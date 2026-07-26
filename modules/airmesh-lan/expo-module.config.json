@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["AirMeshLanModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.airmeshlan.AirMeshLanModule"]
+  }
+}

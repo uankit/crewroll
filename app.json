@@ -1,42 +1,96 @@
 {
   "expo": {
-    "name": "AirMesh",
+    "name": "CrewRoll",
     "slug": "AirMesh",
-    "version": "1.0.0",
+    "version": "0.2.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "icon": "./assets/brand/app-icon.png",
     "scheme": "airmesh",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/brand/app-icon.png",
+      "bundleIdentifier": "com.uankit53.airmesh",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "CrewRoll can connect directly to friends on the same Wi-Fi or personal hotspot when local fallback sharing is enabled."
+      }
     },
     "android": {
+      "allowBackup": false,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#020A12",
+        "foregroundImage": "./assets/brand/app-icon.png"
       },
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "package": "com.uankit53.airmesh"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "backgroundColor": "#020A12",
+          "image": "./assets/brand/app-icon.png",
+          "imageWidth": 112
         }
-      ]
+      ],
+      "expo-sqlite",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "CrewRoll reads images newly added to your library during an active trip and shares them securely with your trip group.",
+          "savePhotosPermission": "CrewRoll saves originals you choose to keep back to your photo library.",
+          "granularPermissions": [
+            "photo"
+          ],
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": false,
+          "faceIDPermission": false
+        }
+      ],
+      "expo-image",
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "airmesh": {
+        "protocolVersion": 3,
+        "maxGroupSize": 10,
+        "tcpPort": 38457
+      },
+      "eas": {
+        "projectId": "fe1de141-5c42-4250-9c1f-f7313845dc8e"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/fe1de141-5c42-4250-9c1f-f7313845dc8e"
     }
   }
 }

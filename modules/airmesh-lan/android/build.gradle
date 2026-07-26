@@ -1,0 +1,19 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.airmeshlan'
+version = '0.2.0'
+
+expoModule {
+  canBePublished false
+}
+
+android {
+  namespace 'expo.modules.airmeshlan'
+  defaultConfig {
+    versionCode 1
+    versionName '0.2.0'
+  }
+}

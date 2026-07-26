@@ -1,56 +1,107 @@
-# Welcome to your Expo app 👋
+# CrewRoll
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+CrewRoll is a private, local-first trip photo roll for groups of up to ten iPhone and Android users, powered internally by the AirMesh protocol. Friends keep using the system Camera; while a trip is active, CrewRoll discovers new library images and synchronizes encrypted frames through a transient outbound-WSS relay. Phones do not need to share Wi-Fi. There is no account, cloud photo store, offline server queue, or in-app camera.
 
-## Get started
+The flow uses only a QR or complete secure link. The trip creator is the initial admin/admission authority, never a network router. Every phone makes the same outbound relay connection, and ended or left trips remain available as offline Saved rolls.
 
-1. Install dependencies
+## P0 product contract
 
-   ```bash
-   npm install
-   ```
+- **Live Share is the core.** Once CrewRoll can see a new image, every connected member receives its catalog entry and thumbnail. iOS may suspend CrewRoll while the standalone Camera is open, so “live” means immediate while runnable and automatic catch-up when the user returns.
+- Every connected member automatically receives the thumbnail and exact original. Thumbnail/control traffic is prioritized ahead of background originals, and interrupted transfers resume from durable checkpoints. Transfers are chunked, encrypted, size/hash checked, and never promote an unverified partial file.
+- A late joiner reconciles the catalog from the trip’s canonical start, then automatically fetches thumbnails before background originals.
+- Photos are filterable by contributor and capture date. There is no AI or natural-language feature.
+- The catalog, operation log, outbox, and transfer journal live in SQLite. Secrets live in OS-backed SecureStore; image bytes live in the app’s private filesystem.
+- The relay forwards bounded live frames only. It cannot decrypt them and never persists payloads. Delivery therefore requires an online overlap between a requester and at least one phone that holds the requested bytes.
+- Exact-byte originals retain embedded metadata, including possible EXIF/GPS. CrewRoll does not publish a separate catalog location in P0, but it cannot strip metadata while also preserving identical bytes.
 
-2. Start the app
+Mobile photo APIs do not expose one reliable cross-platform “this came from Camera” flag. Live Share therefore covers images whose library creation time is at or after trip start, including newly saved or downloaded images. An in-place edit of an older asset is not claimed. iOS-labelled screenshots are excluded; Android screenshot classification is not claimed. This is disclosed before permission is requested.
 
-   ```bash
-   npx expo start
-   ```
+## Architecture decision
 
-In the output, you'll find options to open the app in a
+A full P2P mesh is the wrong default for 5–10 phones: ten members could create 45 links, duplicate reconciliation work, and amplify battery/network failures. Production uses a **stateless transient relay**: each phone holds one outbound WSS connection, while the relay routes already-encrypted frames and retains no application payload. The creator remains an admin for membership decisions but is not the transport host. Each phone remains a local-first replica.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+Expo SDK 57 / React Native 0.86 is the pragmatic shell. It provides maintained MediaLibrary, SQLite, FileSystem, SecureStore, routing, development builds, and an escape hatch for native modules. Rust would still require Swift/Kotlin lifecycle and permission shells, so it would add FFI and build cost without changing iOS background limits.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+The relay process is deliberately small: room/device authentication, live routing, heartbeat/TTL cleanup, connection and ingress limits, and bounded WebSocket queues. It has no database or file writes. The original native TCP adapter remains behind the same `Transport` boundary as an explicitly configured LAN diagnostic fallback; it is not the production default.
 
-## Get a fresh project
+See [docs/architecture.md](docs/architecture.md) for protocol/security invariants,
+[docs/relay-operations.md](docs/relay-operations.md) for the WSS/container
+contract, and [docs/release-readiness.md](docs/release-readiness.md) for the
+automated and external release gates.
 
-When you're ready, run:
+## Run locally
+
+Requirements: Node 22.13+, Xcode for iOS, and Android Studio for Android. Copy `.env.example` to `.env.local` and set a reachable relay URL. Expo SDK 57 exposes every `EXPO_PUBLIC_` value in the client bundle, so the URL must not contain a secret.
 
 ```bash
-npm run reset-project
+npm install
+npm run check
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Run the transient relay locally (plain WS is allowed only with the explicit development flag shown in `.env.example`):
 
-### Other setup steps
+```bash
+npm run relay:start
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Build and install on a simulator/emulator:
 
-## Learn more
+```bash
+npm run ios
+# or
+npm run android
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+After a native development build is installed, start Metro with:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+npm start
+```
 
-## Join the community
+An emulator is useful for UI, database, permission, and library-ingestion smoke tests. Release still requires physical cross-platform evidence over independent networks, Wi-Fi changes, and personal hotspots. LAN co-location is not a production requirement.
 
-Join our community of developers creating universal apps.
+## Physical and shareable builds
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Fast same-OS local iteration:
+
+```bash
+npm run ios:device
+# or
+npm run android:device
+```
+
+Shareable EAS development builds:
+
+```bash
+npm run build:dev:ios
+npm run build:dev:android
+```
+
+Android’s preview profile produces an installable APK. iOS development/internal distribution needs an Apple Developer account and registered-device provisioning.
+
+The checked-in EAS profiles select relay mode. Inject
+`EXPO_PUBLIC_AIRMESH_RELAY_URL=wss://.../v1/relay` into the matching EAS
+development/preview/production environment before a build or update; the app
+fails closed instead of silently returning to phone-hosted LAN mode.
+EAS builds run `npm run validate:release-env` before dependency installation and
+reject missing, insecure, placeholder, credentialed, local, or room-pinned
+relay endpoints.
+
+CrewRoll implements XChaCha20-Poly1305 in application code, so the repository deliberately does not pre-answer Apple’s export-compliance declaration. Complete App Store Connect’s encryption questionnaire before distribution.
+
+Follow [docs/manual-test-plan.md](docs/manual-test-plan.md) for the emulator, same-OS, cross-OS, independent-network, lifecycle, load, and integrity matrix. The automated relay beta gate is 50 simultaneous clients in five ten-member rooms with targeted control traffic and parallel maximum-size chunk bursts.
+
+## Directory structure
+
+```text
+src/
+  app/          Expo Router screens and navigation
+  application/  use cases, orchestration, security, sync, runtime state
+  core/         platform-free domain rules, codecs, reconciliation
+  data/         SQLite migrations and typed repositories
+  features/     feature-facing filters and providers
+  platform/     Expo/native media, files, and transport adapters
+  ui/           reusable components and design tokens
+relay/          stateless transient WebSocket relay and production container
+docs/           architecture, operations, release gates, and manual evidence plan
+```

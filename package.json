@@ -1,43 +1,94 @@
 {
   "name": "airmesh",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "0.2.0",
+  "description": "CrewRoll: private, local-first trip photo sharing for iPhone and Android groups.",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "dependencies": {
-    "@expo/ui": "~57.0.4",
-    "expo": "~57.0.4",
+    "@expo-google-fonts/manrope": "^0.4.2",
+    "@expo/vector-icons": "^15.0.2",
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "expo": "~57.0.8",
+    "expo-clipboard": "~57.0.0",
     "expo-constants": "~57.0.3",
-    "expo-device": "~57.0.0",
+    "expo-crypto": "~57.0.1",
+    "expo-dev-client": "~57.0.9",
+    "expo-file-system": "~57.0.0",
     "expo-font": "~57.0.0",
-    "expo-glass-effect": "~57.0.0",
-    "expo-image": "~57.0.0",
-    "expo-linking": "~57.0.2",
-    "expo-router": "~57.0.4",
-    "expo-splash-screen": "~57.0.2",
-    "expo-status-bar": "~57.0.0",
-    "expo-symbols": "~57.0.0",
-    "expo-system-ui": "~57.0.0",
-    "expo-web-browser": "~57.0.0",
+    "expo-haptics": "~57.0.1",
+    "expo-image": "~57.0.1",
+    "expo-image-manipulator": "~57.0.6",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-linking": "~57.0.4",
+    "expo-media-library": "~57.0.3",
+    "expo-network": "~57.0.1",
+    "expo-router": "~57.0.8",
+    "expo-secure-store": "~57.0.0",
+    "expo-splash-screen": "~57.0.5",
+    "expo-sqlite": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.1",
+    "expo-updates": "~57.0.10",
+    "expo-web-browser": "~57.0.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.0",
     "react-native-gesture-handler": "~2.32.0",
+    "react-native-qrcode-svg": "^6.3.21",
     "react-native-reanimated": "4.5.0",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "4.25.2",
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-tcp-socket": "^6.4.1",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.10.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3"
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "^57.0.0",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.1"
   },
   "scripts": {
-    "start": "expo start",
-    "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web",
-    "lint": "expo lint"
+    "start": "expo start --dev-client",
+    "start:clean": "expo start --dev-client --clear",
+    "android": "expo run:android",
+    "android:device": "expo run:android --device",
+    "ios": "expo run:ios",
+    "ios:device": "expo run:ios --device",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run && npm run test:release-env && npm run test:relay",
+    "test:release-env": "node --test scripts/validate-release-env.test.mjs",
+    "test:relay": "node --test relay/*.test.mjs",
+    "test:watch": "vitest",
+    "verify:bundle": "expo export --platform all --output-dir dist",
+    "validate:release-env": "node scripts/validate-release-env.mjs",
+    "eas-build-pre-install": "node scripts/validate-release-env.mjs",
+    "relay:start": "node relay/server.mjs",
+    "relay:docker:build": "docker build -t crewroll-relay:local -f relay/Dockerfile relay",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "build:dev:android": "npx eas-cli@latest build --profile development --platform android",
+    "build:dev:ios": "npx eas-cli@latest build --profile development --platform ios",
+    "build:preview:android": "npx eas-cli@latest build --profile preview --platform android",
+    "build:preview:ios": "npx eas-cli@latest build --profile preview --platform ios"
   },
-  "private": true
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "airmesh-lan",
+          "react-native-tcp-socket"
+        ]
+      }
+    }
+  },
+  "private": true,
+  "packageManager": "npm@10.9.2"
 }
