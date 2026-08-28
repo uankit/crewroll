@@ -109,4 +109,27 @@ describe("canonical OpenAPI artifact", () => {
     expect(acceptsWithStandardStringKeywords(checksum ?? {}, Buffer.alloc(31).toString("base64"))).toBe(false);
     expect(acceptsWithStandardStringKeywords(checksum ?? {}, Buffer.alloc(33).toString("base64"))).toBe(false);
   });
+
+  it("enforces canonical base64 padding bits with standard schema patterns", () => {
+    const document = createOpenApiDocument();
+    const schemas = (document.components as { schemas: Record<string, JsonSchema> }).schemas;
+    const registrationKey = schemas.RegisterDeviceBody?.properties?.authenticationPublicKey;
+    const upload = schemas.CreateUploadSessionBody;
+    const uploadProperties = upload?.properties;
+    const checksum = uploadProperties?.objects?.items?.[0]?.properties?.checksumSha256;
+    const manifest = uploadProperties?.encryptedManifest;
+    const wrappedKey = schemas.CreateTripBody?.properties?.ownerKeyEnvelope?.properties?.wrappedKey;
+    const maximumManifest = Buffer.alloc(65_536).toString("base64");
+    const maximumWrappedKey = Buffer.alloc(4_096).toString("base64");
+    const exactChecksum = Buffer.alloc(32).toString("base64");
+
+    expect(acceptsWithStandardStringKeywords(registrationKey ?? {}, "AQ==")).toBe(true);
+    expect(acceptsWithStandardStringKeywords(registrationKey ?? {}, "AR==")).toBe(false);
+    expect(acceptsWithStandardStringKeywords(manifest ?? {}, maximumManifest)).toBe(true);
+    expect(acceptsWithStandardStringKeywords(manifest ?? {}, `${maximumManifest.slice(0, -3)}B==`)).toBe(false);
+    expect(acceptsWithStandardStringKeywords(wrappedKey ?? {}, maximumWrappedKey)).toBe(true);
+    expect(acceptsWithStandardStringKeywords(wrappedKey ?? {}, `${maximumWrappedKey.slice(0, -3)}B==`)).toBe(false);
+    expect(acceptsWithStandardStringKeywords(checksum ?? {}, exactChecksum)).toBe(true);
+    expect(acceptsWithStandardStringKeywords(checksum ?? {}, `${exactChecksum.slice(0, -2)}B=`)).toBe(false);
+  });
 });

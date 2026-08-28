@@ -94,6 +94,17 @@ describe("device registration", () => {
     rejects(RegisterDeviceBodySchema, { ...validRegisterDeviceBody(), e2eePublicKey: "***" });
   });
 
+  it("rejects base64 key material with nonzero padding bits", () => {
+    expect(Value.Check(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      authenticationPublicKey: "AQ==",
+    })).toBe(true);
+    rejects(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      authenticationPublicKey: "AR==",
+    });
+  });
+
   it("returns only an opaque revocable background bearer and its RFC 3339 expiry", () => {
     const response = {
       deviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
@@ -181,14 +192,20 @@ describe("photo upload contracts", () => {
 
   it("enforces encrypted manifest and key-envelope decoded byte ceilings", () => {
     const body = validUploadSessionBody();
-    body.encryptedManifest = Buffer.alloc(65_536).toString("base64");
+    const maximumManifest = Buffer.alloc(65_536).toString("base64");
+    body.encryptedManifest = maximumManifest;
     expect(Value.Check(CreateUploadSessionBodySchema, body)).toBe(true);
+    body.encryptedManifest = `${maximumManifest.slice(0, -3)}B==`;
+    rejects(CreateUploadSessionBodySchema, body);
     body.encryptedManifest = Buffer.alloc(65_537).toString("base64");
     rejects(CreateUploadSessionBodySchema, body);
 
     const trip = validImmediateTripBody();
-    trip.ownerKeyEnvelope.wrappedKey = Buffer.alloc(4_096).toString("base64");
+    const maximumWrappedKey = Buffer.alloc(4_096).toString("base64");
+    trip.ownerKeyEnvelope.wrappedKey = maximumWrappedKey;
     expect(Value.Check(CreateTripBodySchema, trip)).toBe(true);
+    trip.ownerKeyEnvelope.wrappedKey = `${maximumWrappedKey.slice(0, -3)}B==`;
+    rejects(CreateTripBodySchema, trip);
     trip.ownerKeyEnvelope.wrappedKey = Buffer.alloc(4_097).toString("base64");
     rejects(CreateTripBodySchema, trip);
   });
@@ -202,7 +219,12 @@ describe("photo upload contracts", () => {
     });
   });
 
-  it("requires SHA-256 checksums to decode to exactly 32 bytes", () => {
+  it("requires SHA-256 checksums to decode canonically to exactly 32 bytes", () => {
+    const canonical = validUploadSessionBody();
+    expect(Value.Check(CreateUploadSessionBodySchema, canonical)).toBe(true);
+    canonical.objects[0].checksumSha256 = `${canonical.objects[0].checksumSha256.slice(0, -2)}B=`;
+    rejects(CreateUploadSessionBodySchema, canonical);
+
     const tooShort = validUploadSessionBody();
     tooShort.objects[0].checksumSha256 = Buffer.alloc(31).toString("base64");
     rejects(CreateUploadSessionBodySchema, tooShort);

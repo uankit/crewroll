@@ -4,12 +4,15 @@ import { DeviceIdSchema, UuidSchema } from "./ids.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RFC_3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
-const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$";
+const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$";
 const OPAQUE = /^[A-Za-z0-9_-]+$/;
 
-function registerFormat(name: string, check: (value: string) => boolean): void {
-  if (!FormatRegistry.Has(name)) FormatRegistry.Set(name, check);
-}
+type FormatValidator = (value: string) => boolean;
+
+export type CrewRollFormatRegistry = Readonly<{
+  Get(format: string): FormatValidator | undefined;
+  Set(format: string, validator: FormatValidator): void;
+}>;
 
 function isRfc3339DateTime(value: string): boolean {
   const match = RFC_3339.exec(value);
@@ -54,33 +57,41 @@ function exactBase64Pattern(decodedBytes: number): string {
   const groups = Math.floor(decodedBytes / 3);
   const remainder = decodedBytes % 3;
   const prefix = `(?:[A-Za-z0-9+/]{4}){${groups}}`;
-  if (remainder === 1) return `^${prefix}[A-Za-z0-9+/]{2}==$`;
-  if (remainder === 2) return `^${prefix}[A-Za-z0-9+/]{3}=$`;
+  if (remainder === 1) return `^${prefix}[A-Za-z0-9+/][AQgw]==$`;
+  if (remainder === 2) return `^${prefix}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$`;
   return `^${prefix}$`;
 }
 
-registerFormat("uuid", (value) => UUID.test(value));
-registerFormat("date-time", isRfc3339DateTime);
-registerFormat("uri", (value) => {
-  try {
-    return new URL(value).protocol.length > 1;
-  } catch {
-    return false;
+const CREWROLL_FORMAT_VALIDATORS = {
+  uuid: (value: string) => UUID.test(value),
+  "date-time": isRfc3339DateTime,
+  uri: (value: string) => {
+    try {
+      return new URL(value).protocol.length > 1;
+    } catch {
+      return false;
+    }
+  },
+  "iana-time-zone": (value: string) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+      return value === "UTC" || value.includes("/");
+    } catch {
+      return false;
+    }
+  },
+  "opaque-cursor": (value: string) => value.length >= 8 && value.length <= 256 && OPAQUE.test(value),
+  "opaque-source-asset-key": (value: string) =>
+    value.length >= 32 && value.length <= 128 && /^src_[A-Za-z0-9_-]+$/.test(value) && !UUID.test(value),
+} satisfies Readonly<Record<string, FormatValidator>>;
+
+export function installCrewRollFormats(registry: CrewRollFormatRegistry): void {
+  for (const [name, validator] of Object.entries(CREWROLL_FORMAT_VALIDATORS)) {
+    if (registry.Get(name) !== validator) registry.Set(name, validator);
   }
-});
-registerFormat("iana-time-zone", (value) => {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
-    return value === "UTC" || value.includes("/");
-  } catch {
-    return false;
-  }
-});
-registerFormat("opaque-cursor", (value) => value.length >= 8 && value.length <= 256 && OPAQUE.test(value));
-registerFormat(
-  "opaque-source-asset-key",
-  (value) => value.length >= 32 && value.length <= 128 && /^src_[A-Za-z0-9_-]+$/.test(value) && !UUID.test(value),
-);
+}
+
+installCrewRollFormats(FormatRegistry);
 
 export function ClosedObject<T extends TProperties>(properties: T): TObject<T> {
   return Type.Object(properties, { additionalProperties: false });
