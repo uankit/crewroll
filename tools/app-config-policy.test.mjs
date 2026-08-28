@@ -174,5 +174,6 @@ test("app config registers only installed, required greenfield plugins", () => {
     "expo-splash-screen",
     "expo-media-library",
     "expo-secure-store",
+    "@clerk/expo",
   ]);
 });
