@@ -33,7 +33,7 @@ const applicationDependencies = [
   "@shopify/flash-list",
 ];
 
-const sdk57Range = /^~57\.0\.\d+$/;
+const sdk57Range = /^~57\.0\.(0|[1-9]\d*)$/;
 const exactSemver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const rootDependencySections = [
   "dependencies",
@@ -64,16 +64,16 @@ function parseExactSemver(version) {
 }
 
 function satisfiesSdk57Tilde(declaration, resolution) {
-  const declared = /^~(\d+)\.(\d+)\.(\d+)$/.exec(declaration);
+  const declared = sdk57Range.exec(declaration);
   const installed = parseExactSemver(resolution);
   if (!declared || !installed) {
     return false;
   }
 
   return (
-    installed[0] === Number(declared[1]) &&
-    installed[1] === Number(declared[2]) &&
-    installed[2] >= Number(declared[3])
+    installed[0] === 57 &&
+    installed[1] === 0 &&
+    installed[2] >= Number(declared[1])
   );
 }
 
@@ -175,32 +175,35 @@ test("rejects ranges for exact application dependency pins", () => {
   );
 });
 
-test("rejects forbidden packages in every root dependency section", () => {
-  const { manifest: oldClerk, lockfile: oldClerkLock } = cloneManifestAndLock();
+test("rejects malformed SDK 57 dependency declarations", () => {
+  const { manifest, lockfile } = cloneManifestAndLock();
   setRootDependency(
-    oldClerk,
-    oldClerkLock,
-    "devDependencies",
-    "@clerk/clerk-expo",
-    "2.20.0",
-  );
-  assert.throws(
-    () => assertMobileDependencyPolicy(oldClerk, oldClerkLock),
-    /@clerk\/clerk-expo must be absent from devDependencies/,
-  );
-
-  const { manifest: generator, lockfile: generatorLock } = cloneManifestAndLock();
-  setRootDependency(
-    generator,
-    generatorLock,
+    manifest,
+    lockfile,
     "dependencies",
-    "openapi-typescript",
-    "7.13.0",
+    "expo-notifications",
+    "~57.0.01",
   );
   assert.throws(
-    () => assertMobileDependencyPolicy(generator, generatorLock),
-    /openapi-typescript must be absent from dependencies/,
+    () => assertMobileDependencyPolicy(manifest, lockfile),
+    /expo-notifications must use an SDK 57 compatible range/,
   );
+});
+
+test("rejects forbidden packages in every root dependency section", () => {
+  for (const [name, version] of [
+    ["@clerk/clerk-expo", "2.20.0"],
+    ["openapi-typescript", "7.13.0"],
+  ]) {
+    for (const section of rootDependencySections) {
+      const { manifest, lockfile } = cloneManifestAndLock();
+      setRootDependency(manifest, lockfile, section, name, version);
+      assert.throws(
+        () => assertMobileDependencyPolicy(manifest, lockfile),
+        new RegExp(`${name} must be absent from ${section}`),
+      );
+    }
+  }
 });
 
 test("rejects lock resolutions outside the approved declarations", () => {
@@ -211,12 +214,14 @@ test("rejects lock resolutions outside the approved declarations", () => {
     /@clerk\/expo lock version must equal exact manifest pin/,
   );
 
-  const { manifest: badNotifications, lockfile: badNotificationsLock } = cloneManifestAndLock();
-  badNotificationsLock.packages["node_modules/expo-notifications"].version = "58.0.0";
-  assert.throws(
-    () => assertMobileDependencyPolicy(badNotifications, badNotificationsLock),
-    /expo-notifications lock version must satisfy ~57\.0\.\d+/,
-  );
+  for (const version of ["57.0.14", "57.1.0", "58.0.0"]) {
+    const { manifest, lockfile } = cloneManifestAndLock();
+    lockfile.packages["node_modules/expo-notifications"].version = version;
+    assert.throws(
+      () => assertMobileDependencyPolicy(manifest, lockfile),
+      /expo-notifications lock version must satisfy ~57\.0\.\d+/,
+    );
+  }
 });
 
 test("rejects forbidden direct lockfile entries", () => {
