@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -26,6 +27,62 @@ test("Android requests image access without legacy write permission", () => {
       "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
     ),
     false,
+  );
+});
+
+test("resolved Android config blocks legacy media writes while retaining reads", () => {
+  const publicResult = spawnSync(
+    "node_modules/expo/bin/cli",
+    ["config", "--type", "public", "--json"],
+    {
+      cwd: new URL("../", import.meta.url),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  assert.equal(publicResult.status, 0, publicResult.stderr || publicResult.stdout);
+  const publicConfig = JSON.parse(publicResult.stdout);
+  assert.ok(
+    publicConfig.android.blockedPermissions.includes(
+      "android.permission.WRITE_EXTERNAL_STORAGE",
+    ),
+  );
+
+  const introspectResult = spawnSync(
+    "node_modules/expo/bin/cli",
+    ["config", "--type", "introspect", "--json"],
+    {
+      cwd: new URL("../", import.meta.url),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  assert.equal(
+    introspectResult.status,
+    0,
+    introspectResult.stderr || introspectResult.stdout,
+  );
+  const resolved = JSON.parse(introspectResult.stdout);
+  const permissions = resolved.android.permissions;
+
+  assert.equal(
+    permissions.includes("android.permission.WRITE_EXTERNAL_STORAGE"),
+    false,
+  );
+  assert.equal(
+    permissions.includes("android.permission.READ_EXTERNAL_STORAGE"),
+    true,
+  );
+  assert.equal(
+    permissions.includes("android.permission.READ_MEDIA_IMAGES"),
+    true,
+  );
+  assert.ok(
+    resolved.android.blockedPermissions.includes(
+      "android.permission.WRITE_EXTERNAL_STORAGE",
+    ),
   );
 });
 
