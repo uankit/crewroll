@@ -7,6 +7,29 @@ const root = new URL("../", import.meta.url);
 const app = JSON.parse(await readFile(new URL("app.json", root), "utf8")).expo;
 const eas = JSON.parse(await readFile(new URL("eas.json", root), "utf8"));
 
+function permissionAttribute(entry) {
+  return entry?.$ ?? entry?.attributes ?? entry ?? {};
+}
+
+function permissionName(entry) {
+  const attributes = permissionAttribute(entry);
+  return attributes["android:name"] ?? attributes.name;
+}
+
+function permissionEntries(manifestPermissions, name) {
+  return manifestPermissions.filter((entry) => permissionName(entry) === name);
+}
+
+function assertExactlyOnePermission(manifestPermissions, name) {
+  const entries = permissionEntries(manifestPermissions, name);
+  assert.equal(
+    entries.length,
+    1,
+    `expected exactly one ${name} manifest entry; found ${entries.length}`,
+  );
+  return permissionAttribute(entries[0]);
+}
+
 test("greenfield config contains no legacy LAN or relay architecture", () => {
   assert.equal(app.extra?.airmesh, undefined);
   assert.equal(app.ios?.infoPlist?.NSLocalNetworkUsageDescription, undefined);
@@ -65,6 +88,50 @@ test("resolved Android config blocks legacy media writes while retaining reads",
     introspectResult.stderr || introspectResult.stdout,
   );
   const resolved = JSON.parse(introspectResult.stdout);
+  const manifestPermissions =
+    resolved._internal?.modResults?.android?.manifest?.manifest?.[
+      "uses-permission"
+    ];
+  assert.ok(
+    Array.isArray(manifestPermissions),
+    "Expo introspection did not return Android manifest uses-permission entries",
+  );
+
+  const writeAttributes = assertExactlyOnePermission(
+    manifestPermissions,
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+  );
+  assert.equal(
+    writeAttributes["tools:node"],
+    "remove",
+    "WRITE_EXTERNAL_STORAGE must be removed from the final Android manifest",
+  );
+
+  const readAttributes = assertExactlyOnePermission(
+    manifestPermissions,
+    "android.permission.READ_EXTERNAL_STORAGE",
+  );
+  assert.equal(
+    readAttributes["android:maxSdkVersion"],
+    "32",
+    "READ_EXTERNAL_STORAGE must remain limited to Android API 30-32",
+  );
+  assert.notEqual(
+    readAttributes["tools:node"],
+    "remove",
+    "READ_EXTERNAL_STORAGE must not be removed from the final Android manifest",
+  );
+
+  const imageReadAttributes = assertExactlyOnePermission(
+    manifestPermissions,
+    "android.permission.READ_MEDIA_IMAGES",
+  );
+  assert.notEqual(
+    imageReadAttributes["tools:node"],
+    "remove",
+    "READ_MEDIA_IMAGES must not be removed from the final Android manifest",
+  );
+
   const permissions = resolved.android.permissions;
 
   assert.equal(
