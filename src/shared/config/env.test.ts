@@ -74,6 +74,32 @@ describe("readPublicEnv", () => {
   });
 
   it.each([
+    [
+      "a non-default numeric port",
+      "https://api.crewroll.app:8443",
+      "https://api.crewroll.app:8443",
+    ],
+    [
+      "uppercase HTTPS semantics",
+      "HTTPS://API.CREWROLL.APP",
+      "https://api.crewroll.app",
+    ],
+    [
+      "a bracketed IPv6 host",
+      "https://[2001:db8::1]:8443",
+      "https://[2001:db8::1]:8443",
+    ],
+    ["a custom host", "https://api.internal", "https://api.internal"],
+  ])("accepts %s", (_label, apiUrl, expectedOrigin) => {
+    expect(
+      readPublicEnv({
+        EXPO_PUBLIC_API_URL: apiUrl,
+        EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: TEST_PUBLISHABLE_KEY,
+      }).apiUrl,
+    ).toBe(expectedOrigin);
+  });
+
+  it.each([
     ["EXPO_PUBLIC_API_URL", { EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: TEST_PUBLISHABLE_KEY }],
     ["EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY", { EXPO_PUBLIC_API_URL: "https://api.crewroll.app" }],
   ])("rejects a missing %s", (variableName, source) => {
@@ -89,6 +115,12 @@ describe("readPublicEnv", () => {
     ["a bare query delimiter", "https://api.crewroll.app?"],
     ["a bare fragment delimiter", "https://api.crewroll.app#"],
     ["a path that normalizes to root", "https://api.crewroll.app/foo/.."],
+    ["a tab normalized out of the authority", "https://api.\tcrewroll.app"],
+    ["a line feed normalized out of the authority", "https://api.\ncrewroll.app"],
+    ["a carriage return normalized out of the authority", "https://api.\rcrewroll.app"],
+    ["an empty username marker", "https://@api.crewroll.app"],
+    ["empty username and password markers", "https://:@api.crewroll.app"],
+    ["an empty port marker", "https://api.crewroll.app:"],
     ["a malformed URL", "crewroll-api"],
   ])("rejects %s without echoing it", (_label, apiUrl) => {
     expectInvalidVariable(

@@ -1,6 +1,21 @@
 import { z } from "zod";
 
-const RawHttpsOriginPattern = /^https:\/\/[^/?#\\]+\/?$/i;
+const RawHttpsOriginPattern = /^https:\/\/([^/?#\\]+)\/?$/i;
+const RawAsciiControlOrWhitespacePattern = /[\u0000-\u0020\u007f]/;
+
+function isValidRawHttpsOrigin(value: string): boolean {
+  if (RawAsciiControlOrWhitespacePattern.test(value)) {
+    return false;
+  }
+
+  const match = RawHttpsOriginPattern.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const rawAuthority = match[1] ?? "";
+  return !rawAuthority.includes("@") && !rawAuthority.endsWith(":");
+}
 
 const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
   let url: URL;
@@ -14,7 +29,7 @@ const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
 
   if (
     value !== value.trim() ||
-    !RawHttpsOriginPattern.test(value) ||
+    !isValidRawHttpsOrigin(value) ||
     url.protocol !== "https:" ||
     url.username !== "" ||
     url.password !== "" ||
