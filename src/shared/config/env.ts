@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 const RawHttpsOriginPattern = /^https:\/\/([^/?#\\]+)\/?$/i;
-const RawAsciiControlOrWhitespacePattern = /[\u0000-\u0020\u007f]/;
+const RawControlOrWhitespacePattern = /[\u0000-\u001f\u007f\s]/;
 
 function isValidRawHttpsOrigin(value: string): boolean {
-  if (RawAsciiControlOrWhitespacePattern.test(value)) {
+  if (RawControlOrWhitespacePattern.test(value)) {
     return false;
   }
 

@@ -118,6 +118,7 @@ describe("readPublicEnv", () => {
     ["a tab normalized out of the authority", "https://api.\tcrewroll.app"],
     ["a line feed normalized out of the authority", "https://api.\ncrewroll.app"],
     ["a carriage return normalized out of the authority", "https://api.\rcrewroll.app"],
+    ["a byte order mark normalized out of the authority", "https://api.\uFEFFcrewroll.app"],
     ["an empty username marker", "https://@api.crewroll.app"],
     ["empty username and password markers", "https://:@api.crewroll.app"],
     ["an empty port marker", "https://api.crewroll.app:"],
