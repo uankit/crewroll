@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+
 const fields = [
   "name",
   "slug",
@@ -10,6 +12,14 @@ const fields = [
   "appVersionSource",
   "productionAutoIncrement",
 ];
+
+export function assertRootManifest(manifest) {
+  assert.equal(manifest.name, "crewroll", "package name must remain crewroll");
+  assert.equal(manifest.private, true, "root package must remain private");
+  assert.equal(manifest.main, "expo-router/entry", "Expo Router must stay at repository root");
+  assert.deepEqual(manifest.workspaces, ["packages/*", "services/*"], "workspace topology");
+  assert.match(manifest.dependencies?.expo ?? "", /^~57\./, "Expo SDK 57");
+}
 
 export function identityFromConfigs(publicConfig, easConfig) {
   return {

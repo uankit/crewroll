@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
-import { assertIdentity, identityFromConfigs } from "./app-identity.mjs";
+import {
+  assertIdentity,
+  assertRootManifest,
+  identityFromConfigs,
+} from "./app-identity.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
 const snapshot = JSON.parse(
@@ -10,6 +14,11 @@ const snapshot = JSON.parse(
 const easConfig = JSON.parse(
   await readFile(new URL("../eas.json", import.meta.url), "utf8"),
 );
+const rootManifest = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
+
+assertRootManifest(rootManifest);
 
 const result = spawnSync(
   process.platform === "win32" ? "npx.cmd" : "npx",

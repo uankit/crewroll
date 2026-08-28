@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   assertIdentity,
+  assertRootManifest,
   identityFromConfigs,
 } from "./app-identity.mjs";
 
@@ -30,6 +31,25 @@ const easConfig = {
   cli: { appVersionSource: "remote" },
   build: { production: { autoIncrement: true } },
 };
+
+const validRoot = {
+  name: "crewroll",
+  private: true,
+  main: "expo-router/entry",
+  workspaces: ["packages/*", "services/*"],
+  dependencies: { expo: "~57.0.18" },
+};
+
+test("accepts the locked root Expo manifest", () => {
+  assert.doesNotThrow(() => assertRootManifest(validRoot));
+});
+
+test("rejects a renamed root application", () => {
+  assert.throws(
+    () => assertRootManifest({ ...validRoot, name: "mobile" }),
+    /package name/,
+  );
+});
 
 test("extracts the protected App Store, Play, and EAS identity", () => {
   assert.deepEqual(identityFromConfigs(publicConfig, easConfig), snapshot);
