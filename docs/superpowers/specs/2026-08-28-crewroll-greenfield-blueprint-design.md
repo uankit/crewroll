@@ -1,391 +1,755 @@
-# CrewRoll Greenfield Architecture Blueprint
+# CrewRoll Greenfield Product and Architecture Specification
 
 **Date:** 2026-08-28  
-**Status:** Proposed for review  
-**Scope:** Greenfield MVP and 5,000-user architecture. This document does not preserve, migrate, or extend the current implementation.
+**Status:** Approved architecture; implementation source of truth
+**Scope:** Photo-only MVP for trips of up to 10 people, designed for 5,000 registered users
+**Implementation stance:** Greenfield. Preserve release identity and signing lineage; do not preserve legacy architecture.
 
-## 1. Executive decision
+## 1. Product promise
 
-CrewRoll should be a native-assisted, end-to-end encrypted media delivery system with a React Native/Expo interface. It should not be a peer-to-peer mesh, a live WebSocket byte relay, a Google Drive synchronizer, or a traditional cloud gallery.
+CrewRoll makes one promise:
 
-The server is a temporary courier and durable coordinator:
+> Start one shared trip, keep using the normal iPhone or Android camera, and finish with every eligible trip photo saved locally in every member's system photo library.
 
-1. A native iOS or Android adapter discovers a new stock-camera asset.
-2. The phone records the asset in a durable local outbox before networking begins.
-3. The phone creates and encrypts a small preview, then encrypts the exact original bytes.
-4. The phone uploads ciphertext directly to temporary object storage through signed URLs.
-5. A compact manifest is committed to the control plane in PostgreSQL.
-6. Every trip member receives a durable inbox entry. Push or a foreground stream only tells the app to sync that inbox.
-7. Each recipient downloads, decrypts, hashes, and saves the asset to the system photo library automatically.
-8. Each device reports `SAVED_LOCALLY`; ciphertext is deleted after every intended recipient acknowledges it, with a hard TTL as a backstop.
+The experience is not a cloud gallery, chat attachment flow, drive synchronizer, or peer-to-peer mesh. CrewRoll is a private, temporary, end-to-end encrypted courier with a durable reconciliation record.
 
-This gives the product its defining contract: **when a trip finishes, every member can prove whether every shared asset is saved locally, missing, or awaiting a specific device.**
+The product must answer three questions at a glance:
 
-## 2. Product contract
+1. Is CrewRoll watching for new photos?
+2. Are photos safely moving?
+3. Does everyone have everything?
 
-### Non-negotiable behavior
+## 2. Locked MVP contract
 
-- Maximum 10 people per trip in MVP.
-- One active trip per user.
-- Photos come from the normal iOS or Android camera; CrewRoll has no in-app camera.
-- The app detects new photos automatically when the OS permits it and reconciles missed detections later.
-- A small preview should feel live; the exact original may finish later.
-- The original asset is never recompressed. Preview compression is allowed and expected.
-- Photos are end-to-end encrypted before leaving the source device.
-- The server never receives plaintext media or trip media keys.
-- The server does not retain media indefinitely.
-- Delivery is durable and retryable across app restarts, device reboots, bad networks, and temporary offline periods.
-- Pause stops network transfer, not discovery. New captures continue entering the local outbox.
-- A scheduled release such as 10 PM controls when recipients see inbox entries. It cannot guarantee that a phone uploads or downloads at exactly 10 PM because mobile operating systems schedule background work.
-- Trip completion is a reconciliation state, not a visual celebration: all intended assets must be `SAVED_LOCALLY` on all intended devices, or the UI must identify the exact gap.
+### 2.1 Included
 
-### Honest OS contract
+- iOS and Android applications under the existing App Store, Play, and EAS identity.
+- Apple and Google sign-in through Clerk.
+- Create or join a trip by invite link, QR code, or short code.
+- Maximum 10 members, including the owner.
+- One pending or active trip per user.
+- One nominated participating device per member per trip.
+- No in-app camera. Members use the stock camera or another app that writes to the system photo library.
+- Full photo-library access is required while participating in a trip.
+- Automatic discovery of new eligible photos during the active trip window.
+- Encrypted preview delivery first, exact original delivery second.
+- Exact original bytes; originals are never recompressed.
+- Immediate delivery or one nightly release time in an IANA timezone.
+- Device-local pause. Discovery continues while network transfer pauses.
+- Cellular transfer allowed by default for photos.
+- Automatic retry and reconciliation after normal suspension, process termination, network loss, device restart, or app restart, within OS limits.
+- End-to-end encryption before any media leaves a source device.
+- Temporary ciphertext storage only.
+- Completion only after every required recipient device reports an exact local save.
+- Metadata-only trip history after ciphertext deletion.
 
-“Instant” means best effort when both apps and networks are cooperative. iOS and Android may defer background work for power, network, privacy, or user-controlled reasons. A user force-quitting an iOS app cancels its background URLSession transfers until the app is relaunched. Push notifications are not a reliable queue. CrewRoll therefore combines fast hints with durable inbox cursors, background transfers, and foreground reconciliation.
+### 2.2 Explicitly excluded
 
-For newer iOS versions, PhotoKit’s Background Resource Upload extension is the preferred upload path. It requires full library access and is system-scheduled. For older supported iOS versions, the host app observes the photo library when alive, records work durably, and uses background URLSession plus reconciliation on the next launch. Android uses MediaStore changes as a trigger and WorkManager/JobScheduler for durable work, with a generation cursor to catch missed changes.
+- Video transfer.
+- In-app camera.
+- Google Drive, iCloud Drive, Dropbox, email attachments, or WhatsApp/Telegram integration.
+- LAN, Bluetooth, Wi-Fi Direct, Multipeer Connectivity, Nearby Connections, WebRTC, or any P2P byte path.
+- WebSocket media relay or media bytes through the API.
+- Multiple providers or fallback vendors.
+- Late joins, member departures, participating-device changes, or key rotation after a trip starts.
+- Multiple participating devices per member.
+- Limited-library/manual-picker mode.
+- Manual retry as the primary recovery experience.
+- A second gallery; CrewRoll's gallery is a transfer-status projection, while durable media lives in the system photo library.
+- Redis, Kafka, SQS, Kubernetes, microservices, or a separate notification source of truth.
 
-## 3. System shape
+### 2.3 Honest operating-system contract
+
+Neither iOS nor Android exposes a universally reliable flag proving that an image came from the stock camera. The implementable contract is:
+
+> Share new image assets added to the photo library during the active trip, excluding known screenshots, download locations, and assets saved by CrewRoll itself.
+
+“Instant” is best effort when the source phone, recipient phone, network, and operating systems cooperate. CrewRoll provides instant satisfaction through preview-first transfer and foreground observers, then proves eventual correctness through persistent cursors, native job databases, direct background transfers, and reconciliation.
+
+On iOS, an already-started background `URLSession` transfer can continue after normal suspension or system termination. A deliberate force-quit cancels transfers and prevents automatic relaunch. Photos created after force-quit are discovered when CrewRoll is reopened.
+
+On Android, WorkManager and JobScheduler survive normal task dismissal and process death. A Settings-level force-stop disables work until the user explicitly opens CrewRoll again.
+
+These limits appear in permission and trip-readiness copy. They are not hidden behind a weaker fallback path.
+
+## 3. Architecture decision
+
+CrewRoll uses one native-assisted mobile application and one modular-monolith control plane.
 
 ```text
-Stock camera
-    |
-    v
-Native capture adapter ----> local SQLite outbox ----> preview/original encryption
-    |                                  |                         |
-    |                                  +---- retry state --------+
-    |                                                            |
-    +------------------------------------------------------------v
-                                                  signed direct upload
-                                                            |
-                                                            v
-                                                  temporary object store
-                                                            |
-                                             manifest only  |
-                                                            v
-React Native UI <---- API / sync cursor ---- modular monolith ---- PostgreSQL
-       ^                                         |    |             |
-       |                                         |    +---- pg-boss jobs/schedules
-       |                                         +--------- FCM/APNs wake-up hints
-       |
-       +---- native download/decrypt/hash/save <---- signed direct download
+Stock camera / photo-library writer
+               |
+               v
+Native library observer + persistent reconciliation cursor
+               |
+               v
+Native SQLite job ledger
+       |                     |
+       | preview lane        | original lane
+       v                     v
+Native resize          exact bounded read
+       |                     |
+       +------ libsodium secretstream encryption ------+
+                                                       |
+                                                       v
+                                            ciphertext staging files
+                                                       |
+                                             signed direct PUT to S3
+                                                       |
+                                                       v
+Clerk JWT -> Fastify API -> PostgreSQL transaction -> durable device inbox
+                                                       |
+                                               FCM/APNs wake hint
+                                                       |
+                                                       v
+Recipient native engine -> signed S3 GET -> decrypt -> hash -> exact library save
+                                                       |
+                                                       v
+                                    idempotent SAVED_LOCALLY receipt
+                                                       |
+                          all required receipts or hard expiry
+                                                       |
+                              idempotent S3 deletion + reconciliation
 ```
 
-### Architectural boundaries
+### 3.1 Sources of truth
 
-| Boundary | Responsibility | Durable source of truth |
-|---|---|---|
-| Mobile UI | Trips, membership, progress, pause/schedule controls, errors | Server state cached locally |
-| Native transfer engine | Detect, spool, encrypt, upload, download, verify, save | Per-platform SQLite job database |
-| API module | Authentication, authorization, trip commands, signed transfer sessions | PostgreSQL |
-| Delivery module | Recipient fan-out, durable inboxes, cursor sync, acknowledgements | PostgreSQL |
-| Worker/scheduler | Retries, scheduled release, TTL cleanup, stuck-job repair | PostgreSQL via pg-boss |
-| Object plane | Temporary ciphertext and multipart parts | S3-compatible bucket with lifecycle rules |
-| Notification adapter | Low-latency wake-up hints | None; it may drop messages safely |
-
-## 4. Core flows
-
-### 4.1 Create, join, and start a trip
-
-1. Creator makes a trip in `LOBBY` and receives an invite link/QR code.
-2. A membership transaction enforces both constraints: at most 10 active members and no second active trip for a user.
-3. Each device publishes an identity key and wrapped trip-key envelope. The backend stores public material and envelopes only.
-4. `START` freezes the initial recipient set and changes the trip to `ACTIVE`.
-5. A deliberately supported late join creates new delivery rows for every unexpired asset; it is not an accidental side effect.
-
-### 4.2 Capture and publish
-
-1. The native detector observes an asset identifier and captures source metadata.
-2. In a single local transaction it inserts an `AssetJob` with a stable idempotency key derived from the source asset ID, trip ID, and capture generation.
-3. A preview is generated locally, stripped of unnecessary metadata, encrypted, and uploaded first.
-4. The original bytes are streamed through libsodium `crypto_secretstream_xchacha20poly1305`; the plaintext hash, ciphertext hash, byte count, and MIME type are recorded.
-5. Small originals use one signed PUT. Large videos use multipart upload, retrying individual parts.
-6. `POST /assets/commit` atomically inserts the asset, its object metadata, all intended recipients, and an outbox event. Repeating the same idempotency key returns the existing asset.
-7. Scheduled trips mark delivery rows `HELD` until `release_at`. Immediate trips make them `READY`.
-
-### 4.3 Deliver and save
-
-1. The worker publishes a best-effort FCM/APNs hint. The app also syncs on foreground, reconnect, and a bounded periodic cadence.
-2. `GET /sync?cursor=...` returns ordered durable inbox changes and the next cursor.
-3. The recipient requests a short-lived, recipient-scoped download URL.
-4. Preview downloads run in a high-priority lane. Originals use a separately bounded lane so videos cannot block every preview.
-5. The native engine decrypts to an app-private staging file, verifies the authenticated stream and plaintext hash, then saves the exact file to the system photo library.
-6. A unique local `saved_asset` row prevents duplicate library saves across retries.
-7. `POST /deliveries/:id/receipt` advances the state to `SAVED_LOCALLY` idempotently.
-
-### 4.4 Delete and reconcile
-
-1. When all recipients have `SAVED_LOCALLY`, a cleanup job deletes preview/original ciphertext and marks the asset `PURGED`.
-2. A bucket lifecycle rule enforces `trip_end + 7 days` as a hard backstop even if application cleanup fails.
-3. Before ending a trip, the API computes a reconciliation matrix: asset by member, with source-device and recipient-device status.
-4. A trip becomes `COMPLETE` only when every required cell is saved. If TTL expires first, it becomes `INCOMPLETE_EXPIRED`; it never silently claims success.
-
-## 5. State machines
-
-### Trip
-
-`LOBBY -> ACTIVE -> ENDING -> COMPLETE`
-
-Exceptional exits: `ACTIVE|ENDING -> INCOMPLETE_EXPIRED`, and owner cancellation before media exists may produce `CANCELLED`.
-
-### Source asset job
-
-`DISCOVERED -> PREVIEW_READY -> PREVIEW_UPLOADED -> ORIGINAL_UPLOADING -> COMMITTED -> SOURCE_DONE`
-
-Every network state can move to `RETRY_WAIT`; permission loss moves to `BLOCKED_PERMISSION`; an asset removed from the library before spooling moves to `SOURCE_MISSING` and is visible in reconciliation.
-
-### Recipient delivery
-
-`HELD|READY -> PREVIEW_SAVED -> ORIGINAL_DOWNLOADING -> VERIFIED -> SAVED_LOCALLY`
-
-Failures move to `RETRY_WAIT`, `BLOCKED_STORAGE`, or `BLOCKED_PERMISSION`. Only `SAVED_LOCALLY` counts toward completion.
-
-## 6. Data model
-
-Core tables:
-
-- `users(id, auth_subject, created_at)`
-- `devices(id, user_id, platform, push_token, identity_public_key, last_seen_at, revoked_at)`
-- `trips(id, owner_id, name, state, release_mode, release_at, ends_at, hard_ttl_at)`
-- `trip_members(trip_id, user_id, joined_at, role, key_epoch, left_at)`
-- `trip_key_envelopes(trip_id, key_epoch, device_id, wrapped_key)`
-- `assets(id, trip_id, source_device_id, source_asset_key, captured_at, media_type, mime_type, original_bytes, plaintext_sha256, key_epoch, committed_at, purged_at)`
-- `asset_objects(asset_id, variant, object_key, ciphertext_bytes, ciphertext_sha256, multipart_upload_id, expires_at)`
-- `deliveries(id, asset_id, recipient_device_id, state, available_at, saved_at, last_error_code, attempt_count)`
-- `inbox_events(sequence, recipient_device_id, event_type, aggregate_id, available_at, payload_json)`
-- `receipts(delivery_id, receipt_type, device_timestamp, server_timestamp, idempotency_key)`
-- `idempotency_keys(scope, key, response_ref, expires_at)`
-- `audit_events(id, trip_id, actor_id, type, metadata_json, occurred_at)`
-
-Important database constraints:
-
-- Unique `(trip_id, source_device_id, source_asset_key)`.
-- Unique `(asset_id, recipient_device_id)`.
-- Unique active-trip membership per user through a partial unique index.
-- Membership count enforced in the same locked transaction that joins a trip.
-- Receipt transitions are monotonic.
-- Object deletion is allowed only after an atomic all-recipient check or TTL expiry.
-
-## 7. API and event surface
-
-Minimal command API:
-
-- `POST /trips`, `POST /trips/:id/join`, `POST /trips/:id/start`, `POST /trips/:id/end`
-- `POST /devices/register`, `POST /trips/:id/key-envelopes`
-- `POST /assets/upload-session`, `POST /assets/:id/parts`, `POST /assets/commit`
-- `GET /sync?cursor=...&limit=...`
-- `POST /deliveries/:id/download-session`
-- `POST /deliveries/:id/receipt`
-- `POST /transfer/pause`, `POST /transfer/resume`
-- `GET /trips/:id/reconciliation`
-
-Internal events:
-
-- `asset.committed`
-- `delivery.released`
-- `delivery.saved_locally`
-- `asset.all_recipients_saved`
-- `asset.expired`
-- `trip.reconciliation_requested`
-
-Events are written through an outbox in the same transaction as domain changes. Consumers are idempotent. No endpoint proxies media bytes.
-
-## 8. Security and privacy
-
-### Key hierarchy
-
-- Each device owns a long-lived identity key generated and held in Keychain/Secure Enclave or Android Keystore.
-- Each trip has an epoch key. Membership changes rotate the epoch for future captures.
-- Each asset has a random content key. The content key is wrapped to the trip epoch and referenced by the manifest.
-- A removed member retains access only to assets from epochs for which their device already received a key envelope.
-
-### Media encryption
-
-- Use audited native libsodium, not a JavaScript crypto implementation.
-- Use `crypto_secretstream_xchacha20poly1305` for chunked files so corruption, reordering, truncation, or duplication is detected.
-- Bind trip ID, asset ID, media type, encryption version, and key epoch as authenticated metadata.
-- Keep media keys out of logs, analytics, crash reports, filenames, and push payloads.
-
-### Privacy controls
-
-- Full photo-library permission must be explained as core functionality, not requested during a generic onboarding screen.
-- Android Play Console declarations must explain why the picker cannot satisfy continuous stock-camera sync.
-- EXIF location is preserved only in the encrypted original. Previews omit location by default.
-- Signed URLs are short-lived and scoped to one object and operation.
-- Account deletion revokes devices, destroys outstanding envelopes where possible, and schedules encrypted-object cleanup.
-
-## 9. Recommended technology stack
-
-### Mobile shell
-
-| Concern | Recommendation | Why |
-|---|---|---|
-| UI/runtime | Expo SDK 57, React Native, TypeScript, Expo Router | Fast cross-platform product development while retaining native targets |
-| Native bridge | Expo Modules API + config plugins + EAS app-extension target | Swift/Kotlin capability without forking the UI architecture |
-| Server state | TanStack Query | Reconnect/focus aware API cache; not used as the transfer queue |
-| UI state | Zustand | Small transient store for filters, selected trip, and banners |
-| Large lists | Shopify FlashList | Efficient trip/media grids |
-| Images | `expo-image` | Cached preview rendering; original binary transfer stays native |
-| Monitoring | Sentry React Native + OpenTelemetry correlation IDs | Native and JS crash/performance visibility |
-| Product analytics | PostHog with a strict event allowlist | Funnel and satisfaction metrics without media metadata |
-
-### iOS engine
-
-- Swift and PhotoKit Background Resource Upload extension on iOS 26.1+.
-- `PHPhotoLibraryChangeObserver` and reconciliation cursor as the fallback/foreground detector.
-- Background `URLSession` for resumable system-owned transfers where appropriate.
-- GRDB.swift for the native job database.
-- libsodium C package/wrapper for streaming encryption.
-- App Group storage shared between host app and extension.
-
-### Android engine
-
-- Kotlin, MediaStore, and generation-based reconciliation.
-- JobScheduler `TriggerContentUri` for change wakeups; WorkManager for durable constrained work and retries.
-- Room for the native job database.
-- OkHttp for HTTP/2, pooling, TLS, and robust retry behavior.
-- libsodium JNI for the same ciphertext protocol as iOS.
-
-### Backend
-
-| Concern | Recommendation | Why |
-|---|---|---|
-| Runtime/API | Node.js LTS + TypeScript + Fastify + TypeBox | Low overhead, schema-first validation/OpenAPI, one language for API and IaC |
-| Database | Managed PostgreSQL + Kysely | Transactions and relational invariants with explicit typed SQL |
-| Jobs/schedule | pg-boss | Durable Postgres-backed retries, cron, backpressure, and transactional enqueue without Redis/Kafka |
-| Media | S3-compatible object storage, AWS S3 as reference provider | Signed direct I/O, multipart, checksums, lifecycle deletion |
-| Auth | Clerk for MVP | Native Expo Apple/Google flows and enough included usage for 5,000 users; keep OIDC boundary portable |
-| Push | Direct FCM/APNs through Firebase Admin | Cheap wake-up hints; durable inbox remains independent |
-| Email | Postmark or Resend, optional | Trip completion/failure summary only, never media attachments |
-| Deployment | One API service + one worker service + managed Postgres + bucket | Modular monolith; independently scale web and worker processes |
-| IaC | Terraform | Reproducible environments and lifecycle/IAM reviewability |
-
-Cloudflare R2 is a credible later storage substitution because it is S3-compatible and has no internet egress charge, which matters when one upload fans out to nine downloads. The MVP reference remains S3 because its multipart/checksum/background-transfer behavior is the compatibility baseline. Benchmark both with encrypted 5 MB photos and 100–500 MB videos before changing the provider.
-
-## 10. Scale model: 5,000 users
-
-The coordination load is small; media bandwidth is the real cost driver.
-
-- Absolute upper bound: 5,000 simultaneously active users / 10 members = 500 trips.
-- Planning case: 20% simultaneously active = 1,000 devices and roughly 100 trips.
-- With 25 photos at 5 MB and two 100 MB videos per active user per day, source ingress is about 325 GB/day at the planning case.
-- Nine recipients multiply delivery to about 2.9 TB/day before protocol overhead.
-- A two-day average encrypted retention implies roughly 650 GB stored, while a seven-day hard TTL protects recovery.
-- The same planning case creates about 27,000 source assets and 243,000 recipient delivery rows per day.
-
-One well-indexed managed PostgreSQL primary, two API instances, and two worker instances are sufficient to begin. Partition `inbox_events`, `receipts`, and old audit data by month only when observed table growth or vacuum behavior warrants it. Autoscale workers on oldest-ready-job age, not CPU alone.
-
-Do not introduce Kafka, Kubernetes, service meshes, Cassandra, a separate scheduling system, or microservices at this stage. Extract a delivery service only when independent scaling or ownership is demonstrated by production measurements.
-
-## 11. Performance and reliability objectives
-
-| SLI | MVP target |
+| Concern | Durable source of truth |
 |---|---|
-| New preview visible, capture to recipient foreground app | p50 < 3 s, p95 < 8 s on healthy Wi-Fi/5G |
-| 5 MB original saved, source to recipient | p50 < 10 s, p95 < 30 s on healthy Wi-Fi/5G |
-| Manifest commit availability | 99.9% monthly |
-| Silent asset loss | 0; every detected asset ends terminally or remains visibly actionable |
-| Duplicate photo-library saves | < 1 per million delivery attempts, with repair tooling |
-| Receipt durability | 99.99%; idempotent replay until acknowledged |
-| Hard deletion | 100% by configured TTL, audited daily |
-| Reconciliation correctness | Every completed trip has zero non-saved required delivery cells |
+| User and session identity | Clerk plus CrewRoll `users` and `devices` projections |
+| Trip, membership, release, delivery, and cleanup state | PostgreSQL |
+| Undelivered server-to-device commands | Ordered PostgreSQL `inbox_events` |
+| Work on one phone | GRDB on iOS and Room on Android |
+| Media while in transit | Private S3 ciphertext objects |
+| Finished media | Each member's system photo library |
+| Push notifications | No source of truth; hints only |
+| React Native progress UI | Durable native snapshot plus server projection; never JS events alone |
 
-Instrument timestamps for detection, durable spool, preview ready/uploaded, manifest committed, inbox ready, download started/verified, library saved, and receipt accepted. Every stage carries `trip_id`, opaque `asset_id`, and `delivery_id`; never plaintext filenames or media hashes in analytics.
+### 3.2 Dependency direction
 
-## 12. MVP scope and build sequence
+```text
+route -> application service -> pure domain transition -> feature repository port
+                                                  ^
+composition root -> PostgreSQL / S3 / Clerk / push adapters
+```
 
-### Phase 0: feasibility spikes
+- Routes are transport adapters, not business modules.
+- Feature modules own their tables, routes, commands, jobs, and repository interfaces.
+- There is no generic base repository, service locator, or process-wide mutable singleton.
+- Cross-module calls go through application-service interfaces.
+- Infrastructure is constructed only in composition roots.
+- Shared contracts contain TypeBox schemas and generated types, never domain behavior.
 
-- Prove stock-camera detection on physical iOS and Android devices.
-- Prove iOS PhotoKit background extension provisioning and real-device scheduling.
-- Prove a 500 MB encrypted video can pause, resume, verify, and save without loading it into memory.
-- Prove library permission and Play Store policy language.
+## 4. Recommended-only technology stack
 
-Exit only when each spike has a reproducible device test and measured timings.
+### 4.1 Repository and mobile shell
 
-### Phase 1: photo-only vertical slice
+- Node.js 22.13.x and npm 10 workspaces.
+- Expo SDK 57, React Native 0.86, React 19.2, TypeScript strict mode.
+- Expo Router with thin route files.
+- Expo development builds and Continuous Native Generation; Expo Go is not a target.
+- One local Expo module named `crewroll-transfer`.
+- TanStack Query for server projections.
+- Zustand only for transient UI state.
+- Zod for JavaScript environment and native-bridge boundaries.
+- `openapi-fetch` generated from the canonical OpenAPI contract.
+- `expo-image` for encrypted-preview render results already materialized by native code.
+- Shopify FlashList for large transfer grids.
+- Sentry for crash/performance telemetry and PostHog with an event allowlist.
+- `jest-expo`, React Native Testing Library, and Maestro.
+- Plain React Native styles and semantic tokens; no UI framework and no Reanimated in the first slice.
 
-- Two users, one trip, immediate release.
-- Stock-camera photo detection, preview-first transfer, original save, E2EE, receipts, cleanup.
-- Airplane mode, app restart, duplicate events, source force-quit, recipient storage-full tests.
+### 4.2 iOS transfer engine
 
-### Phase 2: full 10-person MVP
+- Swift.
+- `PHPhotoLibraryChangeObserver` for foreground latency.
+- PhotoKit persistent-change tokens for reconciliation on launch, foreground, observer wake, and opportunistic background processing.
+- Background `URLSession` for uploads and downloads.
+- GRDB for the native job ledger.
+- Security/Keychain and Secure Enclave backed device keys where supported.
+- ImageIO/Core Image for bounded preview generation.
+- Native libsodium C API and `crypto_secretstream_xchacha20poly1305`.
+- No PhotoKit Background Resource Upload extension because it uploads the raw `PHAssetResource` and cannot insert CrewRoll's required encryption transform.
 
-- Invite/QR, 10-member constraint, one active trip, pause/resume, reconciliation dashboard.
-- Scheduled release, late join policy, device revocation, hard TTL.
-- Load test at 500 concurrent trips and device-farm acceptance on representative OS versions.
+### 4.3 Android transfer engine
 
-### Phase 3: video and operational hardening
+- Kotlin and minimum API 30.
+- MediaStore version and generation cursors as reconciliation truth.
+- `ContentObserver` for foreground latency.
+- Private JobScheduler service with `TriggerContentUri` for system wakeups.
+- Unique WorkManager jobs for durable constrained work.
+- Room for the native job ledger.
+- OkHttp for direct signed uploads and downloads.
+- Android Keystore for device keys.
+- Native libsodium JNI with the same framing as iOS.
 
-- Multipart streaming upload/download, poster previews, network/battery policies.
-- Admin repair tooling, cost dashboards, dead-letter workflows, incident runbooks.
+### 4.4 Control plane
 
-### Explicitly later
+- Node.js 22.13.x, TypeScript, Fastify, and TypeBox.
+- PostgreSQL, Kysely, and pg-boss.
+- Clerk only for identity.
+- AWS S3 only for temporary ciphertext.
+- FCM for Android and APNs; Firebase Admin supplies FCM, while APNs uses Node HTTP/2 plus `jose`.
+- `@js-temporal/polyfill` for nightly release instants.
+- Pino with strict redaction and OpenTelemetry.
+- Vitest, Testcontainers PostgreSQL, `fast-check`, AWS SDK mocks, and k6.
 
-- LAN/P2P acceleration, selective albums, cloud-drive export, face recognition, AI curation, web gallery, more than 10 members, multiple simultaneous trips.
+### 4.5 Production topology
 
-## 13. Acceptance suite
+```text
+Route 53 -> AWS ALB -> ECS Fargate API (2+ tasks, two AZs)
+                              |
+                              +-> RDS PostgreSQL Multi-AZ
+                              +-> private S3 bucket via VPC endpoint
+                              +-> AWS KMS / Secrets Manager
 
-The release gate is a real multi-device journey, not API health checks:
+                    ECS Fargate worker (2+ tasks)
+                              |
+                              +-> pg-boss in PostgreSQL
+                              +-> S3 delete/head
+                              +-> FCM/APNs
+```
 
-1. Ten mixed iOS/Android devices join one trip.
-2. Every device captures at least three photos with the stock camera while apps move among foreground, background, suspended, restarted, and temporarily offline states.
-3. One device has a 20-minute network outage; another has low storage and recovers after space is freed.
-4. Immediate previews meet the latency SLI on healthy devices.
-5. Every original hash matches the source and every photo appears exactly once in every required system library.
-6. The trip cannot claim completion while any required receipt is missing.
-7. Ciphertext is deleted after all receipts, and an independent lifecycle test proves TTL deletion.
+- Terraform owns all AWS infrastructure and IAM.
+- Staging and production use separate AWS accounts.
+- Migrations run as a one-off ECS task, never during API startup.
+- API and worker roles have least-privilege, non-overlapping S3 permissions.
+- S3 bucket versioning and Object Lock are disabled so deletion is effective.
+- S3 server-side encryption is enabled in addition to client E2EE.
 
-## 14. Architectural provenance / ADRs
+## 5. Product flow
 
-| Decision | Chosen | Rejected for MVP | Reason |
-|---|---|---|---|
-| Transfer topology | Temporary object storage + durable inbox | P2P mesh / WebSocket byte relay | Offline recipients, mobile lifecycle, retryability, and fan-out durability |
-| Camera integration | Stock camera + native OS adapters | In-app camera | Product requirement and better default camera experience |
-| Delivery trigger | Durable cursor sync + push hint | Pub/sub or push as source of truth | Push is throttled/droppable; recipients may be offline |
-| Media fidelity | Exact original + compressed preview | Recompress original | Preserve quality while still delivering instant satisfaction |
-| Queue | PostgreSQL + pg-boss | Kafka/SQS/Redis at MVP | One transactional system is enough for 5,000 users and reduces failure modes |
-| Backend shape | Modular monolith | Microservices | Scale and team boundaries do not justify distributed transactions |
-| Storage | S3-compatible temporary ciphertext | Google Drive folders | Permissions, account coupling, deletion semantics, fan-out control, and poor E2EE fit |
-| Completion | Per-device `SAVED_LOCALLY` receipt matrix | “Upload completed” | The user promise is possession by every member, not cloud availability |
-| Encryption | Native libsodium streaming E2EE | TLS-only or custom crypto | Server must not see plaintext; large files require bounded-memory authenticated streaming |
-| Schedule | Server release gate | Exact 10 PM phone execution | Mobile operating systems do not guarantee exact background execution |
+### 5.1 Sign in and readiness
 
-## 15. Research basis
+1. The member signs in with Apple or Google through Clerk.
+2. Native code creates device authentication and E2EE key pairs; private keys never cross the JS bridge.
+3. The API registers public material and returns a revocable background device credential.
+4. CrewRoll explains why full photo access is required, what is shared, what is excluded, and the force-stop limitation.
+5. The OS permission prompt appears only after that explanation.
 
-Primary references reviewed for this design:
+### 5.2 Create, join, and start
 
-- Apple PhotoKit background upload: https://developer.apple.com/documentation/photokit/uploading-asset-resources-in-the-background
-- Apple background URLSession: https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:)
-- Apple background push: https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app
-- Android MediaStore: https://developer.android.com/training/data-storage/shared/media
-- Android TriggerContentUri: https://developer.android.com/reference/android/app/job/JobInfo.TriggerContentUri
-- Android WorkManager: https://developer.android.com/develop/background-work/background-tasks/persistent
-- Google Play restricted media permissions: https://support.google.com/googleplay/android-developer/answer/14115180
-- Expo SDK 57 MediaLibrary: https://docs.expo.dev/versions/v57.0.0/sdk/media-library/
-- Expo SDK 57 BackgroundTask: https://docs.expo.dev/versions/v57.0.0/sdk/background-task/
-- Expo Modules API: https://docs.expo.dev/modules/overview/
-- Expo iOS app extensions: https://docs.expo.dev/build-reference/app-extensions/
-- libsodium encrypted streams: https://doc.libsodium.org/secret-key_cryptography/secretstream
-- AWS S3 multipart: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html
-- AWS S3 lifecycle: https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html
-- Cloudflare R2 pricing: https://developers.cloudflare.com/r2/pricing/
-- pg-boss: https://pgboss.io/
-- Clerk pricing: https://clerk.com/pricing
-- OneSignal pricing and September/October 2026 free-tier changes: https://onesignal.com/pricing and https://documentation.onesignal.com/docs/en/billing-faq
-- Sentry pricing: https://sentry.io/pricing/
-- PostHog pricing: https://posthog.com/product-analytics/pricing
-- Maestro React Native support: https://docs.maestro.dev/get-started/supported-platform/react-native
+1. The owner creates a trip in `LOBBY`, choosing `IMMEDIATE` or `NIGHTLY`, an immutable end time, and a participating device.
+2. The create transaction inserts the trip, owner membership, active-trip slot, owner key envelope, and a one-time invite token hash.
+3. Invitees create `PENDING_KEY` join requests. A locked trip-row transaction caps owner plus pending/active members at 10.
+4. The owner approves each member by wrapping the trip epoch key to that member's device public key.
+5. `START` requires every non-rejected member to be `ACTIVE` with an epoch-1 key envelope.
+6. Start freezes members, participating devices, and key epoch and revokes the invite.
 
-Exa was used to review 160 results across mobile operating-system constraints, native/mobile libraries, backend infrastructure, and managed vendor/pricing workstreams. Recommendations above prefer primary vendor and platform documentation.
+### 5.3 Discover and publish
 
-## 16. Open review decisions
+1. Activation stores the current iOS persistent token or Android MediaStore version/generation as the trip baseline.
+2. Foreground observers reduce perceived latency; persistent reconciliation is authoritative.
+3. A local transaction creates one `asset_job` keyed by a source-ID HMAC, not the raw library identifier.
+4. A native preview is generated, encrypted independently, and queued ahead of the original.
+5. Exact original bytes stream through secretstream encryption into a protected ciphertext staging file. The source plaintext is never copied to app storage.
+6. Plaintext hash, MIME type, dimensions, capture metadata, encryption version, and secretstream metadata live inside the encrypted manifest.
+7. The API creates a write-once signed upload session. Each S3 PUT signs content length, `application/octet-stream`, SHA-256 checksum, and `If-None-Match: *`.
+8. The client uploads preview then original directly to S3.
+9. Commit verifies both objects with `HeadObject`, locks the session, and atomically creates the asset, objects, per-member deliveries, source receipt, inbox events, and outbox event.
 
-These choices do not block the blueprint, but should be confirmed before an implementation plan:
+### 5.4 Release, download, and save
 
-1. Minimum iOS version. Supporting iOS versions before 26.1 changes how much truly automatic background upload is possible.
-2. Photo-only first launch versus photos and videos together. Photo-only is the recommended first vertical slice.
-3. Default cellular policy for originals and videos.
-4. Whether “every member” means every active device or one nominated device per user. MVP recommendation: one nominated receiving device per user, with extra devices treated as optional replicas.
-5. Whether late joiners receive all unexpired earlier media. Recommended default: yes, with a visible owner confirmation because it rotates access expectations.
+1. `IMMEDIATE` deliveries are `READY`; `NIGHTLY` deliveries begin `HELD` with a precomputed UTC `available_at`.
+2. pg-boss releases due rows transactionally and records durable inbox events.
+3. FCM/APNs sends a privacy-safe wake hint containing only event type, trip ID, and opaque inbox sequence.
+4. A recipient syncs an ordered cursor and asks for five-minute signed GET URLs.
+5. The native engine downloads preview first and original second.
+6. It authenticates and decrypts into a protected temporary file, verifies the plaintext hash in the encrypted manifest, and saves exact bytes to the system library.
+7. A unique `saved_asset` row prevents duplicate saves.
+8. The client writes an idempotent `SAVED_LOCALLY` command to its native outbox before notifying the API.
 
+### 5.5 End, reconcile, and purge
+
+1. Ending a trip moves it to `ENDING`; it does not claim completion.
+2. Reconciliation returns an asset-by-member matrix with the exact missing device and blocker.
+3. A trip becomes `COMPLETE` only when every required delivery is `SAVED_LOCALLY`.
+4. The final receipt moves an asset to `PURGE_PENDING` exactly once.
+5. The worker deletes preview and original objects idempotently, then marks the asset `PURGED`.
+6. At immutable `hard_delete_at = ends_at + 7 days`, unresolved deliveries expire and remaining objects are purged; the trip becomes `INCOMPLETE_EXPIRED`, never false-complete.
+7. A bucket lifecycle rule deletes trip-media objects 22 days after creation as a safety backstop. It is not the primary trip-relative deletion mechanism.
+8. System photo-library files are never deleted by CrewRoll after save.
+
+## 6. State models
+
+### 6.1 Trip
+
+```text
+LOBBY -> ACTIVE -> ENDING -> COMPLETE
+   |                   |
+   +-> CANCELLED       +-> INCOMPLETE_EXPIRED
+```
+
+### 6.2 Server asset
+
+```text
+upload session: CREATED -> VERIFIED -> COMMITTED | EXPIRED
+asset:          COMMITTED -> PURGE_PENDING -> PURGED
+                    |               |
+                    +-----------> EXPIRED
+```
+
+### 6.3 Delivery
+
+```text
+HELD -> READY -> SAVED_LOCALLY
+  |       |
+  +-------+-> EXPIRED
+```
+
+### 6.4 Native source job
+
+```text
+DISCOVERED -> PREVIEW_ENCRYPTED -> PREVIEW_UPLOADED
+           -> ORIGINAL_ENCRYPTED -> ORIGINAL_UPLOADED -> COMMITTED -> SOURCE_DONE
+```
+
+### 6.5 Native recipient job
+
+```text
+READY -> PREVIEW_AVAILABLE -> ORIGINAL_DOWNLOADED -> VERIFIED -> SAVED_LOCALLY
+```
+
+Retry timing, pause, attempt count, and blocker code are orthogonal persisted fields. They are not extra progress states. Progress moves monotonically; retries repeat idempotent work at the current stage.
+
+## 7. Durable native data
+
+iOS GRDB and Android Room share this semantic schema:
+
+| Table | Purpose | Required uniqueness |
+|---|---|---|
+| `engine_settings` | schema version, revision, pause, cellular policy | singleton |
+| `active_trip` | frozen native trip activation and epoch | singleton |
+| `library_checkpoint` | persistent token or generation cursor | platform key |
+| `asset_job` | one source photo's monotonic pipeline | `(trip_id, source_dedupe_hmac)` |
+| `blob_job` | preview/original ciphertext staging | `(asset_local_id, variant)` |
+| `delivery_job` | recipient download/decrypt/save pipeline | server `delivery_id` |
+| `saved_asset` | exactly-once system-library save | server `asset_id` |
+| `command_outbox` | durable idempotent native-to-server commands | `dedupe_key` |
+| `inbox_checkpoint` | last processed device inbox cursor | singleton |
+
+Secrets kept only in Keychain/Keystore:
+
+- Background device credential.
+- Device authentication private key.
+- Device E2EE private key.
+- Trip epoch keys.
+- Source-ID HMAC key.
+
+The JS bridge accepts secrets once for native installation and never returns them.
+
+### 7.1 Native bridge
+
+```ts
+export interface CrewRollTransferModule {
+  ensureDeviceIdentity(): Promise<NativeDeviceIdentity>;
+  installDeviceSession(input: DeviceSessionInput): Promise<void>;
+  activateTrip(input: NativeTripActivation): Promise<void>;
+  deactivateTrip(input: { tripId: string }): Promise<void>;
+  setTransferPolicy(input: {
+    paused: boolean;
+    cellularAllowed: boolean;
+  }): Promise<void>;
+  reconcileNow(): Promise<void>;
+  retry(input: { workId: string }): Promise<void>;
+  getSnapshot(): Promise<EngineSnapshot>;
+  listAssets(input: {
+    cursor: string | null;
+    limit: number;
+  }): Promise<AssetPage>;
+}
+```
+
+Native emits only `{ revision: number }` invalidations. JavaScript rereads a durable snapshot. Per-byte progress events never become state.
+
+## 8. PostgreSQL model and invariants
+
+### 8.1 Identity and membership
+
+- `users`: Clerk subject, display name, timestamps, soft deletion.
+- `devices`: user, installation ID, platform, identity public key/version, KMS-encrypted push token, token hash, app version, last seen, revocation.
+- `trips`: owner, name, state, release mode/timezone/local time, end/hard-delete times, member count, optimistic version, lifecycle timestamps.
+- `user_active_trips`: one row keyed by user; this enforces one pending/active trip without an invalid cross-table partial index.
+- `trip_invites`: token hash, expiry, bounded uses, revocation.
+- `trip_members`: trip, user, participating device, role, membership state, key epoch.
+- `trip_key_envelopes`: trip/epoch/recipient device, sender device, algorithm version, wrapped key.
+
+### 8.2 Assets and delivery
+
+- `upload_sessions`: client asset ID, source device/key, encrypted manifest, expected object metadata, state and expiry.
+- `upload_objects`: preview/original S3 key, expected ciphertext bytes/checksum, ETag and verification.
+- `assets`: committed client asset ID, trip, source device/key, capture time, key/encryption versions, encrypted manifest, lifecycle state.
+- `asset_objects`: preview/original object key, ciphertext bytes/checksum, ETag, deletion timestamps.
+- `deliveries`: asset, recipient user/device, held/ready/saved/expired state and timing.
+- `receipts`: delivery, receipt type, unique client event ID, client/server time.
+- `inbox_events`: identity sequence, recipient device, trip, event type, aggregate, availability, privacy-safe payload.
+- `outbox_events`: deduplicated transactional events for at-least-once jobs.
+- `api_idempotency`: actor, route, idempotency key, request hash, stored response and expiry.
+- `audit_events`: allowlisted operational facts only.
+- `clerk_webhook_events`: webhook event deduplication.
+
+### 8.3 Database invariants
+
+1. A user owns at most one `user_active_trips` row.
+2. Join locks the trip row before capacity validation and insertion.
+3. Pending key requests consume one of the 10 member slots.
+4. Start requires all non-rejected members active with an epoch-1 envelope.
+5. Members, devices, and epoch are immutable after start in MVP.
+6. Asset IDs originate on the source device before encryption.
+7. Commit is unique by asset ID and `(trip, source device, source asset key)`.
+8. Commit creates every delivery and outbox event in one transaction.
+9. The source gets a delivery immediately marked saved with a `SOURCE_PRESENT` receipt.
+10. Only a release transaction changes `HELD` to `READY` and creates visible inbox events.
+11. Delivery and asset transitions are monotonic.
+12. Repeated receipts return the original acceptance without changing timestamps.
+13. Only all-saved or hard-expiry moves an asset toward purge.
+14. Only zero unresolved delivery cells produces `COMPLETE`.
+15. Media keys, plaintext hashes, MIME details, filenames, EXIF, dimensions, raw source IDs, and push tokens never enter plaintext logs, push payloads, or public database columns.
+
+## 9. HTTP and event contract
+
+Every command uses a Clerk bearer token, `X-CrewRoll-Device-Id`, and a UUID `Idempotency-Key`. Errors are RFC 9457 `application/problem+json` with a stable application `code` and `requestId`.
+
+### 9.1 Identity
+
+- `POST /v1/devices`
+- `PATCH /v1/devices/:deviceId/push-token`
+- `DELETE /v1/devices/:deviceId`
+
+### 9.2 Trips
+
+- `POST /v1/trips`
+- `POST /v1/trips/join-requests`
+- `PUT /v1/trips/:tripId/join-requests/:membershipId/approval`
+- `DELETE /v1/trips/:tripId/join-requests/:membershipId`
+- `POST /v1/trips/:tripId/start`
+- `POST /v1/trips/:tripId/end`
+- `GET /v1/trips/:tripId`
+- `GET /v1/trips/:tripId/reconciliation`
+
+### 9.3 Media coordination
+
+- `POST /v1/assets/upload-sessions`
+- `POST /v1/assets/:assetId/commit`
+- `GET /v1/sync`
+- `POST /v1/deliveries/:deliveryId/download-session`
+- `PUT /v1/deliveries/:deliveryId/saved-receipt`
+
+There is no server pause endpoint because pause is device-local. There is no media upload/download endpoint because bytes travel directly between native engines and S3.
+
+### 9.4 Jobs
+
+pg-boss queues:
+
+- `outbox.dispatch`
+- `delivery.release`
+- `delivery.release-sweep`
+- `notification.send`
+- `asset.purge`
+- `asset.expiry-sweep`
+- `upload-session.expire`
+- `trip.reconcile`
+- `inbox.compact`
+- `account.purge`
+
+All consumers use stable dedupe keys and remain correct under at-least-once execution.
+
+## 10. Cryptography and privacy
+
+### 10.1 Key hierarchy
+
+1. Each device creates authentication and X25519 E2EE key pairs in secure hardware/key storage where available.
+2. A trip owns a random epoch key.
+3. The owner wraps the epoch key independently to every participating device.
+4. Each asset owns a random content key.
+5. The encrypted manifest carries the asset content key wrapped by the trip epoch key and all private media metadata.
+
+The server stores public keys and opaque envelopes only. It cannot derive trip or asset keys.
+
+### 10.2 File format
+
+- Libsodium `crypto_secretstream_xchacha20poly1305` with versioned framing.
+- Preview and original encrypted independently.
+- Trip ID, asset ID, variant, key epoch, and format version authenticated as associated data.
+- Shared golden vectors prove Swift, Kotlin, and server-side test tooling agree.
+- Tests reject truncation, reordering, duplication, bit flips, and wrong associated data.
+- Encryption/decryption memory remains bounded independent of file size.
+
+### 10.3 Temporary storage
+
+- S3 sees ciphertext, opaque identifiers, ciphertext byte counts, and ciphertext checksums only.
+- Protected native staging contains ciphertext; decrypted destination staging is short-lived and deleted immediately after exact save or terminal failure cleanup.
+- Crash reporting and analytics use an explicit allowlist and never receive source IDs, object URLs, manifests, hashes, keys, filenames, EXIF, or media.
+
+## 11. Design system and experience
+
+CrewRoll feels like a quiet, trustworthy courier, not a diagnostics utility.
+
+### 11.1 Core flow
+
+```text
+Splash -> Apple/Google sign-in -> Home
+  -> Create or Join -> contextual full-access permission
+  -> Lobby readiness -> Active Trip Roll
+  -> Ending reconciliation -> Complete or Incomplete
+  -> metadata-only History
+```
+
+There is no onboarding carousel, in-app QR scanner, manual download flow, or diagnostics panel in the product surface.
+
+### 11.2 Semantic color tokens
+
+| Token | Light | Dark |
+|---|---|---|
+| background | `#F7F9FC` | `#020A12` |
+| surface | `#FFFFFF` | `#081421` |
+| muted surface | `#EDF2F8` | `#0E1C2B` |
+| border | `#DCE4EE` | `#203247` |
+| primary text | `#07111F` | `#F7FAFF` |
+| secondary text | `#5F6C7D` | `#9EADBE` |
+| action | `#0B63CE` | `#1675FF` |
+| success text/background | `#067A5B` / `#E7F8F2` | `#62E8BC` / `#0D362C` |
+| warning text/background | `#8A4B00` / `#FFF3D6` | `#FFD27A` / `#3B2A0A` |
+| critical text/background | `#B42318` / `#FDECEA` | `#FF9B9B` / `#40171C` |
+| info text/background | `#075EDB` / `#EAF2FF` | `#79B8FF` / `#0A2D5D` |
+
+Status always uses icon plus text, never color alone.
+
+### 11.3 Type, space, radius, and motion
+
+- Manrope display `36/42 800`, title-1 `30/36 800`, title-2 `24/30 700`.
+- Headline `18/24 700`, body-strong `16/24 600`, body `16/24 400`.
+- Label `14/20 600`, caption `12/17 500`, eyebrow `12/16 700` uppercase.
+- Spacing scale: `4, 8, 12, 16, 20, 24, 32, 40, 48, 64`; screen gutter 20.
+- Radius scale: `12, 16, 20, 28`, plus pill.
+- Minimum touch target: 48 by 48 points/dp.
+- Motion: 120 ms direct response, 220 ms state transition, 320 ms navigation; reduced-motion mode removes nonessential transitions.
+
+### 11.4 Components
+
+Primitives:
+
+- `AppText`, `Screen`, `Stack`, `Inline`, `Surface`, `Divider`.
+- `Button`, `IconButton`, `TextField`, `PressableRow`.
+- `Sheet`, `Dialog`, `Skeleton`, `ProgressBar`, `ProgressRing`.
+
+Feedback:
+
+- `StatusBadge`, `LiveStatus`, `InlineBanner`, `BlockingCallout`, `Toast`, `EmptyState`, `PermissionCard`.
+
+Product composites:
+
+- `CrewRollWordmark`, `MemberAvatar`, `MemberStack`, `MemberReadinessRow`.
+- `TripSummaryCard`, `InviteCard`, `PhotoTile`, `PhotoGrid`.
+- `TransferHealthCard`, `MemberCoverageCard`, `ReconciliationRow`, `ReleaseModeField`.
+
+All error copy comes from a typed registry. Raw provider errors, HTTP status, object paths, hashes, or stack details never appear in UI.
+
+### 11.5 Accessibility
+
+- WCAG 2.2 AA contrast.
+- Dynamic Type/font scaling through 200 percent without clipped core actions.
+- VoiceOver and TalkBack labels, values, hints, and ordered focus.
+- All status includes text and icon.
+- QR invitations also expose a tappable link and readable short code.
+- Reduce Motion and screen-reader announcements for meaningful transfer/completion changes.
+
+## 12. Repository architecture
+
+The root remains the Expo/EAS application so the existing project lineage stays intact.
+
+```text
+app/                              # Expo Router routes only
+src/
+  bootstrap/
+  design-system/
+    tokens/
+    primitives/
+    feedback/
+    product/
+  features/
+    auth/
+    home/
+    trips/
+    invitations/
+    permissions/
+    live-roll/
+    transfer-status/
+    reconciliation/
+    history/
+  domain/
+    models/
+    failures/
+    policies/
+  application/
+    commands/
+    queries/
+    view-models/
+  infrastructure/
+    api/
+    auth/
+    analytics/
+    native-transfer/
+modules/crewroll-transfer/
+  src/
+  plugin/
+  ios/
+    Domain/
+    Engine/
+    Persistence/
+    Photos/
+    Crypto/
+    Network/
+    Background/
+    Tests/
+  android/src/main/java/com/uankit53/crewroll/transfer/
+    domain/
+    engine/
+    persistence/
+    photos/
+    crypto/
+    network/
+    work/
+services/control-plane/
+  src/
+    api/
+    worker/
+    app/
+    config/
+    db/
+    modules/
+    platform/
+    shared/
+packages/contracts/
+  openapi/
+  fixtures/
+  crypto/
+infra/terraform/
+tests/maestro/
+docs/superpowers/specs/
+docs/superpowers/plans/
+```
+
+Route files render feature screens. React Native sends commands and reads projections; it never schedules chunks or advances native transfer stages optimistically.
+
+## 13. Scale model
+
+The 5,000-user target does not require distributed-streaming architecture.
+
+Planning envelope:
+
+- 5,000 registered users.
+- 1,000 simultaneously active devices.
+- Roughly 100 concurrent 10-person trips.
+- 300 photos per trip-day as a load-test envelope.
+- 30,000 committed photos per active day.
+- Up to 300,000 delivery rows per day at 10 recipients including source; expected modeled volume is approximately 243,000 after realistic occupancy.
+- Media bypasses API and worker compute, so API scale tracks metadata operations rather than bytes.
+
+PostgreSQL row locks protect joins and final-receipt races. Composite indexes cover device sync, due release, unsaved delivery, pending outbox, and purge scans. API scales on latency/concurrency; worker scales on oldest-ready-job age.
+
+## 14. Reliability and performance objectives
+
+### 14.1 User-visible objectives
+
+| Journey | Target under healthy LTE/Wi-Fi and active apps |
+|---|---|
+| Source photo to recipient preview p50 | <= 3 seconds |
+| Source photo to recipient preview p95 | <= 8 seconds |
+| 12 MiB original saved locally p50 | <= 15 seconds |
+| 12 MiB original saved locally p95 | <= 45 seconds |
+| Foreground reconciliation after reconnect | begins <= 2 seconds |
+| Duplicate system-library saves | 0 |
+| False `COMPLETE` states | 0 |
+| Server-retained plaintext media | 0 bytes |
+
+Background-only timings are measured separately because the OS controls wakeups.
+
+### 14.2 Operational SLOs
+
+- API availability: 99.9 percent monthly after launch stabilization.
+- Command API p95 excluding S3: <= 300 ms.
+- Sync API p95 for 100 events: <= 250 ms.
+- Upload commit p95 excluding client upload: <= 750 ms including two S3 `HeadObject` calls.
+- Nightly release lag p95: <= 60 seconds.
+- Final receipt to purge request p95: <= 30 seconds.
+- Eligible purge request to both objects deleted p95: <= 5 minutes.
+- Zero database invariant violations under concurrency and retry tests.
+
+## 15. Test and release strategy
+
+### 15.1 Test pyramid
+
+- Pure transition and policy tests for every state machine.
+- Contract validation and cryptographic golden vectors.
+- PostgreSQL integration tests through Testcontainers.
+- GRDB/Room migration, process-kill, and idempotency tests.
+- Swift and Kotlin native unit tests plus physical-device instrumentation.
+- React Native component and feature tests.
+- Maestro mixed-device user journeys.
+- k6 metadata/API load tests and real S3 staging tests.
+- Terraform validation and policy assertions.
+
+### 15.2 Non-negotiable first vertical slice
+
+The first slice is not complete until:
+
+1. Two real physical devices are signed in.
+2. They join and start one immediate trip.
+3. One user takes one photo with the stock camera.
+4. CrewRoll discovers it without reopening the source app while the documented OS conditions hold.
+5. Preview appears automatically on the second device.
+6. The exact original uploads, downloads, authenticates, hashes, and saves exactly once to the second system library.
+7. The receiver records and syncs `SAVED_LOCALLY`.
+8. Reconciliation shows both members complete.
+9. S3 preview and original are deleted.
+10. Source/receiver apps survive a process restart without duplicate transfer or save.
+
+Unit tests, HTTP 200 responses, healthy services, simulator behavior, or successful EAS builds alone do not satisfy this gate.
+
+## 16. Greenfield reset safety
+
+### 16.1 Identity that must remain exact
+
+| Setting | Required value |
+|---|---|
+| iOS bundle identifier | `com.uankit53.airmesh` |
+| Android package | `com.uankit53.airmesh` |
+| EAS project ID | `fe1de141-5c42-4250-9c1f-f7313845dc8e` |
+| Expo slug | `AirMesh` |
+| URL scheme | `airmesh` |
+| Updates URL | `https://u.expo.dev/fe1de141-5c42-4250-9c1f-f7313845dc8e` |
+| Runtime version | `{ "policy": "appVersion" }` |
+| App version source | EAS remote |
+| Production versioning | `autoIncrement: true` |
+
+User-facing names normalize to CrewRoll. Slug and scheme stay unchanged because they are release/deep-link identity, not visible architecture.
+
+### 16.2 Protected paths and state
+
+- `.git/`, `AGENTS.md`, and `LICENSE`.
+- Release-identity values above and remote EAS/App Store/Play credentials.
+- Root `ios/` and `android/` projects if they appear before reset.
+- `assets/brand/app-icon.png` and the approved brand onboarding images.
+- This specification, implementation plans, and verified blueprint workbook.
+
+No root `ios/` or `android/` directories existed at the audit point; current native projects are generated and gitignored. The legacy `modules/airmesh-lan/ios` and `android` directories are not signing projects and are deleted.
+
+### 16.3 Rebuilt paths
+
+- Legacy `.claude/`, `.github/`, `.vscode/`, `src/`, `modules/airmesh-lan/`, `relay/`, `scripts/`, template assets, legacy docs, package manifests, lockfile, and configuration.
+- `app.json` is replaced only after an automated identity verifier passes against the new configuration.
+- `eas.json` retains release lineage and profile behavior while removing relay environment variables.
+
+## 17. Final architectural principles
+
+1. Preview speed creates delight; durable ledgers create trust.
+2. Push wakes the app; it never proves delivery.
+3. Media uses the object plane; business state uses the control plane.
+4. Every mutation is idempotent and has one explicit transaction boundary.
+5. Every transfer stage survives process death.
+6. JavaScript renders truth; native code owns media work.
+7. `SAVED_LOCALLY`, not downloaded bytes, is the completion contract.
+8. Ciphertext is temporary; user libraries are permanent.
+9. The architecture optimizes the real two-phone journey before generalized scale.
+10. One recommended path is implemented thoroughly before any optional extension.

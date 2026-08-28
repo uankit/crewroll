@@ -1,21 +1,17 @@
-const { defineConfig } = require('eslint/config');
-const expoConfig = require('eslint-config-expo/flat');
+const { defineConfig } = require("eslint/config");
+const expoConfig = require("eslint-config-expo/flat");
 
 module.exports = defineConfig([
+  expoConfig,
   {
     ignores: [
-      '.expo/**',
-      'android/**',
-      'ios/**',
-      'coverage/**',
-      'dist/**',
-      'node_modules/**',
+      "dist/**",
+      "outputs/**",
+      "services/**",
+      "packages/**",
     ],
-  },
-  ...expoConfig,
-  {
     rules: {
-      'no-console': ['warn', { allow: ['warn', 'error'] }],
+      "no-console": ["error", { allow: ["warn", "error"] }],
     },
   },
 ]);
