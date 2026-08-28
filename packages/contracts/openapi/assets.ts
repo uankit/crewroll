@@ -1,8 +1,8 @@
 import { Type, type Static } from "@sinclair/typebox";
 
 import {
+  Base64ExactSchema,
   Base64MaxSchema,
-  Base64Schema,
   ClosedObject,
   DateTimeSchema,
   DecimalBytesSchema,
@@ -11,7 +11,7 @@ import {
 } from "./common.js";
 import { AssetIdSchema, TripIdSchema, UploadSessionIdSchema } from "./ids.js";
 
-const ChecksumSchema = Type.String({ format: "base64", minLength: 44, maxLength: 44 });
+const ChecksumSchema = Base64ExactSchema(32);
 
 export const PreviewUploadObjectSchema = ClosedObject({
   variant: Type.Literal("PREVIEW"),
@@ -41,7 +41,7 @@ const PresignedUploadFields = {
   requiredHeaders: ClosedObject({
     "content-length": Type.String({ pattern: "^(?:0|[1-9]\\d*)$" }),
     "content-type": Type.Literal("application/octet-stream"),
-    "x-amz-checksum-sha256": Base64Schema,
+    "x-amz-checksum-sha256": Base64ExactSchema(32),
     "if-none-match": Type.Literal("*"),
   }),
 } as const;

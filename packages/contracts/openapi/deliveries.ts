@@ -1,6 +1,13 @@
 import { Type, type Static } from "@sinclair/typebox";
 
-import { Base64MaxSchema, Base64Schema, ClosedObject, DateTimeSchema, DecimalBytesSchema, UriSchema } from "./common.js";
+import {
+  Base64ExactSchema,
+  Base64MaxSchema,
+  ClosedObject,
+  DateTimeSchema,
+  DecimalBytesSchema,
+  UriSchema,
+} from "./common.js";
 import { DeliveryStatusSchema } from "./enums.js";
 import { AssetIdSchema, DeliveryIdSchema } from "./ids.js";
 
@@ -15,7 +22,7 @@ export type CreateDownloadSessionBody = Static<typeof CreateDownloadSessionBodyS
 
 const DownloadObjectFields = {
   url: UriSchema,
-  checksumSha256: Base64Schema,
+  checksumSha256: Base64ExactSchema(32),
 } as const;
 export const PreviewDownloadObjectSchema = ClosedObject({
   variant: Type.Literal("PREVIEW"),

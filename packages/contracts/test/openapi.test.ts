@@ -6,6 +6,36 @@ import { createOpenApiDocument, serializeOpenApiDocument } from "../generator/op
 
 const generatedUrl = new URL("../generated/crewroll.openapi.json", import.meta.url);
 
+type JsonSchema = {
+  anyOf?: JsonSchema[];
+  maxLength?: number;
+  minLength?: number;
+  pattern?: string;
+  properties?: Record<string, JsonSchema>;
+  items?: JsonSchema[];
+  [key: string]: unknown;
+};
+
+function acceptsWithStandardStringKeywords(schema: JsonSchema, value: string): boolean {
+  if (schema.anyOf) return schema.anyOf.some((candidate) => acceptsWithStandardStringKeywords(candidate, value));
+  if (schema.minLength !== undefined && value.length < schema.minLength) return false;
+  if (schema.maxLength !== undefined && value.length > schema.maxLength) return false;
+  return schema.pattern === undefined || new RegExp(schema.pattern).test(value);
+}
+
+function operations(document: ReturnType<typeof createOpenApiDocument>) {
+  return Object.entries(document.paths).flatMap(([path, pathItem]) =>
+    Object.entries(pathItem as Record<string, unknown>).map(([method, operation]) => ({
+      path,
+      method,
+      operation: operation as {
+        parameters?: Array<{ in: string; name: string }>;
+        security?: Array<Record<string, never[]>>;
+      },
+    })),
+  );
+}
+
 describe("canonical OpenAPI artifact", () => {
   it("regenerates byte-for-byte deterministically", async () => {
     const first = serializeOpenApiDocument(createOpenApiDocument());
@@ -39,5 +69,44 @@ describe("canonical OpenAPI artifact", () => {
     expect(json).not.toContain("X-CrewRoll-Response-Version");
     expect(json).not.toContain("/pause");
     expect(json).not.toContain("media-bytes");
+  });
+
+  it("models Clerk registration and background-device operation security", () => {
+    const all = operations(createOpenApiDocument());
+    for (const { path, method, operation } of all) {
+      expect(operation.parameters ?? [], `${method.toUpperCase()} ${path}`).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ in: "header", name: "Authorization" })]),
+      );
+      expect(operation.security, `${method.toUpperCase()} ${path}`).toEqual(
+        path === "/v1/devices" && method === "post"
+          ? [{ ClerkBearer: [] }]
+          : [{ BackgroundDeviceBearer: [] }],
+      );
+    }
+  });
+
+  it("encodes mandated byte and decimal ceilings in standard schema keywords", () => {
+    const document = createOpenApiDocument();
+    const schemas = (document.components as { schemas: Record<string, JsonSchema> }).schemas;
+    const upload = schemas.CreateUploadSessionBody;
+    const uploadProperties = upload?.properties;
+    const objects = uploadProperties?.objects?.items;
+    const previewBytes = objects?.[0]?.properties?.ciphertextBytes;
+    const originalBytes = objects?.[1]?.properties?.ciphertextBytes;
+    const checksum = objects?.[0]?.properties?.checksumSha256;
+    const manifest = uploadProperties?.encryptedManifest;
+    const wrappedKey = schemas.CreateTripBody?.properties?.ownerKeyEnvelope?.properties?.wrappedKey;
+
+    expect(acceptsWithStandardStringKeywords(previewBytes ?? {}, "524288")).toBe(true);
+    expect(acceptsWithStandardStringKeywords(previewBytes ?? {}, "524289")).toBe(false);
+    expect(acceptsWithStandardStringKeywords(originalBytes ?? {}, "52428800")).toBe(true);
+    expect(acceptsWithStandardStringKeywords(originalBytes ?? {}, "52428801")).toBe(false);
+    expect(acceptsWithStandardStringKeywords(manifest ?? {}, Buffer.alloc(65_536).toString("base64"))).toBe(true);
+    expect(acceptsWithStandardStringKeywords(manifest ?? {}, Buffer.alloc(65_537).toString("base64"))).toBe(false);
+    expect(acceptsWithStandardStringKeywords(wrappedKey ?? {}, Buffer.alloc(4_096).toString("base64"))).toBe(true);
+    expect(acceptsWithStandardStringKeywords(wrappedKey ?? {}, Buffer.alloc(4_097).toString("base64"))).toBe(false);
+    expect(acceptsWithStandardStringKeywords(checksum ?? {}, Buffer.alloc(32).toString("base64"))).toBe(true);
+    expect(acceptsWithStandardStringKeywords(checksum ?? {}, Buffer.alloc(31).toString("base64"))).toBe(false);
+    expect(acceptsWithStandardStringKeywords(checksum ?? {}, Buffer.alloc(33).toString("base64"))).toBe(false);
   });
 });

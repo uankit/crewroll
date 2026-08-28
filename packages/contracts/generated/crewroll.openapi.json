@@ -8,16 +8,12 @@
     "/v1/devices": {
       "post": {
         "operationId": "registerDevice",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "Idempotency-Key",
             "in": "header",
@@ -105,16 +101,12 @@
     "/v1/devices/{deviceId}/push-token": {
       "patch": {
         "operationId": "updatePushToken",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -213,16 +205,12 @@
     "/v1/devices/{deviceId}": {
       "delete": {
         "operationId": "revokeDevice",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -311,16 +299,12 @@
     "/v1/trips": {
       "post": {
         "operationId": "createTrip",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -417,16 +401,12 @@
     "/v1/trips/join-requests": {
       "post": {
         "operationId": "createJoinRequest",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -523,16 +503,12 @@
     "/v1/trips/{tripId}/join-requests/{membershipId}/approval": {
       "put": {
         "operationId": "approveJoinRequest",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -647,16 +623,12 @@
     "/v1/trips/{tripId}/join-requests/{membershipId}": {
       "delete": {
         "operationId": "rejectJoinRequest",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -754,16 +726,12 @@
     "/v1/trips/{tripId}/start": {
       "post": {
         "operationId": "startTrip",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -869,16 +837,12 @@
     "/v1/trips/{tripId}/end": {
       "post": {
         "operationId": "endTrip",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -984,16 +948,12 @@
     "/v1/trips/{tripId}": {
       "get": {
         "operationId": "getTrip",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1080,16 +1040,12 @@
     "/v1/trips/{tripId}/reconciliation": {
       "get": {
         "operationId": "getReconciliation",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1122,8 +1078,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "format": "decimal-max-100"
+              "pattern": "^(?:0|[1-9]\\d{0,1}|100)$",
+              "x-crewroll-maximum": 100,
+              "type": "string"
             }
           }
         ],
@@ -1194,16 +1151,12 @@
     "/v1/assets/upload-sessions": {
       "post": {
         "operationId": "createUploadSession",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1300,16 +1253,12 @@
     "/v1/assets/{assetId}/commit": {
       "post": {
         "operationId": "commitAsset",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1415,16 +1364,12 @@
     "/v1/sync": {
       "get": {
         "operationId": "sync",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1448,8 +1393,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "format": "decimal-max-100"
+              "pattern": "^(?:0|[1-9]\\d{0,1}|100)$",
+              "x-crewroll-maximum": 100,
+              "type": "string"
             }
           }
         ],
@@ -1520,16 +1466,12 @@
     "/v1/deliveries/{deliveryId}/download-session": {
       "post": {
         "operationId": "createDownloadSession",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1635,16 +1577,12 @@
     "/v1/deliveries/{deliveryId}/saved-receipt": {
       "put": {
         "operationId": "saveReceipt",
-        "parameters": [
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^Bearer [^\\s]+$"
-            }
-          },
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
           {
             "name": "X-CrewRoll-Device-Id",
             "in": "header",
@@ -1857,7 +1795,9 @@
             "type": "string"
           },
           "authenticationPublicKey": {
-            "format": "base64",
+            "contentEncoding": "base64",
+            "minLength": 4,
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
             "type": "string"
           },
           "authenticationKeyVersion": {
@@ -1869,7 +1809,9 @@
             "type": "string"
           },
           "e2eePublicKey": {
-            "format": "base64",
+            "contentEncoding": "base64",
+            "minLength": 4,
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
             "type": "string"
           },
           "e2eeKeyVersion": {
@@ -1906,6 +1848,7 @@
           },
           "backgroundBearerExpiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           }
         }
@@ -1999,6 +1942,7 @@
           },
           "endsAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "ownerDeviceId": {
@@ -2023,8 +1967,24 @@
                 "type": "number"
               },
               "wrappedKey": {
-                "format": "base64-max-4096",
-                "type": "string"
+                "x-crewroll-maxDecodedBytes": 4096,
+                "anyOf": [
+                  {
+                    "contentEncoding": "base64",
+                    "minLength": 4,
+                    "maxLength": 5460,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                    "type": "string"
+                  },
+                  {
+                    "contentEncoding": "base64",
+                    "minLength": 5464,
+                    "maxLength": 5464,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/]{2}==$",
+                    "x-crewroll-decodedBytes": 4096,
+                    "type": "string"
+                  }
+                ]
               }
             }
           }
@@ -2124,6 +2084,7 @@
             "anyOf": [
               {
                 "format": "date-time",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                 "type": "string"
               },
               {
@@ -2133,6 +2094,7 @@
           },
           "endsAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "ownerDeviceId": {
@@ -2167,8 +2129,24 @@
                     "type": "number"
                   },
                   "wrappedKey": {
-                    "format": "base64-max-4096",
-                    "type": "string"
+                    "x-crewroll-maxDecodedBytes": 4096,
+                    "anyOf": [
+                      {
+                        "contentEncoding": "base64",
+                        "minLength": 4,
+                        "maxLength": 5460,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                        "type": "string"
+                      },
+                      {
+                        "contentEncoding": "base64",
+                        "minLength": 5464,
+                        "maxLength": 5464,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/]{2}==$",
+                        "x-crewroll-decodedBytes": 4096,
+                        "type": "string"
+                      }
+                    ]
                   }
                 }
               },
@@ -2239,6 +2217,7 @@
           },
           "expiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           }
         }
@@ -2325,8 +2304,24 @@
                     "type": "number"
                   },
                   "wrappedKey": {
-                    "format": "base64-max-4096",
-                    "type": "string"
+                    "x-crewroll-maxDecodedBytes": 4096,
+                    "anyOf": [
+                      {
+                        "contentEncoding": "base64",
+                        "minLength": 4,
+                        "maxLength": 5460,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                        "type": "string"
+                      },
+                      {
+                        "contentEncoding": "base64",
+                        "minLength": 5464,
+                        "maxLength": 5464,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/]{2}==$",
+                        "x-crewroll-decodedBytes": 4096,
+                        "type": "string"
+                      }
+                    ]
                   }
                 }
               },
@@ -2355,8 +2350,24 @@
             "type": "number"
           },
           "wrappedKey": {
-            "format": "base64-max-4096",
-            "type": "string"
+            "x-crewroll-maxDecodedBytes": 4096,
+            "anyOf": [
+              {
+                "contentEncoding": "base64",
+                "minLength": 4,
+                "maxLength": 5460,
+                "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                "type": "string"
+              },
+              {
+                "contentEncoding": "base64",
+                "minLength": 5464,
+                "maxLength": 5464,
+                "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/]{2}==$",
+                "x-crewroll-decodedBytes": 4096,
+                "type": "string"
+              }
+            ]
           }
         }
       },
@@ -2414,6 +2425,7 @@
           },
           "capturedAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "formatVersion": {
@@ -2425,8 +2437,24 @@
             "type": "number"
           },
           "encryptedManifest": {
-            "format": "base64-max-65536",
-            "type": "string"
+            "x-crewroll-maxDecodedBytes": 65536,
+            "anyOf": [
+              {
+                "contentEncoding": "base64",
+                "minLength": 4,
+                "maxLength": 87380,
+                "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                "type": "string"
+              },
+              {
+                "contentEncoding": "base64",
+                "minLength": 87384,
+                "maxLength": 87384,
+                "pattern": "^(?:[A-Za-z0-9+/]{4}){21845}[A-Za-z0-9+/]{2}==$",
+                "x-crewroll-decodedBytes": 65536,
+                "type": "string"
+              }
+            ]
           },
           "objects": {
             "type": "array",
@@ -2445,13 +2473,16 @@
                     "type": "string"
                   },
                   "ciphertextBytes": {
-                    "format": "decimal-max-524288",
+                    "pattern": "^(?:0|[1-9]\\d{0,4}|[1-4]\\d{5}|5[0-1]\\d{4}|52[0-3]\\d{3}|524[0-1]\\d{2}|5242[0-7]\\d{1}|52428[0-7]|524288)$",
+                    "x-crewroll-maximum": 524288,
                     "type": "string"
                   },
                   "checksumSha256": {
-                    "format": "base64",
+                    "contentEncoding": "base64",
                     "minLength": 44,
                     "maxLength": 44,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                    "x-crewroll-decodedBytes": 32,
                     "type": "string"
                   }
                 }
@@ -2470,13 +2501,16 @@
                     "type": "string"
                   },
                   "ciphertextBytes": {
-                    "format": "decimal-max-52428800",
+                    "pattern": "^(?:0|[1-9]\\d{0,6}|[1-4]\\d{7}|5[0-1]\\d{6}|52[0-3]\\d{5}|524[0-1]\\d{4}|5242[0-7]\\d{3}|52428[0-7]\\d{2}|52428800)$",
+                    "x-crewroll-maximum": 52428800,
                     "type": "string"
                   },
                   "checksumSha256": {
-                    "format": "base64",
+                    "contentEncoding": "base64",
                     "minLength": 44,
                     "maxLength": 44,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                    "x-crewroll-decodedBytes": 32,
                     "type": "string"
                   }
                 }
@@ -2508,6 +2542,7 @@
           },
           "expiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "objects": {
@@ -2549,7 +2584,11 @@
                         "type": "string"
                       },
                       "x-amz-checksum-sha256": {
-                        "format": "base64",
+                        "contentEncoding": "base64",
+                        "minLength": 44,
+                        "maxLength": 44,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                        "x-crewroll-decodedBytes": 32,
                         "type": "string"
                       },
                       "if-none-match": {
@@ -2596,7 +2635,11 @@
                         "type": "string"
                       },
                       "x-amz-checksum-sha256": {
-                        "format": "base64",
+                        "contentEncoding": "base64",
+                        "minLength": 44,
+                        "maxLength": 44,
+                        "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                        "x-crewroll-decodedBytes": 32,
                         "type": "string"
                       },
                       "if-none-match": {
@@ -2689,6 +2732,7 @@
           },
           "committedAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "sequence": {
@@ -2734,6 +2778,7 @@
                     },
                     "occurredAt": {
                       "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                       "type": "string"
                     },
                     "tripId": {
@@ -2769,6 +2814,7 @@
                     },
                     "occurredAt": {
                       "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                       "type": "string"
                     },
                     "tripId": {
@@ -2826,6 +2872,7 @@
                     },
                     "occurredAt": {
                       "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                       "type": "string"
                     },
                     "tripId": {
@@ -2871,6 +2918,7 @@
           },
           "cursorExpiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "hasMore": {
@@ -2926,11 +2974,28 @@
           },
           "expiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "encryptedManifest": {
-            "format": "base64-max-65536",
-            "type": "string"
+            "x-crewroll-maxDecodedBytes": 65536,
+            "anyOf": [
+              {
+                "contentEncoding": "base64",
+                "minLength": 4,
+                "maxLength": 87380,
+                "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                "type": "string"
+              },
+              {
+                "contentEncoding": "base64",
+                "minLength": 87384,
+                "maxLength": 87384,
+                "pattern": "^(?:[A-Za-z0-9+/]{4}){21845}[A-Za-z0-9+/]{2}==$",
+                "x-crewroll-decodedBytes": 65536,
+                "type": "string"
+              }
+            ]
           },
           "objects": {
             "minItems": 1,
@@ -2953,7 +3018,8 @@
                       "type": "string"
                     },
                     "ciphertextBytes": {
-                      "format": "decimal-max-524288",
+                      "pattern": "^(?:0|[1-9]\\d{0,4}|[1-4]\\d{5}|5[0-1]\\d{4}|52[0-3]\\d{3}|524[0-1]\\d{2}|5242[0-7]\\d{1}|52428[0-7]|524288)$",
+                      "x-crewroll-maximum": 524288,
                       "type": "string"
                     },
                     "url": {
@@ -2961,7 +3027,11 @@
                       "type": "string"
                     },
                     "checksumSha256": {
-                      "format": "base64",
+                      "contentEncoding": "base64",
+                      "minLength": 44,
+                      "maxLength": 44,
+                      "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                      "x-crewroll-decodedBytes": 32,
                       "type": "string"
                     }
                   }
@@ -2981,7 +3051,8 @@
                       "type": "string"
                     },
                     "ciphertextBytes": {
-                      "format": "decimal-max-52428800",
+                      "pattern": "^(?:0|[1-9]\\d{0,6}|[1-4]\\d{7}|5[0-1]\\d{6}|52[0-3]\\d{5}|524[0-1]\\d{4}|5242[0-7]\\d{3}|52428[0-7]\\d{2}|52428800)$",
+                      "x-crewroll-maximum": 52428800,
                       "type": "string"
                     },
                     "url": {
@@ -2989,7 +3060,11 @@
                       "type": "string"
                     },
                     "checksumSha256": {
-                      "format": "base64",
+                      "contentEncoding": "base64",
+                      "minLength": 44,
+                      "maxLength": 44,
+                      "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=$",
+                      "x-crewroll-decodedBytes": 32,
                       "type": "string"
                     }
                   }
@@ -3014,6 +3089,7 @@
           },
           "savedAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "engineRevision": {
@@ -3057,6 +3133,7 @@
           },
           "acceptedAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           }
         }
@@ -3070,7 +3147,8 @@
             "type": "string"
           },
           "limit": {
-            "format": "decimal-max-100",
+            "pattern": "^(?:0|[1-9]\\d{0,1}|100)$",
+            "x-crewroll-maximum": 100,
             "type": "string"
           }
         }
@@ -3109,6 +3187,7 @@
                 },
                 "capturedAt": {
                   "format": "date-time",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                   "type": "string"
                 },
                 "members": {
@@ -3157,6 +3236,7 @@
                         "anyOf": [
                           {
                             "format": "date-time",
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
                             "type": "string"
                           },
                           {
@@ -3187,6 +3267,7 @@
           },
           "cursorExpiresAt": {
             "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "type": "string"
           },
           "hasMore": {

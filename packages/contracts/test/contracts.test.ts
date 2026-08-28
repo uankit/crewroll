@@ -120,6 +120,13 @@ describe("trip and invite contracts", () => {
     rejects(CreateTripBodySchema, { ...body, release: { ...body.release, localTime: "9:30 PM" } });
   });
 
+  it("rejects impossible RFC 3339 calendar dates instead of normalizing them", () => {
+    rejects(CreateTripBodySchema, {
+      ...validImmediateTripBody(),
+      endsAt: "2026-02-30T12:00:00.000Z",
+    });
+  });
+
   it("uses one normalized eight-character Crockford invite code for create and join", () => {
     expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(true);
     expect(Value.Check(CreateJoinRequestBodySchema, validCreateJoinRequestBody())).toBe(true);
@@ -193,6 +200,16 @@ describe("photo upload contracts", () => {
       ...body,
       objects: [{ ...body.objects[0], variant: "VIDEO" }, body.objects[1]],
     });
+  });
+
+  it("requires SHA-256 checksums to decode to exactly 32 bytes", () => {
+    const tooShort = validUploadSessionBody();
+    tooShort.objects[0].checksumSha256 = Buffer.alloc(31).toString("base64");
+    rejects(CreateUploadSessionBodySchema, tooShort);
+
+    const tooLong = validUploadSessionBody();
+    tooLong.objects[0].checksumSha256 = Buffer.alloc(33).toString("base64");
+    rejects(CreateUploadSessionBodySchema, tooLong);
   });
 
   it("validates commit, download-session, and saved-receipt commands", () => {

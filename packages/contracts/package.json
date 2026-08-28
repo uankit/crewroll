@@ -6,19 +6,41 @@
   "engines": {
     "node": ">=22.13.0 <23"
   },
+  "files": [
+    "dist",
+    "generated/crewroll.openapi.json"
+  ],
   "exports": {
-    ".": "./openapi/index.ts",
-    "./openapi": "./openapi/index.ts",
-    "./fixtures/http": "./fixtures/http.ts",
-    "./crypto/protocol": "./crypto/protocol.ts",
-    "./native/protocol": "./native/protocol.ts",
-    "./storage/ports": "./storage/ports.ts",
+    ".": {
+      "types": "./dist/openapi/index.d.ts",
+      "import": "./dist/openapi/index.js"
+    },
+    "./openapi": {
+      "types": "./dist/openapi/index.d.ts",
+      "import": "./dist/openapi/index.js"
+    },
+    "./fixtures/http": {
+      "types": "./dist/fixtures/http.d.ts",
+      "import": "./dist/fixtures/http.js"
+    },
+    "./crypto/protocol": {
+      "types": "./dist/crypto/protocol.d.ts",
+      "import": "./dist/crypto/protocol.js"
+    },
+    "./native/protocol": {
+      "types": "./dist/native/protocol.d.ts",
+      "import": "./dist/native/protocol.js"
+    },
+    "./storage/ports": {
+      "types": "./dist/storage/ports.d.ts",
+      "import": "./dist/storage/ports.js"
+    },
     "./generated/crewroll.openapi.json": "./generated/crewroll.openapi.json"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
     "openapi:generate": "tsx generator/generate-openapi.ts",
     "openapi:check": "tsx generator/check-openapi.ts"
   },

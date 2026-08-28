@@ -6,6 +6,7 @@ import {
   CreateJoinRequestBodySchema,
   CreateTripBodySchema,
   CreateUploadSessionBodySchema,
+  DecimalLimitSchema,
   DeviceResponseSchema,
   DownloadSessionResponseSchema,
   EndTripBodySchema,
@@ -51,12 +52,6 @@ const problemResponses = {
   "409": response("ProblemDetails", "Conflict"),
 };
 
-const authorizationHeader = {
-  name: "Authorization",
-  in: "header",
-  required: true,
-  schema: { type: "string", pattern: "^Bearer [^\\s]+$" },
-};
 const deviceHeader = {
   name: "X-CrewRoll-Device-Id",
   in: "header",
@@ -69,9 +64,9 @@ const idempotencyHeader = {
   required: true,
   schema: { type: "string", format: "uuid" },
 };
-const registrationHeaders = [authorizationHeader, idempotencyHeader];
-const commandHeaders = [authorizationHeader, deviceHeader, idempotencyHeader];
-const queryHeaders = [authorizationHeader, deviceHeader];
+const registrationHeaders = [idempotencyHeader];
+const commandHeaders = [deviceHeader, idempotencyHeader];
+const queryHeaders = [deviceHeader];
 const pathId = (name: string) => ({
   name,
   in: "path",
@@ -84,8 +79,10 @@ const operation = (
   parameters: readonly unknown[],
   responses: Record<string, unknown>,
   bodyName?: string,
+  securityScheme: "ClerkBearer" | "BackgroundDeviceBearer" = "BackgroundDeviceBearer",
 ) => ({
   operationId,
+  security: [{ [securityScheme]: [] }],
   parameters,
   ...(bodyName ? { requestBody: requestBody(bodyName) } : {}),
   responses: { ...responses, ...problemResponses },
@@ -129,7 +126,13 @@ export function createOpenApiDocument(): OpenApiDocument {
     info: { title: "CrewRoll Control Plane", version: "1.0.0" },
     paths: {
       "/v1/devices": {
-        post: operation("registerDevice", registrationHeaders, { "201": response("DeviceResponse", "Registered") }, "RegisterDeviceBody"),
+        post: operation(
+          "registerDevice",
+          registrationHeaders,
+          { "201": response("DeviceResponse", "Registered") },
+          "RegisterDeviceBody",
+          "ClerkBearer",
+        ),
       },
       "/v1/devices/{deviceId}/push-token": {
         patch: operation("updatePushToken", [...commandHeaders, pathId("deviceId")], { "204": { description: "Updated" } }, "UpdatePushTokenBody"),
@@ -162,7 +165,7 @@ export function createOpenApiDocument(): OpenApiDocument {
         get: operation("getReconciliation", [...queryHeaders, pathId("tripId"), {
           name: "cursor", in: "query", required: false, schema: { type: "string", format: "opaque-cursor" },
         }, {
-          name: "limit", in: "query", required: false, schema: { type: "string", format: "decimal-max-100" },
+          name: "limit", in: "query", required: false, schema: DecimalLimitSchema,
         }], { "200": response("ReconciliationResponse") }),
       },
       "/v1/assets/upload-sessions": {
@@ -175,7 +178,7 @@ export function createOpenApiDocument(): OpenApiDocument {
         get: operation("sync", [...queryHeaders, {
           name: "cursor", in: "query", required: false, schema: { type: "string", format: "opaque-cursor" },
         }, {
-          name: "limit", in: "query", required: false, schema: { type: "string", format: "decimal-max-100" },
+          name: "limit", in: "query", required: false, schema: DecimalLimitSchema,
         }], { "200": response("SyncResponse") }),
       },
       "/v1/deliveries/{deliveryId}/download-session": {

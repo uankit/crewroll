@@ -35,7 +35,7 @@
     "doctor": "npx expo-doctor@latest",
     "verify:identity": "node tools/verify-app-identity.mjs",
     "verify:bundle": "expo export --platform ios --output-dir dist/ios && expo export --platform android --output-dir dist/android",
-    "check": "npm run verify:identity && npm run typecheck && npm run lint && npm run test && npm run doctor",
+    "check": "npm run verify:identity && npm run typecheck && npm run typecheck:workspaces && npm run lint && npm run test && npm run test:workspaces && npm run doctor",
     "build:dev:android": "npx eas-cli@latest build --profile development --platform android",
     "build:dev:ios": "npx eas-cli@latest build --profile development --platform ios",
     "build:preview:android": "npx eas-cli@latest build --profile preview --platform android",

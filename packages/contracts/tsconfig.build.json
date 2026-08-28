@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": [
+    "crypto/**/*.ts",
+    "fixtures/**/*.ts",
+    "native/**/*.ts",
+    "openapi/**/*.ts",
+    "storage/**/*.ts"
+  ],
+  "exclude": ["dist", "generator", "test", "vitest.config.ts"]
+}

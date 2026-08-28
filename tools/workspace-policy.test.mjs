@@ -63,3 +63,8 @@ test("quality scripts include identity, types, lint, tests, and Expo Doctor", ()
   assert.match(packageJson.scripts.check, /test/);
   assert.match(packageJson.scripts.check, /doctor/);
 });
+
+test("root check runs both workspace typecheck and test gates", () => {
+  assert.match(packageJson.scripts.check, /typecheck:workspaces/);
+  assert.match(packageJson.scripts.check, /test:workspaces/);
+});

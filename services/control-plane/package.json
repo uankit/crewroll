@@ -6,15 +6,21 @@
   "engines": {
     "node": ">=22.13.0 <23"
   },
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test --max-warnings=0",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "npm run build && vitest run",
+    "test:coverage": "npm run build && vitest run --coverage",
     "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
