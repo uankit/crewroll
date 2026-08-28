@@ -1,0 +1,59 @@
+{
+  "name": "@crewroll/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0 <23"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "db:migrate": "tsx src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "3.1121.0",
+    "@aws-sdk/client-s3": "3.1121.0",
+    "@aws-sdk/s3-request-presigner": "3.1121.0",
+    "@clerk/backend": "3.16.13",
+    "@crewroll/contracts": "0.1.0",
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/swagger": "9.8.1",
+    "@fastify/swagger-ui": "6.1.1",
+    "@fastify/type-provider-typebox": "6.1.0",
+    "@js-temporal/polyfill": "0.5.1",
+    "@opentelemetry/sdk-node": "0.221.0",
+    "@sinclair/typebox": "0.34.52",
+    "fastify": "5.12.1",
+    "firebase-admin": "14.3.0",
+    "jose": "6.2.10",
+    "kysely": "0.29.5",
+    "pg": "8.23.0",
+    "pg-boss": "12.28.0",
+    "pino": "10.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@testcontainers/postgresql": "11.11.0",
+    "@types/node": "22.19.15",
+    "@types/pg": "8.23.1",
+    "@types/supertest": "7.2.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "aws-sdk-client-mock": "4.1.0",
+    "eslint": "10.9.1",
+    "fast-check": "4.9.0",
+    "supertest": "7.2.2",
+    "testcontainers": "11.11.0",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.68.0",
+    "vitest": "4.1.11"
+  }
+}

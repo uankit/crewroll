@@ -1,0 +1,3328 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CrewRoll Control Plane",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/devices": {
+      "post": {
+        "operationId": "registerDevice",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDeviceBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{deviceId}/push-token": {
+      "patch": {
+        "operationId": "updatePushToken",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePushTokenBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Updated"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/devices/{deviceId}": {
+      "delete": {
+        "operationId": "revokeDevice",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips": {
+      "post": {
+        "operationId": "createTrip",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTripBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/join-requests": {
+      "post": {
+        "operationId": "createJoinRequest",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJoinRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/join-requests/{membershipId}/approval": {
+      "put": {
+        "operationId": "approveJoinRequest",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveJoinRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/join-requests/{membershipId}": {
+      "delete": {
+        "operationId": "rejectJoinRequest",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "membershipId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Rejected"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/start": {
+      "post": {
+        "operationId": "startTrip",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTripBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/end": {
+      "post": {
+        "operationId": "endTrip",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndTripBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}": {
+      "get": {
+        "operationId": "getTrip",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/reconciliation": {
+      "get": {
+        "operationId": "getReconciliation",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "opaque-cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "decimal-max-100"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/assets/upload-sessions": {
+      "post": {
+        "operationId": "createUploadSession",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUploadSessionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/assets/{assetId}/commit": {
+      "post": {
+        "operationId": "commitAsset",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "assetId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitAssetBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitAssetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sync": {
+      "get": {
+        "operationId": "sync",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "opaque-cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "decimal-max-100"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/deliveries/{deliveryId}/download-session": {
+      "post": {
+        "operationId": "createDownloadSession",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "deliveryId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDownloadSessionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/deliveries/{deliveryId}/saved-receipt": {
+      "put": {
+        "operationId": "saveReceipt",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^Bearer [^\\s]+$"
+            }
+          },
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "deliveryId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedReceiptBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedReceiptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ClerkBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Clerk"
+      },
+      "BackgroundDeviceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque"
+      }
+    },
+    "schemas": {
+      "DeviceRegistrationHeaders": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "authorization",
+          "idempotency-key"
+        ],
+        "properties": {
+          "authorization": {
+            "pattern": "^Bearer [^\\s]+$",
+            "type": "string"
+          },
+          "idempotency-key": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      },
+      "MobileCommandHeaders": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "authorization",
+          "x-crewroll-device-id",
+          "idempotency-key"
+        ],
+        "properties": {
+          "authorization": {
+            "pattern": "^Bearer [^\\s]+$",
+            "type": "string"
+          },
+          "x-crewroll-device-id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "idempotency-key": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      },
+      "MobileQueryHeaders": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "authorization",
+          "x-crewroll-device-id"
+        ],
+        "properties": {
+          "authorization": {
+            "pattern": "^Bearer [^\\s]+$",
+            "type": "string"
+          },
+          "x-crewroll-device-id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      },
+      "RegisterDeviceBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "installationId",
+          "platform",
+          "authenticationKeyAlgorithm",
+          "authenticationPublicKey",
+          "authenticationKeyVersion",
+          "e2eeKeyAlgorithm",
+          "e2eePublicKey",
+          "e2eeKeyVersion",
+          "appVersion"
+        ],
+        "properties": {
+          "installationId": {
+            "pattern": "^[A-Za-z0-9_-]{8,128}$",
+            "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "const": "ios",
+                "type": "string"
+              },
+              {
+                "const": "android",
+                "type": "string"
+              }
+            ]
+          },
+          "authenticationKeyAlgorithm": {
+            "const": "P-256",
+            "type": "string"
+          },
+          "authenticationPublicKey": {
+            "format": "base64",
+            "type": "string"
+          },
+          "authenticationKeyVersion": {
+            "const": 1,
+            "type": "number"
+          },
+          "e2eeKeyAlgorithm": {
+            "const": "X25519",
+            "type": "string"
+          },
+          "e2eePublicKey": {
+            "format": "base64",
+            "type": "string"
+          },
+          "e2eeKeyVersion": {
+            "const": 1,
+            "type": "number"
+          },
+          "pushToken": {
+            "minLength": 1,
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "appVersion": {
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+            "type": "string"
+          }
+        }
+      },
+      "DeviceResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "deviceId",
+          "backgroundBearer",
+          "backgroundBearerExpiresAt"
+        ],
+        "properties": {
+          "deviceId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "backgroundBearer": {
+            "pattern": "^crb_[A-Za-z0-9_-]{12,512}$",
+            "type": "string"
+          },
+          "backgroundBearerExpiresAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        }
+      },
+      "UpdatePushTokenBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pushToken",
+          "appVersion"
+        ],
+        "properties": {
+          "pushToken": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "appVersion": {
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+            "type": "string"
+          }
+        }
+      },
+      "CreateTripBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "inviteCode",
+          "release",
+          "endsAt",
+          "ownerDeviceId",
+          "ownerKeyEnvelope"
+        ],
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "maxLength": 80,
+            "type": "string"
+          },
+          "inviteCode": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+            "type": "string"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "IMMEDIATE",
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "mode",
+                  "timeZone",
+                  "localTime"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "NIGHTLY",
+                    "type": "string"
+                  },
+                  "timeZone": {
+                    "format": "iana-time-zone",
+                    "type": "string"
+                  },
+                  "localTime": {
+                    "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          "endsAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ownerDeviceId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "ownerKeyEnvelope": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "keyEpoch",
+              "algorithmVersion",
+              "wrappedKey"
+            ],
+            "properties": {
+              "keyEpoch": {
+                "const": 1,
+                "type": "number"
+              },
+              "algorithmVersion": {
+                "const": 1,
+                "type": "number"
+              },
+              "wrappedKey": {
+                "format": "base64-max-4096",
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "TripResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "release",
+          "startsAt",
+          "endsAt",
+          "ownerDeviceId",
+          "currentMembershipId",
+          "keyEpoch",
+          "tripKeyEnvelope",
+          "members"
+        ],
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "maxLength": 80,
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "LOBBY",
+                "type": "string"
+              },
+              {
+                "const": "ACTIVE",
+                "type": "string"
+              },
+              {
+                "const": "ENDING",
+                "type": "string"
+              },
+              {
+                "const": "COMPLETE",
+                "type": "string"
+              },
+              {
+                "const": "INCOMPLETE_EXPIRED",
+                "type": "string"
+              }
+            ]
+          },
+          "release": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "IMMEDIATE",
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "mode",
+                  "timeZone",
+                  "localTime"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "NIGHTLY",
+                    "type": "string"
+                  },
+                  "timeZone": {
+                    "format": "iana-time-zone",
+                    "type": "string"
+                  },
+                  "localTime": {
+                    "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ownerDeviceId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "currentMembershipId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "keyEpoch": {
+            "const": 1,
+            "type": "number"
+          },
+          "tripKeyEnvelope": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "keyEpoch",
+                  "algorithmVersion",
+                  "wrappedKey"
+                ],
+                "properties": {
+                  "keyEpoch": {
+                    "const": 1,
+                    "type": "number"
+                  },
+                  "algorithmVersion": {
+                    "const": 1,
+                    "type": "number"
+                  },
+                  "wrappedKey": {
+                    "format": "base64-max-4096",
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "members": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "membershipId",
+                "deviceId",
+                "displayName",
+                "status"
+              ],
+              "properties": {
+                "membershipId": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "deviceId": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "displayName": {
+                  "minLength": 1,
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "PENDING",
+                      "type": "string"
+                    },
+                    {
+                      "const": "APPROVED",
+                      "type": "string"
+                    },
+                    {
+                      "const": "REJECTED",
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "InviteResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId",
+          "expiresAt"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        }
+      },
+      "CreateJoinRequestBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "inviteCode",
+          "deviceId"
+        ],
+        "properties": {
+          "inviteCode": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+            "type": "string"
+          },
+          "deviceId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      },
+      "MembershipResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "membershipId",
+          "tripId",
+          "deviceId",
+          "status",
+          "keyEpoch",
+          "tripKeyEnvelope"
+        ],
+        "properties": {
+          "membershipId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tripId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "deviceId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "PENDING",
+                "type": "string"
+              },
+              {
+                "const": "APPROVED",
+                "type": "string"
+              },
+              {
+                "const": "REJECTED",
+                "type": "string"
+              }
+            ]
+          },
+          "keyEpoch": {
+            "const": 1,
+            "type": "number"
+          },
+          "tripKeyEnvelope": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "keyEpoch",
+                  "algorithmVersion",
+                  "wrappedKey"
+                ],
+                "properties": {
+                  "keyEpoch": {
+                    "const": 1,
+                    "type": "number"
+                  },
+                  "algorithmVersion": {
+                    "const": 1,
+                    "type": "number"
+                  },
+                  "wrappedKey": {
+                    "format": "base64-max-4096",
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ApproveJoinRequestBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "keyEpoch",
+          "algorithmVersion",
+          "wrappedKey"
+        ],
+        "properties": {
+          "keyEpoch": {
+            "const": 1,
+            "type": "number"
+          },
+          "algorithmVersion": {
+            "const": 1,
+            "type": "number"
+          },
+          "wrappedKey": {
+            "format": "base64-max-4096",
+            "type": "string"
+          }
+        }
+      },
+      "StartTripBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expectedVersion"
+        ],
+        "properties": {
+          "expectedVersion": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "EndTripBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expectedVersion"
+        ],
+        "properties": {
+          "expectedVersion": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "CreateUploadSessionBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId",
+          "assetId",
+          "sourceAssetKey",
+          "capturedAt",
+          "formatVersion",
+          "keyEpoch",
+          "encryptedManifest",
+          "objects"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "assetId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sourceAssetKey": {
+            "format": "opaque-source-asset-key",
+            "type": "string"
+          },
+          "capturedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "formatVersion": {
+            "const": 1,
+            "type": "number"
+          },
+          "keyEpoch": {
+            "const": 1,
+            "type": "number"
+          },
+          "encryptedManifest": {
+            "format": "base64-max-65536",
+            "type": "string"
+          },
+          "objects": {
+            "type": "array",
+            "items": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "ciphertextBytes",
+                  "checksumSha256"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "PREVIEW",
+                    "type": "string"
+                  },
+                  "ciphertextBytes": {
+                    "format": "decimal-max-524288",
+                    "type": "string"
+                  },
+                  "checksumSha256": {
+                    "format": "base64",
+                    "minLength": 44,
+                    "maxLength": 44,
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "ciphertextBytes",
+                  "checksumSha256"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "ORIGINAL",
+                    "type": "string"
+                  },
+                  "ciphertextBytes": {
+                    "format": "decimal-max-52428800",
+                    "type": "string"
+                  },
+                  "checksumSha256": {
+                    "format": "base64",
+                    "minLength": 44,
+                    "maxLength": 44,
+                    "type": "string"
+                  }
+                }
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "UploadSessionResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uploadSessionId",
+          "assetId",
+          "expiresAt",
+          "objects"
+        ],
+        "properties": {
+          "uploadSessionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "assetId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "objects": {
+            "type": "array",
+            "items": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "url",
+                  "requiredHeaders"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "PREVIEW",
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "requiredHeaders": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "content-length",
+                      "content-type",
+                      "x-amz-checksum-sha256",
+                      "if-none-match"
+                    ],
+                    "properties": {
+                      "content-length": {
+                        "pattern": "^(?:0|[1-9]\\d*)$",
+                        "type": "string"
+                      },
+                      "content-type": {
+                        "const": "application/octet-stream",
+                        "type": "string"
+                      },
+                      "x-amz-checksum-sha256": {
+                        "format": "base64",
+                        "type": "string"
+                      },
+                      "if-none-match": {
+                        "const": "*",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "url",
+                  "requiredHeaders"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "ORIGINAL",
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "requiredHeaders": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "content-length",
+                      "content-type",
+                      "x-amz-checksum-sha256",
+                      "if-none-match"
+                    ],
+                    "properties": {
+                      "content-length": {
+                        "pattern": "^(?:0|[1-9]\\d*)$",
+                        "type": "string"
+                      },
+                      "content-type": {
+                        "const": "application/octet-stream",
+                        "type": "string"
+                      },
+                      "x-amz-checksum-sha256": {
+                        "format": "base64",
+                        "type": "string"
+                      },
+                      "if-none-match": {
+                        "const": "*",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "CommitAssetBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uploadSessionId",
+          "objects"
+        ],
+        "properties": {
+          "uploadSessionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "objects": {
+            "type": "array",
+            "items": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "etag"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "PREVIEW",
+                    "type": "string"
+                  },
+                  "etag": {
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "variant",
+                  "etag"
+                ],
+                "properties": {
+                  "variant": {
+                    "const": "ORIGINAL",
+                    "type": "string"
+                  },
+                  "etag": {
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "type": "string"
+                  }
+                }
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "CommitAssetResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "assetId",
+          "committedAt",
+          "sequence"
+        ],
+        "properties": {
+          "assetId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "committedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sequence": {
+            "pattern": "^(?:0|[1-9]\\d*)$",
+            "type": "string"
+          }
+        }
+      },
+      "SyncResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "events",
+          "nextCursor",
+          "caughtUpThrough",
+          "cursorExpiresAt",
+          "hasMore"
+        ],
+        "properties": {
+          "events": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sequence",
+                    "occurredAt",
+                    "tripId",
+                    "assetId"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "ASSET_COMMITTED",
+                      "type": "string"
+                    },
+                    "sequence": {
+                      "pattern": "^(?:0|[1-9]\\d*)$",
+                      "type": "string"
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "tripId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "assetId": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sequence",
+                    "occurredAt",
+                    "tripId",
+                    "assetId",
+                    "deliveryId",
+                    "status"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "DELIVERY_CHANGED",
+                      "type": "string"
+                    },
+                    "sequence": {
+                      "pattern": "^(?:0|[1-9]\\d*)$",
+                      "type": "string"
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "tripId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "assetId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "deliveryId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "const": "HELD",
+                          "type": "string"
+                        },
+                        {
+                          "const": "READY",
+                          "type": "string"
+                        },
+                        {
+                          "const": "SAVED",
+                          "type": "string"
+                        },
+                        {
+                          "const": "FAILED",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "sequence",
+                    "occurredAt",
+                    "tripId",
+                    "status"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "TRIP_CHANGED",
+                      "type": "string"
+                    },
+                    "sequence": {
+                      "pattern": "^(?:0|[1-9]\\d*)$",
+                      "type": "string"
+                    },
+                    "occurredAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "tripId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "const": "LOBBY",
+                          "type": "string"
+                        },
+                        {
+                          "const": "ACTIVE",
+                          "type": "string"
+                        },
+                        {
+                          "const": "ENDING",
+                          "type": "string"
+                        },
+                        {
+                          "const": "COMPLETE",
+                          "type": "string"
+                        },
+                        {
+                          "const": "INCOMPLETE_EXPIRED",
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "nextCursor": {
+            "format": "opaque-cursor",
+            "type": "string"
+          },
+          "caughtUpThrough": {
+            "pattern": "^(?:0|[1-9]\\d*)$",
+            "type": "string"
+          },
+          "cursorExpiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CreateDownloadSessionBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "variants"
+        ],
+        "properties": {
+          "variants": {
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "const": "PREVIEW",
+                  "type": "string"
+                },
+                {
+                  "const": "ORIGINAL",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "DownloadSessionResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "deliveryId",
+          "assetId",
+          "expiresAt",
+          "encryptedManifest",
+          "objects"
+        ],
+        "properties": {
+          "deliveryId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "assetId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "encryptedManifest": {
+            "format": "base64-max-65536",
+            "type": "string"
+          },
+          "objects": {
+            "minItems": 1,
+            "maxItems": 2,
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "variant",
+                    "ciphertextBytes",
+                    "url",
+                    "checksumSha256"
+                  ],
+                  "properties": {
+                    "variant": {
+                      "const": "PREVIEW",
+                      "type": "string"
+                    },
+                    "ciphertextBytes": {
+                      "format": "decimal-max-524288",
+                      "type": "string"
+                    },
+                    "url": {
+                      "format": "uri",
+                      "type": "string"
+                    },
+                    "checksumSha256": {
+                      "format": "base64",
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "variant",
+                    "ciphertextBytes",
+                    "url",
+                    "checksumSha256"
+                  ],
+                  "properties": {
+                    "variant": {
+                      "const": "ORIGINAL",
+                      "type": "string"
+                    },
+                    "ciphertextBytes": {
+                      "format": "decimal-max-52428800",
+                      "type": "string"
+                    },
+                    "url": {
+                      "format": "uri",
+                      "type": "string"
+                    },
+                    "checksumSha256": {
+                      "format": "base64",
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "SavedReceiptBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "assetId",
+          "savedAt",
+          "engineRevision"
+        ],
+        "properties": {
+          "assetId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "savedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "engineRevision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      },
+      "SavedReceiptResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "deliveryId",
+          "status",
+          "acceptedAt"
+        ],
+        "properties": {
+          "deliveryId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "HELD",
+                "type": "string"
+              },
+              {
+                "const": "READY",
+                "type": "string"
+              },
+              {
+                "const": "SAVED",
+                "type": "string"
+              },
+              {
+                "const": "FAILED",
+                "type": "string"
+              }
+            ]
+          },
+          "acceptedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        }
+      },
+      "ReconciliationQuery": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "format": "opaque-cursor",
+            "type": "string"
+          },
+          "limit": {
+            "format": "decimal-max-100",
+            "type": "string"
+          }
+        }
+      },
+      "ReconciliationResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId",
+          "items",
+          "nextCursor",
+          "caughtUpThrough",
+          "cursorExpiresAt",
+          "hasMore"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "items": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "assetId",
+                "capturedAt",
+                "members"
+              ],
+              "properties": {
+                "assetId": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "capturedAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "members": {
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "type": "array",
+                  "items": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "membershipId",
+                      "deviceId",
+                      "deliveryStatus",
+                      "savedAt"
+                    ],
+                    "properties": {
+                      "membershipId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "deviceId": {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      "deliveryStatus": {
+                        "anyOf": [
+                          {
+                            "const": "HELD",
+                            "type": "string"
+                          },
+                          {
+                            "const": "READY",
+                            "type": "string"
+                          },
+                          {
+                            "const": "SAVED",
+                            "type": "string"
+                          },
+                          {
+                            "const": "FAILED",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "savedAt": {
+                        "anyOf": [
+                          {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "format": "opaque-cursor",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caughtUpThrough": {
+            "pattern": "^(?:0|[1-9]\\d*)$",
+            "type": "string"
+          },
+          "cursorExpiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SyncAvailablePushHint": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "tripId",
+          "sequence"
+        ],
+        "properties": {
+          "type": {
+            "const": "SYNC_AVAILABLE",
+            "type": "string"
+          },
+          "tripId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sequence": {
+            "pattern": "^(?:0|[1-9]\\d*)$",
+            "type": "string"
+          }
+        }
+      },
+      "ProblemDetails": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance",
+          "code",
+          "requestId"
+        ],
+        "properties": {
+          "type": {
+            "format": "uri",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "maxLength": 160,
+            "type": "string"
+          },
+          "status": {
+            "minimum": 400,
+            "maximum": 599,
+            "type": "integer"
+          },
+          "detail": {
+            "minLength": 1,
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "instance": {
+            "pattern": "^(?:https?://|/)[^\\s]+$",
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "const": "AUTH_REQUIRED",
+                "type": "string"
+              },
+              {
+                "const": "DEVICE_REVOKED",
+                "type": "string"
+              },
+              {
+                "const": "IDEMPOTENCY_CONFLICT",
+                "type": "string"
+              },
+              {
+                "const": "INVALID_REQUEST",
+                "type": "string"
+              },
+              {
+                "const": "ACTIVE_TRIP_EXISTS",
+                "type": "string"
+              },
+              {
+                "const": "TRIP_FULL",
+                "type": "string"
+              },
+              {
+                "const": "TRIP_FROZEN",
+                "type": "string"
+              },
+              {
+                "const": "INVITE_INVALID",
+                "type": "string"
+              },
+              {
+                "const": "KEY_ENVELOPE_INVALID",
+                "type": "string"
+              },
+              {
+                "const": "UPLOAD_EXPIRED",
+                "type": "string"
+              },
+              {
+                "const": "OBJECT_MISMATCH",
+                "type": "string"
+              },
+              {
+                "const": "CURSOR_EXPIRED",
+                "type": "string"
+              },
+              {
+                "const": "NOT_FOUND",
+                "type": "string"
+              },
+              {
+                "const": "CONFLICT",
+                "type": "string"
+              },
+              {
+                "const": "INTERNAL_ERROR",
+                "type": "string"
+              }
+            ]
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

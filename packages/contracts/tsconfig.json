@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "crypto/**/*.ts",
+    "fixtures/**/*.ts",
+    "generator/**/*.ts",
+    "native/**/*.ts",
+    "openapi/**/*.ts",
+    "storage/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
