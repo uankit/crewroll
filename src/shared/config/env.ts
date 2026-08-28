@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const RawHttpsOriginPattern = /^https:\/\/[^/?#\\]+\/?$/i;
+
 const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
   let url: URL;
 
@@ -12,6 +14,7 @@ const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
 
   if (
     value !== value.trim() ||
+    !RawHttpsOriginPattern.test(value) ||
     url.protocol !== "https:" ||
     url.username !== "" ||
     url.password !== "" ||
@@ -23,9 +26,69 @@ const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
   }
 });
 
+const Base64Alphabet =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64(value: string): string | null {
+  const match = /^([A-Za-z0-9+/]*)(={0,2})$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const encoded = match[1] ?? "";
+  const paddingLength = match[2]?.length ?? 0;
+  if (encoded.length === 0 || encoded.length % 4 === 1) {
+    return null;
+  }
+
+  if (
+    paddingLength > 0 &&
+    ((encoded.length + paddingLength) % 4 !== 0 ||
+      paddingLength !== (4 - (encoded.length % 4)) % 4)
+  ) {
+    return null;
+  }
+
+  let bits = 0;
+  let buffer = 0;
+  let decoded = "";
+
+  for (const character of encoded) {
+    buffer = (buffer << 6) | Base64Alphabet.indexOf(character);
+    bits += 6;
+
+    if (bits >= 8) {
+      bits -= 8;
+      decoded += String.fromCharCode((buffer >> bits) & 0xff);
+      buffer &= (1 << bits) - 1;
+    }
+  }
+
+  return decoded;
+}
+
+function isClerkPublishableKey(value: string): boolean {
+  const parts = value.split("_");
+  if (
+    parts.length !== 3 ||
+    parts[0] !== "pk" ||
+    (parts[1] !== "test" && parts[1] !== "live")
+  ) {
+    return false;
+  }
+
+  const decoded = decodeBase64(parts[2] ?? "");
+  if (!decoded?.endsWith("$")) {
+    return false;
+  }
+
+  const frontendIdentifier = decoded.slice(0, -1);
+  return frontendIdentifier.includes(".") && !frontendIdentifier.includes("$");
+}
+
 const ClerkPublishableKeySchema = z
   .string()
-  .regex(/^pk_(?:test|live)_[A-Za-z0-9+/=_-]+$/, "must be a Clerk publishable key");
+  .refine(isClerkPublishableKey, "must be a Clerk publishable key");
 
 const PublicEnvSchema = z.object({
   EXPO_PUBLIC_API_URL: HttpsApiOriginSchema,
