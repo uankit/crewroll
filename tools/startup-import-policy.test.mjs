@@ -188,11 +188,16 @@ test("accepts actual node builtins, exact package grammar, and safe DB runtime i
     t,
     `
       import fs from "node:fs";
+      import * as pathApi from "node:path";
+      import type * as moduleTypes from "node:module";
       import "node:fs/promises";
       import "package_name.v1~beta/sub-path";
       import "@scope-name/pkg_name/sub.path";
       import "./db/database.js";
       void fs;
+      void pathApi;
+      type ModuleTypes = typeof moduleTypes;
+      void (undefined as unknown as ModuleTypes);
     `,
   );
   await writeText(
@@ -203,6 +208,61 @@ test("accepts actual node builtins, exact package grammar, and safe DB runtime i
   const result = await analyzeStartupGraph({ rootPath });
   assert.deepEqual(result.findings, []);
   assertResultShape(result);
+});
+
+test("rejects runtime module-loader origins independent of aliasing and computed access", async (t) => {
+  const cases = [
+    [
+      "namespace alias with computed name",
+      `
+        import * as moduleApi from "node:module";
+        const loaderName = "create" + "Require";
+        const load = moduleApi[loaderName](import.meta.url);
+        load("./db/migrate.js");
+      `,
+    ],
+    [
+      "namespace alias with computed literal",
+      `
+        import * as moduleApi from "node:module";
+        const load = moduleApi["createRequire"](import.meta.url);
+        load("./db/migrate.js");
+      `,
+    ],
+    [
+      "default alias with destructuring",
+      `
+        import moduleApi from "node:module";
+        const { createRequire: makeLoader } = moduleApi;
+        const load = makeLoader(import.meta.url);
+        load("./db/migrate.js");
+      `,
+    ],
+    [
+      "named alias",
+      `
+        import { createRequire as makeLoader } from "node:module";
+        const load = makeLoader(import.meta.url);
+        load("./db/migrate.js");
+      `,
+    ],
+    [
+      "legacy module package namespace alias",
+      `
+        import * as moduleApi from "module";
+        const load = moduleApi["createRequire"](import.meta.url);
+        load("./db/migrate.js");
+      `,
+    ],
+  ];
+
+  for (const [name, source] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest, source);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", indexPath);
+    });
+  }
 });
 
 test("reads the root and every workspace manifest without evaluating source", async (t) => {

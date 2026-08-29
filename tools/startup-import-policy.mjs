@@ -33,6 +33,7 @@ const FORBIDDEN_LIFECYCLE = new Set([
 ]);
 const VALID_ENTRY_MAIN_PATHS = new Set([API_PATH, WORKER_PATH]);
 const LOADER_PROPERTY_NAMES = new Set(["require", "createRequire", "dlopen"]);
+const LOADER_MODULE_SPECIFIERS = new Set(["module", "node:module"]);
 const EXECUTABLE_CONSTRUCTORS = new Set(["eval", "Function", "AsyncFunction"]);
 const LOADER_IDENTIFIERS = new Set([
   "require",
@@ -343,8 +344,24 @@ function hasImportAttributes(statement) {
   return Boolean(statement.attributes ?? statement.assertClause);
 }
 
+function isRuntimeImportDeclaration(node) {
+  const clause = node.importClause;
+  if (!clause) return true;
+  if (clause.isTypeOnly) return false;
+  if (clause.name || !clause.namedBindings) return true;
+  if (ts.isNamespaceImport(clause.namedBindings)) return true;
+  return (
+    clause.namedBindings.elements.length === 0 ||
+    clause.namedBindings.elements.some((element) => !element.isTypeOnly)
+  );
+}
+
 function isUnsupportedLoaderNode(node) {
   if (
+    (ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      LOADER_MODULE_SPECIFIERS.has(node.moduleSpecifier.text) &&
+      isRuntimeImportDeclaration(node)) ||
     ts.isImportEqualsDeclaration(node) ||
     ts.isImportTypeNode(node) ||
     (ts.isExportAssignment(node) && node.isExportEquals)
