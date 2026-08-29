@@ -1,0 +1,777 @@
+import assert from "node:assert/strict";
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { analyzeStartupGraph } from "./startup-import-policy.mjs";
+
+const controlRoot = "services/control-plane";
+const controlManifestPath = `${controlRoot}/package.json`;
+const sourceRoot = `${controlRoot}/src`;
+const indexPath = `${sourceRoot}/index.ts`;
+const apiPath = `${sourceRoot}/api/main.ts`;
+const workerPath = `${sourceRoot}/worker/main.ts`;
+const buildAppPath = `${sourceRoot}/app/buildApp.ts`;
+const runnerPath = `${sourceRoot}/db/migrate.ts`;
+const migrationPath = `${sourceRoot}/db/migrations/001_initial.ts`;
+
+function rootManifest() {
+  return {
+    private: true,
+    workspaces: ["packages/*", "services/*"],
+    scripts: {},
+  };
+}
+
+function controlManifest() {
+  return {
+    name: "@crewroll/control-plane",
+    private: true,
+    type: "module",
+    exports: {
+      ".": {
+        types: "./dist/src/index.d.ts",
+        import: "./dist/src/index.js",
+      },
+    },
+    scripts: {},
+  };
+}
+
+async function writeText(rootPath, relativePath, text) {
+  const targetPath = path.join(rootPath, relativePath);
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, text, "utf8");
+}
+
+async function writeJson(rootPath, relativePath, value) {
+  await writeText(rootPath, relativePath, `${JSON.stringify(value)}\n`);
+}
+
+async function fixture(t, indexSource = 'import "@crewroll/contracts";\n') {
+  const rootPath = await mkdtemp(
+    path.join(os.tmpdir(), "crewroll-b2b-ii-c-startup-"),
+  );
+  t.after(async () => rm(rootPath, { force: true, recursive: true }));
+  await writeJson(rootPath, "package.json", rootManifest());
+  await writeJson(rootPath, "packages/contracts/package.json", {
+    name: "@crewroll/contracts",
+    private: true,
+    type: "module",
+    scripts: {},
+  });
+  await writeJson(rootPath, controlManifestPath, controlManifest());
+  await writeText(rootPath, indexPath, indexSource);
+  return rootPath;
+}
+
+async function readJson(rootPath, relativePath) {
+  return JSON.parse(await readFile(path.join(rootPath, relativePath), "utf8"));
+}
+
+function compareFindings(left, right) {
+  return (
+    left.path.localeCompare(right.path) ||
+    left.line - right.line ||
+    left.column - right.column ||
+    left.code.localeCompare(right.code)
+  );
+}
+
+function assertResultShape(result) {
+  assert.deepEqual(Object.keys(result), ["protectedRoots", "findings"]);
+  assert.ok(Object.isFrozen(result));
+  assert.ok(Object.isFrozen(result.protectedRoots));
+  assert.ok(Object.isFrozen(result.findings));
+  assert.deepEqual(result.protectedRoots, [...result.protectedRoots].sort());
+  assert.deepEqual(result.findings, [...result.findings].sort(compareFindings));
+  for (const finding of result.findings) {
+    assert.ok(Object.isFrozen(finding));
+    assert.deepEqual(Object.keys(finding).sort(), [
+      "code",
+      "column",
+      "line",
+      "path",
+    ]);
+    assert.equal(path.isAbsolute(finding.path), false);
+    assert.equal(finding.path.includes("\\"), false);
+    assert.ok(Number.isInteger(finding.line) && finding.line > 0);
+    assert.ok(Number.isInteger(finding.column) && finding.column > 0);
+  }
+}
+
+function assertFinding(result, code, expectedPath) {
+  assertResultShape(result);
+  assert.ok(result.findings.length > 0);
+  assert.ok(
+    result.findings.some(
+      (finding) =>
+        finding.code === code &&
+        (expectedPath === undefined || finding.path === expectedPath),
+    ),
+    `expected ${code}${expectedPath ? ` at ${expectedPath}` : ""}, received ${JSON.stringify(result.findings)}`,
+  );
+}
+
+test("accepts the exact package entry and a closed static package graph", async (t) => {
+  const rootPath = await fixture(t);
+  const result = await analyzeStartupGraph({ rootPath });
+
+  assert.deepEqual(result.protectedRoots, [indexPath]);
+  assert.deepEqual(result.findings, []);
+  assertResultShape(result);
+});
+
+test("protects every existing exact root and traverses all static edge forms", async (t) => {
+  const rootPath = await fixture(
+    t,
+    `
+      import "./app/buildApp.js";
+      import type { Api } from "./types.js";
+      export { worker } from "./worker/worker.js";
+      export * from "./shared.js";
+    `,
+  );
+  const manifest = await readJson(rootPath, controlManifestPath);
+  manifest.scripts = {
+    "start:api": "node dist/src/api/main.js",
+    "start:worker": "node dist/src/worker/main.js",
+  };
+  await writeJson(rootPath, controlManifestPath, manifest);
+  await writeText(rootPath, apiPath, 'import "node:http";\n');
+  await writeText(rootPath, workerPath, 'import "@scope/worker/subpath";\n');
+  await writeText(rootPath, buildAppPath, 'import "safe-package/sub_path";\n');
+  await writeText(
+    rootPath,
+    `${sourceRoot}/types.ts`,
+    "export interface Api {}\n",
+  );
+  await writeText(
+    rootPath,
+    `${sourceRoot}/worker/worker.ts`,
+    "export const worker = true;\n",
+  );
+  await writeText(rootPath, `${sourceRoot}/shared.ts`, "export {};\n");
+
+  const result = await analyzeStartupGraph({ rootPath });
+  assert.deepEqual(result.protectedRoots, [
+    apiPath,
+    buildAppPath,
+    indexPath,
+    workerPath,
+  ]);
+  assert.deepEqual(result.findings, []);
+  assertResultShape(result);
+});
+
+test("accepts actual node builtins, exact package grammar, and safe DB runtime imports", async (t) => {
+  const rootPath = await fixture(
+    t,
+    `
+      import fs from "node:fs";
+      import "node:fs/promises";
+      import "package_name.v1~beta/sub-path";
+      import "@scope-name/pkg_name/sub.path";
+      import "./db/database.js";
+      void fs;
+    `,
+  );
+  await writeText(
+    rootPath,
+    `${sourceRoot}/db/database.ts`,
+    'import "pg";\nexport const database = true;\n',
+  );
+  const result = await analyzeStartupGraph({ rootPath });
+  assert.deepEqual(result.findings, []);
+  assertResultShape(result);
+});
+
+test("reads the root and every workspace manifest without evaluating source", async (t) => {
+  const marker = "__crewrollStartupPolicyMustNotExecute";
+  delete globalThis[marker];
+  t.after(() => delete globalThis[marker]);
+  const rootPath = await fixture(
+    t,
+    `globalThis.${marker} = true;\nexport const ready = true;\n`,
+  );
+  const reads = [];
+  const result = await analyzeStartupGraph({
+    rootPath,
+    fsAdapter: {
+      lstat,
+      readdir,
+      realpath,
+      readFile: async (...args) => {
+        reads.push(path.relative(rootPath, args[0]).split(path.sep).join("/"));
+        return readFile(...args);
+      },
+    },
+  });
+
+  assert.equal(globalThis[marker], undefined);
+  assert.deepEqual(
+    [
+      "package.json",
+      "packages/contracts/package.json",
+      controlManifestPath,
+    ].filter((item) => !reads.includes(item)),
+    [],
+  );
+  assert.equal(JSON.stringify(result).includes(marker), false);
+  assert.deepEqual(result.findings, []);
+});
+
+test("rejects every control export and executable field mutation", async (t) => {
+  const cases = [
+    ["main field", (value) => (value.main = "./dist/src/index.js")],
+    ["module field", (value) => (value.module = "./dist/src/index.js")],
+    ["bin field", (value) => (value.bin = "./dist/src/index.js")],
+    ["custom entry field", (value) => (value.entry = "./dist/src/index.js")],
+    ["missing exports", (value) => delete value.exports],
+    ["extra export", (value) => (value.exports["./admin"] = "./dist/admin.js")],
+    [
+      "string root export",
+      (value) => (value.exports["."] = "./dist/src/index.js"),
+    ],
+    [
+      "extra condition",
+      (value) => (value.exports["."].require = "./dist/src/index.cjs"),
+    ],
+    [
+      "wrong types target",
+      (value) => (value.exports["."].types = "./dist/index.d.ts"),
+    ],
+    [
+      "wrong import target",
+      (value) => (value.exports["."].import = "./dist/index.js"),
+    ],
+    [
+      "condition order",
+      (value) => {
+        value.exports["."] = {
+          import: "./dist/src/index.js",
+          types: "./dist/src/index.d.ts",
+        };
+      },
+    ],
+  ];
+
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, controlManifestPath);
+      mutate(manifest);
+      await writeJson(rootPath, controlManifestPath, manifest);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
+    });
+  }
+});
+
+test("requires API and worker roots and scripts to activate atomically", async (t) => {
+  const cases = [
+    ["api root only", apiPath, null, null],
+    ["api script only", null, "start:api", "node dist/src/api/main.js"],
+    ["api wrong script only", null, "start:api", "echo disabled"],
+    ["api wrong script", apiPath, "start:api", "tsx src/api/main.ts"],
+    ["worker root only", workerPath, null, null],
+    [
+      "worker script only",
+      null,
+      "start:worker",
+      "node dist/src/worker/main.js",
+    ],
+    ["worker wrong script only", null, "start:worker", "echo disabled"],
+    [
+      "worker wrong script",
+      workerPath,
+      "start:worker",
+      "node dist/src/index.js",
+    ],
+  ];
+
+  for (const [name, sourcePath, scriptName, scriptValue] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      if (sourcePath) await writeText(rootPath, sourcePath, "export {};\n");
+      if (scriptName) {
+        const manifest = await readJson(rootPath, controlManifestPath);
+        manifest.scripts[scriptName] = scriptValue;
+        await writeJson(rootPath, controlManifestPath, manifest);
+      }
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE");
+    });
+  }
+
+  for (const hook of [
+    "prestart:api",
+    "poststart:api",
+    "prestart:worker",
+    "poststart:worker",
+  ]) {
+    await t.test(hook, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, controlManifestPath);
+      manifest.scripts[hook] = "node dist/src/index.js";
+      await writeJson(rootPath, controlManifestPath, manifest);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
+    });
+  }
+});
+
+test("rejects direct, indirect, shell, npm-exec, and out-of-contract launchers", async (t) => {
+  const cases = [
+    ["control direct", controlManifestPath, "serve", "node dist/src/index.js"],
+    ["control source", controlManifestPath, "serve", "tsx src/index.ts"],
+    [
+      "control shell",
+      controlManifestPath,
+      "serve",
+      'sh -c "node dist/src/index.js"',
+    ],
+    [
+      "control npm exec",
+      controlManifestPath,
+      "serve",
+      "npm exec -- tsx src/index.ts",
+    ],
+    ["outside target", controlManifestPath, "serve", "node server.js"],
+    [
+      "tool-name backdoor",
+      controlManifestPath,
+      "test:backdoor",
+      "node server.js",
+    ],
+    ["control indirect", controlManifestPath, "serve", "npm run start:api"],
+    [
+      "misplaced exact API launcher",
+      "package.json",
+      "start:api",
+      "node dist/src/api/main.js",
+    ],
+    [
+      "root direct",
+      "package.json",
+      "serve",
+      "node services/control-plane/dist/src/index.js",
+    ],
+    [
+      "root indirect",
+      "package.json",
+      "serve",
+      "npm run start:api --workspace @crewroll/control-plane",
+    ],
+  ];
+
+  for (const [name, manifestPath, scriptName, command] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, manifestPath);
+      manifest.scripts[scriptName] = command;
+      await writeJson(rootPath, manifestPath, manifest);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", manifestPath);
+    });
+  }
+});
+
+test("rejects alternate main files, TypeScript shebangs, and source-tree symlinks", async (t) => {
+  await t.test("alternate main", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(rootPath, `${sourceRoot}/admin/main.ts`, "export {};\n");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_EXECUTABLE_SURFACE",
+      `${sourceRoot}/admin/main.ts`,
+    );
+  });
+
+  await t.test("shebang", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(
+      rootPath,
+      `${sourceRoot}/tool.ts`,
+      "#!/usr/bin/env node\nexport {};\n",
+    );
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_EXECUTABLE_SURFACE",
+      `${sourceRoot}/tool.ts`,
+    );
+  });
+
+  await t.test("TSX shebang", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(
+      rootPath,
+      `${sourceRoot}/tool.tsx`,
+      "#!/usr/bin/env node\nexport {};\n",
+    );
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_EXECUTABLE_SURFACE",
+      `${sourceRoot}/tool.tsx`,
+    );
+  });
+
+  await t.test("source symlink", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(rootPath, `${sourceRoot}/actual.ts`, "export {};\n");
+    await symlink(
+      "actual.ts",
+      path.join(rootPath, sourceRoot, "linked.ts"),
+      "file",
+    );
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_EXECUTABLE_SURFACE",
+      `${sourceRoot}/linked.ts`,
+    );
+  });
+});
+
+test("analyzes every protected root instead of treating its presence as sufficient", async (t) => {
+  for (const protectedPath of [indexPath, apiPath, workerPath, buildAppPath]) {
+    await t.test(protectedPath, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, controlManifestPath);
+      if (protectedPath === apiPath) {
+        manifest.scripts["start:api"] = "node dist/src/api/main.js";
+      }
+      if (protectedPath === workerPath) {
+        manifest.scripts["start:worker"] = "node dist/src/worker/main.js";
+      }
+      await writeJson(rootPath, controlManifestPath, manifest);
+      await writeText(rootPath, protectedPath, "void import(target);\n");
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", protectedPath);
+    });
+  }
+});
+
+test("rejects control targets exported from another workspace manifest", async (t) => {
+  const rootPath = await fixture(t);
+  const contractsPath = "packages/contracts/package.json";
+  const manifest = await readJson(rootPath, contractsPath);
+  manifest.exports = {
+    ".": "../../services/control-plane/dist/src/index.js",
+  };
+  await writeJson(rootPath, contractsPath, manifest);
+  const result = await analyzeStartupGraph({ rootPath });
+  assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", contractsPath);
+});
+
+test("requires the manifest-bound index to remain a regular file", async (t) => {
+  await t.test("missing", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await rm(path.join(rootPath, indexPath));
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_IMPORT_RESOLUTION", indexPath);
+  });
+
+  await t.test("symlink", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(rootPath, `${sourceRoot}/actual-index.ts`, "export {};\n");
+    await rm(path.join(rootPath, indexPath));
+    await symlink("actual-index.ts", path.join(rootPath, indexPath), "file");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_IMPORT_RESOLUTION", indexPath);
+  });
+});
+
+test("rejects parse diagnostics without leaking or evaluating source", async (t) => {
+  const marker = "__crewrollStartupParseSecret";
+  delete globalThis[marker];
+  t.after(() => delete globalThis[marker]);
+  const rootPath = await fixture(t, `globalThis.${marker} = true;\nif (`);
+  const result = await analyzeStartupGraph({ rootPath });
+  assertFinding(result, "STARTUP_PARSE", indexPath);
+  assert.equal(globalThis[marker], undefined);
+  assert.equal(JSON.stringify(result).includes(marker), false);
+});
+
+test("rejects malformed relative, URL, absolute, and package import grammar", async (t) => {
+  const cases = [
+    ["direct TypeScript", "./leaf.ts"],
+    ["extensionless", "./leaf"],
+    ["backslash", ".\\leaf.js"],
+    ["empty segment", "./dir//leaf.js"],
+    ["encoded", "./%6ceaf.js"],
+    ["query", "./leaf.js?raw"],
+    ["fragment", "./leaf.js#x"],
+    ["control", "./leaf\u0001.js"],
+    ["absolute", "/tmp/leaf.js"],
+    ["drive", "C:/leaf.js"],
+    ["UNC", "//server/leaf.js"],
+    ["file URL", "file:///tmp/leaf.js"],
+    ["data URL", "data:text/javascript,export{}"],
+    ["HTTP URL", "https://example.com/leaf.js"],
+    ["package alias", "#leaf"],
+    ["uppercase package", "Package"],
+    ["Unicode package", "café"],
+    ["leading punctuation", "-package"],
+    ["malformed scope", "@scope"],
+    ["dot package segment", "scope/../leaf"],
+    ["empty package segment", "scope//leaf"],
+    ["unknown builtin", "node:not-a-real-builtin"],
+    ["self package", "@crewroll/control-plane"],
+    ["self subpath", "@crewroll/control-plane/private"],
+  ];
+
+  for (const [name, specifier] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(
+        subtest,
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_IMPORT_GRAMMAR", indexPath);
+    });
+  }
+});
+
+test("rejects escaping, missing, ambiguous, directory, and symlinked resolution", async (t) => {
+  const cases = [
+    ["normalized escape", "../outside.js", "escape"],
+    ["missing", "./missing.js", "missing"],
+    ["ambiguous", "./leaf.js", "ambiguous"],
+    ["directory", "./leaf.js", "directory"],
+    ["symlink", "./leaf.js", "symlink"],
+    ["symlink ancestor", "./linked/leaf.js", "ancestor"],
+  ];
+
+  for (const [name, specifier, setup] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(
+        subtest,
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+      if (setup === "escape") {
+        await writeText(rootPath, `${controlRoot}/outside.ts`, "export {};\n");
+      } else if (setup === "ambiguous") {
+        await writeText(rootPath, `${sourceRoot}/leaf.ts`, "export {};\n");
+        await writeText(rootPath, `${sourceRoot}/leaf.tsx`, "export {};\n");
+      } else if (setup === "directory") {
+        await mkdir(path.join(rootPath, sourceRoot, "leaf.ts"), {
+          recursive: true,
+        });
+      } else if (setup === "symlink") {
+        await writeText(rootPath, `${sourceRoot}/actual.ts`, "export {};\n");
+        await symlink(
+          "actual.ts",
+          path.join(rootPath, sourceRoot, "leaf.ts"),
+          "file",
+        );
+      } else if (setup === "ancestor") {
+        await mkdir(path.join(rootPath, sourceRoot, "actual"), {
+          recursive: true,
+        });
+        await writeText(
+          rootPath,
+          `${sourceRoot}/actual/leaf.ts`,
+          "export {};\n",
+        );
+        await symlink(
+          "actual",
+          path.join(rootPath, sourceRoot, "linked"),
+          "dir",
+        );
+      }
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(
+        result,
+        setup === "escape"
+          ? "STARTUP_IMPORT_GRAMMAR"
+          : "STARTUP_IMPORT_RESOLUTION",
+        indexPath,
+      );
+    });
+  }
+});
+
+test("rejects import attributes and every unsupported loader spelling", async (t) => {
+  await t.test("import attributes", async (subtest) => {
+    const rootPath = await fixture(
+      subtest,
+      'import data from "./data.js" with { type: "json" };\nvoid data;\n',
+    );
+    await writeText(rootPath, `${sourceRoot}/data.ts`, "export default {};\n");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_IMPORT_GRAMMAR", indexPath);
+  });
+
+  const cases = [
+    ["literal dynamic import", 'void import("./leaf.js");'],
+    ["nonliteral dynamic import", "void import(target);"],
+    ["require call", 'require("./leaf.js");'],
+    ["require alias", "const load = require; void load;"],
+    ["require property", "const load = globalThis.require; void load;"],
+    ["module require", 'module.require("./leaf.js");'],
+    ["computed require", 'module["require"]("./leaf.js");'],
+    [
+      "import equals require",
+      'import loader = require("./leaf.js"); void loader;',
+    ],
+    [
+      "createRequire import",
+      'import { createRequire as makeLoader } from "node:module"; void makeLoader;',
+    ],
+    [
+      "createRequire alias",
+      "const makeLoader = createRequire; void makeLoader;",
+    ],
+    ["process dlopen", 'process.dlopen(module, "addon.node");'],
+    ["computed dlopen", 'process["dlopen"](module, "addon.node");'],
+    ["eval", 'eval("require(\\"x\\")");'],
+    ["Function", 'Function("return require(\\"x\\")")();'],
+    ["AsyncFunction", 'new AsyncFunction("return import(\\"x\\")");'],
+    ["computed eval", 'globalThis["eval"]("x");'],
+    ["computed loader variable", "module[loaderName](target);"],
+    ["eval alias", "const execute = eval; execute(source);"],
+    ["Function alias", "const Constructor = Function; void Constructor;"],
+    ["CommonJS exports", "module.exports = {};"],
+    ["exports alias", "exports.ready = true;"],
+    ["import type query", 'type Lazy = import("./leaf.js").Lazy;'],
+  ];
+
+  for (const [name, source] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest, `${source}\n`);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", indexPath);
+    });
+  }
+});
+
+test("rejects direct, transitive, barrel, and dynamic migration reachability", async (t) => {
+  const cases = [
+    ["direct runner", `import "./db/migrate.js";\n`, runnerPath],
+    [
+      "direct migration",
+      `import "./db/migrations/001_initial.js";\n`,
+      migrationPath,
+    ],
+    [
+      "dynamic migration",
+      `void import("./db/migrations/001_initial.js");\n`,
+      migrationPath,
+    ],
+  ];
+
+  for (const [name, source, targetPath] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest, source);
+      await writeText(rootPath, targetPath, "export {};\n");
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_MIGRATION_REACHABILITY", indexPath);
+      if (name === "dynamic migration") {
+        assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", indexPath);
+      }
+    });
+  }
+
+  await t.test("transitive", async (subtest) => {
+    const rootPath = await fixture(subtest, 'import "./bridge.js";\n');
+    await writeText(
+      rootPath,
+      `${sourceRoot}/bridge.ts`,
+      'import "./db/migrate.js";\n',
+    );
+    await writeText(rootPath, runnerPath, "export {};\n");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_MIGRATION_REACHABILITY",
+      `${sourceRoot}/bridge.ts`,
+    );
+  });
+
+  await t.test("barrel", async (subtest) => {
+    const rootPath = await fixture(subtest, 'export * from "./barrel.js";\n');
+    await writeText(
+      rootPath,
+      `${sourceRoot}/barrel.ts`,
+      'export * from "./db/migrations/001_initial.js";\n',
+    );
+    await writeText(rootPath, migrationPath, "export {};\n");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(
+      result,
+      "STARTUP_MIGRATION_REACHABILITY",
+      `${sourceRoot}/barrel.ts`,
+    );
+  });
+});
+
+test("rejects missing, malformed, and symlinked manifests fail closed", async (t) => {
+  await t.test("malformed root", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeText(rootPath, "package.json", "{");
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", "package.json");
+  });
+
+  await t.test("missing control", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await rm(path.join(rootPath, controlManifestPath));
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
+  });
+
+  await t.test("symlinked control", async (subtest) => {
+    const rootPath = await fixture(subtest);
+    await writeJson(
+      rootPath,
+      `${controlRoot}/manifest-real.json`,
+      controlManifest(),
+    );
+    await rm(path.join(rootPath, controlManifestPath));
+    await symlink(
+      "manifest-real.json",
+      path.join(rootPath, controlManifestPath),
+      "file",
+    );
+    const result = await analyzeStartupGraph({ rootPath });
+    assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
+  });
+});
+
+test("validates inputs and propagates unexpected adapter failures", async (t) => {
+  await assert.rejects(
+    analyzeStartupGraph(),
+    /Invalid startup import analyzer input/u,
+  );
+  const rootPath = await fixture(t);
+  const failure = new Error("adapter secret must be sanitized by dispatcher");
+  await assert.rejects(
+    analyzeStartupGraph({
+      rootPath,
+      fsAdapter: {
+        lstat: async () => {
+          throw failure;
+        },
+        readFile,
+        readdir,
+        realpath,
+      },
+    }),
+    (error) => error === failure,
+  );
+});
