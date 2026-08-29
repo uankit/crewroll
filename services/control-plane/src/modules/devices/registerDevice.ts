@@ -227,6 +227,9 @@ export function createRegisterDevice(dependencies: RegisterDeviceDependencies) {
           if (device.userId !== user.userId) {
             throw new DomainError("INSTALLATION_OWNED_BY_ANOTHER_USER");
           }
+          if (snapshot.installation === null) {
+            throw new DomainError("CONFLICT");
+          }
           if (device.revoked) throw new DomainError("DEVICE_REVOKED");
           if (
             device.platform !== body.platform ||

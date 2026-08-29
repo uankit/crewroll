@@ -250,6 +250,38 @@ describe("registerDevice", () => {
     expect(test.idempotencies.size).toBe(0);
   });
 
+  it("rejects a different-key installation winner that appeared after an absent snapshot", async () => {
+    const test = createDeviceTestHarness();
+    const body = validRegisterDeviceBody();
+    test.setBeforeTransaction(() => {
+      test.users.set("user_clerk_subject", {
+        clerkSubject: "user_clerk_subject",
+        deleted: false,
+        displayName: "CrewRoll member",
+        state: "active",
+        userId,
+      });
+      test.devices.set(body.installationId, {
+        appVersion: body.appVersion,
+        ...installationSnapshot(userId, false),
+        encryptedPushToken: null,
+        installationId: body.installationId,
+        lastSeenAt: now,
+        pushTokenHash: null,
+        revoked: false,
+      });
+    });
+    const register = createRegisterDevice(test.dependencies);
+
+    const error = await register
+      .execute({ body, clerkSubject: "user_clerk_subject", idempotencyKey })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).kind).toBe("CONFLICT");
+    expect(test.idempotencies.size).toBe(0);
+  });
+
   const rejectionCases: readonly (readonly [
     string,
     RegistrationAuthorizationSnapshot,
