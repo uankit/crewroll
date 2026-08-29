@@ -34,6 +34,8 @@ const boundaryToolPins = {
   "eslint-plugin-boundaries": "7.2.0",
 };
 
+const contractsBuildCommand = "npm run build --workspace @crewroll/contracts";
+
 const forbiddenDependencies = [
   "@noble/ciphers",
   "@noble/curves",
@@ -158,6 +160,19 @@ function assertRootLintPolicy(script) {
   }
 }
 
+function assertLintBuildPrerequisites(rootManifest, controlManifest) {
+  assert.equal(
+    rootManifest.scripts?.prelint,
+    contractsBuildCommand,
+    "root prelint must build contracts before root/mobile and workspace lint",
+  );
+  assert.equal(
+    controlManifest.scripts?.prelint,
+    contractsBuildCommand,
+    "control prelint must build contracts before standalone control lint",
+  );
+}
+
 test("root remains the CrewRoll Expo application and owns the workspaces", () => {
   assert.equal(packageJson.name, "crewroll");
   assert.equal(packageJson.main, "expo-router/entry");
@@ -253,6 +268,34 @@ test("workspace policy rejects a missing lint command", () => {
 
 test("root lint is exhaustive, uncached, warning-clean, and invokes both workspaces", () => {
   assertRootLintPolicy(packageJson.scripts.lint);
+});
+
+test("root and control lint lifecycle build contracts first", () => {
+  assertLintBuildPrerequisites(packageJson, controlPlanePackageJson);
+});
+
+test("lint prerequisite policy rejects removal or a different dependency build", () => {
+  for (const owner of ["root", "control"]) {
+    for (const replacement of [
+      undefined,
+      "npm run typecheck --workspace @crewroll/contracts",
+      "npm run build --workspace @crewroll/control-plane",
+    ]) {
+      const mutatedRoot = structuredClone(packageJson);
+      const mutatedControl = structuredClone(controlPlanePackageJson);
+      const mutatedOwner = owner === "root" ? mutatedRoot : mutatedControl;
+
+      if (replacement === undefined) delete mutatedOwner.scripts.prelint;
+      else mutatedOwner.scripts.prelint = replacement;
+
+      assert.throws(
+        () => assertLintBuildPrerequisites(mutatedRoot, mutatedControl),
+        owner === "root"
+          ? /root prelint must build contracts/u
+          : /control prelint must build contracts/u,
+      );
+    }
+  }
 });
 
 test("root lint policy rejects every omitted path class and deterministic flag", () => {

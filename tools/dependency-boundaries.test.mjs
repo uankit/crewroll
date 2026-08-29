@@ -21,6 +21,14 @@ const controlPath = path.resolve(
 const policyPath = fileURLToPath(
   new URL("./dependency-boundary-policy.cjs", import.meta.url),
 );
+const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+const contractsBuildArgs = [
+  "run",
+  "build",
+  "--workspace",
+  "@crewroll/contracts",
+];
+let contractsBuildCompleted = false;
 
 const rootRequire = createRequire(new URL("../package.json", import.meta.url));
 const contractsRequire = createRequire(
@@ -225,8 +233,39 @@ async function removeFixtureFiles() {
   }
 }
 
-test.before(createFixtureFiles);
+async function setupBoundaryOracle() {
+  await execFileAsync(npmExecutable, contractsBuildArgs, { cwd: rootPath });
+  contractsBuildCompleted = true;
+  await createFixtureFiles();
+}
+
+test.before(setupBoundaryOracle);
 test.after(removeFixtureFiles);
+
+test("boundary oracle builds contracts with the canonical portable invocation", async () => {
+  assert.equal(npmExecutable, process.platform === "win32" ? "npm.cmd" : "npm");
+  assert.deepEqual(contractsBuildArgs, [
+    "run",
+    "build",
+    "--workspace",
+    "@crewroll/contracts",
+  ]);
+  assert.equal(
+    contractsBuildCompleted,
+    true,
+    "contracts build must complete before effective ESLint runs",
+  );
+  for (const entrypoint of [
+    "dist/openapi/index.js",
+    "dist/openapi/index.d.ts",
+  ]) {
+    assert.equal(
+      await pathExists(path.join(contractsPath, entrypoint)),
+      true,
+      `contracts build must emit ${entrypoint}`,
+    );
+  }
+});
 
 function formatMessages(result) {
   return result.messages

@@ -25,6 +25,7 @@
     "ios": "expo run:ios",
     "ios:device": "expo run:ios --device",
     "format:check": "prettier . --check --ignore-unknown",
+    "prelint": "npm run build --workspace @crewroll/contracts",
     "lint": "expo lint app src modules __tests__ tests tools eslint.config.js vitest.config.ts --no-cache --max-warnings=0 -- --no-error-on-unmatched-pattern && npm run lint --workspace @crewroll/contracts && npm run lint --workspace @crewroll/control-plane",
     "typecheck": "npm run typecheck --workspace @crewroll/contracts && npm run build --workspace @crewroll/contracts && tsc --noEmit && npm run typecheck --workspace @crewroll/control-plane",
     "test": "npm run test:unit",
