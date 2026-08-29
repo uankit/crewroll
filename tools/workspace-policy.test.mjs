@@ -80,6 +80,7 @@ const alwaysActiveCommands = [
 ];
 
 const migrationCheckCommand = "node tools/check-migrations.mjs";
+const migrationRunCommand = "tsx src/db/migrate.ts";
 const guardedMigrationCheckCommand =
   "npm run --ignore-scripts migrations:check";
 const migrationLifecycleHooks = [
@@ -279,9 +280,20 @@ function assertMigrationCheckSurface(rootManifest, controlManifest) {
     "migrations:check must use the canonical dispatcher",
   );
   assert.equal(
-    controlManifest.scripts?.["db:migrate"],
+    rootManifest.scripts?.["db:migrate"],
     undefined,
-    "control db:migrate must not dangle before DB-001 activates its runner",
+    "root db:migrate is not an authorized migration runner owner",
+  );
+  assert.equal(
+    controlManifest.scripts?.["migrations:check"],
+    undefined,
+    "control migrations:check is not an authorized dispatcher owner",
+  );
+  const migrationRunValue = controlManifest.scripts?.["db:migrate"];
+  assert.ok(
+    migrationRunValue === undefined ||
+      migrationRunValue === migrationRunCommand,
+    "control db:migrate must be absent or use the exact DB-001 runner command",
   );
 
   for (const hookName of migrationLifecycleHooks) {
@@ -358,11 +370,49 @@ test("the root exposes always-active gates and exact honest future dispatchers",
   assert.equal(packageJson.scripts?.["test:workspaces"], undefined);
 });
 
+test("workspace policy permits only the exact control-plane migration runner activation", () => {
+  const activatedControl = structuredClone(controlPlanePackageJson);
+  activatedControl.scripts["db:migrate"] = migrationRunCommand;
+
+  assert.doesNotThrow(() =>
+    assertMigrationCheckSurface(packageJson, activatedControl),
+  );
+
+  for (const replacement of [
+    `${migrationRunCommand} --mutated`,
+    "tsx src/db/other.ts",
+    "",
+  ]) {
+    const mutatedControl = structuredClone(controlPlanePackageJson);
+    mutatedControl.scripts["db:migrate"] = replacement;
+
+    assert.throws(
+      () => assertMigrationCheckSurface(packageJson, mutatedControl),
+      /control db:migrate/u,
+    );
+  }
+
+  const wrongRootOwner = structuredClone(packageJson);
+  wrongRootOwner.scripts["db:migrate"] = migrationRunCommand;
+  assert.throws(
+    () => assertMigrationCheckSurface(wrongRootOwner, controlPlanePackageJson),
+    /root db:migrate/u,
+  );
+
+  const wrongControlOwner = structuredClone(controlPlanePackageJson);
+  wrongControlOwner.scripts["migrations:check"] = migrationCheckCommand;
+  assert.throws(
+    () => assertMigrationCheckSurface(packageJson, wrongControlOwner),
+    /control migrations:check/u,
+  );
+});
+
 test("workspace policy rejects every migration lifecycle hook", () => {
   for (const hookName of migrationLifecycleHooks) {
     for (const owner of ["root", "control"]) {
       const mutatedRoot = structuredClone(packageJson);
       const mutatedControl = structuredClone(controlPlanePackageJson);
+      mutatedControl.scripts["db:migrate"] = migrationRunCommand;
       (owner === "root" ? mutatedRoot : mutatedControl).scripts[hookName] =
         "node -e process.exit(0)";
 
