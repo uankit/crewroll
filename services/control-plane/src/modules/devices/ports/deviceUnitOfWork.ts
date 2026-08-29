@@ -36,6 +36,11 @@ export interface DeviceIdempotencyRecord {
   readonly userId: string;
 }
 
+export interface BackgroundAuthenticationRecord {
+  readonly device: DeviceRecord;
+  readonly userDeleted: boolean;
+}
+
 export interface DeviceTransaction {
   deleteIdempotency(record: DeviceIdempotencyRecord): Promise<void>;
   findDeviceByInstallation(
@@ -45,6 +50,9 @@ export interface DeviceTransaction {
     userId: string,
     deviceId: string,
   ): Promise<DeviceRecord | null>;
+  findDeviceByBackgroundCredentialHash(
+    credentialHash: Readonly<Uint8Array>,
+  ): Promise<BackgroundAuthenticationRecord | null>;
   findIdempotency(
     command: CommandIdentity,
     userId: string,

@@ -1,4 +1,8 @@
 export { createRegisterDevice } from "./registerDevice.js";
+export {
+  createBackgroundDeviceAuthenticator,
+  type BackgroundDeviceActor,
+} from "./backgroundDeviceAuthenticator.js";
 export { createRevokeDevice } from "./revokeDevice.js";
 export { createUpdateDevicePushToken } from "./updateDevicePushToken.js";
 export { deviceRoutes, type DeviceRouteDependencies } from "./deviceRoutes.js";

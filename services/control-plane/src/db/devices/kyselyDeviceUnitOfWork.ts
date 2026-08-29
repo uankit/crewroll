@@ -48,6 +48,11 @@ interface DeviceIdempotencyRecord {
   readonly userId: string;
 }
 
+interface BackgroundAuthenticationRecord {
+  readonly device: DeviceRecord;
+  readonly userDeleted: boolean;
+}
+
 interface DeviceTransaction {
   deleteIdempotency(record: DeviceIdempotencyRecord): Promise<void>;
   findDeviceByInstallation(
@@ -57,6 +62,9 @@ interface DeviceTransaction {
     userId: string,
     deviceId: string,
   ): Promise<DeviceRecord | null>;
+  findDeviceByBackgroundCredentialHash(
+    credentialHash: Readonly<Uint8Array>,
+  ): Promise<BackgroundAuthenticationRecord | null>;
   findIdempotency(
     command: CommandIdentity,
     userId: string,
@@ -176,6 +184,26 @@ function transactionAdapter(
         .forUpdate()
         .executeTakeFirst();
       return row === undefined ? null : mapDevice(row);
+    },
+    async findDeviceByBackgroundCredentialHash(credentialHash) {
+      const row = await transaction
+        .selectFrom("devices")
+        .innerJoin("users", "users.id", "devices.user_id")
+        .selectAll("devices")
+        .select("users.deleted_at as user_deleted_at")
+        .where(
+          "devices.background_credential_hash",
+          "=",
+          Buffer.from(credentialHash),
+        )
+        .forUpdate()
+        .executeTakeFirst();
+      return row === undefined
+        ? null
+        : {
+            device: mapDevice(row),
+            userDeleted: row.user_deleted_at !== null,
+          };
     },
     async findDeviceByOwnerAndId(userId, deviceId) {
       const row = await transaction
