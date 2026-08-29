@@ -386,6 +386,14 @@ test("Doctor uses only the exact locally installed binary", () => {
   assert.equal(packageJson.scripts.doctor, "expo-doctor");
 });
 
+test("mobile identity runbook uses the pinned Doctor script", async () => {
+  const runbook = await readText("docs/runbooks/mobile-identity.md");
+
+  assert.match(runbook, /^npm run doctor$/mu);
+  assert.doesNotMatch(runbook, /expo-doctor@latest/u);
+  assert.doesNotMatch(runbook, /@latest/u);
+});
+
 test("EAS CLI is remote-pinned in all four build commands and never installed locally", () => {
   const expectedBuildScripts = {
     "build:dev:android":

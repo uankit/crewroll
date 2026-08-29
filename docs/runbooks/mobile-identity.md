@@ -38,7 +38,7 @@ Recorded at reset time with SHA-256:
 ```bash
 npm run verify:identity
 npx expo config --type public
-npx expo-doctor@latest
+npm run doctor
 ```
 
 Confirm the protected values above in the resolved Expo config. Do not run EAS project initialization, change bundle/package identifiers, or replace remote credentials as part of ordinary feature work.
