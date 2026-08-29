@@ -1,0 +1,204 @@
+{
+  "aad": {
+    "manifestBase64": "Q1JST0xMLU1BTi1WMQAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxMzAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxNDAAAAABAAAAAQ==",
+    "originalBase64": "Q1JST0xMLUFBRC1WMQAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxMzAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxNDACAAAAAQAAAAE=",
+    "previewBase64": "Q1JST0xMLUFBRC1WMQAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxMzAwMThmMGQ5OC03NmZhLTdkMWEtYjRiNC0xZjc0MmMyZTMxNDABAAAAAQAAAAE="
+  },
+  "context": {
+    "assetId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3140",
+    "ownerDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+    "recipientDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
+    "recipientE2eeKeyVersion": 1,
+    "tripId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3130"
+  },
+  "envelopes": [
+    {
+      "ciphertextBytes": 148,
+      "expectedTripKeyBase64": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=",
+      "file": "envelope-owner-self.bin",
+      "kind": "OWNER_SELF",
+      "recipientDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+      "recipientE2eeKeyVersion": 1,
+      "recipientPublicKeyBase64": "EIT5fcwxJb3Sw8y+V9yHL+JGU5pDVlgw9H5ueCV7OnI=",
+      "residualAnonymousSubstitution": false,
+      "senderDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+      "wrappedKeyBase64": "RJ+bgKYaErKoaPAvRkj9oMZw/Ixz5FLtlh6CmyS6iUzVhbfEaPyB5cE+4yZWViy2reyrh1Jm0CX+lB6GgdEsWVU44ME+EGdnkBeqYbOCw51rRKAtjyxT5wwThXJsmcJv3GJNFuZRAYMP/Qltzv2ECx2HoilLBkE1gYCosXUdUm3iCeP5wNC1hTj0T5YnZC7ldGpapw=="
+    },
+    {
+      "ciphertextBytes": 148,
+      "expectedTripKeyBase64": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=",
+      "file": "envelope-owner-recipient.bin",
+      "kind": "OWNER_RECIPIENT",
+      "recipientDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
+      "recipientE2eeKeyVersion": 1,
+      "recipientPublicKeyBase64": "pwEP64FAv6NU2VaYsDwuGVIHpubBQnFsIQP2gBO6404=",
+      "residualAnonymousSubstitution": false,
+      "senderDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+      "wrappedKeyBase64": "RJ+bgKYaErKoaPAvRkj9oMZw/Ixz5FLtlh6CmyS6iUxzLptFHrfgG6zbGtFyyLzCWp59B3J1ajhriyXEA94+zv30tCuiXBGiYxbyXzPSQqBumMc/o877eOIhBZ2wF+tI/fm2YYIl6eLGV7aEqCk0IyrU45yLNvTVCHzuMLwmCnXw0BPhmaepo66NFD2C94QDdJGRcw=="
+    },
+    {
+      "ciphertextBytes": 148,
+      "expectedTripKeyBase64": "kJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq8=",
+      "file": "envelope-first-import-substitution.bin",
+      "kind": "FIRST_IMPORT_SUBSTITUTION",
+      "recipientDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
+      "recipientE2eeKeyVersion": 1,
+      "recipientPublicKeyBase64": "pwEP64FAv6NU2VaYsDwuGVIHpubBQnFsIQP2gBO6404=",
+      "residualAnonymousSubstitution": true,
+      "senderDeviceId": "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+      "wrappedKeyBase64": "RJ+bgKYaErKoaPAvRkj9oMZw/Ixz5FLtlh6CmyS6iUzhhOJ9RFALXqC2r/m2kKMpWp59B3J1ajhriyXEA94+zv30tCuiXBGiYxbyXzPSQqBumMc/o877eOIhBZ2wF+tI/fm2YYIl6eLGV7aEqCk0IyrU45wLtnRViPxusDymivVwUJNhGScpIy4NlL0CdwSD9BER8w=="
+    }
+  ],
+  "fixtureOnly": true,
+  "generator": {
+    "entropyBytesConsumed": 328,
+    "entropyTapeBytes": 512,
+    "entropyTapeSha256": "ed45478c50ab087a4d88a5f796831f2af9b406850d3e02841be94489f6554b4c",
+    "libsodiumVersion": "1.0.22",
+    "license": "ISC",
+    "name": "CrewRollVectorGenerator",
+    "rng": "crewroll-fixture-v1-do-not-ship",
+    "rngInstalledBeforeSodiumInit": true,
+    "swiftSodiumArchiveSha256": "52b43b383a04e04a20eb40ee7b30d4e6a3ffc4ac7b09f9c9317bfdfd46461e81",
+    "swiftSodiumCommit": "cfd195c76882aa9b997560ca7cb95d72fbf5db00",
+    "swiftSodiumTagObject": "df17ff800f85491b2cdb5c9d0426dacb40761ad2",
+    "swiftSodiumVersion": "0.11.0"
+  },
+  "inventory": {
+    "envelope-first-import-substitution.bin": "87edf3b14aaa4f0f4061b0871ce098d47a11d99cbbe03011f41bf8631355926d",
+    "envelope-owner-recipient.bin": "f3f961bdbbe528e97c99b4334233fe9e689d474cb0e2539ee6bd0c2a2c4d77b3",
+    "envelope-owner-self.bin": "37c7b4c1712d5cf47f4e24a9329aad36c40d2296d3d34d978bf5279c5a7d2e83",
+    "manifest-canonical.bin": "a717344138975e1b5b4dac3f7b7c9f7baf9ff9ebdc6b9ab31b6d25ac93ccc6f6",
+    "media-chunk-plus-one-original.bin": "2445ab208f7edead98d9347c050e9058a990d5f4342def71c9871e08ea42ab8c",
+    "media-chunk-plus-one-preview.bin": "b11c9fea2a059e51ead792d1c75279236d586b2d117183a160a302510435b1f6",
+    "media-empty-original.bin": "00d29124716fba4bccd2f3c292aa8294a83e8d256a29af140213e224e14186d4",
+    "media-empty-preview.bin": "347f4b469345b72b800a23ea53defdccdc46107871be9ae489e48f81ee9e9c05",
+    "media-exact-chunk-original.bin": "b0676e4a14f736dd17406a1fa3096d7c1e818249bf9a7af216fd798b5d74e8d5",
+    "media-exact-chunk-preview.bin": "366e6ac1be0c40e211da96c4a802500373647a5c68489eb4a7b3d1d6886d06f3",
+    "media-one-original.bin": "c4acd0814821ff3bd49dfea5d2d6ab4482bce31321fc6f64d9a2917e9fb428f8",
+    "media-one-preview.bin": "0990f2dd3ced74665c009e26bf525a68187a7e9dfe28d8261bca8d70403897da"
+  },
+  "manifest": {
+    "capturedAtMs": 1777777777777,
+    "ciphertextBytes": 303,
+    "file": "manifest-canonical.bin",
+    "filename": "Café.jpg",
+    "nonceBase64": "XaHlKW6y9jp/wwdLkNQYXBNXm98kaKzw",
+    "originalMediaFile": "media-chunk-plus-one-original.bin",
+    "plaintextBytes": 263,
+    "plaintextSha256Base64": "ECuIKD1dVy6zNUPrb9AfxfFETbdxxMaNq7ozlxOAuvY=",
+    "previewMediaFile": "media-one-preview.bin"
+  },
+  "media": [
+    {
+      "ciphertextBytes": 45,
+      "ciphertextSha256Base64": "NH9LRpNFtyuACiPqU979zNxGEHhxvprkieSPge6enAU=",
+      "file": "media-empty-preview.bin",
+      "frameCount": 1,
+      "headerBase64": "XaHlKW6y9jp/wwdLkNQYXBNXm98kaKzw",
+      "plaintextBytes": 0,
+      "plaintextSha256Base64": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+      "streamKeyBase64": "Uw52sHB+WzNhtQkaT7E7ulycYuOVb1aAv+EQmvCZfb8=",
+      "variant": "PREVIEW"
+    },
+    {
+      "ciphertextBytes": 46,
+      "ciphertextSha256Base64": "CZDy3TztdGZcAJ4mv1JaaBh6fp3+KNgmG8qNcEA4l9o=",
+      "file": "media-one-preview.bin",
+      "frameCount": 1,
+      "headerBase64": "MXW5/UaKzgJdoeUpbrL2On/DB0uQ1Bhc",
+      "plaintextBytes": 1,
+      "plaintextSha256Base64": "SmShB/DLMlNuW85smMOT2yHMp/TqGHuoxNyotR1OqAo=",
+      "streamKeyBase64": "Uw52sHB+WzNhtQkaT7E7ulycYuOVb1aAv+EQmvCZfb8=",
+      "variant": "PREVIEW"
+    },
+    {
+      "ciphertextBytes": 262189,
+      "ciphertextSha256Base64": "Nm5qwb4MQOIR2pbEqAJQA3NkelxoSJ60p7PR1ohtBvM=",
+      "file": "media-exact-chunk-preview.bin",
+      "frameCount": 1,
+      "headerBase64": "E1eb3yRorPAxdbn9RorOAl2h5SlusvY6",
+      "plaintextBytes": 262144,
+      "plaintextSha256Base64": "po5wSdgWZ7VE1kcDx1tXm4wCSEyX28lWTClMbIoQvW0=",
+      "streamKeyBase64": "Uw52sHB+WzNhtQkaT7E7ulycYuOVb1aAv+EQmvCZfb8=",
+      "variant": "PREVIEW"
+    },
+    {
+      "ciphertextBytes": 262211,
+      "ciphertextSha256Base64": "sRyf6ioFnlHq15LRx1J5I21Yay0RcYOhYKMCUQQ1sfY=",
+      "file": "media-chunk-plus-one-preview.bin",
+      "frameCount": 2,
+      "headerBase64": "f8MHS5DUGFwTV5vfJGis8DF1uf1Gis4C",
+      "plaintextBytes": 262145,
+      "plaintextSha256Base64": "Nz9FIWx9/PcSEvRuAtlwdEyYhmjx7Qn/nTzYsu1UsO8=",
+      "streamKeyBase64": "Uw52sHB+WzNhtQkaT7E7ulycYuOVb1aAv+EQmvCZfb8=",
+      "variant": "PREVIEW"
+    },
+    {
+      "ciphertextBytes": 45,
+      "ciphertextSha256Base64": "ANKRJHFvukvM0vPCkqqClKg+jSVqKa8UAhPiJOFBhtQ=",
+      "file": "media-empty-original.bin",
+      "frameCount": 1,
+      "headerBase64": "XaHlKW6y9jp/wwdLkNQYXBNXm98kaKzw",
+      "plaintextBytes": 0,
+      "plaintextSha256Base64": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+      "streamKeyBase64": "ZsyJRVuU+16KeORGaf/+i1poFC91KraCFb0/XJNyjjk=",
+      "variant": "ORIGINAL"
+    },
+    {
+      "ciphertextBytes": 46,
+      "ciphertextSha256Base64": "xKzQgUgh/zvUnf6l0tarRIK84xMh/G9k2aKRfp+0KPg=",
+      "file": "media-one-original.bin",
+      "frameCount": 1,
+      "headerBase64": "MXW5/UaKzgJdoeUpbrL2On/DB0uQ1Bhc",
+      "plaintextBytes": 1,
+      "plaintextSha256Base64": "SmShB/DLMlNuW85smMOT2yHMp/TqGHuoxNyotR1OqAo=",
+      "streamKeyBase64": "ZsyJRVuU+16KeORGaf/+i1poFC91KraCFb0/XJNyjjk=",
+      "variant": "ORIGINAL"
+    },
+    {
+      "ciphertextBytes": 262189,
+      "ciphertextSha256Base64": "sGduShT3Nt0XQGofowltfB6Bgkm/mnryFv15i1106NU=",
+      "file": "media-exact-chunk-original.bin",
+      "frameCount": 1,
+      "headerBase64": "E1eb3yRorPAxdbn9RorOAl2h5SlusvY6",
+      "plaintextBytes": 262144,
+      "plaintextSha256Base64": "po5wSdgWZ7VE1kcDx1tXm4wCSEyX28lWTClMbIoQvW0=",
+      "streamKeyBase64": "ZsyJRVuU+16KeORGaf/+i1poFC91KraCFb0/XJNyjjk=",
+      "variant": "ORIGINAL"
+    },
+    {
+      "ciphertextBytes": 262211,
+      "ciphertextSha256Base64": "JEWrII9+3q2Y2TR8BQ6QWKmQ1fQ0Le9xyYceCOpCq4w=",
+      "file": "media-chunk-plus-one-original.bin",
+      "frameCount": 2,
+      "headerBase64": "f8MHS5DUGFwTV5vfJGis8DF1uf1Gis4C",
+      "plaintextBytes": 262145,
+      "plaintextSha256Base64": "Nz9FIWx9/PcSEvRuAtlwdEyYhmjx7Qn/nTzYsu1UsO8=",
+      "streamKeyBase64": "ZsyJRVuU+16KeORGaf/+i1poFC91KraCFb0/XJNyjjk=",
+      "variant": "ORIGINAL"
+    }
+  ],
+  "protocol": {
+    "formatVersion": 1,
+    "keyEpoch": 1,
+    "manifestKdfContext": "CRMANF01",
+    "manifestSubkeyId": 1,
+    "mediaKdfContext": "CRROLL01",
+    "originalSubkeyId": 2,
+    "plaintextFrameBytes": 262144,
+    "plaintextPattern": "byte[i] = (i * 29 + 17) mod 256",
+    "previewSubkeyId": 1
+  },
+  "schemaVersion": 1,
+  "secrets": {
+    "contentRootBase64": "MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk8=",
+    "fixtureOnly": true,
+    "ownerSecretKeyBase64": "7kARMZqE/onEWMkb3j4TS6qUBB73xReGD9bnjMah3Gg=",
+    "ownerSeedBase64": "UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8=",
+    "recipientSecretKeyBase64": "lTmXvUJ7nghtew2sV7FnN1LmPWFJEv7BVQe0wpX3/UI=",
+    "recipientSeedBase64": "cHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo8=",
+    "substitutedTripKeyBase64": "kJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq8=",
+    "tripKeyBase64": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8="
+  }
+}
