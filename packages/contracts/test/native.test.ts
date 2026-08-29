@@ -30,8 +30,9 @@ const tripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
 const deviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
 const membershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
 const P256_PUBLIC_KEY =
-  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=";
+const X25519_PUBLIC_KEY = "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=";
+const BACKGROUND_BEARER = `crb_${"A".repeat(43)}`;
 const TRIP_ENVELOPE =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -109,11 +110,27 @@ describe("native bridge protocol", () => {
     const command = {
       protocolVersion: 1,
       deviceId,
-      backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+      backgroundBearer: BACKGROUND_BEARER,
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
       apiBaseUrl: "https://api.crewroll.app",
     };
     expect(Value.Check(InstallDeviceSessionCommandSchema, command)).toBe(true);
+    for (const backgroundBearer of [
+      `crb_${"A".repeat(42)}`,
+      `crb_${"A".repeat(44)}`,
+      `crb_${"A".repeat(42)}=`,
+      `crb_${"A".repeat(42)}+`,
+      `crb_${"A".repeat(42)}/`,
+      `crb_${"A".repeat(42)} `,
+      `other_${"A".repeat(41)}`,
+    ]) {
+      expect(
+        Value.Check(InstallDeviceSessionCommandSchema, {
+          ...command,
+          backgroundBearer,
+        }),
+      ).toBe(false);
+    }
     expect(
       Value.Check(InstallDeviceSessionCommandSchema, {
         ...command,

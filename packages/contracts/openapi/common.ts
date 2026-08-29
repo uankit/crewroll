@@ -195,6 +195,20 @@ export const Base64MaxSchema = (maximum: 4_096 | 65_536) => {
 
 export const P256PublicKeySchema = Base64ExactSchema(65);
 export const X25519PublicKeySchema = Base64ExactSchema(32);
+export const PushTokenSchema = Type.String({
+  minLength: 1,
+  maxLength: 4096,
+  pattern: "^[\\x21-\\x7E]{1,4096}$",
+});
+export const BackgroundBearerV1Schema = Type.String({
+  minLength: 47,
+  maxLength: 47,
+  pattern: "^crb_[A-Za-z0-9_-]{43}$",
+});
+export const AppVersionSchema = Type.String({
+  maxLength: 128,
+  pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+});
 
 export const KeyEnvelopeSchema = ClosedObject({
   keyEpoch: Type.Literal(1),

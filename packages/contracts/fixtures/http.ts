@@ -30,8 +30,11 @@ const IDS = {
 
 const SHA256_BASE64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const P256_PUBLIC_KEY_BASE64 =
-  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const X25519_PUBLIC_KEY_BASE64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=";
+const X25519_PUBLIC_KEY_BASE64 = "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=";
+const IOS_APNS_TOKEN =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const BACKGROUND_BEARER = `crb_${"A".repeat(43)}`;
 const TRIP_ENVELOPE_BASE64 =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -42,17 +45,32 @@ export function validRegistrationHeaders(): DeviceRegistrationHeaders {
   };
 }
 
-export function validMobileCommandHeaders(): MobileCommandHeaders {
+export function validClerkCommandHeaders(): MobileCommandHeaders {
   return {
-    authorization: "Bearer background-device-token",
+    authorization: "Bearer clerk-session-token",
     "x-crewroll-device-id": IDS.device,
     "idempotency-key": IDS.idempotency,
   };
 }
 
-export function validMobileQueryHeaders(): MobileQueryHeaders {
+export function validClerkQueryHeaders(): MobileQueryHeaders {
   return {
-    authorization: "Bearer background-device-token",
+    authorization: "Bearer clerk-session-token",
+    "x-crewroll-device-id": IDS.device,
+  };
+}
+
+export function validBackgroundCommandHeaders(): MobileCommandHeaders {
+  return {
+    authorization: `Bearer ${BACKGROUND_BEARER}`,
+    "x-crewroll-device-id": IDS.device,
+    "idempotency-key": IDS.idempotency,
+  };
+}
+
+export function validBackgroundQueryHeaders(): MobileQueryHeaders {
+  return {
+    authorization: `Bearer ${BACKGROUND_BEARER}`,
     "x-crewroll-device-id": IDS.device,
   };
 }
@@ -67,7 +85,7 @@ export function validRegisterDeviceBody(): RegisterDeviceBody {
     e2eeKeyAlgorithm: "X25519",
     e2eePublicKey: X25519_PUBLIC_KEY_BASE64,
     e2eeKeyVersion: 1,
-    pushToken: "ExponentPushToken[fixture]",
+    pushToken: IOS_APNS_TOKEN,
     appVersion: "1.0.0",
   };
 }
@@ -75,7 +93,10 @@ export function validRegisterDeviceBody(): RegisterDeviceBody {
 export const validDeviceBody = validRegisterDeviceBody;
 
 export function validUpdatePushTokenBody(): UpdatePushTokenBody {
-  return { pushToken: "ExponentPushToken[fixture-next]", appVersion: "1.0.1" };
+  return {
+    pushToken: "fcm_fixture_token_01J6D4M4KB8J8G3AZXJ3PZV1Z9",
+    appVersion: "1.0.1",
+  };
 }
 
 export function validImmediateTripBody(): CreateTripBody {

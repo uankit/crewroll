@@ -38,13 +38,15 @@ import {
 } from "../openapi/index.js";
 import {
   validApproveJoinRequestBody,
+  validBackgroundCommandHeaders,
+  validBackgroundQueryHeaders,
+  validClerkCommandHeaders,
+  validClerkQueryHeaders,
   validCommitAssetBody,
   validCreateDownloadSessionBody,
   validCreateJoinRequestBody,
   validEndTripBody,
   validImmediateTripBody,
-  validMobileCommandHeaders,
-  validMobileQueryHeaders,
   validNightlyTripBody,
   validReconciliationQuery,
   validRegisterDeviceBody,
@@ -58,8 +60,9 @@ import {
 } from "../fixtures/http.js";
 
 const P256_PUBLIC_KEY =
-  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=";
+const X25519_PUBLIC_KEY = "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=";
+const BACKGROUND_BEARER = `crb_${"A".repeat(43)}`;
 const TRIP_ENVELOPE =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 const TRIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
@@ -131,23 +134,29 @@ describe("command header variants", () => {
   });
 
   it("requires bearer, device id, and idempotency on every other mobile command", () => {
-    expect(
-      Value.Check(MobileCommandHeadersSchema, validMobileCommandHeaders()),
-    ).toBe(true);
+    for (const headers of [
+      validClerkCommandHeaders(),
+      validBackgroundCommandHeaders(),
+    ]) {
+      expect(Value.Check(MobileCommandHeadersSchema, headers)).toBe(true);
+    }
     const { "idempotency-key": _idempotency, ...withoutIdempotency } =
-      validMobileCommandHeaders();
+      validClerkCommandHeaders();
     rejects(MobileCommandHeadersSchema, withoutIdempotency);
     const { "x-crewroll-device-id": _device, ...withoutDevice } =
-      validMobileCommandHeaders();
+      validClerkCommandHeaders();
     rejects(MobileCommandHeadersSchema, withoutDevice);
   });
 
   it("requires bearer and device id but rejects idempotency on mobile queries", () => {
-    expect(
-      Value.Check(MobileQueryHeadersSchema, validMobileQueryHeaders()),
-    ).toBe(true);
+    for (const headers of [
+      validClerkQueryHeaders(),
+      validBackgroundQueryHeaders(),
+    ]) {
+      expect(Value.Check(MobileQueryHeadersSchema, headers)).toBe(true);
+    }
     rejects(MobileQueryHeadersSchema, {
-      ...validMobileQueryHeaders(),
+      ...validClerkQueryHeaders(),
       "idempotency-key": "018f0d98-76fa-7d1a-b4b4-1f742c2e3121",
     });
   });
@@ -195,10 +204,21 @@ describe("device registration", () => {
   it("returns only an opaque revocable background bearer and its RFC 3339 expiry", () => {
     const response = {
       deviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
-      backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+      backgroundBearer: BACKGROUND_BEARER,
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
     };
     expect(Value.Check(DeviceResponseSchema, response)).toBe(true);
+    for (const backgroundBearer of [
+      `crb_${"A".repeat(42)}`,
+      `crb_${"A".repeat(44)}`,
+      `crb_${"A".repeat(42)}=`,
+      `crb_${"A".repeat(42)}+`,
+      `crb_${"A".repeat(42)}/`,
+      `crb_${"A".repeat(42)} `,
+      `other_${"A".repeat(41)}`,
+    ]) {
+      rejects(DeviceResponseSchema, { ...response, backgroundBearer });
+    }
     rejects(DeviceResponseSchema, {
       ...response,
       backgroundBearerExpiresAt: "next month",
@@ -220,6 +240,76 @@ describe("device registration", () => {
       pushToken: "expo-push-token",
       appVersion: "1.0.0",
       platform: "ios",
+    });
+  });
+
+  it("accepts only 1..4096 visible ASCII push-token bytes on both device commands", () => {
+    for (const pushToken of ["!", "~", "A".repeat(4096)]) {
+      expect(
+        Value.Check(RegisterDeviceBodySchema, {
+          ...validRegisterDeviceBody(),
+          pushToken,
+        }),
+      ).toBe(true);
+      expect(
+        Value.Check(UpdatePushTokenBodySchema, {
+          pushToken,
+          appVersion: "1.0.0",
+        }),
+      ).toBe(true);
+    }
+
+    for (const pushToken of [
+      "",
+      " ",
+      "line\nbreak",
+      "token\u0000value",
+      "token-😀",
+      "é",
+      "A".repeat(4097),
+    ]) {
+      rejects(RegisterDeviceBodySchema, {
+        ...validRegisterDeviceBody(),
+        pushToken,
+      });
+      rejects(UpdatePushTokenBodySchema, {
+        pushToken,
+        appVersion: "1.0.0",
+      });
+    }
+  });
+
+  it("caps semver-shaped app versions at 128 characters on both device commands", () => {
+    const exactly128 = `1.0.0+${"a".repeat(122)}`;
+    const overlong = `${exactly128}a`;
+
+    expect(exactly128).toHaveLength(128);
+    expect(
+      Value.Check(RegisterDeviceBodySchema, {
+        ...validRegisterDeviceBody(),
+        appVersion: exactly128,
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(UpdatePushTokenBodySchema, {
+        pushToken: null,
+        appVersion: exactly128,
+      }),
+    ).toBe(true);
+    rejects(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      appVersion: overlong,
+    });
+    rejects(UpdatePushTokenBodySchema, {
+      pushToken: null,
+      appVersion: overlong,
+    });
+  });
+
+  it("keeps registration closed after the wire hardening", () => {
+    rejects(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      privateAuthenticationKey: "must-never-cross-http",
     });
   });
 });
@@ -260,7 +350,7 @@ describe("trip and invite contracts", () => {
   });
 
   it("binds canonical create and join fixtures to the command-header device", () => {
-    const headerDeviceId = validMobileCommandHeaders()["x-crewroll-device-id"];
+    const headerDeviceId = validClerkCommandHeaders()["x-crewroll-device-id"];
     expect(validImmediateTripBody().ownerDeviceId).toBe(headerDeviceId);
     expect(validCreateJoinRequestBody().deviceId).toBe(headerDeviceId);
   });
@@ -556,7 +646,7 @@ describe("photo upload contracts", () => {
       "ph://A1B2C3D4",
       "/storage/emulated/0/DCIM/Camera/photo.jpg",
       body.assetId,
-      validMobileCommandHeaders()["idempotency-key"],
+      validClerkCommandHeaders()["idempotency-key"],
     ]) {
       rejects(CreateUploadSessionBodySchema, { ...body, sourceAssetKey });
     }
