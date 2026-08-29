@@ -21,14 +21,26 @@ const controlPath = path.resolve(
 const policyPath = fileURLToPath(
   new URL("./dependency-boundary-policy.cjs", import.meta.url),
 );
-const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
-const contractsBuildArgs = [
-  "run",
-  "build",
-  "--workspace",
-  "@crewroll/contracts",
-];
+const windowsContractsBuildCommand =
+  "npm run build --workspace @crewroll/contracts";
 let contractsBuildCompleted = false;
+let completedContractsBuildInvocation;
+
+function buildContractsBuildInvocation(platform) {
+  if (platform === "win32") {
+    return {
+      executable: "cmd.exe",
+      args: ["/d", "/s", "/c", windowsContractsBuildCommand],
+      options: { cwd: rootPath },
+    };
+  }
+
+  return {
+    executable: "npm",
+    args: ["run", "build", "--workspace", "@crewroll/contracts"],
+    options: { cwd: rootPath },
+  };
+}
 
 const rootRequire = createRequire(new URL("../package.json", import.meta.url));
 const contractsRequire = createRequire(
@@ -234,7 +246,13 @@ async function removeFixtureFiles() {
 }
 
 async function setupBoundaryOracle() {
-  await execFileAsync(npmExecutable, contractsBuildArgs, { cwd: rootPath });
+  const invocation = buildContractsBuildInvocation(process.platform);
+  await execFileAsync(
+    invocation.executable,
+    invocation.args,
+    invocation.options,
+  );
+  completedContractsBuildInvocation = invocation;
   contractsBuildCompleted = true;
   await createFixtureFiles();
 }
@@ -242,14 +260,39 @@ async function setupBoundaryOracle() {
 test.before(setupBoundaryOracle);
 test.after(removeFixtureFiles);
 
+test("contracts build command builder returns fixed safe POSIX and Windows invocations", () => {
+  assert.deepEqual(buildContractsBuildInvocation("linux"), {
+    executable: "npm",
+    args: ["run", "build", "--workspace", "@crewroll/contracts"],
+    options: { cwd: rootPath },
+  });
+  assert.deepEqual(buildContractsBuildInvocation("win32"), {
+    executable: "cmd.exe",
+    args: ["/d", "/s", "/c", "npm run build --workspace @crewroll/contracts"],
+    options: { cwd: rootPath },
+  });
+});
+
 test("boundary oracle builds contracts with the canonical portable invocation", async () => {
-  assert.equal(npmExecutable, process.platform === "win32" ? "npm.cmd" : "npm");
-  assert.deepEqual(contractsBuildArgs, [
-    "run",
-    "build",
-    "--workspace",
-    "@crewroll/contracts",
-  ]);
+  assert.deepEqual(
+    completedContractsBuildInvocation,
+    process.platform === "win32"
+      ? {
+          executable: "cmd.exe",
+          args: [
+            "/d",
+            "/s",
+            "/c",
+            "npm run build --workspace @crewroll/contracts",
+          ],
+          options: { cwd: rootPath },
+        }
+      : {
+          executable: "npm",
+          args: ["run", "build", "--workspace", "@crewroll/contracts"],
+          options: { cwd: rootPath },
+        },
+  );
   assert.equal(
     contractsBuildCompleted,
     true,
