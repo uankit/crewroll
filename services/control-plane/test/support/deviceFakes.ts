@@ -38,6 +38,21 @@ export function createDeviceTestHarness() {
     findDeviceByInstallation(installationId) {
       return Promise.resolve(devices.get(installationId) ?? null);
     },
+    findDeviceByBackgroundCredentialHash(credentialHash) {
+      const device = [...devices.values()].find((candidate) =>
+        Buffer.from(candidate.backgroundCredentialHash).equals(
+          Buffer.from(credentialHash),
+        ),
+      );
+      if (device === undefined) return Promise.resolve(null);
+      const user = [...users.values()].find(
+        (candidate) => candidate.userId === device.userId,
+      );
+      return Promise.resolve({
+        device,
+        userDeleted: user?.deleted ?? true,
+      });
+    },
     findDeviceByOwnerAndId(userId, deviceId) {
       return Promise.resolve(
         [...devices.values()].find(
