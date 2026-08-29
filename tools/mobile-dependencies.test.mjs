@@ -20,6 +20,8 @@ const expoManagedDependencies = [
   "expo-notifications",
   "expo-task-manager",
   "expo-device",
+  "expo-crypto",
+  "@expo/ui",
 ];
 
 const applicationDependencies = [

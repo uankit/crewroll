@@ -144,6 +144,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   const featurePackages = [
     ...uiPackages,
     "@hookform/resolvers",
+    "@expo/ui",
     "@shopify/flash-list",
     "@tanstack/react-query",
     "react-hook-form",
@@ -156,6 +157,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     "@sentry/*",
     "@tanstack/react-query",
     "expo-constants",
+    "expo-crypto",
     "expo-device",
     "expo-linking",
     "expo-media-library",

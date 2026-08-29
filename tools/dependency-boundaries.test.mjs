@@ -699,6 +699,55 @@ test("every high-risk external/core package is rejected in every dependency-node
   }
 });
 
+test("reserves Expo Crypto for infrastructure and Expo UI for feature code", async (t) => {
+  const cases = [
+    {
+      allowedPath: "src/infrastructure/random/__boundary-source.ts",
+      forbiddenPaths: [
+        "app/__boundary-source.tsx",
+        "src/application/__boundary-source.ts",
+        "src/domain/__boundary-source.ts",
+        "src/features/__boundary_alpha__/internal.ts",
+      ],
+      packageName: "expo-crypto",
+    },
+    {
+      allowedPath: "src/features/__boundary_alpha__/internal.ts",
+      forbiddenPaths: [
+        "app/__boundary-source.tsx",
+        "src/application/__boundary-source.ts",
+        "src/domain/__boundary-source.ts",
+        "src/infrastructure/__boundary_alpha__/internal.ts",
+      ],
+      packageName: "@expo/ui",
+    },
+  ];
+
+  for (const { allowedPath, forbiddenPaths, packageName } of cases) {
+    await t.test(
+      `${packageName} is allowed only by its owning layer`,
+      async () => {
+        assertAllowed(
+          await lint(
+            "mobile",
+            `import ${JSON.stringify(packageName)};\n`,
+            allowedPath,
+          ),
+        );
+
+        const source = everyDependencyForm([packageName]);
+
+        for (const forbiddenPath of forbiddenPaths) {
+          assertForbiddenInEveryDependencyForm(
+            await lint("mobile", source, forbiddenPath),
+            Object.keys(dependencyForms).length,
+          );
+        }
+      },
+    );
+  }
+});
+
 test("only the canonical migration runner may use its three Node adapters", async (t) => {
   const allowed = ["node:fs", "node:path", "node:url"];
   const canonicalPath = "src/db/migrate.ts";
