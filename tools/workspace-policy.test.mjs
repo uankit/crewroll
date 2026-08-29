@@ -273,7 +273,11 @@ function assertFutureSuiteSurface(manifest) {
   }
 }
 
-function assertMigrationCheckSurface(rootManifest, controlManifest) {
+function assertMigrationCheckSurface(
+  rootManifest,
+  controlManifest,
+  contractsManifest,
+) {
   assert.equal(
     rootManifest.scripts?.["migrations:check"],
     migrationCheckCommand,
@@ -289,6 +293,18 @@ function assertMigrationCheckSurface(rootManifest, controlManifest) {
     undefined,
     "control migrations:check is not an authorized dispatcher owner",
   );
+  assert.equal(
+    contractsManifest.scripts?.["db:migrate"],
+    undefined,
+    "contracts db:migrate is not an authorized migration runner owner",
+  );
+  for (const hookName of ["predb:migrate", "postdb:migrate"]) {
+    assert.equal(
+      contractsManifest.scripts?.[hookName],
+      undefined,
+      `contracts ${hookName} is a forbidden lifecycle path`,
+    );
+  }
   const migrationRunValue = controlManifest.scripts?.["db:migrate"];
   assert.ok(
     migrationRunValue === undefined ||
@@ -364,7 +380,11 @@ test("the root exposes always-active gates and exact honest future dispatchers",
   }
 
   assertFutureSuiteSurface(packageJson);
-  assertMigrationCheckSurface(packageJson, controlPlanePackageJson);
+  assertMigrationCheckSurface(
+    packageJson,
+    controlPlanePackageJson,
+    contractsPackageJson,
+  );
 
   assert.equal(packageJson.scripts?.["typecheck:workspaces"], undefined);
   assert.equal(packageJson.scripts?.["test:workspaces"], undefined);
@@ -375,7 +395,11 @@ test("workspace policy permits only the exact control-plane migration runner act
   activatedControl.scripts["db:migrate"] = migrationRunCommand;
 
   assert.doesNotThrow(() =>
-    assertMigrationCheckSurface(packageJson, activatedControl),
+    assertMigrationCheckSurface(
+      packageJson,
+      activatedControl,
+      contractsPackageJson,
+    ),
   );
 
   for (const replacement of [
@@ -387,7 +411,12 @@ test("workspace policy permits only the exact control-plane migration runner act
     mutatedControl.scripts["db:migrate"] = replacement;
 
     assert.throws(
-      () => assertMigrationCheckSurface(packageJson, mutatedControl),
+      () =>
+        assertMigrationCheckSurface(
+          packageJson,
+          mutatedControl,
+          contractsPackageJson,
+        ),
       /control db:migrate/u,
     );
   }
@@ -395,17 +424,50 @@ test("workspace policy permits only the exact control-plane migration runner act
   const wrongRootOwner = structuredClone(packageJson);
   wrongRootOwner.scripts["db:migrate"] = migrationRunCommand;
   assert.throws(
-    () => assertMigrationCheckSurface(wrongRootOwner, controlPlanePackageJson),
+    () =>
+      assertMigrationCheckSurface(
+        wrongRootOwner,
+        controlPlanePackageJson,
+        contractsPackageJson,
+      ),
     /root db:migrate/u,
   );
 
   const wrongControlOwner = structuredClone(controlPlanePackageJson);
   wrongControlOwner.scripts["migrations:check"] = migrationCheckCommand;
   assert.throws(
-    () => assertMigrationCheckSurface(packageJson, wrongControlOwner),
+    () =>
+      assertMigrationCheckSurface(
+        packageJson,
+        wrongControlOwner,
+        contractsPackageJson,
+      ),
     /control migrations:check/u,
   );
 });
+
+for (const scriptName of ["db:migrate", "predb:migrate", "postdb:migrate"]) {
+  test(`workspace policy rejects contracts ${scriptName}`, () => {
+    const mutatedContracts = structuredClone(contractsPackageJson);
+    mutatedContracts.scripts[scriptName] =
+      scriptName === "db:migrate"
+        ? migrationRunCommand
+        : "node -e process.exit(0)";
+
+    assert.throws(
+      () =>
+        assertMigrationCheckSurface(
+          packageJson,
+          controlPlanePackageJson,
+          mutatedContracts,
+        ),
+      new RegExp(
+        `^AssertionError \\[ERR_ASSERTION\\]: contracts ${scriptName}`,
+        "u",
+      ),
+    );
+  });
+}
 
 test("workspace policy rejects every migration lifecycle hook", () => {
   for (const hookName of migrationLifecycleHooks) {
@@ -417,7 +479,12 @@ test("workspace policy rejects every migration lifecycle hook", () => {
         "node -e process.exit(0)";
 
       assert.throws(
-        () => assertMigrationCheckSurface(mutatedRoot, mutatedControl),
+        () =>
+          assertMigrationCheckSurface(
+            mutatedRoot,
+            mutatedControl,
+            contractsPackageJson,
+          ),
         new RegExp(`^AssertionError \\[ERR_ASSERTION\\]: ${hookName}`, "u"),
       );
     }
