@@ -116,6 +116,123 @@ test("accepts one minimal closed migration module", async (t) => {
   assert.ok(Object.isFrozen(result.findings));
 });
 
+test("accepts only the exact bounded alter-table constraint grammar", async (t) => {
+  const result = await analyzeSource(
+    t,
+    migrationSource({
+      imports: sqlImports,
+      upBody: `
+        await db.schema
+          .alterTable("devices")
+          .dropConstraint("devices_authentication_key_check")
+          .execute();
+        await db.schema
+          .alterTable("devices")
+          .addCheckConstraint(
+            "devices_authentication_key_check",
+            sql\`octet_length(authentication_public_key) = 65\`,
+          )
+          .execute();
+      `,
+      downBody: `
+        await db.schema
+          .alterTable("devices")
+          .dropConstraint("devices_authentication_key_check")
+          .execute();
+        await db.schema
+          .alterTable("devices")
+          .addCheckConstraint(
+            "devices_authentication_key_check",
+            sql\`octet_length(authentication_public_key) >= 33\`,
+          )
+          .execute();
+      `,
+    }),
+  );
+
+  assert.equal(result.migrationCount, 1);
+  assert.deepEqual(result.findings, []);
+});
+
+test("rejects every alter-table widening outside exact constraint replacement", async (t) => {
+  const cases = [
+    [
+      "dynamic table",
+      'await db.schema.alterTable(tableName).dropConstraint("check").execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "dynamic constraint",
+      'await db.schema.alterTable("devices").dropConstraint(checkName).execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "opaque method",
+      'await db.schema.alterTable("devices").dropColumn("key").execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "drop extra argument",
+      'await db.schema.alterTable("devices").dropConstraint("check", "cascade").execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "generic alter table",
+      'await db.schema.alterTable<"devices">("devices").dropConstraint("check").execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "generic constraint method",
+      'await db.schema.alterTable("devices").dropConstraint<"check">("check").execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "combined alterations",
+      'await db.schema.alterTable("devices").dropConstraint("old").addCheckConstraint("new", sql`value > 0`).execute();',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+    [
+      "interpolated check",
+      'await db.schema.alterTable("devices").addCheckConstraint("check", sql`value > ${db}`).execute();',
+      "MIGRATION_SQL_SHAPE",
+    ],
+    [
+      "executable check SQL",
+      'await db.schema.alterTable("devices").addCheckConstraint("check", sql`value > 0; drop table devices`).execute();',
+      "MIGRATION_SQL_SHAPE",
+    ],
+    [
+      "raw check SQL",
+      'await db.schema.alterTable("devices").addCheckConstraint("check", sql.raw("value > 0")).execute();',
+      "MIGRATION_SQL_SHAPE",
+    ],
+    [
+      "missing execute",
+      'await db.schema.alterTable("devices").dropConstraint("check");',
+      "MIGRATION_UP_OPAQUE_CALL",
+    ],
+  ];
+
+  for (const [name, upBody, expectedCode] of cases) {
+    await t.test(`up ${name}`, (subtest) =>
+      assertRejected(
+        subtest,
+        migrationSource({ imports: sqlImports, upBody }),
+        expectedCode,
+      ),
+    );
+    await t.test(`down ${name}`, (subtest) =>
+      assertRejected(
+        subtest,
+        migrationSource({ imports: sqlImports, downBody: upBody }),
+        expectedCode === "MIGRATION_SQL_SHAPE"
+          ? expectedCode
+          : "MIGRATION_DOWN_OPAQUE_CALL",
+      ),
+    );
+  }
+});
+
 test("accepts the full create-table, index, SQL, helper, and rollback grammar", async (t) => {
   const result = await analyzeSource(
     t,
