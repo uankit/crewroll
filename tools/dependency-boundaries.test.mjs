@@ -61,6 +61,14 @@ const eslintByOwner = Object.fromEntries(
   ]),
 );
 
+const controlCompositionPaths = [
+  "src/index.ts",
+  "src/app/buildApp.ts",
+  "src/api/main.ts",
+  "src/worker/main.ts",
+];
+const controlCompositionPathSet = new Set(controlCompositionPaths);
+
 const fixtureFiles = {
   mobile: {
     "src/__boundary-unknown/source.ts": "export {};\n",
@@ -113,20 +121,20 @@ const fixtureFiles = {
     "src/api/__boundary-route.ts": "export {};\n",
     "src/api/__boundary-source.ts": "export {};\n",
     "src/api/__boundary-target.ts": "export const target = true;\n",
-    "src/api/main.ts": "export {};\n",
     "src/worker/__boundary-source.ts": "export {};\n",
     "src/worker/__boundary-target.ts": "export const target = true;\n",
     "src/worker/__boundary-worker.ts": "export {};\n",
-    "src/worker/main.ts": "export {};\n",
     "src/app/__boundary-service.ts": "export {};\n",
     "src/app/__boundary-target.ts": "export const target = true;\n",
-    "src/app/buildApp.ts": "export {};\n",
     "src/app/index.ts": 'export { target } from "./__boundary-target";\n',
     "src/modules/__boundary_alpha__/index.ts":
       'export { target } from "./internal";\n',
     "src/modules/__boundary_alpha__/internal.ts":
       "export const target = true;\n",
     "src/modules/__boundary_alpha__/source.ts": "export {};\n",
+    "src/modules/__boundary_alpha__/deviceRepository.ts": "export {};\n",
+    "src/modules/__boundary_alpha__/deviceRoutes.ts": "export {};\n",
+    "src/modules/__boundary_alpha__/tripRoutes.ts": "export {};\n",
     "src/modules/__boundary_alpha__/ports/port.ts":
       "export interface Port { readonly ready: boolean }\n",
     "src/modules/__boundary_alpha__/routes/route.ts":
@@ -260,6 +268,13 @@ function assertAllowed(result) {
 }
 
 async function lint(owner, code, filePath, eslint = eslintByOwner[owner]) {
+  if (
+    eslint === eslintByOwner.control &&
+    controlCompositionPathSet.has(filePath) &&
+    !(await pathExists(path.join(controlPath, filePath)))
+  ) {
+    return lintAbsentControlCompositionInIsolatedProcess(code, filePath);
+  }
   const [result] = await eslint.lintText(code, { filePath });
   assert.ok(result, `${owner}:${filePath} did not produce an ESLint result`);
   return result;
@@ -299,6 +314,40 @@ async function lintUnknownContractsFileInIsolatedProcess() {
   `;
   const { stdout } = await execFileAsync(process.execPath, ["-e", script], {
     cwd: contractsPath,
+  });
+  return JSON.parse(stdout);
+}
+
+async function lintAbsentControlCompositionInIsolatedProcess(code, filePath) {
+  const eslintModule = controlRequire.resolve("eslint");
+  const script = `
+    const { ESLint } = require(${JSON.stringify(eslintModule)});
+    const eslint = new ESLint({
+      cwd: ${JSON.stringify(controlPath)},
+      overrideConfig: {
+        languageOptions: {
+          parserOptions: {
+            projectService: {
+              allowDefaultProject: [${JSON.stringify(filePath)}],
+              defaultProject: "tsconfig.json"
+            }
+          }
+        }
+      }
+    });
+    eslint.lintText(${JSON.stringify(code)}, {
+      filePath: ${JSON.stringify(filePath)}
+    }).then(([result]) => {
+      process.stdout.write(JSON.stringify({
+        errorCount: result.errorCount,
+        fatalErrorCount: result.fatalErrorCount,
+        messages: result.messages,
+        warningCount: result.warningCount
+      }));
+    });
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ["-e", script], {
+    cwd: controlPath,
   });
   return JSON.parse(stdout);
 }
@@ -774,23 +823,186 @@ test("production test/support/fixture/generator targets are known and rejected a
   }
 });
 
-test("global fetch is rejected in mobile route/feature and control routes", async (t) => {
+test("locked camel-case control route and repository filenames receive their categories", async (t) => {
+  for (const filePath of [
+    "src/modules/__boundary_alpha__/deviceRoutes.ts",
+    "src/modules/__boundary_alpha__/tripRoutes.ts",
+  ]) {
+    await t.test(`${path.basename(filePath)} allows Fastify`, async () => {
+      assertAllowed(await lint("control", 'import "fastify";\n', filePath));
+    });
+  }
+
+  await t.test("deviceRoutes rejects its sibling repository", async () => {
+    assertForbidden(
+      await lint(
+        "control",
+        'import "./deviceRepository.js";\n',
+        "src/modules/__boundary_alpha__/deviceRoutes.ts",
+      ),
+      "boundaries/dependencies",
+    );
+  });
+
+  await t.test("deviceRepository rejects its sibling route", async () => {
+    assertForbidden(
+      await lint(
+        "control",
+        'import "./deviceRoutes.js";\n',
+        "src/modules/__boundary_alpha__/deviceRepository.ts",
+      ),
+      "boundaries/dependencies",
+    );
+  });
+});
+
+test("production owners reject contracts fixture and generator subpaths in every dependency form", async (t) => {
+  for (const [owner, filePath] of [
+    ["mobile", "src/bootstrap/__boundary-source.ts"],
+    ["control", "src/app/__boundary-service.ts"],
+  ]) {
+    for (const [form, source] of Object.entries(dependencyForms)) {
+      await t.test(`${owner}:fixtures/http:${form}`, async () => {
+        assertForbidden(
+          await lint(
+            owner,
+            source("@crewroll/contracts/fixtures/http"),
+            filePath,
+          ),
+          "boundaries/dependencies",
+        );
+      });
+    }
+
+    await t.test(`${owner}:generator`, async () => {
+      assertForbidden(
+        await lint(
+          owner,
+          'import "@crewroll/contracts/generator/private";\n',
+          filePath,
+        ),
+        "boundaries/dependencies",
+      );
+    });
+  }
+
+  for (const [owner, filePath] of [
+    ["mobile", "tests/support/__boundary-source.ts"],
+    ["control", "test/__boundary-source.ts"],
+  ]) {
+    await t.test(`${owner} tests retain fixture consumption`, async () => {
+      assertAllowed(
+        await lint(
+          owner,
+          'import "@crewroll/contracts/fixtures/http";\n',
+          filePath,
+        ),
+      );
+    });
+  }
+});
+
+test("all control composition roots reject workspace implementation escapes and arbitrary SDKs", async (t) => {
+  const roots = [
+    ["src/index.ts", "../../../"],
+    ["src/app/buildApp.ts", "../../../../"],
+    ["src/api/main.ts", "../../../../"],
+    ["src/worker/main.ts", "../../../../"],
+  ];
+
+  for (const [filePath, repositoryPrefix] of roots) {
+    for (const [name, source] of [
+      ["React", 'import "react";\n'],
+      ["AWS SDK", 'import "@aws-sdk/client-s3";\n'],
+      [
+        "mobile implementation",
+        `import ${JSON.stringify(`${repositoryPrefix}src/design-system`)};\n`,
+      ],
+      [
+        "contracts implementation",
+        `import ${JSON.stringify(
+          `${repositoryPrefix}packages/contracts/openapi/common.js`,
+        )};\n`,
+      ],
+    ]) {
+      await t.test(`${filePath}:${name}`, async () => {
+        const result = await lint("control", source, filePath);
+        assertForbidden(result, "boundaries/dependencies");
+        assert.equal(
+          result.messages.some(({ ruleId }) =>
+            [
+              "boundaries/no-unknown-dependencies",
+              "boundaries/no-unknown-files",
+            ].includes(ruleId),
+          ),
+          false,
+          `composition restriction was masked as unknown:\n${formatMessages(result)}`,
+        );
+      });
+    }
+  }
+});
+
+test("global fetch is rejected in mobile route/feature and locked camel-case control routes", async (t) => {
   for (const [name, owner, filePath] of [
     ["mobile route", "mobile", "app/__boundary-source.tsx"],
     ["mobile feature", "mobile", "src/features/__boundary_alpha__/source.ts"],
     [
-      "control module route",
+      "control device route",
       "control",
-      "src/modules/__boundary_alpha__/routes/source.ts",
+      "src/modules/__boundary_alpha__/deviceRoutes.ts",
+    ],
+    [
+      "control trip route",
+      "control",
+      "src/modules/__boundary_alpha__/tripRoutes.ts",
     ],
   ]) {
-    await t.test(name, async () => {
-      assertForbidden(
-        await lint(owner, 'void fetch("https://example.invalid");\n', filePath),
-        "no-restricted-globals",
-      );
-    });
+    const accesses = [
+      ["bare", 'void fetch("https://example.invalid");\n'],
+      ["globalThis", 'void globalThis.fetch("https://example.invalid");\n'],
+      ...(owner === "mobile"
+        ? [
+            ["self", 'void self.fetch("https://example.invalid");\n'],
+            ["window", 'void window.fetch("https://example.invalid");\n'],
+          ]
+        : []),
+      ...(filePath.endsWith("deviceRoutes.ts")
+        ? [["global", 'void global.fetch("https://example.invalid");\n']]
+        : []),
+    ];
+    for (const [access, source] of accesses) {
+      await t.test(`${name}:${access}`, async () => {
+        assertForbidden(
+          await lint(owner, source, filePath),
+          "no-restricted-globals",
+        );
+      });
+    }
   }
+});
+
+test("the oracle never owns locked future control composition entrypoints", () => {
+  for (const relativePath of [
+    "src/api/main.ts",
+    "src/worker/main.ts",
+    "src/app/buildApp.ts",
+  ]) {
+    assert.equal(
+      Object.hasOwn(fixtureFiles.control, relativePath),
+      false,
+      `${relativePath} must remain available for its planned implementation`,
+    );
+  }
+});
+
+test("real control composition entrypoints stay on the project service", async () => {
+  assert.equal(controlCompositionPathSet.has("src/index.ts"), true);
+  assert.equal(await pathExists(path.join(controlPath, "src/index.ts")), true);
+  assertForbidden(
+    await lint("control", 'import "react";\n', "src/index.ts"),
+    "boundaries/dependencies",
+  );
 });
 
 test("unknown production paths fail closed under each owning ESLint", async (t) => {

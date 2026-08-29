@@ -49,9 +49,14 @@ module.exports = defineConfig([
       "no-restricted-globals": [
         "error",
         {
-          name: "fetch",
-          message:
-            "Routes and features must use the infrastructure API boundary.",
+          globals: [
+            {
+              name: "fetch",
+              message:
+                "Routes and features must use the infrastructure API boundary.",
+            },
+          ],
+          checkGlobalObject: true,
         },
       ],
     },

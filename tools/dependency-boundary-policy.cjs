@@ -109,6 +109,16 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   const domain = element("domain");
   const infrastructure = element("infrastructure");
   const nativeBridge = element("native-bridge");
+  const production = [
+    route,
+    bootstrap,
+    design,
+    feature,
+    application,
+    domain,
+    infrastructure,
+    nativeBridge,
+  ];
   const nonProduction = file(NON_PRODUCTION_CATEGORIES);
 
   const routeFrameworkPackages = [
@@ -221,6 +231,16 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
       ],
     },
     allowModules(bootstrap, ["*", "@crewroll/contracts"]),
+    {
+      from: production,
+      disallow: [
+        {
+          to: moduleSelector("external", "@crewroll/contracts", {
+            internalPath: ["fixtures/**", "generator/**"],
+          }),
+        },
+      ],
+    },
     {
       disallow: [
         {
@@ -413,6 +433,17 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   const composition = file("composition");
   const route = file("route");
   const repository = file("repository");
+  const production = [
+    api,
+    worker,
+    app,
+    module,
+    db,
+    platform,
+    config,
+    shared,
+    composition,
+  ];
   const nonProduction = file(NON_PRODUCTION_CATEGORIES);
 
   const contractPackages = ["@crewroll/contracts", "@sinclair/typebox"];
@@ -422,6 +453,12 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     "pino",
   ];
   const routePackages = [...contractPackages, "@fastify/*", "fastify", "pino"];
+  const compositionPackages = [
+    ...servicePackages,
+    "@fastify/*",
+    "fastify",
+    "pg-boss",
+  ];
   const routeForbiddenPackages = [
     "@aws-sdk/*",
     "@clerk/backend",
@@ -518,7 +555,27 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
         },
       ],
     },
-    allowEveryDependency(composition),
+    allowElements(composition, [
+      api,
+      worker,
+      app,
+      module,
+      db,
+      platform,
+      config,
+      shared,
+    ]),
+    allowModules(composition, compositionPackages),
+    {
+      from: production,
+      disallow: [
+        {
+          to: moduleSelector("external", "@crewroll/contracts", {
+            internalPath: ["fixtures/**", "generator/**"],
+          }),
+        },
+      ],
+    },
     {
       disallow: [
         {
@@ -569,7 +626,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
         pattern: [
           "src/api/**/*.ts",
           "src/modules/*/routes/**/*.ts",
-          "src/modules/**/*route*.ts",
+          "src/modules/**/*{route,Route}*.ts",
         ],
       },
       {
@@ -577,7 +634,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
         pattern: [
           "src/db/**/*repository*.ts",
           "src/modules/*/repositories/**/*.ts",
-          "src/modules/**/*repository*.ts",
+          "src/modules/**/*{repository,Repository}*.ts",
         ],
       },
       {

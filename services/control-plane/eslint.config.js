@@ -31,13 +31,27 @@ export default tseslint.config(
     },
   },
   {
-    files: ["src/api/**/*.ts", "src/modules/**/{route,routes}/**/*.ts"],
+    files: [
+      "src/api/**/*.ts",
+      "src/modules/**/{route,routes}/**/*.ts",
+      "src/modules/**/*{route,Route}*.ts",
+    ],
+    languageOptions: {
+      globals: { global: "readonly" },
+    },
     rules: {
       "no-restricted-globals": [
         "error",
         {
-          name: "fetch",
-          message: "Routes must call application services through owned ports.",
+          globals: [
+            {
+              name: "fetch",
+              message:
+                "Routes must call application services through owned ports.",
+            },
+          ],
+          checkGlobalObject: true,
+          globalObjects: ["global"],
         },
       ],
     },
