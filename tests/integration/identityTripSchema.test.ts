@@ -23,12 +23,18 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 async function expectPostgresError(
   operation: Promise<unknown>,
   expectedCode: "23503" | "23505" | "23514",
+  expectedConstraint?: string,
 ): Promise<void> {
   try {
     await operation;
     throw new Error(`Expected PostgreSQL error ${expectedCode}`);
   } catch (error) {
-    expect(error).toMatchObject({ code: expectedCode });
+    expect(error).toMatchObject({
+      code: expectedCode,
+      ...(expectedConstraint === undefined
+        ? {}
+        : { constraint: expectedConstraint }),
+    });
   }
 }
 
@@ -309,6 +315,24 @@ describe.sequential("identity and trip schema", () => {
       }),
       "23514",
     );
+  });
+
+  it("requires an exact uncompressed 65-byte P-256 authentication point shape", async () => {
+    const user = await fixture.user();
+
+    for (const authenticationPublicKey of [
+      Uint8Array.from({ length: 64 }, (_, index) => (index === 0 ? 4 : 1)),
+      Uint8Array.from({ length: 66 }, (_, index) => (index === 0 ? 4 : 1)),
+      Uint8Array.from({ length: 65 }, () => 1),
+    ]) {
+      await expectPostgresError(
+        fixture.device(user.id, {
+          authentication_public_key: authenticationPublicKey,
+        }),
+        "23514",
+        "devices_authentication_key_check",
+      );
+    }
   });
 
   it("rejects incoherent device key, push-token, and revocation data", async () => {
@@ -767,6 +791,7 @@ describe.sequential("identity and trip schema", () => {
     await migrateDown(db);
     await migrateDown(db);
     await migrateDown(db);
+    await migrateDown(db);
 
     const tablesAfterDown = await sql<{ table_name: string }>`
       select table_name
@@ -785,6 +810,7 @@ describe.sequential("identity and trip schema", () => {
       where schemaname = 'public'
         and indexname in (
           'devices_user_active_idx',
+          'api_idempotency_expires_at_idx',
           'trip_members_trip_state_idx',
           'trips_state_ends_idx'
         )
@@ -812,6 +838,7 @@ describe.sequential("identity and trip schema", () => {
       where schemaname = 'public'
         and indexname in (
           'devices_user_active_idx',
+          'api_idempotency_expires_at_idx',
           'trip_members_trip_state_idx',
           'trips_state_ends_idx'
         )
@@ -830,10 +857,24 @@ describe.sequential("identity and trip schema", () => {
     ]);
     expect(indexesAfterSecondUp.rows.map(({ indexname }) => indexname)).toEqual(
       [
+        "api_idempotency_expires_at_idx",
         "devices_user_active_idx",
         "trip_members_trip_state_idx",
         "trips_state_ends_idx",
       ],
+    );
+    const restoredAuthenticationChecks = await sql<{ definition: string }>`
+      select pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname = 'devices_authentication_key_check'
+        and constraint_record.conrelid = 'devices'::regclass
+    `.execute(db);
+    expect(restoredAuthenticationChecks.rows).toHaveLength(1);
+    expect(restoredAuthenticationChecks.rows[0]!.definition).toContain(
+      "octet_length(authentication_public_key) = 65",
+    );
+    expect(restoredAuthenticationChecks.rows[0]!.definition).toContain(
+      "get_byte(authentication_public_key, 0) = 4",
     );
   });
 });
