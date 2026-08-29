@@ -409,12 +409,14 @@ describe.sequential("media and coordination schema", () => {
           'inbox_events_trip_id_idx',
           'outbox_events_unpublished_available_idx',
           'audit_events_trip_occurred_idx',
-          'audit_events_actor_user_device_idx'
+          'audit_events_actor_user_device_idx',
+          'api_idempotency_expires_at_idx'
         )
       order by indexname
     `.execute(db);
 
     expect(indexes.rows.map(({ indexname }) => indexname)).toEqual([
+      "api_idempotency_expires_at_idx",
       "assets_state_committed_idx",
       "assets_trip_committed_id_idx",
       "audit_events_actor_user_device_idx",
@@ -442,6 +444,9 @@ describe.sequential("media and coordination schema", () => {
     expect(definitions.audit_events_trip_occurred_idx).toContain(
       "(trip_id, occurred_at)",
     );
+    expect(definitions.api_idempotency_expires_at_idx).toContain(
+      "(expires_at)",
+    );
     expect(definitions.deliveries_asset_state_idx).toContain(
       "(asset_id, state)",
     );
@@ -464,6 +469,26 @@ describe.sequential("media and coordination schema", () => {
     expect(definitions.upload_sessions_state_expires_idx).toContain(
       "(state, expires_at)",
     );
+  });
+
+  it("can use the idempotency expiry index for bounded ordered cleanup", async () => {
+    await sql`set enable_seqscan = off`.execute(db);
+    try {
+      const explanation = await sql<{ "QUERY PLAN": string }>`
+        explain (costs off)
+        select user_id, route_key, idempotency_key
+        from api_idempotency
+        where expires_at <= now()
+        order by expires_at, user_id, route_key, idempotency_key
+        limit 100
+        for update skip locked
+      `.execute(db);
+      expect(
+        explanation.rows.map((row) => row["QUERY PLAN"]).join("\n"),
+      ).toContain("api_idempotency_expires_at_idx");
+    } finally {
+      await sql`reset enable_seqscan`.execute(db);
+    }
   });
 
   it("enforces upload-session identity, source membership, and uniqueness", async () => {
@@ -1071,6 +1096,7 @@ describe.sequential("media and coordination schema", () => {
     try {
       await migrateDown(prior.db);
       await migrateDown(prior.db);
+      await migrateDown(prior.db);
       const priorFixture = createMediaCoordinationFixtures(prior.db);
       const user = await priorFixture.identity.user();
       const trip = await priorFixture.identity.trip(user.id);
@@ -1112,6 +1138,7 @@ describe.sequential("media and coordination schema", () => {
     await migrateDown(db);
     await migrateDown(db);
     await migrateDown(db);
+    await migrateDown(db);
 
     const tablesAfterDown = await sql<{ table_name: string }>`
       select table_name
@@ -1134,7 +1161,8 @@ describe.sequential("media and coordination schema", () => {
           'inbox_events_device_sequence_idx', 'inbox_events_trip_id_idx',
           'outbox_events_unpublished_available_idx',
           'audit_events_trip_occurred_idx',
-          'audit_events_actor_user_device_idx'
+          'audit_events_actor_user_device_idx',
+          'api_idempotency_expires_at_idx'
         )
       order by indexname
     `.execute(db);
@@ -1171,6 +1199,15 @@ describe.sequential("media and coordination schema", () => {
       "upload_sessions",
       "user_active_trips",
       "users",
+    ]);
+    const indexesAfterSecondUp = await sql<{ indexname: string }>`
+      select indexname
+      from pg_indexes
+      where schemaname = 'public'
+        and indexname = 'api_idempotency_expires_at_idx'
+    `.execute(db);
+    expect(indexesAfterSecondUp.rows).toEqual([
+      { indexname: "api_idempotency_expires_at_idx" },
     ]);
   });
 });

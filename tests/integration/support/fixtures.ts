@@ -15,6 +15,12 @@ type Overrides<T> = Partial<Insertable<T>>;
 
 const FIXED_NOW = new Date("2026-08-29T08:00:00.000Z");
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const P256_PUBLIC_KEY = Uint8Array.from(
+  Buffer.from(
+    "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=",
+    "base64",
+  ),
+);
 
 function fixedBytes(fill: number, length = 32): Uint8Array {
   return Uint8Array.from({ length }, () => fill);
@@ -89,7 +95,7 @@ export function createIdentityTripFixtures(
           app_version: "0.2.0",
           authentication_key_algorithm: "P-256",
           authentication_key_version: 1,
-          authentication_public_key: fixedBytes(sequence, 91),
+          authentication_public_key: P256_PUBLIC_KEY.slice(),
           background_credential_expires_at: new Date(
             FIXED_NOW.getTime() + 30 * ONE_DAY_MS,
           ),
