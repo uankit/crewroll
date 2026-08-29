@@ -14,10 +14,69 @@ describe("toProblemDetails", () => {
   it.each<{
     detail: string;
     internalKind: DomainErrorKind;
-    publicCode: "INTERNAL_ERROR" | "INVALID_REQUEST" | "NOT_FOUND";
+    publicCode:
+      | "AUTH_INVALID"
+      | "AUTH_REQUIRED"
+      | "CONFLICT"
+      | "DEVICE_NOT_OWNED"
+      | "DEVICE_REVOKED"
+      | "IDEMPOTENCY_CONFLICT"
+      | "INSTALLATION_OWNED_BY_ANOTHER_USER"
+      | "INTERNAL_ERROR"
+      | "INVALID_REQUEST"
+      | "NOT_FOUND";
     status: number;
     title: string;
   }>([
+    {
+      detail: "Authentication is required.",
+      internalKind: "AUTH_REQUIRED",
+      publicCode: "AUTH_REQUIRED",
+      status: 401,
+      title: "Authentication required",
+    },
+    {
+      detail: "Authentication credentials are invalid.",
+      internalKind: "AUTH_INVALID",
+      publicCode: "AUTH_INVALID",
+      status: 401,
+      title: "Invalid authentication",
+    },
+    {
+      detail: "The device is not owned by the authenticated user.",
+      internalKind: "DEVICE_NOT_OWNED",
+      publicCode: "DEVICE_NOT_OWNED",
+      status: 403,
+      title: "Device not owned",
+    },
+    {
+      detail: "The device has been revoked.",
+      internalKind: "DEVICE_REVOKED",
+      publicCode: "DEVICE_REVOKED",
+      status: 409,
+      title: "Device revoked",
+    },
+    {
+      detail: "The installation is owned by another user.",
+      internalKind: "INSTALLATION_OWNED_BY_ANOTHER_USER",
+      publicCode: "INSTALLATION_OWNED_BY_ANOTHER_USER",
+      status: 409,
+      title: "Installation owned by another user",
+    },
+    {
+      detail: "The idempotency key conflicts with an earlier request.",
+      internalKind: "IDEMPOTENCY_CONFLICT",
+      publicCode: "IDEMPOTENCY_CONFLICT",
+      status: 409,
+      title: "Idempotency conflict",
+    },
+    {
+      detail: "The request conflicts with the current resource state.",
+      internalKind: "CONFLICT",
+      publicCode: "CONFLICT",
+      status: 409,
+      title: "Conflict",
+    },
     {
       detail: "The request could not be accepted.",
       internalKind: "INVALID_REQUEST",

@@ -10,11 +10,53 @@ interface ProblemDefinition {
 }
 
 const problemDefinitions = {
+  AUTH_INVALID: {
+    code: "AUTH_INVALID",
+    detail: "Authentication credentials are invalid.",
+    status: 401,
+    title: "Invalid authentication",
+  },
+  AUTH_REQUIRED: {
+    code: "AUTH_REQUIRED",
+    detail: "Authentication is required.",
+    status: 401,
+    title: "Authentication required",
+  },
+  CONFLICT: {
+    code: "CONFLICT",
+    detail: "The request conflicts with the current resource state.",
+    status: 409,
+    title: "Conflict",
+  },
   DEPENDENCY_NOT_READY: {
     code: "INTERNAL_ERROR",
     detail: "Required service dependencies are unavailable.",
     status: 503,
     title: "Service unavailable",
+  },
+  DEVICE_NOT_OWNED: {
+    code: "DEVICE_NOT_OWNED",
+    detail: "The device is not owned by the authenticated user.",
+    status: 403,
+    title: "Device not owned",
+  },
+  DEVICE_REVOKED: {
+    code: "DEVICE_REVOKED",
+    detail: "The device has been revoked.",
+    status: 409,
+    title: "Device revoked",
+  },
+  IDEMPOTENCY_CONFLICT: {
+    code: "IDEMPOTENCY_CONFLICT",
+    detail: "The idempotency key conflicts with an earlier request.",
+    status: 409,
+    title: "Idempotency conflict",
+  },
+  INSTALLATION_OWNED_BY_ANOTHER_USER: {
+    code: "INSTALLATION_OWNED_BY_ANOTHER_USER",
+    detail: "The installation is owned by another user.",
+    status: 409,
+    title: "Installation owned by another user",
   },
   INTERNAL_ERROR: {
     code: "INTERNAL_ERROR",

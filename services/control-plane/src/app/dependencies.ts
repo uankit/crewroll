@@ -1,11 +1,8 @@
 import type { Logger } from "pino";
 
 import type { Environment } from "../config/env.js";
+import type { IdGenerator } from "../shared/ids/idGenerator.js";
 import type { Clock } from "../shared/time/clock.js";
-
-export interface IdGenerator {
-  uuid(): string;
-}
 
 export interface ReadinessProbe {
   check(): Promise<void>;

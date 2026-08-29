@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../../src/app/buildApp.js";
+import { DomainError } from "../../src/shared/errors/domainError.js";
+import type { IdGenerator } from "../../src/shared/ids/idGenerator.js";
 import { createTestDependencies, fixedRequestId } from "../support/fakes.js";
 
 const closeApps: (() => Promise<void>)[] = [];
@@ -50,6 +54,56 @@ function expectedProblem(
 }
 
 describe("buildApp", () => {
+  it("keeps the injected request-ID contract shared and dependency-free", () => {
+    const ids: IdGenerator = { uuid: () => fixedRequestId };
+    const sharedContract = readFileSync(
+      new URL("../../src/shared/ids/idGenerator.ts", import.meta.url),
+      "utf8",
+    );
+    const appDependencies = readFileSync(
+      new URL("../../src/app/dependencies.ts", import.meta.url),
+      "utf8",
+    );
+    const packageManifest = readFileSync(
+      new URL("../../package.json", import.meta.url),
+      "utf8",
+    );
+
+    expect(ids.uuid()).toBe(fixedRequestId);
+    expect(sharedContract).not.toContain("app/dependencies");
+    expect(appDependencies).toContain("../shared/ids/idGenerator.js");
+    expect(packageManifest).not.toMatch(/uuid|randomuuid/iu);
+  });
+
+  it.each(["AUTH_REQUIRED", "AUTH_INVALID"] as const)(
+    "adds a Bearer challenge for %s only",
+    async (kind) => {
+      const fixture = createTestDependencies();
+      const app = track(buildApp(fixture.dependencies));
+      app.get(`/testing/${kind.toLowerCase()}`, () => {
+        throw new DomainError(kind);
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/testing/${kind.toLowerCase()}`,
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.headers["www-authenticate"]).toBe("Bearer");
+      expect(response.json()).toMatchObject({ code: kind, status: 401 });
+    },
+  );
+
+  it("does not add a Bearer challenge to non-authentication problems", async () => {
+    const fixture = createTestDependencies();
+    const app = track(buildApp(fixture.dependencies));
+
+    const response = await app.inject({ method: "GET", url: "/missing" });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.headers).not.toHaveProperty("www-authenticate");
+  });
   it("ignores an inbound request ID and keeps liveness process-only", async () => {
     const fixture = createTestDependencies();
     const app = track(buildApp(fixture.dependencies));
