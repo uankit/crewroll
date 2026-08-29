@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -54,12 +54,59 @@ const alwaysActiveCommands = [
   "doctor",
 ];
 
-const futureOnlyCommands = [
-  "test:integration",
-  "test:native:ios",
-  "test:native:android",
-  "test:e2e",
-  "test:load",
+const futureSuiteScripts = [
+  {
+    publicName: "test:integration",
+    publicCommand: "node tools/run-future-suite.mjs integration",
+    privateName: "test:integration:run",
+  },
+  {
+    publicName: "test:native:ios",
+    publicCommand: "node tools/run-future-suite.mjs native-ios",
+    privateName: "test:native:ios:run",
+  },
+  {
+    publicName: "test:native:android",
+    publicCommand: "node tools/run-future-suite.mjs native-android",
+    privateName: "test:native:android:run",
+  },
+  {
+    publicName: "test:e2e",
+    publicCommand: "node tools/run-future-suite.mjs e2e",
+    privateName: "test:e2e:run",
+  },
+  {
+    publicName: "test:load",
+    publicCommand: "node tools/run-future-suite.mjs load",
+    privateName: "test:load:run",
+  },
+];
+
+const futureSuiteLifecycleHooks = futureSuiteScripts.flatMap(
+  ({ publicName, privateName }) => [
+    `pre${publicName}`,
+    `post${publicName}`,
+    `pre${privateName}`,
+    `post${privateName}`,
+  ],
+);
+
+const dormantFutureSuitePaths = [
+  "tests/integration",
+  "tests/integration/.crewroll-suite.json",
+  "tests/integration/vitest.config.ts",
+  "modules/crewroll-transfer/ios",
+  "modules/crewroll-transfer/ios/.crewroll-suite.json",
+  "modules/crewroll-transfer/ios/Package.swift",
+  "modules/crewroll-transfer/android",
+  "modules/crewroll-transfer/android/.crewroll-suite.json",
+  "modules/crewroll-transfer/android/build.gradle",
+  "tools/run-android-native-tests.mjs",
+  "tests/maestro",
+  "tests/maestro/.crewroll-suite.json",
+  "tests/load",
+  "tests/load/.crewroll-suite.json",
+  "tests/load/photo-flow.js",
 ];
 
 const rootLintPathClasses = [
@@ -173,6 +220,29 @@ function assertLintBuildPrerequisites(rootManifest, controlManifest) {
   );
 }
 
+function assertFutureSuiteSurface(manifest) {
+  for (const { publicName, publicCommand, privateName } of futureSuiteScripts) {
+    assert.equal(
+      manifest.scripts?.[publicName],
+      publicCommand,
+      `${publicName} must use the honest dispatcher`,
+    );
+    assert.equal(
+      manifest.scripts?.[privateName],
+      undefined,
+      `${privateName} stays reserved for its future owner`,
+    );
+  }
+
+  for (const hookName of futureSuiteLifecycleHooks) {
+    assert.equal(
+      manifest.scripts?.[hookName],
+      undefined,
+      `${hookName} is a forbidden lifecycle path`,
+    );
+  }
+}
+
 test("root remains the CrewRoll Expo application and owns the workspaces", () => {
   assert.equal(packageJson.name, "crewroll");
   assert.equal(packageJson.main, "expo-router/entry");
@@ -211,21 +281,38 @@ test("test-only packages are development dependencies", () => {
   }
 });
 
-test("the root exposes exactly the always-active FND-002A commands", () => {
+test("the root exposes always-active gates and exact honest future dispatchers", () => {
   for (const command of [...alwaysActiveCommands, "check"]) {
     assertRealScript(packageJson.scripts?.[command], `root ${command}`);
   }
 
-  for (const command of futureOnlyCommands) {
-    assert.equal(
-      packageJson.scripts?.[command],
-      undefined,
-      `${command} stays absent until its complete harness lands`,
-    );
-  }
+  assertFutureSuiteSurface(packageJson);
 
   assert.equal(packageJson.scripts?.["typecheck:workspaces"], undefined);
   assert.equal(packageJson.scripts?.["test:workspaces"], undefined);
+});
+
+test("workspace policy rejects every public and private future-suite lifecycle hook", () => {
+  assert.equal(futureSuiteLifecycleHooks.length, 20);
+  assert.equal(new Set(futureSuiteLifecycleHooks).size, 20);
+
+  for (const hookName of futureSuiteLifecycleHooks) {
+    const mutated = structuredClone(packageJson);
+    mutated.scripts[hookName] = "node -e process.exit(0)";
+
+    assert.throws(
+      () => assertFutureSuiteSurface(mutated),
+      new RegExp(`^AssertionError \\[ERR_ASSERTION\\]: ${hookName}`, "u"),
+    );
+  }
+});
+
+test("future suite activation evidence stays absent until an owner lands it", async () => {
+  for (const path of dormantFutureSuitePaths) {
+    await assert.rejects(lstat(new URL(path, root)), {
+      code: "ENOENT",
+    });
+  }
 });
 
 test("aggregate check invokes each always-active gate exactly once", () => {
@@ -244,6 +331,11 @@ test("aggregate check invokes each always-active gate exactly once", () => {
     check.split(/\s*&&\s*/u),
     alwaysActiveCommands.map((command) => `npm run ${command}`),
   );
+
+  for (const { publicName, privateName } of futureSuiteScripts) {
+    assert.equal(countCommand(check, publicName), 0);
+    assert.equal(countCommand(check, privateName), 0);
+  }
 });
 
 test("all root scripts reject silent skips, network-selected latest tools, and placeholders", () => {
