@@ -21,8 +21,7 @@
     "prelint": "npm run build --workspace @crewroll/contracts",
     "lint": "eslint src test --max-warnings=0",
     "test": "npm run build && vitest run",
-    "test:coverage": "npm run build && vitest run --coverage",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "test:coverage": "npm run build && vitest run --coverage"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1121.0",

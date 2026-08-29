@@ -352,7 +352,6 @@ function assertAllowed(result) {
 async function lint(owner, code, filePath, eslint = eslintByOwner[owner]) {
   if (
     eslint === eslintByOwner.control &&
-    controlCompositionPathSet.has(filePath) &&
     !(await pathExists(path.join(controlPath, filePath)))
   ) {
     return lintAbsentControlCompositionInIsolatedProcess(code, filePath);
@@ -619,6 +618,51 @@ test("every high-risk external/core package is rejected in every dependency-node
         });
       }
     }
+  }
+});
+
+test("only the canonical migration runner may use its three Node adapters", async (t) => {
+  const allowed = ["node:fs", "node:path", "node:url"];
+  const canonicalPath = "src/db/migrate.ts";
+
+  for (const specifier of allowed) {
+    await t.test(`allows ${specifier} from the canonical runner`, async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          `import ${JSON.stringify(specifier)};\n`,
+          canonicalPath,
+        ),
+      );
+    });
+  }
+
+  for (const [name, filePath, specifier] of [
+    ["case mutation", "src/db/Migrate.ts", "node:fs"],
+    ["path mutation", "src/db/runner/migrate.ts", "node:path"],
+    ["extra core module", canonicalPath, "node:child_process"],
+    ["package lookalike", canonicalPath, "node:filesystem"],
+    ["relative substitute", canonicalPath, "./node:fs"],
+    ["database source", "src/db/database.ts", "node:fs"],
+    ["schema source", "src/db/schema/tables.ts", "node:path"],
+    ["migration source", "src/db/migrations/001_initial.ts", "node:url"],
+    [
+      "repository source",
+      "src/modules/__boundary_alpha__/repositories/databaseRepository.ts",
+      "node:fs",
+    ],
+    ["non-database source", "src/app/__boundary-service.ts", "node:path"],
+  ]) {
+    await t.test(`rejects ${name}`, async () => {
+      assertForbidden(
+        await lint(
+          "control",
+          `import ${JSON.stringify(specifier)};\n`,
+          filePath,
+        ),
+        "boundaries/dependencies",
+      );
+    });
   }
 });
 

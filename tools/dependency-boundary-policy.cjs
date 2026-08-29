@@ -525,6 +525,11 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     allowModules([api, route], routePackages),
     allowModules(worker, [...servicePackages, "pg-boss"]),
     allowModules([app, module, shared], servicePackages),
+    allowModules(
+      element("db", { fileInternalPath: "migrate.ts" }),
+      ["node:fs", "node:path", "node:url"],
+      "core",
+    ),
     allowModules(db, [...contractPackages, "kysely", "pg", "pg-boss"]),
     allowModules(platform, [
       ...contractPackages,

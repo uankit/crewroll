@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 
 import { ESLint } from "eslint";
@@ -8,6 +19,7 @@ import { createVitest } from "vitest/node";
 
 const root = new URL("../", import.meta.url);
 const rootPath = fileURLToPath(root);
+const execFileAsync = promisify(execFile);
 
 const readText = (path) => readFile(new URL(path, root), "utf8");
 const readJson = async (path) => JSON.parse(await readText(path));
@@ -50,8 +62,19 @@ const alwaysActiveCommands = [
   "format:check",
   "lint",
   "typecheck",
+  "migrations:check",
   "test:unit",
   "doctor",
+];
+
+const migrationCheckCommand = "node tools/check-migrations.mjs";
+const guardedMigrationCheckCommand =
+  "npm run --ignore-scripts migrations:check";
+const migrationLifecycleHooks = [
+  "premigrations:check",
+  "postmigrations:check",
+  "predb:migrate",
+  "postdb:migrate",
 ];
 
 const futureSuiteScripts = [
@@ -237,6 +260,32 @@ function assertFutureSuiteSurface(manifest) {
   }
 }
 
+function assertMigrationCheckSurface(rootManifest, controlManifest) {
+  assert.equal(
+    rootManifest.scripts?.["migrations:check"],
+    migrationCheckCommand,
+    "migrations:check must use the canonical dispatcher",
+  );
+  assert.equal(
+    controlManifest.scripts?.["db:migrate"],
+    undefined,
+    "control db:migrate must not dangle before DB-001 activates its runner",
+  );
+
+  for (const hookName of migrationLifecycleHooks) {
+    assert.equal(
+      rootManifest.scripts?.[hookName],
+      undefined,
+      `${hookName} is a forbidden lifecycle path`,
+    );
+    assert.equal(
+      controlManifest.scripts?.[hookName],
+      undefined,
+      `${hookName} is a forbidden lifecycle path`,
+    );
+  }
+}
+
 test("root remains the CrewRoll Expo application and owns the workspaces", () => {
   assert.equal(packageJson.name, "crewroll");
   assert.equal(packageJson.main, "expo-router/entry");
@@ -281,9 +330,26 @@ test("the root exposes always-active gates and exact honest future dispatchers",
   }
 
   assertFutureSuiteSurface(packageJson);
+  assertMigrationCheckSurface(packageJson, controlPlanePackageJson);
 
   assert.equal(packageJson.scripts?.["typecheck:workspaces"], undefined);
   assert.equal(packageJson.scripts?.["test:workspaces"], undefined);
+});
+
+test("workspace policy rejects every migration lifecycle hook", () => {
+  for (const hookName of migrationLifecycleHooks) {
+    for (const owner of ["root", "control"]) {
+      const mutatedRoot = structuredClone(packageJson);
+      const mutatedControl = structuredClone(controlPlanePackageJson);
+      (owner === "root" ? mutatedRoot : mutatedControl).scripts[hookName] =
+        "node -e process.exit(0)";
+
+      assert.throws(
+        () => assertMigrationCheckSurface(mutatedRoot, mutatedControl),
+        new RegExp(`^AssertionError \\[ERR_ASSERTION\\]: ${hookName}`, "u"),
+      );
+    }
+  }
 });
 
 test("workspace policy rejects every public and private future-suite lifecycle hook", () => {
@@ -323,23 +389,89 @@ test("aggregate check invokes each always-active gate exactly once", () => {
   const check = packageJson.scripts.check;
   assert.equal(typeof check, "string");
 
-  for (const command of alwaysActiveCommands) {
+  for (const command of alwaysActiveCommands.filter(
+    (command) => command !== "migrations:check",
+  )) {
     assert.equal(
       countCommand(check, command),
       1,
       `check must invoke ${command} exactly once`,
     );
   }
-
-  assert.deepEqual(
-    check.split(/\s*&&\s*/u),
-    alwaysActiveCommands.map((command) => `npm run ${command}`),
+  assert.equal(
+    check.split(guardedMigrationCheckCommand).length - 1,
+    1,
+    "check must invoke migrations:check exactly once with lifecycle scripts disabled",
   );
+
+  assert.deepEqual(check.split(/\s*&&\s*/u), [
+    "npm run verify:identity",
+    "npm run format:check",
+    "npm run lint",
+    "npm run typecheck",
+    guardedMigrationCheckCommand,
+    "npm run test:unit",
+    "npm run doctor",
+  ]);
 
   for (const { publicName, privateName } of futureSuiteScripts) {
     assert.equal(countCommand(check, publicName), 0);
     assert.equal(countCommand(check, privateName), 0);
   }
+});
+
+test("aggregate migration check is guarded and rejects an unguarded mutation", () => {
+  const unguarded = structuredClone(packageJson);
+  unguarded.scripts.check = alwaysActiveCommands
+    .map((command) => `npm run ${command}`)
+    .join(" && ");
+
+  assert.throws(() => {
+    const check = unguarded.scripts.check;
+    assert.ok(check.includes(guardedMigrationCheckCommand));
+  }, /guarded/u);
+});
+
+test("npm 10 guarded migration invocation runs no lifecycle hook", async (t) => {
+  const fixturePath = await mkdtemp(
+    path.join(os.tmpdir(), "crewroll-npm-hook-"),
+  );
+  t.after(async () => rm(fixturePath, { force: true, recursive: true }));
+  await mkdir(fixturePath, { recursive: true });
+  await writeFile(
+    path.join(fixturePath, "package.json"),
+    JSON.stringify({
+      name: "crewroll-npm-hook-fixture",
+      private: true,
+      scripts: {
+        "migrations:check": "node main.mjs",
+        "premigrations:check": "node pre.mjs",
+        "postmigrations:check": "node post.mjs",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(fixturePath, "pre.mjs"),
+    'import { writeFile } from "node:fs/promises"; await writeFile("pre.marker", "bad");\n',
+  );
+  await writeFile(
+    path.join(fixturePath, "post.mjs"),
+    'import { writeFile } from "node:fs/promises"; await writeFile("post.sentinel", "bad");\n',
+  );
+  await writeFile(
+    path.join(fixturePath, "main.mjs"),
+    'import { writeFile } from "node:fs/promises"; await writeFile("main.marker", "ok");\n',
+  );
+
+  await execFileAsync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["run", "--ignore-scripts", "migrations:check"],
+    { cwd: fixturePath },
+  );
+
+  await readFile(path.join(fixturePath, "main.marker"), "utf8");
+  await assert.rejects(readFile(path.join(fixturePath, "pre.marker")));
+  await assert.rejects(readFile(path.join(fixturePath, "post.sentinel")));
 });
 
 test("all root scripts reject silent skips, network-selected latest tools, and placeholders", () => {
