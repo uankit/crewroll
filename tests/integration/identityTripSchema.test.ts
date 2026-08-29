@@ -10,9 +10,11 @@ import {
 } from "./support/fixtures.js";
 import { migrateDown } from "./support/migrations.js";
 import {
+  resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
   type PostgresTestContext,
+  usesExplicitExternalPostgres,
 } from "./support/postgres.js";
 
 const FIXED_NOW = new Date("2026-08-29T08:00:00.000Z");
@@ -55,6 +57,10 @@ describe.sequential("identity and trip schema", () => {
       from information_schema.tables
       where table_schema = 'public'
         and table_name not like 'kysely_%'
+        and table_name in (
+          'devices', 'trip_invites', 'trip_key_envelopes', 'trip_members',
+          'trips', 'user_active_trips', 'users'
+        )
       order by table_name
     `.execute(db);
 
@@ -103,6 +109,11 @@ describe.sequential("identity and trip schema", () => {
         on namespace_record.oid = constraint_record.connamespace
       where namespace_record.nspname = 'public'
         and constraint_record.contype = 'c'
+        and constraint_record.conrelid in (
+          'devices'::regclass, 'trip_invites'::regclass,
+          'trip_key_envelopes'::regclass, 'trip_members'::regclass,
+          'trips'::regclass, 'users'::regclass
+        )
       order by constraint_record.conname
     `.execute(db);
 
@@ -152,6 +163,11 @@ describe.sequential("identity and trip schema", () => {
         on namespace_record.oid = constraint_record.connamespace
       where namespace_record.nspname = 'public'
         and constraint_record.contype = 'f'
+        and constraint_record.conrelid in (
+          'devices'::regclass, 'trip_invites'::regclass,
+          'trip_key_envelopes'::regclass, 'trip_members'::regclass,
+          'trips'::regclass, 'user_active_trips'::regclass
+        )
       order by constraint_record.conname
     `.execute(db);
 
@@ -749,12 +765,18 @@ describe.sequential("identity and trip schema", () => {
 
   it("migrates up, down, and up again", async () => {
     await migrateDown(db);
+    await migrateDown(db);
+    await migrateDown(db);
 
     const tablesAfterDown = await sql<{ table_name: string }>`
       select table_name
       from information_schema.tables
       where table_schema = 'public'
         and table_name not like 'kysely_%'
+        and table_name in (
+          'devices', 'trip_invites', 'trip_key_envelopes', 'trip_members',
+          'trips', 'user_active_trips', 'users'
+        )
       order by table_name
     `.execute(db);
     const indexesAfterDown = await sql<{ indexname: string }>`
@@ -778,6 +800,10 @@ describe.sequential("identity and trip schema", () => {
       from information_schema.tables
       where table_schema = 'public'
         and table_name not like 'kysely_%'
+        and table_name in (
+          'devices', 'trip_invites', 'trip_key_envelopes', 'trip_members',
+          'trips', 'user_active_trips', 'users'
+        )
       order by table_name
     `.execute(db);
     const indexesAfterSecondUp = await sql<{ indexname: string }>`
@@ -813,8 +839,63 @@ describe.sequential("identity and trip schema", () => {
 });
 
 describe.sequential("PostgreSQL test-support lifecycle", () => {
-  it("stops the started container when database construction fails", async () => {
+  it("fails closed unless the disposable loopback cluster is explicitly approved", () => {
+    expect(resolveExplicitExternalPostgresUrl({})).toBeNull();
+    expect(() =>
+      resolveExplicitExternalPostgresUrl({
+        CREWROLL_TEST_EXTERNAL_POSTGRES_URL:
+          "postgresql://uankit@127.0.0.1:55432/postgres",
+      }),
+    ).toThrow("explicit disposable-loopback opt-in");
+    expect(() =>
+      resolveExplicitExternalPostgresUrl({
+        CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
+      }),
+    ).toThrow("explicit disposable-loopback opt-in");
+
+    for (const connectionString of [
+      "postgresql://uankit@localhost:55432/postgres",
+      "postgresql://uankit@127.0.0.1:5432/postgres",
+      "postgresql://uankit@127.0.0.1:55432/user_database",
+      "postgresql://uankit@127.0.0.1:55432/postgres?sslmode=disable",
+    ]) {
+      expect(() =>
+        resolveExplicitExternalPostgresUrl({
+          CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
+          CREWROLL_TEST_EXTERNAL_POSTGRES_URL: connectionString,
+        }),
+      ).toThrow("approved disposable loopback cluster");
+    }
+
+    expect(
+      resolveExplicitExternalPostgresUrl({
+        CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
+        CREWROLL_TEST_EXTERNAL_POSTGRES_URL:
+          "postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green",
+      }),
+    ).toBe("postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green");
+  });
+
+  it("cleans test resources when database construction fails", async () => {
     const failure = new Error("database construction failed for test");
+
+    if (usesExplicitExternalPostgres()) {
+      let observedError: unknown;
+
+      try {
+        await startMigratedPostgres({
+          databaseFactory() {
+            throw failure;
+          },
+        });
+      } catch (error) {
+        observedError = error;
+      }
+
+      expect(observedError).toBe(failure);
+      return;
+    }
+
     let containerId: string | undefined;
     let unexpectedContext: PostgresTestContext | undefined;
     let observedError: unknown;
