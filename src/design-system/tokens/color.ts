@@ -18,6 +18,10 @@ export const lightColors = {
   infoSurface: "#EAF2FF",
 } as const;
 
+export type CrewRollColors = {
+  readonly [Key in keyof typeof lightColors]: string;
+};
+
 export const darkColors = {
   background: "#020A12",
   surface: "#081421",
@@ -26,8 +30,8 @@ export const darkColors = {
   textPrimary: "#F7FAFF",
   textSecondary: "#9EADBE",
   action: "#1675FF",
-  actionPressed: "#0B63CE",
-  onAction: "#FFFFFF",
+  actionPressed: "#2D82FF",
+  onAction: "#020A12",
   success: "#62E8BC",
   successSurface: "#0D362C",
   warning: "#FFD27A",
@@ -36,8 +40,4 @@ export const darkColors = {
   criticalSurface: "#40171C",
   info: "#79B8FF",
   infoSurface: "#0A2D5D",
-} as const;
-
-export type CrewRollColors = {
-  [Key in keyof typeof lightColors]: string;
-};
+} as const satisfies CrewRollColors;
