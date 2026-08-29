@@ -39,6 +39,12 @@ async function startBootstrapDatabase(): Promise<BootstrapDatabase> {
   const loopbackUri = process.env.CREWROLL_API_LOOPBACK_DATABASE_URL;
   if (loopbackUri === undefined) {
     const context = await startMigratedPostgres();
+    if (context.container === undefined) {
+      await context.stop();
+      throw new Error(
+        "Expected a Testcontainers-backed API bootstrap database",
+      );
+    }
     return {
       connectionUri: context.container.getConnectionUri(),
       stop: () => context.stop(),
