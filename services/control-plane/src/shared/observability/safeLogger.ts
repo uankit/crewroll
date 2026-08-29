@@ -26,6 +26,10 @@ const knownRouteTemplates = new Set([
   "/health/live",
   "/health/ready",
   "/unmatched",
+  "/v1/devices",
+  "/v1/devices/:deviceId",
+  "/v1/devices/:deviceId/push-token",
+  "/webhooks/clerk",
 ]);
 
 function isBoundedString(value: unknown, pattern: RegExp): boolean {

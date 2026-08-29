@@ -33,6 +33,9 @@ function sendProblem(
   requestId: string,
 ): FastifyReply {
   const problem = toProblemDetails(new DomainError(kind), requestId);
+  if (kind === "AUTH_REQUIRED" || kind === "AUTH_INVALID") {
+    reply.header("WWW-Authenticate", "Bearer");
+  }
   return reply
     .code(problem.status)
     .type("application/problem+json")

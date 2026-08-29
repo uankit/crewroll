@@ -40,7 +40,8 @@ const sourceSchema = z.object({
   APNS_PRIVATE_KEY: nonemptySecretSchema.optional(),
   APNS_TEAM_ID: nonemptySecretSchema.optional(),
   AWS_REGION: nonemptySecretSchema.optional(),
-  CLERK_AUDIENCE: nonemptySecretSchema.optional(),
+  BACKGROUND_CREDENTIAL_HMAC_KEY_V1: nonemptySecretSchema.optional(),
+  CLERK_AUTHORIZED_PARTIES_JSON: nonemptySecretSchema.optional(),
   CLERK_ISSUER: nonemptySecretSchema.optional(),
   CLERK_SECRET_KEY: nonemptySecretSchema.optional(),
   CLERK_WEBHOOK_SECRET: nonemptySecretSchema.optional(),
@@ -67,7 +68,8 @@ const productionOnlyKeys = [
   "APNS_PRIVATE_KEY",
   "APNS_TEAM_ID",
   "AWS_REGION",
-  "CLERK_AUDIENCE",
+  "BACKGROUND_CREDENTIAL_HMAC_KEY_V1",
+  "CLERK_AUTHORIZED_PARTIES_JSON",
   "CLERK_ISSUER",
   "CLERK_SECRET_KEY",
   "CLERK_WEBHOOK_SECRET",
@@ -86,7 +88,8 @@ export interface Environment {
   readonly apnsPrivateKey: string | undefined;
   readonly apnsTeamId: string | undefined;
   readonly awsRegion: string | undefined;
-  readonly clerkAudience: string | undefined;
+  readonly backgroundCredentialHmacKeyV1: Uint8Array | undefined;
+  readonly clerkAuthorizedParties: readonly string[];
   readonly clerkIssuer: string | undefined;
   readonly clerkSecretKey: string | undefined;
   readonly clerkWebhookSecret: string | undefined;
@@ -146,6 +149,70 @@ function parseDebugCorsOrigins(
   return new Set(origins).size === origins.length ? origins : undefined;
 }
 
+function parseCanonicalBase64Key(
+  input: string | undefined,
+): Buffer | undefined {
+  if (input === undefined) return undefined;
+  try {
+    const decoded = Buffer.from(input, "base64");
+    if (decoded.byteLength !== 32 || decoded.toString("base64") !== input) {
+      return undefined;
+    }
+    return Buffer.from(decoded);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseOrigin(input: string, requireHttps: boolean): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return undefined;
+  }
+  if (
+    (requireHttps
+      ? url.protocol !== "https:"
+      : !["http:", "https:"].includes(url.protocol)) ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    input !== url.origin
+  ) {
+    return undefined;
+  }
+  return url.origin;
+}
+
+function parseAuthorizedParties(
+  input: string | undefined,
+  requireHttps: boolean,
+): readonly string[] | undefined {
+  if (input === undefined) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+
+  const origins: string[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "string") return undefined;
+    const origin = parseOrigin(item, requireHttps);
+    if (origin === undefined) return undefined;
+    origins.push(origin);
+  }
+  if (
+    new Set(origins).size !== origins.length ||
+    JSON.stringify(origins) !== input
+  ) {
+    return undefined;
+  }
+  return origins;
+}
+
 export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
   const parsed = sourceSchema.safeParse(source);
   const invalidKeys = new Set<string>();
@@ -174,6 +241,33 @@ export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
     invalidKeys.add("DEBUG_CORS_ORIGINS");
   }
 
+  const isProduction = source.NODE_ENV === "production";
+  const backgroundCredentialHmacKeyV1 = parseCanonicalBase64Key(
+    source.BACKGROUND_CREDENTIAL_HMAC_KEY_V1,
+  );
+  if (
+    source.BACKGROUND_CREDENTIAL_HMAC_KEY_V1 !== undefined &&
+    backgroundCredentialHmacKeyV1 === undefined
+  ) {
+    invalidKeys.add("BACKGROUND_CREDENTIAL_HMAC_KEY_V1");
+  }
+
+  const clerkAuthorizedParties = parseAuthorizedParties(
+    source.CLERK_AUTHORIZED_PARTIES_JSON,
+    isProduction,
+  );
+  if (clerkAuthorizedParties === undefined) {
+    invalidKeys.add("CLERK_AUTHORIZED_PARTIES_JSON");
+  }
+
+  if (
+    isProduction &&
+    source.CLERK_ISSUER !== undefined &&
+    parseOrigin(source.CLERK_ISSUER, true) === undefined
+  ) {
+    invalidKeys.add("CLERK_ISSUER");
+  }
+
   if (
     !parsed.success ||
     debugCorsOrigins === undefined ||
@@ -182,13 +276,17 @@ export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
     throw new EnvironmentError([...invalidKeys]);
   }
 
-  return Object.freeze({
+  const normalizedClerkAuthorizedParties = clerkAuthorizedParties ?? [];
+
+  const environment = {
     apnsBundleId: parsed.data.APNS_BUNDLE_ID,
     apnsKeyId: parsed.data.APNS_KEY_ID,
     apnsPrivateKey: parsed.data.APNS_PRIVATE_KEY,
     apnsTeamId: parsed.data.APNS_TEAM_ID,
     awsRegion: parsed.data.AWS_REGION,
-    clerkAudience: parsed.data.CLERK_AUDIENCE,
+    clerkAuthorizedParties: Object.freeze([
+      ...normalizedClerkAuthorizedParties,
+    ]),
     clerkIssuer: parsed.data.CLERK_ISSUER,
     clerkSecretKey: parsed.data.CLERK_SECRET_KEY,
     clerkWebhookSecret: parsed.data.CLERK_WEBHOOK_SECRET,
@@ -202,5 +300,12 @@ export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
     mediaBucket: parsed.data.MEDIA_BUCKET,
     nodeEnvironment: parsed.data.NODE_ENV,
     port: parsed.data.PORT,
+  } as Environment;
+  Object.defineProperty(environment, "backgroundCredentialHmacKeyV1", {
+    configurable: false,
+    enumerable: false,
+    value: backgroundCredentialHmacKeyV1,
+    writable: false,
   });
+  return Object.freeze(environment);
 }
