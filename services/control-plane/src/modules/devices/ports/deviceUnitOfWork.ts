@@ -41,6 +41,10 @@ export interface DeviceTransaction {
   findDeviceByInstallation(
     installationId: string,
   ): Promise<DeviceRecord | null>;
+  findDeviceByOwnerAndId(
+    userId: string,
+    deviceId: string,
+  ): Promise<DeviceRecord | null>;
   findIdempotency(
     command: CommandIdentity,
     userId: string,

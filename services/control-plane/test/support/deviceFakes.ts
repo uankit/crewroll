@@ -26,6 +26,9 @@ export function createDeviceTestHarness() {
   const ids = [fixedUserId, fixedDeviceId];
   let snapshotOverride: RegistrationAuthorizationSnapshot | undefined;
   let beforeTransaction: (() => void) | undefined;
+  let currentNow = fixedNow;
+  let foregroundState:
+    "conflict" | "deleted" | "revoked" | "unknown" | undefined;
 
   const transaction: DeviceTransaction = {
     deleteIdempotency(record) {
@@ -34,6 +37,13 @@ export function createDeviceTestHarness() {
     },
     findDeviceByInstallation(installationId) {
       return Promise.resolve(devices.get(installationId) ?? null);
+    },
+    findDeviceByOwnerAndId(userId, deviceId) {
+      return Promise.resolve(
+        [...devices.values()].find(
+          (device) => device.userId === userId && device.deviceId === deviceId,
+        ) ?? null,
+      );
     },
     findIdempotency(command, ownerId) {
       return Promise.resolve(
@@ -79,7 +89,7 @@ export function createDeviceTestHarness() {
         expiresAt,
       }),
     },
-    clock: { now: () => fixedNow },
+    clock: { now: () => currentNow },
     directory: {
       getUser(clerkSubject) {
         calls.directory += 1;
@@ -104,8 +114,30 @@ export function createDeviceTestHarness() {
       },
     },
     snapshots: {
-      readForegroundDevice() {
-        return Promise.resolve(null);
+      readForegroundDevice(clerkSubject, deviceId, command) {
+        if (foregroundState === "unknown") return Promise.resolve(null);
+        const user = users.get(clerkSubject);
+        const device = [...devices.values()].find(
+          (candidate) => candidate.deviceId === deviceId,
+        );
+        if (user === undefined || device === undefined) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({
+          deviceId: device.deviceId,
+          idempotency:
+            foregroundState === "conflict"
+              ? "live-conflict"
+              : idempotencyState(
+                  idempotencies.get(`${user.userId}:${command.idempotencyKey}`),
+                  command,
+                ),
+          platform: device.platform,
+          pushTokenHash: device.pushTokenHash,
+          revoked: foregroundState === "revoked" || device.revoked,
+          userDeleted: foregroundState === "deleted" || user.deleted,
+          userId: user.userId,
+        });
       },
       readRegistration(_clerkSubject, installationId, command) {
         if (snapshotOverride !== undefined) {
@@ -138,7 +170,7 @@ export function createDeviceTestHarness() {
     command: CommandIdentity,
   ): "expired" | "live-conflict" | "live-match" | "missing" {
     if (stored === undefined) return "missing";
-    if (stored.expiresAt.getTime() <= fixedNow.getTime()) return "expired";
+    if (stored.expiresAt.getTime() <= currentNow.getTime()) return "expired";
     return Buffer.from(stored.command.requestSha256).equals(
       Buffer.from(command.requestSha256),
     )
@@ -147,15 +179,41 @@ export function createDeviceTestHarness() {
   }
 
   return {
+    advanceNow(milliseconds: number) {
+      currentNow = new Date(currentNow.getTime() + milliseconds);
+    },
     calls,
     dependencies,
     devices,
+    findDevice(deviceId: string): DeviceRecord {
+      const device = [...devices.values()].find(
+        (candidate) => candidate.deviceId === deviceId,
+      );
+      if (device === undefined) throw new Error("Expected fake device");
+      return device;
+    },
     idempotencies,
+    replaceDevice(deviceId: string, patch: Partial<DeviceRecord>) {
+      const device = [...devices.values()].find(
+        (candidate) => candidate.deviceId === deviceId,
+      );
+      if (device === undefined) throw new Error("Expected fake device");
+      devices.set(device.installationId, { ...device, ...patch });
+    },
+    resetCalls() {
+      calls.directory = 0;
+      calls.fingerprint = 0;
+      calls.protect = 0;
+      calls.transaction = 0;
+    },
     setBeforeTransaction(hook: (() => void) | undefined) {
       beforeTransaction = hook;
     },
     setSnapshot(snapshot: RegistrationAuthorizationSnapshot | undefined) {
       snapshotOverride = snapshot;
+    },
+    setForegroundState(state: typeof foregroundState) {
+      foregroundState = state;
     },
     users,
   };
