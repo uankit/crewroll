@@ -46,6 +46,7 @@
     "test:native:android": "node tools/run-future-suite.mjs native-android",
     "test:e2e": "node tools/run-future-suite.mjs e2e",
     "test:load": "node tools/run-future-suite.mjs load",
+    "generate:mobile-api": "node tools/generate-mobile-api.mjs",
     "migrations:check": "node tools/check-migrations.mjs",
     "doctor": "expo-doctor",
     "verify:identity": "node tools/verify-app-identity.mjs",
