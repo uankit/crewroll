@@ -29,42 +29,43 @@ export const FUTURE_SUITE_DEFINITIONS = deepFreeze({
     sentinel: "tests/integration/.crewroll-suite.json",
     fixedHarness: ["tests/integration/vitest.config.ts"],
     discoveredHarness: [{ under: "tests/integration", suffixes: [".test.ts"] }],
-    extraArtifacts: [],
+    activationArtifacts: [],
+    passiveHarness: [],
   },
   "native-ios": {
     suite: "native-ios",
     ownerTask: "IOS-001",
     privateScript: "test:native:ios:run",
-    privateCommand: "swift test --package-path modules/crewroll-transfer/ios",
-    ownedRoot: "modules/crewroll-transfer/ios",
+    privateCommand:
+      "swift test --package-path modules/crewroll-transfer/ios --scratch-path .expo/crewroll-native-ios-tests",
+    ownedRoot: "modules/crewroll-transfer/ios/Tests",
     sentinel: "modules/crewroll-transfer/ios/.crewroll-suite.json",
-    fixedHarness: ["modules/crewroll-transfer/ios/Package.swift"],
+    fixedHarness: [],
     discoveredHarness: [
       {
         under: "modules/crewroll-transfer/ios/Tests",
         suffixes: [".swift"],
       },
     ],
-    extraArtifacts: [],
+    activationArtifacts: ["modules/crewroll-transfer/ios/Package.swift"],
+    passiveHarness: [],
   },
   "native-android": {
     suite: "native-android",
     ownerTask: "AND-001",
     privateScript: "test:native:android:run",
     privateCommand: "node tools/run-android-native-tests.mjs",
-    ownedRoot: "modules/crewroll-transfer/android",
+    ownedRoot: "modules/crewroll-transfer/android/src/test",
     sentinel: "modules/crewroll-transfer/android/.crewroll-suite.json",
-    fixedHarness: [
-      "modules/crewroll-transfer/android/build.gradle",
-      "tools/run-android-native-tests.mjs",
-    ],
+    fixedHarness: [],
     discoveredHarness: [
       {
         under: "modules/crewroll-transfer/android/src/test",
         suffixes: [".kt"],
       },
     ],
-    extraArtifacts: ["tools/run-android-native-tests.mjs"],
+    activationArtifacts: ["tools/run-android-native-tests.mjs"],
+    passiveHarness: ["modules/crewroll-transfer/android/build.gradle"],
   },
   e2e: {
     suite: "e2e",
@@ -77,7 +78,8 @@ export const FUTURE_SUITE_DEFINITIONS = deepFreeze({
     discoveredHarness: [
       { under: "tests/maestro", suffixes: [".yaml", ".yml"] },
     ],
-    extraArtifacts: [],
+    activationArtifacts: [],
+    passiveHarness: [],
   },
   load: {
     suite: "load",
@@ -88,7 +90,8 @@ export const FUTURE_SUITE_DEFINITIONS = deepFreeze({
     sentinel: "tests/load/.crewroll-suite.json",
     fixedHarness: ["tests/load/photo-flow.js"],
     discoveredHarness: [],
-    extraArtifacts: [],
+    activationArtifacts: [],
+    passiveHarness: [],
   },
 });
 
@@ -127,7 +130,8 @@ for (const definition of Object.values(FUTURE_SUITE_DEFINITIONS)) {
     definition.ownedRoot,
     definition.sentinel,
     ...definition.fixedHarness,
-    ...definition.extraArtifacts,
+    ...definition.activationArtifacts,
+    ...definition.passiveHarness,
     ...definition.discoveredHarness.map(({ under }) => under),
   ]) {
     resolveContainedPath(lexicalRepositoryRoot, path);
@@ -222,7 +226,7 @@ async function scanOwnedRoot(root, repositoryRelativePath) {
   return { evidence: true, invalid, files };
 }
 
-async function inspectExtraArtifact(root, repositoryRelativePath) {
+async function inspectArtifact(root, repositoryRelativePath) {
   const ancestry = await inspectRealAncestors(root, repositoryRelativePath);
   if (ancestry.kind === "missing") {
     return { evidence: false, invalid: false, regularFile: false };
@@ -294,8 +298,8 @@ function isExactSentinel(value, definition) {
   );
 }
 
-async function hasExactSentinel(root, files, definition) {
-  if (!files.has(definition.sentinel)) return false;
+async function hasExactSentinel(root, sentinelArtifact, definition) {
+  if (!sentinelArtifact.regularFile) return false;
   try {
     const value = JSON.parse(
       await readFile(resolveContainedPath(root, definition.sentinel), "utf8"),
@@ -306,13 +310,22 @@ async function hasExactSentinel(root, files, definition) {
   }
 }
 
-function hasCompleteHarness(files, extraArtifacts, definition) {
+function hasCompleteHarness(
+  files,
+  activationArtifacts,
+  passiveHarness,
+  definition,
+) {
   for (const path of definition.fixedHarness) {
-    if (definition.extraArtifacts.includes(path)) {
-      if (!extraArtifacts.get(path)?.regularFile) return false;
-    } else if (!files.has(path)) {
-      return false;
-    }
+    if (!files.has(path)) return false;
+  }
+
+  for (const path of definition.activationArtifacts) {
+    if (!activationArtifacts.get(path)?.regularFile) return false;
+  }
+
+  for (const path of definition.passiveHarness) {
+    if (!passiveHarness.get(path)?.regularFile) return false;
   }
 
   for (const discovery of definition.discoveredHarness) {
@@ -351,14 +364,20 @@ export async function classifyFutureSuiteRepository(suite) {
   const manifestEvidence = hasPrivateScript || hasPreHook || hasPostHook;
 
   const ownedRoot = await scanOwnedRoot(root, definition.ownedRoot);
-  const extraArtifacts = new Map();
-  for (const path of definition.extraArtifacts) {
-    extraArtifacts.set(path, await inspectExtraArtifact(root, path));
+  const sentinelArtifact = await inspectArtifact(root, definition.sentinel);
+  const activationArtifacts = new Map();
+  for (const path of definition.activationArtifacts) {
+    activationArtifacts.set(path, await inspectArtifact(root, path));
+  }
+  const passiveHarness = new Map();
+  for (const path of definition.passiveHarness) {
+    passiveHarness.set(path, await inspectArtifact(root, path));
   }
 
   const filesystemEvidence =
     ownedRoot.evidence ||
-    [...extraArtifacts.values()].some(({ evidence }) => evidence);
+    sentinelArtifact.evidence ||
+    [...activationArtifacts.values()].some(({ evidence }) => evidence);
 
   if (manifest.valid && !manifestEvidence && !filesystemEvidence) {
     return {
@@ -375,17 +394,22 @@ export async function classifyFutureSuiteRepository(suite) {
     manifest.scripts[definition.privateScript] === definition.privateCommand;
   const sentinelExact = await hasExactSentinel(
     root,
-    ownedRoot.files,
+    sentinelArtifact,
     definition,
   );
   const harnessComplete = hasCompleteHarness(
     ownedRoot.files,
-    extraArtifacts,
+    activationArtifacts,
+    passiveHarness,
     definition,
   );
   const invalidEvidence =
     ownedRoot.invalid ||
-    [...extraArtifacts.values()].some(({ invalid }) => invalid);
+    sentinelArtifact.invalid ||
+    [...activationArtifacts.values()].some(({ invalid }) => invalid);
+  const invalidHarness = [...passiveHarness.values()].some(
+    ({ invalid }) => invalid,
+  );
 
   if (
     manifest.valid &&
@@ -394,6 +418,7 @@ export async function classifyFutureSuiteRepository(suite) {
     !hasPostHook &&
     ownedRoot.evidence &&
     !invalidEvidence &&
+    !invalidHarness &&
     sentinelExact &&
     harnessComplete
   ) {
@@ -411,7 +436,7 @@ export async function classifyFutureSuiteRepository(suite) {
   if (hasPreHook || hasPostHook) contractClasses.add("lifecycle");
   if (!ownedRoot.evidence || invalidEvidence) contractClasses.add("evidence");
   if (!sentinelExact) contractClasses.add("sentinel");
-  if (!harnessComplete) contractClasses.add("harness");
+  if (!harnessComplete || invalidHarness) contractClasses.add("harness");
 
   return {
     state: "partial",

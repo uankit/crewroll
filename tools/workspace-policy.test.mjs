@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -59,26 +59,33 @@ const futureSuiteScripts = [
     publicName: "test:integration",
     publicCommand: "node tools/run-future-suite.mjs integration",
     privateName: "test:integration:run",
+    privateCommand:
+      "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && vitest run --config tests/integration/vitest.config.ts",
   },
   {
     publicName: "test:native:ios",
     publicCommand: "node tools/run-future-suite.mjs native-ios",
     privateName: "test:native:ios:run",
+    privateCommand:
+      "swift test --package-path modules/crewroll-transfer/ios --scratch-path .expo/crewroll-native-ios-tests",
   },
   {
     publicName: "test:native:android",
     publicCommand: "node tools/run-future-suite.mjs native-android",
     privateName: "test:native:android:run",
+    privateCommand: "node tools/run-android-native-tests.mjs",
   },
   {
     publicName: "test:e2e",
     publicCommand: "node tools/run-future-suite.mjs e2e",
     privateName: "test:e2e:run",
+    privateCommand: "maestro test tests/maestro",
   },
   {
     publicName: "test:load",
     publicCommand: "node tools/run-future-suite.mjs load",
     privateName: "test:load:run",
+    privateCommand: "k6 run tests/load/photo-flow.js",
   },
 ];
 
@@ -90,24 +97,6 @@ const futureSuiteLifecycleHooks = futureSuiteScripts.flatMap(
     `post${privateName}`,
   ],
 );
-
-const dormantFutureSuitePaths = [
-  "tests/integration",
-  "tests/integration/.crewroll-suite.json",
-  "tests/integration/vitest.config.ts",
-  "modules/crewroll-transfer/ios",
-  "modules/crewroll-transfer/ios/.crewroll-suite.json",
-  "modules/crewroll-transfer/ios/Package.swift",
-  "modules/crewroll-transfer/android",
-  "modules/crewroll-transfer/android/.crewroll-suite.json",
-  "modules/crewroll-transfer/android/build.gradle",
-  "tools/run-android-native-tests.mjs",
-  "tests/maestro",
-  "tests/maestro/.crewroll-suite.json",
-  "tests/load",
-  "tests/load/.crewroll-suite.json",
-  "tests/load/photo-flow.js",
-];
 
 const rootLintPathClasses = [
   "app",
@@ -221,16 +210,21 @@ function assertLintBuildPrerequisites(rootManifest, controlManifest) {
 }
 
 function assertFutureSuiteSurface(manifest) {
-  for (const { publicName, publicCommand, privateName } of futureSuiteScripts) {
+  for (const {
+    publicName,
+    publicCommand,
+    privateName,
+    privateCommand,
+  } of futureSuiteScripts) {
     assert.equal(
       manifest.scripts?.[publicName],
       publicCommand,
       `${publicName} must use the honest dispatcher`,
     );
-    assert.equal(
-      manifest.scripts?.[privateName],
-      undefined,
-      `${privateName} stays reserved for its future owner`,
+    const privateValue = manifest.scripts?.[privateName];
+    assert.ok(
+      privateValue === undefined || privateValue === privateCommand,
+      `${privateName} must be absent or use its exact owner command`,
     );
   }
 
@@ -307,11 +301,21 @@ test("workspace policy rejects every public and private future-suite lifecycle h
   }
 });
 
-test("future suite activation evidence stays absent until an owner lands it", async () => {
-  for (const path of dormantFutureSuitePaths) {
-    await assert.rejects(lstat(new URL(path, root)), {
-      code: "ENOENT",
-    });
+test("workspace policy permits absent or exact private owner scripts and rejects mutations", () => {
+  for (const { privateName, privateCommand } of futureSuiteScripts) {
+    const activated = structuredClone(packageJson);
+    activated.scripts[privateName] = privateCommand;
+    assert.doesNotThrow(
+      () => assertFutureSuiteSurface(activated),
+      `${privateName} exact owner command`,
+    );
+
+    const mutated = structuredClone(packageJson);
+    mutated.scripts[privateName] = `${privateCommand} --mutated`;
+    assert.throws(
+      () => assertFutureSuiteSurface(mutated),
+      new RegExp(`^AssertionError \\[ERR_ASSERTION\\]: ${privateName}`, "u"),
+    );
   }
 });
 

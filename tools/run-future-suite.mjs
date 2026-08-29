@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +44,36 @@ function unavailable(stderr, definition) {
   return FUTURE_SUITE_EXIT_CODES.unavailable;
 }
 
+function repositoryStateExit(stderr, definition, repository) {
+  if (repository.state === "active") return undefined;
+
+  if (repository.state === "dormant") {
+    if (
+      !emit(
+        stderr,
+        `future-suite ${definition.suite} dormant ${definition.ownerTask}: owner task has not activated the complete harness.`,
+      )
+    ) {
+      return FUTURE_SUITE_EXIT_CODES.internal;
+    }
+    return FUTURE_SUITE_EXIT_CODES.dormant;
+  }
+
+  if (repository.state === "partial") {
+    if (
+      !emit(
+        stderr,
+        `future-suite ${definition.suite} partial ${definition.ownerTask}: incomplete repository contract classes ${repository.contractClasses.join(",")}.`,
+      )
+    ) {
+      return FUTURE_SUITE_EXIT_CODES.internal;
+    }
+    return FUTURE_SUITE_EXIT_CODES.partial;
+  }
+
+  return internal(stderr, definition);
+}
+
 function nonemptyEnvironmentValue(value) {
   return typeof value === "string" && value.trim() !== "";
 }
@@ -71,11 +101,8 @@ async function mapProbe(probe, executable, args, options) {
 async function inspectDirectory(path) {
   try {
     return (await stat(path)).isDirectory() ? "available" : "unavailable";
-  } catch (error) {
-    if (["EACCES", "ENOENT", "ENOTDIR"].includes(error?.code)) {
-      return "unavailable";
-    }
-    return "internal";
+  } catch {
+    return "unavailable";
   }
 }
 
@@ -119,13 +146,11 @@ async function checkAvailability({ definition, root, env, platform, probe }) {
       );
       if (sdkRoots.length === 0) return "unavailable";
 
-      let unexpectedDirectoryResult = false;
       for (const sdkRoot of sdkRoots) {
         const directory = await inspectDirectory(sdkRoot);
         if (directory === "available") return "available";
-        if (directory === "internal") unexpectedDirectoryResult = true;
       }
-      return unexpectedDirectoryResult ? "internal" : "unavailable";
+      return "unavailable";
     }
     case "e2e":
       return mapProbe(probe, "maestro", ["--version"], probeOptions);
@@ -147,7 +172,7 @@ async function invokePrivateSuite({ definition, root, npmExecPath, spawn }) {
   try {
     result = await spawn(
       process.execPath,
-      [npmExecPath, "run", definition.privateScript],
+      [npmExecPath, "run", "--ignore-scripts", definition.privateScript],
       {
         cwd: root,
         shell: false,
@@ -203,31 +228,8 @@ export async function dispatchFutureSuite({
     }
 
     const repository = await classifyFutureSuiteRepository(definition.suite);
-    if (repository.state === "dormant") {
-      if (
-        !emit(
-          stderr,
-          `future-suite ${definition.suite} dormant ${definition.ownerTask}: owner task has not activated the complete harness.`,
-        )
-      ) {
-        return FUTURE_SUITE_EXIT_CODES.internal;
-      }
-      return FUTURE_SUITE_EXIT_CODES.dormant;
-    }
-
-    if (repository.state === "partial") {
-      if (
-        !emit(
-          stderr,
-          `future-suite ${definition.suite} partial ${definition.ownerTask}: incomplete repository contract classes ${repository.contractClasses.join(",")}.`,
-        )
-      ) {
-        return FUTURE_SUITE_EXIT_CODES.internal;
-      }
-      return FUTURE_SUITE_EXIT_CODES.partial;
-    }
-
-    if (repository.state !== "active") return internal(stderr, definition);
+    const repositoryExit = repositoryStateExit(stderr, definition, repository);
+    if (repositoryExit !== undefined) return repositoryExit;
 
     const availability = await checkAvailability({
       definition,
@@ -238,6 +240,19 @@ export async function dispatchFutureSuite({
     });
     if (availability === "unavailable") return unavailable(stderr, definition);
     if (availability !== "available") return internal(stderr, definition);
+
+    const revalidatedRepository = await classifyFutureSuiteRepository(
+      definition.suite,
+    );
+    const revalidatedExit = repositoryStateExit(
+      stderr,
+      definition,
+      revalidatedRepository,
+    );
+    if (revalidatedExit !== undefined) return revalidatedExit;
+    if (revalidatedRepository.root !== repository.root) {
+      return internal(stderr, definition);
+    }
 
     const child = await invokePrivateSuite({
       definition,
@@ -254,7 +269,19 @@ export async function dispatchFutureSuite({
   }
 }
 
-const entryPath = process.argv[1] ? resolve(process.argv[1]) : undefined;
-if (entryPath === fileURLToPath(import.meta.url)) {
+async function isDirectEntrypoint(entryPath) {
+  if (!entryPath) return false;
+  try {
+    const [canonicalEntryPath, canonicalModulePath] = await Promise.all([
+      realpath(resolve(entryPath)),
+      realpath(fileURLToPath(import.meta.url)),
+    ]);
+    return canonicalEntryPath === canonicalModulePath;
+  } catch {
+    return false;
+  }
+}
+
+if (await isDirectEntrypoint(process.argv[1])) {
   process.exitCode = await dispatchFutureSuite();
 }
