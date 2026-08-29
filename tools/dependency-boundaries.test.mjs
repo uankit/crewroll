@@ -134,6 +134,7 @@ const fixtureFiles = {
       'export { target } from "./internal";\n',
     "src/infrastructure/__boundary_beta__/internal.ts":
       "export const target = true;\n",
+    "src/infrastructure/native/__boundary-source.ts": "export {};\n",
     "modules/crewroll-transfer/src/__boundary-target.ts":
       "export const target = true;\n",
     "tests/support/__boundary-target.ts": "export const target = true;\n",
@@ -791,6 +792,12 @@ test("every production layer class has an effective forbidden-edge mutation", as
       "src/infrastructure/__boundary_alpha__/source.ts",
     ],
     [
+      "mobile non-native infrastructure adapter to TypeBox",
+      "mobile",
+      'import "@sinclair/typebox/value";\n',
+      "src/infrastructure/__boundary_alpha__/source.ts",
+    ],
+    [
       "mobile native bridge to feature",
       "mobile",
       'import "../../../src/features/__boundary_alpha__";\n',
@@ -1313,6 +1320,12 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
       "src/infrastructure/__boundary_alpha__/source.ts",
     ],
     [
+      "mobile native infrastructure adapter to TypeBox value",
+      "mobile",
+      'import "@sinclair/typebox/value";\n',
+      "src/infrastructure/native/__boundary-source.ts",
+    ],
+    [
       "mobile native bridge internal",
       "mobile",
       'import "./__boundary-target";\n',
@@ -1328,6 +1341,12 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
       "mobile native bridge to contracts native protocol",
       "mobile",
       'import "@crewroll/contracts/native/protocol";\n',
+      "modules/crewroll-transfer/src/__boundary-source.ts",
+    ],
+    [
+      "mobile native bridge to Expo module loader",
+      "mobile",
+      'export { requireNativeModule } from "expo";\n',
       "modules/crewroll-transfer/src/__boundary-source.ts",
     ],
     [

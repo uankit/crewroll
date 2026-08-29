@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["CrewRollTransferModule"]
+  },
+  "android": {
+    "modules": ["com.uankit53.crewroll.transfer.CrewRollTransferModule"]
+  }
+}

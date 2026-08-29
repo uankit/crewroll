@@ -6,7 +6,7 @@ export default defineProject({
   resolve: {
     alias: {
       "@sinclair/typebox": fileURLToPath(
-        new URL("./node_modules/@sinclair/typebox", import.meta.url),
+        new URL("../../node_modules/@sinclair/typebox", import.meta.url),
       ),
     },
   },

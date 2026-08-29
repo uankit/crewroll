@@ -56,7 +56,8 @@
           "faceIDPermission": false
         }
       ],
-      "@clerk/expo"
+      "@clerk/expo",
+      "./modules/crewroll-transfer/plugin/withCrewRollTransfer"
     ],
     "experiments": {
       "typedRoutes": true,

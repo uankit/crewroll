@@ -108,6 +108,9 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   const application = element("application");
   const domain = element("domain");
   const infrastructure = element("infrastructure");
+  const nativeInfrastructure = element("infrastructure", {
+    captured: { adapter: "native" },
+  });
   const nativeBridge = element("native-bridge");
   const production = [
     route,
@@ -220,6 +223,8 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     allowModules(feature, featurePackages),
     allowModules(application, ["@crewroll/contracts", "zod"]),
     allowModules(infrastructure, infrastructurePackages),
+    allowModules(nativeInfrastructure, ["@sinclair/typebox"]),
+    allowModules(nativeBridge, ["expo"]),
     {
       from: nativeBridge,
       allow: [

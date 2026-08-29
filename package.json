@@ -50,10 +50,12 @@
   },
   "dependencies": {
     "@clerk/expo": "4.6.1",
+    "@crewroll/contracts": "0.1.0",
     "@expo-google-fonts/manrope": "^0.4.2",
     "@expo/vector-icons": "^15.0.2",
     "@hookform/resolvers": "5.9.1",
     "@shopify/flash-list": "2.0.2",
+    "@sinclair/typebox": "0.34.52",
     "@tanstack/react-query": "5.102.8",
     "expo": "~57.0.18",
     "expo-build-properties": "~57.0.15",
@@ -104,6 +106,11 @@
       "/node_modules/",
       "/services/",
       "/packages/"
-    ]
+    ],
+    "moduleNameMapper": {
+      "^@crewroll/contracts$": "<rootDir>/packages/contracts/openapi/index.ts",
+      "^@crewroll/contracts/native/protocol$": "<rootDir>/packages/contracts/native/protocol.ts",
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    }
   }
 }

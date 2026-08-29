@@ -172,6 +172,53 @@ test("photo permission copy describes automatic trip sharing", () => {
   assert.match(mediaLibraryPlugin[1].savePhotosPermission, /exact originals/i);
 });
 
+test("resolved native transfer config is scoped to photo and background delivery", () => {
+  const introspectResult = spawnSync(
+    "node_modules/expo/bin/cli",
+    ["config", "--type", "introspect", "--json"],
+    {
+      cwd: new URL("../", import.meta.url),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  assert.equal(
+    introspectResult.status,
+    0,
+    introspectResult.stderr || introspectResult.stdout,
+  );
+  const resolved = JSON.parse(introspectResult.stdout);
+  const infoPlist = resolved._internal?.modResults?.ios?.infoPlist;
+  assert.ok(infoPlist, "Expo introspection did not return the iOS Info.plist");
+  assert.match(infoPlist.NSPhotoLibraryUsageDescription, /active trip/i);
+  assert.match(infoPlist.NSPhotoLibraryAddUsageDescription, /exact originals/i);
+  assert.deepEqual(infoPlist.BGTaskSchedulerPermittedIdentifiers, [
+    "com.uankit53.airmesh.media-processing",
+  ]);
+  assert.deepEqual(infoPlist.UIBackgroundModes, [
+    "processing",
+    "remote-notification",
+  ]);
+  assert.equal(
+    JSON.stringify(resolved).includes("com.apple.photos.background-upload"),
+    false,
+  );
+
+  const gradleProperties =
+    resolved._internal?.modResults?.android?.gradleProperties;
+  assert.ok(
+    Array.isArray(gradleProperties),
+    "Expo introspection did not return Android Gradle properties",
+  );
+  const minSdk = gradleProperties.filter(
+    (property) => property.key === "android.minSdkVersion",
+  );
+  assert.deepEqual(minSdk, [
+    { type: "property", key: "android.minSdkVersion", value: "30" },
+  ]);
+});
+
 test("app config registers only installed, required greenfield plugins", () => {
   const pluginNames = app.plugins.map((plugin) =>
     Array.isArray(plugin) ? plugin[0] : plugin,
@@ -183,5 +230,6 @@ test("app config registers only installed, required greenfield plugins", () => {
     "expo-media-library",
     "expo-secure-store",
     "@clerk/expo",
+    "./modules/crewroll-transfer/plugin/withCrewRollTransfer",
   ]);
 });

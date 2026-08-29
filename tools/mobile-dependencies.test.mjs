@@ -24,6 +24,8 @@ const expoManagedDependencies = [
 
 const applicationDependencies = [
   "@clerk/expo",
+  "@crewroll/contracts",
+  "@sinclair/typebox",
   "@tanstack/react-query",
   "zustand",
   "zod",
@@ -75,6 +77,15 @@ function satisfiesSdk57Tilde(declaration, resolution) {
     installed[1] === 0 &&
     installed[2] >= Number(declared[1])
   );
+}
+
+function resolvedPackageVersion(lockfile, name) {
+  const packageEntry = lockfile.packages?.[`node_modules/${name}`];
+  if (packageEntry?.link === true) {
+    return lockfile.packages?.[packageEntry.resolved]?.version ?? "";
+  }
+
+  return packageEntry?.version ?? "";
 }
 
 function assertForbiddenPackageAbsent(manifest, lockfile, name) {
@@ -135,8 +146,7 @@ function assertMobileDependencyPolicy(manifest, lockfile) {
     );
   }
   for (const name of applicationDependencies) {
-    const resolution =
-      lockfile.packages?.[`node_modules/${name}`]?.version ?? "";
+    const resolution = resolvedPackageVersion(lockfile, name);
     assert.match(
       resolution,
       exactSemver,
@@ -179,6 +189,19 @@ test("rejects removal of required mobile dependencies", () => {
   assert.throws(
     () => assertMobileDependencyPolicy(withoutResolvers, resolversLock),
     /@hookform\/resolvers must use an exact application version/,
+  );
+
+  const { manifest: withoutTypeBox, lockfile: typeBoxLock } =
+    cloneManifestAndLock();
+  removeRootDependency(
+    withoutTypeBox,
+    typeBoxLock,
+    "dependencies",
+    "@sinclair/typebox",
+  );
+  assert.throws(
+    () => assertMobileDependencyPolicy(withoutTypeBox, typeBoxLock),
+    /@sinclair\/typebox must use an exact application version/,
   );
 });
 
@@ -228,6 +251,14 @@ test("rejects lock resolutions outside the approved declarations", () => {
   assert.throws(
     () => assertMobileDependencyPolicy(badClerk, badClerkLock),
     /@clerk\/expo lock version must equal exact manifest pin/,
+  );
+
+  const { manifest: badContracts, lockfile: badContractsLock } =
+    cloneManifestAndLock();
+  badContractsLock.packages["packages/contracts"].version = "0.2.0";
+  assert.throws(
+    () => assertMobileDependencyPolicy(badContracts, badContractsLock),
+    /@crewroll\/contracts lock version must equal exact manifest pin/,
   );
 
   for (const version of ["57.0.14", "57.1.0", "58.0.0"]) {
