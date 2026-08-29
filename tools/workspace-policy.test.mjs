@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile, spawnSync } from "node:child_process";
 import {
   mkdtemp,
   mkdir,
@@ -9,7 +10,6 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -674,6 +674,87 @@ test("bundle verification executes the native adapter production graph", () => {
     packageJson.scripts["test:production-resolution"],
     "node tools/verify-native-production-resolution.mjs",
   );
+});
+
+test("builds one shell-free npm CLI invocation for POSIX and Windows paths and fails closed without npm_execpath", async () => {
+  const { buildNpmCliInvocation } =
+    await import("./verify-native-production-resolution.mjs?workspace-policy");
+  const cases = [
+    {
+      label: "POSIX",
+      input: {
+        execPath: "/opt/node/bin/node",
+        npmExecPath: "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+      },
+      expected: {
+        command: "/opt/node/bin/node",
+        args: [
+          "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+          "run",
+          "verify:bundle",
+        ],
+      },
+    },
+    {
+      label: "Windows",
+      input: {
+        execPath: "C:\\Program Files\\nodejs\\node.exe",
+        npmExecPath:
+          "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+      },
+      expected: {
+        command: "C:\\Program Files\\nodejs\\node.exe",
+        args: [
+          "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+          "run",
+          "verify:bundle",
+        ],
+      },
+    },
+  ];
+
+  for (const { label, input, expected } of cases) {
+    assert.deepEqual(buildNpmCliInvocation(input), expected, label);
+  }
+
+  for (const npmExecPath of [undefined, "", "   "]) {
+    assert.throws(
+      () =>
+        buildNpmCliInvocation({
+          execPath: "/opt/node/bin/node",
+          npmExecPath,
+        }),
+      /npm_execpath must be a non-empty path to the npm CLI/u,
+    );
+  }
+});
+
+test("imports the npm invocation builder without executing the destructive production probe", () => {
+  const moduleUrl = new URL(
+    "./verify-native-production-resolution.mjs",
+    import.meta.url,
+  ).href;
+  const imported = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `const loaded = await import(${JSON.stringify(moduleUrl)}); if (typeof loaded.buildNpmCliInvocation !== "function") throw new Error("missing builder");`,
+    ],
+    {
+      cwd: rootPath,
+      encoding: "utf8",
+      env: { ...process.env, npm_execpath: "" },
+    },
+  );
+
+  assert.equal(
+    imported.status,
+    0,
+    [imported.stdout, imported.stderr].filter(Boolean).join("\n"),
+  );
+  assert.equal(imported.stdout, "");
+  assert.equal(imported.stderr, "");
 });
 
 test("Node policy-test discovery does not depend on shell glob expansion", () => {

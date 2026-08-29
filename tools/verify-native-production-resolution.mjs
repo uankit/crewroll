@@ -8,7 +8,6 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const contractsDist = path.join(root, "packages", "contracts", "dist");
 const bundleDist = path.join(root, "dist");
 const adapterBundle = path.join(bundleDist, "native-adapter.ios.js");
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const runtimeExports = [
   ["@crewroll/contracts", "installCrewRollFormats"],
   ["@crewroll/contracts/native/protocol", "ActivateTripCommandSchema"],
@@ -36,47 +35,76 @@ function commandOutput(result) {
   return [result.stdout, result.stderr].filter(Boolean).join("\n");
 }
 
-await rm(contractsDist, { recursive: true, force: true });
-await rm(bundleDist, { recursive: true, force: true });
+export function buildNpmCliInvocation({ execPath, npmExecPath }) {
+  if (typeof npmExecPath !== "string" || npmExecPath.trim() === "") {
+    throw new TypeError(
+      "npm_execpath must be a non-empty path to the npm CLI.",
+    );
+  }
 
-for (const [specifier, expectedExport] of runtimeExports) {
-  const cleanResolution = runtimeImport(specifier, expectedExport);
-  assert.notEqual(
-    cleanResolution.status,
-    0,
-    `${specifier} unexpectedly resolved without contracts dist`,
-  );
-  assert.match(
-    commandOutput(cleanResolution),
-    /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/u,
-  );
+  return {
+    command: execPath,
+    args: [npmExecPath, "run", "verify:bundle"],
+  };
 }
 
-const bundleVerification = run(npm, ["run", "verify:bundle"]);
-assert.equal(
-  bundleVerification.status,
-  0,
-  `production bundle verification failed:\n${commandOutput(bundleVerification)}`,
-);
+async function verifyNativeProductionResolution() {
+  const bundleInvocation = buildNpmCliInvocation({
+    execPath: process.execPath,
+    npmExecPath: process.env.npm_execpath,
+  });
 
-for (const [specifier, expectedExport] of runtimeExports) {
-  const builtResolution = runtimeImport(specifier, expectedExport);
+  await rm(contractsDist, { recursive: true, force: true });
+  await rm(bundleDist, { recursive: true, force: true });
+
+  for (const [specifier, expectedExport] of runtimeExports) {
+    const cleanResolution = runtimeImport(specifier, expectedExport);
+    assert.notEqual(
+      cleanResolution.status,
+      0,
+      `${specifier} unexpectedly resolved without contracts dist`,
+    );
+    assert.match(
+      commandOutput(cleanResolution),
+      /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/u,
+    );
+  }
+
+  const bundleVerification = run(
+    bundleInvocation.command,
+    bundleInvocation.args,
+  );
   assert.equal(
-    builtResolution.status,
+    bundleVerification.status,
     0,
-    `${specifier} did not resolve after verify:bundle lifecycle:\n${commandOutput(builtResolution)}`,
+    `production bundle verification failed:\n${commandOutput(bundleVerification)}`,
+  );
+
+  for (const [specifier, expectedExport] of runtimeExports) {
+    const builtResolution = runtimeImport(specifier, expectedExport);
+    assert.equal(
+      builtResolution.status,
+      0,
+      `${specifier} did not resolve after verify:bundle lifecycle:\n${commandOutput(builtResolution)}`,
+    );
+  }
+
+  const bundleStats = await stat(adapterBundle);
+  assert.ok(
+    bundleStats.size > 1_000,
+    "native adapter bundle is unexpectedly empty",
+  );
+  const bundleSource = await readFile(adapterBundle, "utf8");
+  assert.match(bundleSource, /ERR_CREWROLL_NATIVE_PROTOCOL/u);
+  assert.match(bundleSource, /CrewRollTransfer/u);
+
+  console.log(
+    "Clean production lifecycle rebuilt both contract exports and bundled the native adapter graph.",
   );
 }
 
-const bundleStats = await stat(adapterBundle);
-assert.ok(
-  bundleStats.size > 1_000,
-  "native adapter bundle is unexpectedly empty",
-);
-const bundleSource = await readFile(adapterBundle, "utf8");
-assert.match(bundleSource, /ERR_CREWROLL_NATIVE_PROTOCOL/u);
-assert.match(bundleSource, /CrewRollTransfer/u);
+const isDirectExecution =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-console.log(
-  "Clean production lifecycle rebuilt both contract exports and bundled the native adapter graph.",
-);
+if (isDirectExecution) await verifyNativeProductionResolution();
