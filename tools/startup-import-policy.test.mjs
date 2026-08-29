@@ -495,9 +495,24 @@ test("accepts every approved manifest script and rejects every exact-value mutat
     ),
   );
 
-  const installApprovedManifests = async (rootPath) => {
-    for (const [relativePath, manifest] of approved) {
+  const installApprovedManifests = async (rootPath, manifests = approved) => {
+    for (const [relativePath, manifest] of manifests) {
       await writeJson(rootPath, relativePath, structuredClone(manifest));
+    }
+    const controlScripts = manifests.get(controlManifestPath)?.scripts ?? {};
+    for (const { scriptName, sourcePath } of [
+      {
+        scriptName: "start:api",
+        sourcePath: apiPath,
+      },
+      {
+        scriptName: "start:worker",
+        sourcePath: workerPath,
+      },
+    ]) {
+      if (Object.hasOwn(controlScripts, scriptName)) {
+        await writeText(rootPath, sourcePath, "export {};\n");
+      }
     }
   };
 
@@ -506,6 +521,59 @@ test("accepts every approved manifest script and rejects every exact-value mutat
   const accepted = await analyzeStartupGraph({ rootPath });
   assert.deepEqual(accepted.findings, []);
   assertResultShape(accepted);
+
+  for (const { command, scriptName, sourcePath } of [
+    {
+      command: "node dist/src/api/main.js",
+      scriptName: "start:api",
+      sourcePath: apiPath,
+    },
+    {
+      command: "node dist/src/worker/main.js",
+      scriptName: "start:worker",
+      sourcePath: workerPath,
+    },
+  ]) {
+    await t.test(
+      `${controlManifestPath} ${scriptName} activation is atomic`,
+      async (subtest) => {
+        const activated = new Map(
+          [...approved].map(([relativePath, manifest]) => [
+            relativePath,
+            structuredClone(manifest),
+          ]),
+        );
+        activated.get(controlManifestPath).scripts[scriptName] = command;
+
+        const activationRoot = await fixture(subtest);
+        await installApprovedManifests(activationRoot, activated);
+        const activation = await analyzeStartupGraph({
+          rootPath: activationRoot,
+        });
+        assert.deepEqual(activation.findings, []);
+        assert.equal(activation.protectedRoots.includes(sourcePath), true);
+
+        await rm(path.join(activationRoot, sourcePath));
+        const removed = await analyzeStartupGraph({ rootPath: activationRoot });
+        assertFinding(
+          removed,
+          "STARTUP_EXECUTABLE_SURFACE",
+          controlManifestPath,
+        );
+
+        const mutationRoot = await fixture(subtest);
+        activated.get(controlManifestPath).scripts[scriptName] = `${command} `;
+        await installApprovedManifests(mutationRoot, activated);
+        const mutated = await analyzeStartupGraph({ rootPath: mutationRoot });
+        assert.equal(mutated.protectedRoots.includes(sourcePath), true);
+        assertFinding(
+          mutated,
+          "STARTUP_EXECUTABLE_SURFACE",
+          controlManifestPath,
+        );
+      },
+    );
+  }
 
   for (const [relativePath, manifest] of approved) {
     for (const [scriptName, command] of Object.entries(

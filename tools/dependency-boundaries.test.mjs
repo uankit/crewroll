@@ -461,6 +461,34 @@ async function lintAbsentControlCompositionInIsolatedProcess(code, filePath) {
   return JSON.parse(stdout);
 }
 
+async function lintExistingGraphInIsolatedProcess(owner, patterns) {
+  const definition = ownerDefinitions[owner];
+  const eslintModule = {
+    contracts: contractsRequire,
+    control: controlRequire,
+    mobile: rootRequire,
+  }[owner].resolve("eslint");
+  const script = `
+    const { ESLint } = require(${JSON.stringify(eslintModule)});
+    const eslint = new ESLint({ cwd: ${JSON.stringify(definition.cwd)} });
+    eslint.lintFiles(${JSON.stringify(patterns)}).then((results) => {
+      process.stdout.write(JSON.stringify(results.map((result) => ({
+        errorCount: result.errorCount,
+        filePath: result.filePath,
+        messages: result.messages.map(({ message, ruleId }) => ({
+          message,
+          ruleId
+        })),
+        warningCount: result.warningCount
+      }))));
+    });
+  `;
+  const { stdout } = await execFileAsync(process.execPath, ["-e", script], {
+    cwd: definition.cwd,
+  });
+  return JSON.parse(stdout);
+}
+
 const dependencyForms = {
   "dynamic import": (specifier) =>
     `void import(${JSON.stringify(specifier)});\n`,
@@ -1543,13 +1571,9 @@ test("removing the TypeScript resolver makes the alias oracle lose its boundary 
 
 test("the existing source import graph stays green under effective configs", async () => {
   const targets = [
+    ["mobile", rootPath, ["app", "src", "modules/crewroll-transfer"]],
     [
-      eslintByOwner.mobile,
-      rootPath,
-      ["app", "src", "modules/crewroll-transfer"],
-    ],
-    [
-      eslintByOwner.contracts,
+      "contracts",
       contractsPath,
       [
         "openapi",
@@ -1562,11 +1586,13 @@ test("the existing source import graph stays green under effective configs", asy
         "vitest.config.ts",
       ],
     ],
-    [eslintByOwner.control, controlPath, ["src"]],
+    ["control", controlPath, ["src"]],
   ];
 
-  for (const [eslint, cwd, patterns] of targets) {
-    const results = (await eslint.lintFiles(patterns)).filter(
+  for (const [owner, cwd, patterns] of targets) {
+    const results = (
+      await lintExistingGraphInIsolatedProcess(owner, patterns)
+    ).filter(
       ({ filePath }) =>
         !filePath.includes(`${path.sep}__boundary-unknown${path.sep}`),
     );
