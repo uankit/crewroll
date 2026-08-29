@@ -51,22 +51,112 @@ const PACKAGE_SEGMENT = /^[a-z0-9][a-z0-9._~-]*$/u;
 const CONTROL_TARGET =
   /(?:^|[\s'"=])(?:\.\/)?(?:services\/control-plane\/)?(?:src|dist)\//u;
 const ROOT_CONTROL_TARGET = /services\/control-plane\/(?:src|dist)\//u;
-const CONTROL_INDIRECT = /@crewroll\/control-plane/u;
-const INDIRECT_ENTRY = /(?:start:api|start:worker|db:migrate)/u;
-const COMMAND_LOADER =
-  /(?:^|[\s;&|])(?:node|tsx|npx|bun|sh|bash|zsh)(?:[\s;&|]|$)|(?:^|[\s;&|])npm\s+(?:exec|x)(?:[\s;&|]|$)|(?:^|[\s;&|])(?:pnpm|yarn)\s+dlx(?:[\s;&|]|$)|(?:^|[\s;&|])eval(?:[\s;&|]|$)/u;
-const NPM_ENV_EXECUTABLE_REFERENCE =
-  /(?:\$(?:npm_(?:node_)?execpath)|\$\{npm_(?:node_)?execpath\}|%npm_(?:node_)?execpath%|\$env:npm_(?:node_)?execpath)/iu;
-const CONTROL_ENV_TARGET =
-  /(?:\$(?:PWD|INIT_CWD)|\$\{(?:PWD|INIT_CWD)\}|%(?:CD|INIT_CWD)%|\$env:(?:PWD|INIT_CWD))\/(?:services\/control-plane\/)?(?:src|dist)\//iu;
-const ROOT_ENV_CONTROL_TARGET =
-  /(?:\$(?:PWD|INIT_CWD)|\$\{(?:PWD|INIT_CWD)\}|%(?:CD|INIT_CWD)%|\$env:(?:PWD|INIT_CWD))\/services\/control-plane\/(?:src|dist)\//iu;
-const INERT_COMMANDS = new Set(["echo", "printf"]);
-const ALLOWED_CONTROL_LOADER_SCRIPTS = new Map([
+const APPROVED_ROOT_SCRIPTS = new Map([
+  ["prestart", "npm run build --workspace @crewroll/contracts"],
+  ["start", "expo start --dev-client"],
+  ["prestart:clean", "npm run build --workspace @crewroll/contracts"],
+  ["start:clean", "expo start --dev-client --clear"],
+  ["preandroid", "npm run build --workspace @crewroll/contracts"],
+  ["android", "expo run:android"],
+  ["preandroid:device", "npm run build --workspace @crewroll/contracts"],
+  ["android:device", "expo run:android --device"],
+  ["preios", "npm run build --workspace @crewroll/contracts"],
+  ["ios", "expo run:ios"],
+  ["preios:device", "npm run build --workspace @crewroll/contracts"],
+  ["ios:device", "expo run:ios --device"],
+  ["format:check", "prettier . --check --ignore-unknown"],
+  ["prelint", "npm run build --workspace @crewroll/contracts"],
+  [
+    "lint",
+    "expo lint app src modules __tests__ tests tools eslint.config.js vitest.config.ts --no-cache --max-warnings=0 -- --no-error-on-unmatched-pattern && npm run lint --workspace @crewroll/contracts && npm run lint --workspace @crewroll/control-plane",
+  ],
+  [
+    "typecheck",
+    "npm run typecheck --workspace @crewroll/contracts && npm run build --workspace @crewroll/contracts && tsc --noEmit && npm run typecheck --workspace @crewroll/control-plane",
+  ],
+  ["test", "npm run test:unit"],
+  [
+    "test:unit",
+    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
+  ],
+  [
+    "test:production-resolution",
+    "node tools/verify-native-production-resolution.mjs",
+  ],
+  ["test:tools", 'node --test "tools/*.test.mjs"'],
+  ["test:ui", "jest --runInBand"],
+  ["test:ui:watch", "jest --watch"],
+  ["test:integration", "node tools/run-future-suite.mjs integration"],
+  ["test:native:ios", "node tools/run-future-suite.mjs native-ios"],
+  ["test:native:android", "node tools/run-future-suite.mjs native-android"],
+  ["test:e2e", "node tools/run-future-suite.mjs e2e"],
+  ["test:load", "node tools/run-future-suite.mjs load"],
+  ["migrations:check", "node tools/check-migrations.mjs"],
+  ["doctor", "expo-doctor"],
+  ["verify:identity", "node tools/verify-app-identity.mjs"],
+  ["preverify:bundle", "npm run build --workspace @crewroll/contracts"],
+  [
+    "verify:bundle",
+    "expo export:embed --entry-file src/infrastructure/native/crewRollTransfer.ts --platform ios --dev false --minify false --bundle-output dist/native-adapter.ios.js --max-workers 1 && expo export --platform ios --output-dir dist/ios && expo export --platform android --output-dir dist/android",
+  ],
+  [
+    "check",
+    "npm run verify:identity && npm run format:check && npm run lint && npm run typecheck && npm run --ignore-scripts migrations:check && npm run test:unit && npm run doctor",
+  ],
+  ["eas-build-post-install", "npm run build --workspace @crewroll/contracts"],
+  [
+    "build:dev:android",
+    "npx --yes eas-cli@22.4.0 build --profile development --platform android",
+  ],
+  [
+    "build:dev:ios",
+    "npx --yes eas-cli@22.4.0 build --profile development --platform ios",
+  ],
+  [
+    "build:preview:android",
+    "npx --yes eas-cli@22.4.0 build --profile preview --platform android",
+  ],
+  [
+    "build:preview:ios",
+    "npx --yes eas-cli@22.4.0 build --profile preview --platform ios",
+  ],
+  [
+    "test:integration:run",
+    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && vitest run --config tests/integration/vitest.config.ts",
+  ],
+]);
+const APPROVED_CONTRACT_SCRIPTS = new Map([
   [
     "build",
     "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
   ],
+  [
+    "lint",
+    "eslint crypto fixtures generator native openapi storage test vitest.config.ts --max-warnings=0",
+  ],
+  ["typecheck", "tsc -p tsconfig.json --noEmit"],
+  ["test", "npm run build && vitest run"],
+  ["openapi:generate", "tsx generator/generate-openapi.ts"],
+  ["openapi:check", "tsx generator/check-openapi.ts"],
+]);
+const APPROVED_CONTROL_SCRIPTS = new Map([
+  [
+    "build",
+    "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
+  ],
+  ["typecheck", "tsc -p tsconfig.json --noEmit"],
+  ["prelint", "npm run build --workspace @crewroll/contracts"],
+  ["lint", "eslint src test --max-warnings=0"],
+  ["test", "npm run build && vitest run"],
+  ["test:coverage", "npm run build && vitest run --coverage"],
+  ["start:api", "node dist/src/api/main.js"],
+  ["start:worker", "node dist/src/worker/main.js"],
+  ["db:migrate", "tsx src/db/migrate.ts"],
+]);
+const APPROVED_MANIFEST_SCRIPTS = new Map([
+  ["package.json", APPROVED_ROOT_SCRIPTS],
+  ["packages/contracts/package.json", APPROVED_CONTRACT_SCRIPTS],
+  [CONTROL_MANIFEST, APPROVED_CONTROL_SCRIPTS],
 ]);
 
 function deepFreeze(value) {
@@ -284,120 +374,9 @@ function isUnsupportedLoaderNode(node) {
   );
 }
 
-function splitCommandSegments(command) {
-  const segments = [];
-  let current = "";
-  let quote = null;
-  let escaped = false;
-
-  for (const character of command) {
-    if (escaped) {
-      current += character;
-      escaped = false;
-    } else if (character === "\\" && quote !== null) {
-      current += character;
-      escaped = true;
-    } else if (quote !== null) {
-      current += character;
-      if (character === quote) quote = null;
-    } else if (character === '"' || character === "'") {
-      current += character;
-      quote = character;
-    } else if (character === ";" || character === "&" || character === "|") {
-      if (current.trim().length > 0) segments.push(current);
-      current = "";
-    } else {
-      current += character;
-    }
-  }
-  if (current.trim().length > 0) segments.push(current);
-  return segments;
-}
-
-function hasActiveCommandSubstitution(segment) {
-  let quote = null;
-  let escaped = false;
-
-  for (let index = 0; index < segment.length; index += 1) {
-    const character = segment[index];
-    if (escaped) {
-      escaped = false;
-    } else if (character === "\\" && quote !== "'") {
-      escaped = true;
-    } else if (quote === "'") {
-      if (character === "'") quote = null;
-    } else if (character === '"') {
-      quote = quote === '"' ? null : '"';
-    } else if (character === "'") {
-      quote = "'";
-    } else if (
-      character === "`" ||
-      (character === "$" && segment[index + 1] === "(")
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasNpmEnvironmentControlLauncher(command, isControl) {
-  const targetPattern = isControl
-    ? CONTROL_ENV_TARGET
-    : ROOT_ENV_CONTROL_TARGET;
-  return splitCommandSegments(command).some((rawSegment) => {
-    const segment = rawSegment
-      .replace(/\\(?=["'])/gu, "")
-      .replaceAll("\\", "/")
-      .replace(/["']/gu, "");
-    const tokens = segment.trim().split(/\s+/u).filter(Boolean);
-    let commandIndex = 0;
-    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[commandIndex] ?? ""))
-      commandIndex += 1;
-    const commandName = path.posix
-      .basename(tokens[commandIndex] ?? "")
-      .replace(/^@/u, "")
-      .toLowerCase();
-    return (
-      commandName.length > 0 &&
-      (!INERT_COMMANDS.has(commandName) ||
-        hasActiveCommandSubstitution(rawSegment)) &&
-      NPM_ENV_EXECUTABLE_REFERENCE.test(tokens.join(" ")) &&
-      targetPattern.test(tokens.join(" "))
-    );
-  });
-}
-
 function scriptIsSuspicious({ command, manifestPath, scriptName }) {
-  if (typeof command !== "string") return false;
-  const isControl = manifestPath === CONTROL_MANIFEST;
-  if (
-    isControl &&
-    ((scriptName === "start:api" && command === "node dist/src/api/main.js") ||
-      (scriptName === "start:worker" &&
-        command === "node dist/src/worker/main.js") ||
-      (scriptName === "db:migrate" && command === "tsx src/db/migrate.ts"))
-  ) {
-    return false;
-  }
-  if (
-    !isControl &&
-    (scriptName === "start:api" ||
-      scriptName === "start:worker" ||
-      command === "node dist/src/api/main.js" ||
-      command === "node dist/src/worker/main.js")
-  ) {
-    return true;
-  }
-  if (hasNpmEnvironmentControlLauncher(command, isControl)) return true;
-  if (isControl && CONTROL_TARGET.test(command)) return true;
-  if (!isControl && ROOT_CONTROL_TARGET.test(command)) return true;
-  if (CONTROL_INDIRECT.test(command) && INDIRECT_ENTRY.test(command))
-    return true;
-  if (isControl && INDIRECT_ENTRY.test(command)) return true;
   return (
-    isControl &&
-    COMMAND_LOADER.test(command) &&
-    ALLOWED_CONTROL_LOADER_SCRIPTS.get(scriptName) !== command
+    APPROVED_MANIFEST_SCRIPTS.get(manifestPath)?.get(scriptName) !== command
   );
 }
 

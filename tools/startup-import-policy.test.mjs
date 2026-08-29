@@ -17,6 +17,7 @@ import test from "node:test";
 import { analyzeStartupGraph } from "./startup-import-policy.mjs";
 
 const controlRoot = "services/control-plane";
+const contractsManifestPath = "packages/contracts/package.json";
 const controlManifestPath = `${controlRoot}/package.json`;
 const sourceRoot = `${controlRoot}/src`;
 const indexPath = `${sourceRoot}/index.ts`;
@@ -78,6 +79,12 @@ async function fixture(t, indexSource = 'import "@crewroll/contracts";\n') {
 
 async function readJson(rootPath, relativePath) {
   return JSON.parse(await readFile(path.join(rootPath, relativePath), "utf8"));
+}
+
+async function readRepositoryJson(relativePath) {
+  return JSON.parse(
+    await readFile(new URL(`../${relativePath}`, import.meta.url), "utf8"),
+  );
 }
 
 function compareFindings(left, right) {
@@ -388,8 +395,49 @@ test("rejects direct, indirect, shell, npm-exec, and out-of-contract launchers",
   }
 });
 
-test("rejects npm environment control launchers without treating inert references as execution", async (t) => {
-  const launchers = [
+test("accepts every approved manifest script and rejects every exact-value mutation", async (t) => {
+  const approved = new Map(
+    await Promise.all(
+      ["package.json", contractsManifestPath, controlManifestPath].map(
+        async (relativePath) => [
+          relativePath,
+          await readRepositoryJson(relativePath),
+        ],
+      ),
+    ),
+  );
+
+  const installApprovedManifests = async (rootPath) => {
+    for (const [relativePath, manifest] of approved) {
+      await writeJson(rootPath, relativePath, structuredClone(manifest));
+    }
+  };
+
+  const rootPath = await fixture(t);
+  await installApprovedManifests(rootPath);
+  const accepted = await analyzeStartupGraph({ rootPath });
+  assert.deepEqual(accepted.findings, []);
+  assertResultShape(accepted);
+
+  for (const [relativePath, manifest] of approved) {
+    for (const [scriptName, command] of Object.entries(
+      manifest.scripts ?? {},
+    )) {
+      await t.test(`${relativePath} ${scriptName}`, async (subtest) => {
+        const mutationRoot = await fixture(subtest);
+        await installApprovedManifests(mutationRoot);
+        const mutated = await readJson(mutationRoot, relativePath);
+        mutated.scripts[scriptName] = `${command} `;
+        await writeJson(mutationRoot, relativePath, mutated);
+        const result = await analyzeStartupGraph({ rootPath: mutationRoot });
+        assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", relativePath);
+      });
+    }
+  }
+});
+
+test("rejects every unknown script key independent of shell spelling or inert behavior", async (t) => {
+  const commands = [
     ["POSIX node executable", '"$npm_node_execpath" "$PWD/dist/src/index.js"'],
     [
       "POSIX braced executable and working directory",
@@ -408,6 +456,14 @@ test("rejects npm environment control launchers without treating inert reference
       'echo "$("$npm_node_execpath" "$PWD/dist/src/index.js")"',
     ],
     [
+      "POSIX split alias",
+      'runtime="$npm_node_execpath"; "$runtime" "$PWD/dist/src/index.js"',
+    ],
+    [
+      "POSIX braced default target",
+      '"${npm_node_execpath}" "${PWD:-.}/dist/src/index.js"',
+    ],
+    [
       "Windows cmd node executable",
       '"%npm_node_execpath%" "%CD%\\dist\\src\\index.js"',
     ],
@@ -420,6 +476,14 @@ test("rejects npm environment control launchers without treating inert reference
       'call "%npm_execpath%" exec --call "\\"%npm_node_execpath%\\" \\"%CD%\\dist\\src\\index.js\\""',
     ],
     [
+      "Windows cmd split alias",
+      'set "RUNTIME=%npm_node_execpath%" & call "%RUNTIME%" "%CD%\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows cmd delayed expansion",
+      'cmd /v:on /d /s /c "\\"!npm_node_execpath!\\" \\"!CD!\\dist\\src\\index.js\\""',
+    ],
+    [
       "Windows PowerShell node executable",
       '& "$env:npm_node_execpath" "$PWD\\dist\\src\\index.js"',
     ],
@@ -427,38 +491,70 @@ test("rejects npm environment control launchers without treating inert reference
       "Windows PowerShell process wrapper",
       'Start-Process "$env:npm_node_execpath" -ArgumentList "$PWD\\dist\\src\\index.js"',
     ],
+    [
+      "Windows PowerShell split alias",
+      '$runtime = $env:npm_node_execpath; & $runtime "$PWD\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows PowerShell braced environment",
+      '& "${env:npm_node_execpath}" "${PWD}\\dist\\src\\index.js"',
+    ],
+    ["POSIX inert echo", 'echo "$npm_node_execpath"'],
+    [
+      "POSIX wrapped inert echo",
+      'command echo "$npm_node_execpath $PWD/dist/src/index.js"',
+    ],
+    [
+      "POSIX inert printf",
+      "printf '%s\\n' 'literal; $npm_node_execpath $PWD/dist/src/index.js'",
+    ],
+    [
+      "Windows cmd inert assignment",
+      'set "DIAGNOSTIC=%npm_node_execpath% %CD%\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows PowerShell inert assignment",
+      '$diagnostic = "$env:npm_node_execpath $PWD\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows PowerShell inert output",
+      'Write-Output "$env:npm_node_execpath $PWD\\dist\\src\\index.js"',
+    ],
   ];
 
-  for (const [name, command] of launchers) {
+  for (const [name, command] of commands) {
     await t.test(name, async (subtest) => {
       const rootPath = await fixture(subtest);
       const manifest = await readJson(rootPath, controlManifestPath);
-      manifest.scripts.backdoor = command;
+      manifest.scripts.unknown = command;
       await writeJson(rootPath, controlManifestPath, manifest);
       const result = await analyzeStartupGraph({ rootPath });
       assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
     });
   }
+});
 
-  const inertCommands = [
-    'echo "$npm_node_execpath"',
-    'echo "$PWD/dist/src/index.js"',
-    'echo "$npm_node_execpath $PWD/dist/src/index.js"',
-    'echo \'$("$npm_node_execpath" "$PWD/dist/src/index.js")\'',
-    'echo "literal & $npm_node_execpath $PWD/dist/src/index.js"',
-    "printf '%s\\n' 'literal; $npm_node_execpath $PWD/dist/src/index.js'",
-    'printf "%s\\n" "%npm_node_execpath% %CD%\\dist\\src\\index.js"',
+test("rejects unknown script keys in the root and every workspace manifest", async (t) => {
+  const cases = [
+    ["root", "package.json", false],
+    ["contracts", contractsManifestPath, false],
+    ["unapproved workspace", "packages/unapproved/package.json", true],
   ];
 
-  for (const command of inertCommands) {
-    await t.test(command, async (subtest) => {
+  for (const [name, manifestPath, createManifest] of cases) {
+    await t.test(name, async (subtest) => {
       const rootPath = await fixture(subtest);
-      const manifest = await readJson(rootPath, controlManifestPath);
-      manifest.scripts.diagnostics = command;
-      await writeJson(rootPath, controlManifestPath, manifest);
+      const manifest = createManifest
+        ? {
+            name: "@crewroll/unapproved",
+            private: true,
+            scripts: {},
+          }
+        : await readJson(rootPath, manifestPath);
+      manifest.scripts.diagnostics = 'echo "CrewRoll diagnostics"';
+      await writeJson(rootPath, manifestPath, manifest);
       const result = await analyzeStartupGraph({ rootPath });
-      assert.deepEqual(result.findings, []);
-      assertResultShape(result);
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", manifestPath);
     });
   }
 });

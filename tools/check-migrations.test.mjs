@@ -531,6 +531,69 @@ test("complete composition rejects each isolated source, runner, startup, and sy
       },
     },
     {
+      name: "startup POSIX split executable alias",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const relativePath = "services/control-plane/package.json";
+        const manifest = await readJson(rootPath, relativePath);
+        manifest.scripts.backdoor =
+          'runtime="$npm_node_execpath"; "$runtime" "$PWD/dist/src/index.js"';
+        await writeFile(
+          path.join(rootPath, relativePath),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+      },
+    },
+    {
+      name: "startup cmd delayed executable",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const relativePath = "services/control-plane/package.json";
+        const manifest = await readJson(rootPath, relativePath);
+        manifest.scripts.backdoor =
+          'cmd /v:on /d /s /c "\\"!npm_node_execpath!\\" \\"!CD!\\dist\\src\\index.js\\""';
+        await writeFile(
+          path.join(rootPath, relativePath),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+      },
+    },
+    {
+      name: "startup PowerShell braced executable",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const relativePath = "services/control-plane/package.json";
+        const manifest = await readJson(rootPath, relativePath);
+        manifest.scripts.backdoor =
+          '& "${env:npm_node_execpath}" "${PWD}\\dist\\src\\index.js"';
+        await writeFile(
+          path.join(rootPath, relativePath),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+      },
+    },
+    {
+      name: "startup inert unknown diagnostic",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const relativePath = "services/control-plane/package.json";
+        const manifest = await readJson(rootPath, relativePath);
+        manifest.scripts.diagnostics = 'echo "$npm_node_execpath"';
+        await writeFile(
+          path.join(rootPath, relativePath),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+      },
+    },
+    {
       name: "startup declaration-only runtime target",
       code: "STARTUP_IMPORT_RESOLUTION",
       kind: "startup",
