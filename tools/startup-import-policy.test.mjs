@@ -190,6 +190,8 @@ test("accepts actual node builtins, exact package grammar, and safe DB runtime i
       import fs from "node:fs";
       import * as pathApi from "node:path";
       import type * as moduleTypes from "node:module";
+      export * as pathApiExport from "node:path";
+      export type * as exportedModuleTypes from "node:module";
       import "node:fs/promises";
       import "package_name.v1~beta/sub-path";
       import "@scope-name/pkg_name/sub.path";
@@ -261,6 +263,31 @@ test("rejects runtime module-loader origins independent of aliasing and computed
       const rootPath = await fixture(subtest, source);
       const result = await analyzeStartupGraph({ rootPath });
       assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", indexPath);
+    });
+  }
+});
+
+test("rejects runtime module-loader re-export origins across traversed local modules", async (t) => {
+  for (const specifier of ["node:module", "module"]) {
+    await t.test(specifier, async (subtest) => {
+      const rootPath = await fixture(
+        subtest,
+        `
+          import { moduleApi } from "./loader.js";
+          const loaderName = "create" + "Require";
+          const load = moduleApi[loaderName](import.meta.url);
+          load("./db/migrate.js");
+        `,
+      );
+      const loaderPath = `${sourceRoot}/loader.ts`;
+      await writeText(
+        rootPath,
+        loaderPath,
+        `export * as moduleApi from ${JSON.stringify(specifier)};\n`,
+      );
+
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_UNSUPPORTED_LOADER", loaderPath);
     });
   }
 });

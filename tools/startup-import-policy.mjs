@@ -344,7 +344,18 @@ function hasImportAttributes(statement) {
   return Boolean(statement.attributes ?? statement.assertClause);
 }
 
-function isRuntimeImportDeclaration(node) {
+function isRuntimeImportOrExportDeclaration(node) {
+  if (ts.isExportDeclaration(node)) {
+    if (node.isTypeOnly) return false;
+    if (!node.exportClause || ts.isNamespaceExport(node.exportClause)) {
+      return true;
+    }
+    return (
+      node.exportClause.elements.length === 0 ||
+      node.exportClause.elements.some((element) => !element.isTypeOnly)
+    );
+  }
+
   const clause = node.importClause;
   if (!clause) return true;
   if (clause.isTypeOnly) return false;
@@ -358,10 +369,11 @@ function isRuntimeImportDeclaration(node) {
 
 function isUnsupportedLoaderNode(node) {
   if (
-    (ts.isImportDeclaration(node) &&
+    ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier !== undefined &&
       ts.isStringLiteral(node.moduleSpecifier) &&
       LOADER_MODULE_SPECIFIERS.has(node.moduleSpecifier.text) &&
-      isRuntimeImportDeclaration(node)) ||
+      isRuntimeImportOrExportDeclaration(node)) ||
     ts.isImportEqualsDeclaration(node) ||
     ts.isImportTypeNode(node) ||
     (ts.isExportAssignment(node) && node.isExportEquals)

@@ -657,6 +657,28 @@ test("complete composition rejects each isolated source, runner, startup, and sy
         ),
     },
     {
+      name: "startup re-exported computed node module loader origin",
+      code: "STARTUP_UNSUPPORTED_LOADER",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        await writeFile(
+          path.join(rootPath, indexPath),
+          `
+            import { moduleApi } from "./loader.js";
+            const loaderName = "create" + "Require";
+            const load = moduleApi[loaderName](import.meta.url);
+            load("./db/migrate.js");
+          `,
+          "utf8",
+        );
+        await writeFile(
+          path.join(rootPath, "services/control-plane/src/loader.ts"),
+          'export * as moduleApi from "node:module";\n',
+          "utf8",
+        );
+      },
+    },
+    {
       name: "startup symlinked resolution",
       code: "STARTUP_IMPORT_RESOLUTION",
       kind: "startup",
