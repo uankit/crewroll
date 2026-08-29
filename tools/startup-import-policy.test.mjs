@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   lstat,
   mkdtemp,
@@ -555,6 +556,85 @@ test("rejects unknown script keys in the root and every workspace manifest", asy
       await writeJson(rootPath, manifestPath, manifest);
       const result = await analyzeStartupGraph({ rootPath });
       assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", manifestPath);
+    });
+  }
+});
+
+test("rejects every declared workspace glob base that is not a direct regular directory", async (t) => {
+  const hiddenManifest = {
+    name: "@crewroll/contracts",
+    private: true,
+    scripts: { backdoor: "node malicious.js" },
+  };
+  const cases = [
+    {
+      name: "symlinked base",
+      mutate: async (rootPath) => {
+        await rm(path.join(rootPath, "packages"), {
+          force: true,
+          recursive: true,
+        });
+        await writeJson(
+          rootPath,
+          "workspace-shadow/contracts/package.json",
+          hiddenManifest,
+        );
+        await symlink(
+          "workspace-shadow",
+          path.join(rootPath, "packages"),
+          "dir",
+        );
+
+        const npmResult = spawnSync(
+          process.platform === "win32" ? "npm.cmd" : "npm",
+          ["pkg", "get", "name", "--workspace", "@crewroll/contracts"],
+          { cwd: rootPath, encoding: "utf8" },
+        );
+        assert.equal(npmResult.status, 0, npmResult.stderr);
+        assert.match(npmResult.stdout, /@crewroll\/contracts/u);
+      },
+    },
+    {
+      name: "symlinked ancestor",
+      mutate: async (rootPath) => {
+        const manifest = await readJson(rootPath, "package.json");
+        manifest.workspaces = ["workspace-root/packages/*", "services/*"];
+        await writeJson(rootPath, "package.json", manifest);
+        await writeJson(
+          rootPath,
+          "workspace-shadow/packages/contracts/package.json",
+          hiddenManifest,
+        );
+        await symlink(
+          "workspace-shadow",
+          path.join(rootPath, "workspace-root"),
+          "dir",
+        );
+      },
+    },
+    {
+      name: "missing base",
+      mutate: async (rootPath) =>
+        rm(path.join(rootPath, "packages"), { force: true, recursive: true }),
+    },
+    {
+      name: "non-directory base",
+      mutate: async (rootPath) => {
+        await rm(path.join(rootPath, "packages"), {
+          force: true,
+          recursive: true,
+        });
+        await writeText(rootPath, "packages", "not a directory\n");
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      await testCase.mutate(rootPath);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", "package.json");
     });
   }
 });

@@ -594,6 +594,36 @@ test("complete composition rejects each isolated source, runner, startup, and sy
       },
     },
     {
+      name: "startup symlinked workspace glob base",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const manifest = await readJson(rootPath, "package.json");
+        manifest.workspaces = ["packages/*", "services/*"];
+        await writeFile(
+          path.join(rootPath, "package.json"),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+        await mkdir(path.join(rootPath, "workspace-shadow/contracts"), {
+          recursive: true,
+        });
+        await writeFile(
+          path.join(rootPath, "workspace-shadow/contracts/package.json"),
+          JSON.stringify({
+            name: "@crewroll/contracts",
+            scripts: { backdoor: "node malicious.js" },
+          }),
+          "utf8",
+        );
+        await symlink(
+          "workspace-shadow",
+          path.join(rootPath, "packages"),
+          "dir",
+        );
+      },
+    },
+    {
       name: "startup declaration-only runtime target",
       code: "STARTUP_IMPORT_RESOLUTION",
       kind: "startup",

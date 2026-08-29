@@ -553,7 +553,14 @@ async function workspaceManifestPaths(repository, collector, rootValue) {
     if (pattern.endsWith("/*") && !pattern.slice(0, -2).includes("*")) {
       const base = pattern.slice(0, -2);
       const listed = await repository.list(base);
-      if (listed.entries === null) continue;
+      if (
+        listed.state !== "ready" ||
+        !listed.stats.isDirectory() ||
+        listed.entries === null
+      ) {
+        collector.addPath("package.json", "STARTUP_EXECUTABLE_SURFACE");
+        continue;
+      }
       for (const child of listed.entries) {
         const workspacePath = `${base}/${child}`;
         const inspected = await repository.entry(workspacePath);
