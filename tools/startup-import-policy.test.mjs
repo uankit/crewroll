@@ -388,6 +388,81 @@ test("rejects direct, indirect, shell, npm-exec, and out-of-contract launchers",
   }
 });
 
+test("rejects npm environment control launchers without treating inert references as execution", async (t) => {
+  const launchers = [
+    ["POSIX node executable", '"$npm_node_execpath" "$PWD/dist/src/index.js"'],
+    [
+      "POSIX braced executable and working directory",
+      '"${npm_node_execpath}" "${PWD}/src/index.ts"',
+    ],
+    [
+      "POSIX env wrapper",
+      '/usr/bin/env "$npm_node_execpath" "$PWD/dist/src/index.js"',
+    ],
+    [
+      "POSIX npm executable from the invocation root",
+      '"$npm_execpath" exec --call \'"$npm_node_execpath" "$PWD/dist/src/index.js"\'',
+    ],
+    [
+      "POSIX command substitution",
+      'echo "$("$npm_node_execpath" "$PWD/dist/src/index.js")"',
+    ],
+    [
+      "Windows cmd node executable",
+      '"%npm_node_execpath%" "%CD%\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows cmd wrapper",
+      'cmd /d /s /c "\\"%npm_node_execpath%\\" \\"%CD%\\dist\\src\\index.js\\""',
+    ],
+    [
+      "Windows cmd npm executable from the invocation root",
+      'call "%npm_execpath%" exec --call "\\"%npm_node_execpath%\\" \\"%CD%\\dist\\src\\index.js\\""',
+    ],
+    [
+      "Windows PowerShell node executable",
+      '& "$env:npm_node_execpath" "$PWD\\dist\\src\\index.js"',
+    ],
+    [
+      "Windows PowerShell process wrapper",
+      'Start-Process "$env:npm_node_execpath" -ArgumentList "$PWD\\dist\\src\\index.js"',
+    ],
+  ];
+
+  for (const [name, command] of launchers) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, controlManifestPath);
+      manifest.scripts.backdoor = command;
+      await writeJson(rootPath, controlManifestPath, manifest);
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_EXECUTABLE_SURFACE", controlManifestPath);
+    });
+  }
+
+  const inertCommands = [
+    'echo "$npm_node_execpath"',
+    'echo "$PWD/dist/src/index.js"',
+    'echo "$npm_node_execpath $PWD/dist/src/index.js"',
+    'echo \'$("$npm_node_execpath" "$PWD/dist/src/index.js")\'',
+    'echo "literal & $npm_node_execpath $PWD/dist/src/index.js"',
+    "printf '%s\\n' 'literal; $npm_node_execpath $PWD/dist/src/index.js'",
+    'printf "%s\\n" "%npm_node_execpath% %CD%\\dist\\src\\index.js"',
+  ];
+
+  for (const command of inertCommands) {
+    await t.test(command, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      const manifest = await readJson(rootPath, controlManifestPath);
+      manifest.scripts.diagnostics = command;
+      await writeJson(rootPath, controlManifestPath, manifest);
+      const result = await analyzeStartupGraph({ rootPath });
+      assert.deepEqual(result.findings, []);
+      assertResultShape(result);
+    });
+  }
+});
+
 test("rejects alternate main files, TypeScript shebangs, and source-tree symlinks", async (t) => {
   await t.test("alternate main", async (subtest) => {
     const rootPath = await fixture(subtest);
@@ -602,6 +677,61 @@ test("rejects escaping, missing, ambiguous, directory, and symlinked resolution"
           : "STARTUP_IMPORT_RESOLUTION",
         indexPath,
       );
+    });
+  }
+});
+
+test("rejects declaration-only runtime targets while preserving exact runtime path mapping", async (t) => {
+  const rejected = [
+    [
+      "explicit declaration target",
+      "./ghost.d.js",
+      [`${sourceRoot}/ghost.d.ts`],
+    ],
+    [
+      "nested explicit declaration target",
+      "./types/ghost.d.js",
+      [`${sourceRoot}/types/ghost.d.ts`],
+    ],
+    [
+      "declaration sibling cannot replace a missing runtime source",
+      "./ghost.js",
+      [`${sourceRoot}/ghost.d.ts`],
+    ],
+    [
+      "declaration sibling makes a runtime source ambiguous",
+      "./ghost.js",
+      [`${sourceRoot}/ghost.ts`, `${sourceRoot}/ghost.d.ts`],
+    ],
+  ];
+
+  for (const [name, specifier, sourcePaths] of rejected) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(
+        subtest,
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+      for (const sourcePath of sourcePaths) {
+        await writeText(rootPath, sourcePath, "export {};\n");
+      }
+      const result = await analyzeStartupGraph({ rootPath });
+      assertFinding(result, "STARTUP_IMPORT_RESOLUTION", indexPath);
+    });
+  }
+
+  for (const [specifier, sourcePath] of [
+    ["./ghost.data.js", `${sourceRoot}/ghost.data.ts`],
+    ["./types.d/ghost.js", `${sourceRoot}/types.d/ghost.ts`],
+  ]) {
+    await t.test(`runtime source ${sourcePath}`, async (subtest) => {
+      const rootPath = await fixture(
+        subtest,
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+      await writeText(rootPath, sourcePath, "export {};\n");
+      const result = await analyzeStartupGraph({ rootPath });
+      assert.deepEqual(result.findings, []);
+      assertResultShape(result);
     });
   }
 });

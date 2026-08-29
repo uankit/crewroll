@@ -515,6 +515,39 @@ test("complete composition rejects each isolated source, runner, startup, and sy
       },
     },
     {
+      name: "startup npm environment executable launcher",
+      code: "STARTUP_EXECUTABLE_SURFACE",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        const relativePath = "services/control-plane/package.json";
+        const manifest = await readJson(rootPath, relativePath);
+        manifest.scripts.backdoor =
+          '"$npm_node_execpath" "$PWD/dist/src/index.js"';
+        await writeFile(
+          path.join(rootPath, relativePath),
+          JSON.stringify(manifest),
+          "utf8",
+        );
+      },
+    },
+    {
+      name: "startup declaration-only runtime target",
+      code: "STARTUP_IMPORT_RESOLUTION",
+      kind: "startup",
+      mutate: async (rootPath) => {
+        await writeFile(
+          path.join(rootPath, indexPath),
+          'import "./ghost.d.js";\n',
+          "utf8",
+        );
+        await writeFile(
+          path.join(rootPath, "services/control-plane/src/ghost.d.ts"),
+          "export {};\n",
+          "utf8",
+        );
+      },
+    },
+    {
       name: "startup symlinked resolution",
       code: "STARTUP_IMPORT_RESOLUTION",
       kind: "startup",

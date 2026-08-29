@@ -55,6 +55,13 @@ const CONTROL_INDIRECT = /@crewroll\/control-plane/u;
 const INDIRECT_ENTRY = /(?:start:api|start:worker|db:migrate)/u;
 const COMMAND_LOADER =
   /(?:^|[\s;&|])(?:node|tsx|npx|bun|sh|bash|zsh)(?:[\s;&|]|$)|(?:^|[\s;&|])npm\s+(?:exec|x)(?:[\s;&|]|$)|(?:^|[\s;&|])(?:pnpm|yarn)\s+dlx(?:[\s;&|]|$)|(?:^|[\s;&|])eval(?:[\s;&|]|$)/u;
+const NPM_ENV_EXECUTABLE_REFERENCE =
+  /(?:\$(?:npm_(?:node_)?execpath)|\$\{npm_(?:node_)?execpath\}|%npm_(?:node_)?execpath%|\$env:npm_(?:node_)?execpath)/iu;
+const CONTROL_ENV_TARGET =
+  /(?:\$(?:PWD|INIT_CWD)|\$\{(?:PWD|INIT_CWD)\}|%(?:CD|INIT_CWD)%|\$env:(?:PWD|INIT_CWD))\/(?:services\/control-plane\/)?(?:src|dist)\//iu;
+const ROOT_ENV_CONTROL_TARGET =
+  /(?:\$(?:PWD|INIT_CWD)|\$\{(?:PWD|INIT_CWD)\}|%(?:CD|INIT_CWD)%|\$env:(?:PWD|INIT_CWD))\/services\/control-plane\/(?:src|dist)\//iu;
+const INERT_COMMANDS = new Set(["echo", "printf"]);
 const ALLOWED_CONTROL_LOADER_SCRIPTS = new Map([
   [
     "build",
@@ -277,6 +284,89 @@ function isUnsupportedLoaderNode(node) {
   );
 }
 
+function splitCommandSegments(command) {
+  const segments = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (const character of command) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== null) {
+      current += character;
+      escaped = true;
+    } else if (quote !== null) {
+      current += character;
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      current += character;
+      quote = character;
+    } else if (character === ";" || character === "&" || character === "|") {
+      if (current.trim().length > 0) segments.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim().length > 0) segments.push(current);
+  return segments;
+}
+
+function hasActiveCommandSubstitution(segment) {
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote === "'") {
+      if (character === "'") quote = null;
+    } else if (character === '"') {
+      quote = quote === '"' ? null : '"';
+    } else if (character === "'") {
+      quote = "'";
+    } else if (
+      character === "`" ||
+      (character === "$" && segment[index + 1] === "(")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasNpmEnvironmentControlLauncher(command, isControl) {
+  const targetPattern = isControl
+    ? CONTROL_ENV_TARGET
+    : ROOT_ENV_CONTROL_TARGET;
+  return splitCommandSegments(command).some((rawSegment) => {
+    const segment = rawSegment
+      .replace(/\\(?=["'])/gu, "")
+      .replaceAll("\\", "/")
+      .replace(/["']/gu, "");
+    const tokens = segment.trim().split(/\s+/u).filter(Boolean);
+    let commandIndex = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[commandIndex] ?? ""))
+      commandIndex += 1;
+    const commandName = path.posix
+      .basename(tokens[commandIndex] ?? "")
+      .replace(/^@/u, "")
+      .toLowerCase();
+    return (
+      commandName.length > 0 &&
+      (!INERT_COMMANDS.has(commandName) ||
+        hasActiveCommandSubstitution(rawSegment)) &&
+      NPM_ENV_EXECUTABLE_REFERENCE.test(tokens.join(" ")) &&
+      targetPattern.test(tokens.join(" "))
+    );
+  });
+}
+
 function scriptIsSuspicious({ command, manifestPath, scriptName }) {
   if (typeof command !== "string") return false;
   const isControl = manifestPath === CONTROL_MANIFEST;
@@ -298,6 +388,7 @@ function scriptIsSuspicious({ command, manifestPath, scriptName }) {
   ) {
     return true;
   }
+  if (hasNpmEnvironmentControlLauncher(command, isControl)) return true;
   if (isControl && CONTROL_TARGET.test(command)) return true;
   if (!isControl && ROOT_CONTROL_TARGET.test(command)) return true;
   if (CONTROL_INDIRECT.test(command) && INDIRECT_ENTRY.test(command))
@@ -554,6 +645,10 @@ async function analyzeGraph({ repository, collector, roots }) {
     const resolved = parseRelativeSpecifier(specifier, sourceFile.fileName);
     if (!resolved) {
       collector.addSource(sourceFile, node, "STARTUP_IMPORT_GRAMMAR");
+      return;
+    }
+    if (resolved.endsWith(".d.ts")) {
+      collector.addSource(sourceFile, node, "STARTUP_IMPORT_RESOLUTION");
       return;
     }
     if (isMigrationTarget(resolved)) {
