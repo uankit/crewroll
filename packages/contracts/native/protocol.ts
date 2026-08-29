@@ -1,6 +1,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 
 import {
+  BackgroundBearerV1Schema,
   ClosedObject,
   DateTimeSchema,
   KeyEnvelopeSchema,
@@ -49,7 +50,7 @@ export const InstallDeviceSessionCommandSchema = ClosedObject({
   accountId: NativeAccountIdSchema,
   installationId: NativeDeviceIdentitySchema.properties.installationId,
   deviceId: DeviceIdSchema,
-  backgroundBearer: Type.String({ pattern: "^crb_[A-Za-z0-9_-]{12,512}$" }),
+  backgroundBearer: BackgroundBearerV1Schema,
   backgroundBearerExpiresAt: DateTimeSchema,
   apiBaseUrl: UriSchema,
 });

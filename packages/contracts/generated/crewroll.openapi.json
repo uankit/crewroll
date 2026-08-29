@@ -2283,9 +2283,11 @@
           "pushToken": {
             "minLength": 1,
             "maxLength": 4096,
+            "pattern": "^[\\x21-\\x7E]{1,4096}$",
             "type": "string"
           },
           "appVersion": {
+            "maxLength": 128,
             "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
             "type": "string"
           }
@@ -2305,7 +2307,9 @@
             "type": "string"
           },
           "backgroundBearer": {
-            "pattern": "^crb_[A-Za-z0-9_-]{12,512}$",
+            "minLength": 47,
+            "maxLength": 47,
+            "pattern": "^crb_[A-Za-z0-9_-]{43}$",
             "type": "string"
           },
           "backgroundBearerExpiresAt": {
@@ -2328,6 +2332,7 @@
               {
                 "minLength": 1,
                 "maxLength": 4096,
+                "pattern": "^[\\x21-\\x7E]{1,4096}$",
                 "type": "string"
               },
               {
@@ -2336,6 +2341,7 @@
             ]
           },
           "appVersion": {
+            "maxLength": 128,
             "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
             "type": "string"
           }

@@ -1,9 +1,12 @@
 import { Type, type Static } from "@sinclair/typebox";
 
 import {
+  AppVersionSchema,
+  BackgroundBearerV1Schema,
   ClosedObject,
   DateTimeSchema,
   P256PublicKeySchema,
+  PushTokenSchema,
   X25519PublicKeySchema,
 } from "./common.js";
 import { DevicePlatformSchema } from "./enums.js";
@@ -18,27 +21,20 @@ export const RegisterDeviceBodySchema = ClosedObject({
   e2eeKeyAlgorithm: Type.Literal("X25519"),
   e2eePublicKey: X25519PublicKeySchema,
   e2eeKeyVersion: Type.Literal(1),
-  pushToken: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
-  appVersion: Type.String({
-    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
-  }),
+  pushToken: Type.Optional(PushTokenSchema),
+  appVersion: AppVersionSchema,
 });
 export type RegisterDeviceBody = Static<typeof RegisterDeviceBodySchema>;
 
 export const DeviceResponseSchema = ClosedObject({
   deviceId: DeviceIdSchema,
-  backgroundBearer: Type.String({ pattern: "^crb_[A-Za-z0-9_-]{12,512}$" }),
+  backgroundBearer: BackgroundBearerV1Schema,
   backgroundBearerExpiresAt: DateTimeSchema,
 });
 export type DeviceResponse = Static<typeof DeviceResponseSchema>;
 
 export const UpdatePushTokenBodySchema = ClosedObject({
-  pushToken: Type.Union([
-    Type.String({ minLength: 1, maxLength: 4096 }),
-    Type.Null(),
-  ]),
-  appVersion: Type.String({
-    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
-  }),
+  pushToken: Type.Union([PushTokenSchema, Type.Null()]),
+  appVersion: AppVersionSchema,
 });
 export type UpdatePushTokenBody = Static<typeof UpdatePushTokenBodySchema>;

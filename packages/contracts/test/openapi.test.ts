@@ -15,7 +15,7 @@ const generatedUrl = new URL(
 const OPENAPI_TRIP_ENVELOPE =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 const OPENAPI_P256_PUBLIC_KEY =
-  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=";
 const UUID_V7 =
   "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const EXACT_PROBLEM_CODES = [
@@ -474,6 +474,42 @@ describe("canonical OpenAPI artifact", () => {
         Buffer.alloc(33).toString("base64"),
       ),
     ).toBe(false);
+  });
+
+  it("publishes the exact shared device token and app-version constraints", () => {
+    const document = createOpenApiDocument();
+    const schemas = (
+      document.components as { schemas: Record<string, JsonSchema> }
+    ).schemas;
+    const registration = requiredSchema(schemas, "RegisterDeviceBody");
+    const update = requiredSchema(schemas, "UpdatePushTokenBody");
+    const response = requiredSchema(schemas, "DeviceResponse");
+    const registrationPush = registration.properties?.pushToken;
+    const updatePush = update.properties?.pushToken?.anyOf?.find(
+      (candidate) => candidate.type === "string",
+    );
+
+    for (const pushSchema of [registrationPush, updatePush]) {
+      expect(pushSchema).toMatchObject({
+        minLength: 1,
+        maxLength: 4096,
+        pattern: "^[\\x21-\\x7E]{1,4096}$",
+      });
+    }
+    for (const appVersion of [
+      registration.properties?.appVersion,
+      update.properties?.appVersion,
+    ]) {
+      expect(appVersion?.maxLength).toBe(128);
+      expect(appVersion?.pattern).toBe(
+        "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+      );
+    }
+    expect(response.properties?.backgroundBearer).toMatchObject({
+      minLength: 47,
+      maxLength: 47,
+      pattern: "^crb_[A-Za-z0-9_-]{43}$",
+    });
   });
 
   it("enforces canonical base64 padding bits with standard schema patterns", () => {
