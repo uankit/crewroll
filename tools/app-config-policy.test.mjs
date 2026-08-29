@@ -40,9 +40,13 @@ test("greenfield config contains no legacy LAN or relay architecture", () => {
 });
 
 test("Android requests image access without legacy write permission", () => {
-  assert.ok(app.android.permissions.includes("android.permission.READ_MEDIA_IMAGES"));
+  assert.ok(
+    app.android.permissions.includes("android.permission.READ_MEDIA_IMAGES"),
+  );
   assert.equal(
-    app.android.permissions.includes("android.permission.WRITE_EXTERNAL_STORAGE"),
+    app.android.permissions.includes(
+      "android.permission.WRITE_EXTERNAL_STORAGE",
+    ),
     false,
   );
   assert.equal(
@@ -64,7 +68,11 @@ test("resolved Android config blocks legacy media writes while retaining reads",
     },
   );
 
-  assert.equal(publicResult.status, 0, publicResult.stderr || publicResult.stdout);
+  assert.equal(
+    publicResult.status,
+    0,
+    publicResult.stderr || publicResult.stdout,
+  );
   const publicConfig = JSON.parse(publicResult.stdout);
   assert.ok(
     publicConfig.android.blockedPermissions.includes(

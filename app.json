@@ -4,10 +4,7 @@
     "slug": "AirMesh",
     "version": "0.2.0",
     "orientation": "portrait",
-    "platforms": [
-      "ios",
-      "android"
-    ],
+    "platforms": ["ios", "android"],
     "icon": "./assets/brand/app-icon.png",
     "scheme": "airmesh",
     "userInterfaceStyle": "automatic",
@@ -48,9 +45,7 @@
         {
           "photosPermission": "CrewRoll automatically finds new eligible photos added during an active trip so it can share them privately with your group.",
           "savePhotosPermission": "CrewRoll saves verified exact originals from your active trip to your photo library.",
-          "granularPermissions": [
-            "photo"
-          ],
+          "granularPermissions": ["photo"],
           "isAccessMediaLocationEnabled": false
         }
       ],

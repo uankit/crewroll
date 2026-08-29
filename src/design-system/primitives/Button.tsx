@@ -42,7 +42,9 @@ export function Button({
     >
       <AppText
         variant="bodyStrong"
-        style={{ color: variant === "primary" ? colors.onAction : colors.action }}
+        style={{
+          color: variant === "primary" ? colors.onAction : colors.action,
+        }}
       >
         {label}
       </AppText>

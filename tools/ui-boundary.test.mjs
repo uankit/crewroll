@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const homeScreenUrl = new URL("../src/features/home/HomeScreen.tsx", import.meta.url);
+const homeScreenUrl = new URL(
+  "../src/features/home/HomeScreen.tsx",
+  import.meta.url,
+);
 const routeUrls = [
   new URL("../app/trips/create.tsx", import.meta.url),
   new URL("../app/trips/join.tsx", import.meta.url),

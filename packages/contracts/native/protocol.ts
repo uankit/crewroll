@@ -9,7 +9,13 @@ import {
   ProtocolVersionSchema,
   UriSchema,
 } from "../openapi/common.js";
-import { AssetIdSchema, DeviceIdSchema, MembershipIdSchema, TripIdSchema, UuidSchema } from "../openapi/ids.js";
+import {
+  AssetIdSchema,
+  DeviceIdSchema,
+  MembershipIdSchema,
+  TripIdSchema,
+  UuidSchema,
+} from "../openapi/ids.js";
 
 export const NativeDeviceIdentitySchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
@@ -30,7 +36,9 @@ export const InstallDeviceSessionCommandSchema = ClosedObject({
   backgroundBearerExpiresAt: DateTimeSchema,
   apiBaseUrl: UriSchema,
 });
-export type InstallDeviceSessionCommand = Static<typeof InstallDeviceSessionCommandSchema>;
+export type InstallDeviceSessionCommand = Static<
+  typeof InstallDeviceSessionCommandSchema
+>;
 
 export const CreateTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
@@ -96,9 +104,13 @@ export const SetTransferPolicyCommandSchema = ClosedObject({
   paused: Type.Boolean(),
   cellularAllowed: Type.Boolean(),
 });
-export type SetTransferPolicyCommand = Static<typeof SetTransferPolicyCommandSchema>;
+export type SetTransferPolicyCommand = Static<
+  typeof SetTransferPolicyCommandSchema
+>;
 
-export const ReconcileNowCommandSchema = ClosedObject({ protocolVersion: ProtocolVersionSchema });
+export const ReconcileNowCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+});
 export type ReconcileNowCommand = Static<typeof ReconcileNowCommandSchema>;
 
 export const RetryCommandSchema = ClosedObject({

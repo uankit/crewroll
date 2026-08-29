@@ -32,7 +32,13 @@ describe("crypto protocol metadata", () => {
     expect(ENCRYPTION_FORMAT_VERSION).toBe(1);
     expect(INITIAL_KEY_EPOCH).toBe(1);
     expect(OBJECT_VARIANTS).toEqual(["PREVIEW", "ORIGINAL"]);
-    expect(AAD_FIELDS).toEqual(["tripId", "assetId", "variant", "keyEpoch", "formatVersion"]);
+    expect(AAD_FIELDS).toEqual([
+      "tripId",
+      "assetId",
+      "variant",
+      "keyEpoch",
+      "formatVersion",
+    ]);
     expect(AAD_FIELDS).not.toContain("mime");
     expect(AAD_FIELDS).not.toContain("filename");
     expect(AAD_FIELDS).not.toContain("sourceAssetKey");
@@ -53,8 +59,18 @@ describe("native bridge protocol", () => {
       e2eeKeyVersion: 1,
     };
     expect(Value.Check(NativeDeviceIdentitySchema, identity)).toBe(true);
-    expect(Value.Check(NativeDeviceIdentitySchema, { ...identity, protocolVersion: 2 })).toBe(false);
-    expect(Value.Check(NativeDeviceIdentitySchema, { ...identity, privateKey: "secret" })).toBe(false);
+    expect(
+      Value.Check(NativeDeviceIdentitySchema, {
+        ...identity,
+        protocolVersion: 2,
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(NativeDeviceIdentitySchema, {
+        ...identity,
+        privateKey: "secret",
+      }),
+    ).toBe(false);
   });
 
   it("installs only an opaque expiring background bearer", () => {
@@ -66,7 +82,12 @@ describe("native bridge protocol", () => {
       apiBaseUrl: "https://api.crewroll.app",
     };
     expect(Value.Check(InstallDeviceSessionCommandSchema, command)).toBe(true);
-    expect(Value.Check(InstallDeviceSessionCommandSchema, { ...command, clerkToken: "secret" })).toBe(false);
+    expect(
+      Value.Check(InstallDeviceSessionCommandSchema, {
+        ...command,
+        clerkToken: "secret",
+      }),
+    ).toBe(false);
   });
 
   it("creates, wraps, and imports trip keys only through opaque operations", () => {
@@ -80,15 +101,33 @@ describe("native bridge protocol", () => {
       recipientE2eePublicKey: "AQID",
       recipientE2eeKeyVersion: 1,
     };
-    const wrapped = { protocolVersion: 1, tripId, keyEpoch: 1, recipientDeviceId: deviceId, wrappedKey: "AQID" };
-    const imported = { protocolVersion: 1, tripId, keyEpoch: 1, wrappedKey: "AQID" };
+    const wrapped = {
+      protocolVersion: 1,
+      tripId,
+      keyEpoch: 1,
+      recipientDeviceId: deviceId,
+      wrappedKey: "AQID",
+    };
+    const imported = {
+      protocolVersion: 1,
+      tripId,
+      keyEpoch: 1,
+      wrappedKey: "AQID",
+    };
     expect(Value.Check(CreateTripKeyCommandSchema, create)).toBe(true);
     expect(Value.Check(CreateTripKeyResultSchema, created)).toBe(true);
     expect(Value.Check(WrapTripKeyCommandSchema, wrap)).toBe(true);
     expect(Value.Check(WrapTripKeyResultSchema, wrapped)).toBe(true);
     expect(Value.Check(ImportTripKeyCommandSchema, imported)).toBe(true);
-    expect(Value.Check(CreateTripKeyResultSchema, { ...created, tripKey: "secret" })).toBe(false);
-    expect(Value.Check(ImportTripKeyCommandSchema, { ...imported, contentKey: "secret" })).toBe(false);
+    expect(
+      Value.Check(CreateTripKeyResultSchema, { ...created, tripKey: "secret" }),
+    ).toBe(false);
+    expect(
+      Value.Check(ImportTripKeyCommandSchema, {
+        ...imported,
+        contentKey: "secret",
+      }),
+    ).toBe(false);
   });
 
   it("validates trip activation, transfer policy, reconciliation, and retry commands", () => {
@@ -103,10 +142,28 @@ describe("native bridge protocol", () => {
       wrappedTripKey: "AQID",
     };
     expect(Value.Check(ActivateTripCommandSchema, activate)).toBe(true);
-    expect(Value.Check(SetTransferPolicyCommandSchema, { protocolVersion: 1, paused: false, cellularAllowed: true })).toBe(true);
-    expect(Value.Check(ReconcileNowCommandSchema, { protocolVersion: 1 })).toBe(true);
-    expect(Value.Check(RetryCommandSchema, { protocolVersion: 1, workId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150" })).toBe(true);
-    expect(Value.Check(ActivateTripCommandSchema, { ...activate, mediaKey: "secret" })).toBe(false);
+    expect(
+      Value.Check(SetTransferPolicyCommandSchema, {
+        protocolVersion: 1,
+        paused: false,
+        cellularAllowed: true,
+      }),
+    ).toBe(true);
+    expect(Value.Check(ReconcileNowCommandSchema, { protocolVersion: 1 })).toBe(
+      true,
+    );
+    expect(
+      Value.Check(RetryCommandSchema, {
+        protocolVersion: 1,
+        workId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(ActivateTripCommandSchema, {
+        ...activate,
+        mediaKey: "secret",
+      }),
+    ).toBe(false);
   });
 
   it("exposes durable snapshot/page projections and revision-only invalidation", () => {
@@ -121,19 +178,34 @@ describe("native bridge protocol", () => {
     const page = {
       protocolVersion: 1,
       revision: 7,
-      items: [{
-        workId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
-        assetId: null,
-        capturedAt: "2026-08-29T12:00:00.000Z",
-        previewStage: "PENDING",
-        originalStage: "PENDING",
-        blocker: null,
-      }],
+      items: [
+        {
+          workId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+          assetId: null,
+          capturedAt: "2026-08-29T12:00:00.000Z",
+          previewStage: "PENDING",
+          originalStage: "PENDING",
+          blocker: null,
+        },
+      ],
       nextCursor: null,
     };
     expect(Value.Check(DurableEngineSnapshotSchema, snapshot)).toBe(true);
     expect(Value.Check(AssetPageSchema, page)).toBe(true);
-    expect(Value.Check(RevisionInvalidationSchema, { protocolVersion: 1, type: "ENGINE_INVALIDATED", revision: 8 })).toBe(true);
-    expect(Value.Check(RevisionInvalidationSchema, { protocolVersion: 1, type: "ENGINE_INVALIDATED", revision: 8, snapshot })).toBe(false);
+    expect(
+      Value.Check(RevisionInvalidationSchema, {
+        protocolVersion: 1,
+        type: "ENGINE_INVALIDATED",
+        revision: 8,
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(RevisionInvalidationSchema, {
+        protocolVersion: 1,
+        type: "ENGINE_INVALIDATED",
+        revision: 8,
+        snapshot,
+      }),
+    ).toBe(false);
   });
 });

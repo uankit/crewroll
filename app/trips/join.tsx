@@ -7,8 +7,8 @@ export default function JoinTripRoute() {
         Join a trip
       </AppText>
       <AppText tone="secondary">
-        Open a friend&apos;s invite link, scan their QR code, or enter the short code
-        they shared with you.
+        Open a friend&apos;s invite link, scan their QR code, or enter the short
+        code they shared with you.
       </AppText>
     </Screen>
   );

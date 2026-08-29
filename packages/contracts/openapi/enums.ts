@@ -1,12 +1,21 @@
 import { Type, type Static } from "@sinclair/typebox";
 
-export const DevicePlatformSchema = Type.Union([Type.Literal("ios"), Type.Literal("android")]);
+export const DevicePlatformSchema = Type.Union([
+  Type.Literal("ios"),
+  Type.Literal("android"),
+]);
 export type DevicePlatform = Static<typeof DevicePlatformSchema>;
 
-export const ObjectVariantSchema = Type.Union([Type.Literal("PREVIEW"), Type.Literal("ORIGINAL")]);
+export const ObjectVariantSchema = Type.Union([
+  Type.Literal("PREVIEW"),
+  Type.Literal("ORIGINAL"),
+]);
 export type ObjectVariant = Static<typeof ObjectVariantSchema>;
 
-export const ReleaseModeSchema = Type.Union([Type.Literal("IMMEDIATE"), Type.Literal("NIGHTLY")]);
+export const ReleaseModeSchema = Type.Union([
+  Type.Literal("IMMEDIATE"),
+  Type.Literal("NIGHTLY"),
+]);
 export type ReleaseMode = Static<typeof ReleaseModeSchema>;
 
 export const TripStatusSchema = Type.Union([

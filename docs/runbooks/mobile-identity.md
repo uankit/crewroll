@@ -11,17 +11,17 @@ This runbook protects the existing TestFlight, Play, EAS Build, and EAS Update l
 
 ## Protected values
 
-| Field | Required value |
-|---|---|
-| iOS bundle identifier | `com.uankit53.airmesh` |
-| Android package | `com.uankit53.airmesh` |
-| Expo slug | `AirMesh` |
-| URL scheme | `airmesh` |
-| EAS project ID | `fe1de141-5c42-4250-9c1f-f7313845dc8e` |
-| EAS Updates URL | `https://u.expo.dev/fe1de141-5c42-4250-9c1f-f7313845dc8e` |
-| Runtime version policy | `appVersion` |
-| App version source | `remote` |
-| Production versioning | `autoIncrement: true` |
+| Field                  | Required value                                            |
+| ---------------------- | --------------------------------------------------------- |
+| iOS bundle identifier  | `com.uankit53.airmesh`                                    |
+| Android package        | `com.uankit53.airmesh`                                    |
+| Expo slug              | `AirMesh`                                                 |
+| URL scheme             | `airmesh`                                                 |
+| EAS project ID         | `fe1de141-5c42-4250-9c1f-f7313845dc8e`                    |
+| EAS Updates URL        | `https://u.expo.dev/fe1de141-5c42-4250-9c1f-f7313845dc8e` |
+| Runtime version policy | `appVersion`                                              |
+| App version source     | `remote`                                                  |
+| Production versioning  | `autoIncrement: true`                                     |
 
 `tools/app-identity.snapshot.json` is the machine-readable source for the identity guard. Any intentional identity migration requires a separately reviewed store-migration task; do not update the snapshot merely to make a failing check pass.
 

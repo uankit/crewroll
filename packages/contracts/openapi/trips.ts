@@ -11,13 +11,18 @@ import {
 import { MembershipStatusSchema, TripStatusSchema } from "./enums.js";
 import { DeviceIdSchema, MembershipIdSchema, TripIdSchema } from "./ids.js";
 
-export const ImmediateReleaseSchema = ClosedObject({ mode: Type.Literal("IMMEDIATE") });
+export const ImmediateReleaseSchema = ClosedObject({
+  mode: Type.Literal("IMMEDIATE"),
+});
 export const NightlyReleaseSchema = ClosedObject({
   mode: Type.Literal("NIGHTLY"),
   timeZone: IanaTimeZoneSchema,
   localTime: LocalTimeSchema,
 });
-export const ReleaseSchema = Type.Union([ImmediateReleaseSchema, NightlyReleaseSchema]);
+export const ReleaseSchema = Type.Union([
+  ImmediateReleaseSchema,
+  NightlyReleaseSchema,
+]);
 
 export const CreateTripBodySchema = ClosedObject({
   name: Type.String({ minLength: 1, maxLength: 80 }),
@@ -78,10 +83,16 @@ export const ApproveJoinRequestBodySchema = ClosedObject({
   algorithmVersion: Type.Literal(1),
   wrappedKey: KeyEnvelopeSchema.properties.wrappedKey,
 });
-export type ApproveJoinRequestBody = Static<typeof ApproveJoinRequestBodySchema>;
+export type ApproveJoinRequestBody = Static<
+  typeof ApproveJoinRequestBodySchema
+>;
 
-export const StartTripBodySchema = ClosedObject({ expectedVersion: Type.Integer({ minimum: 0 }) });
+export const StartTripBodySchema = ClosedObject({
+  expectedVersion: Type.Integer({ minimum: 0 }),
+});
 export type StartTripBody = Static<typeof StartTripBodySchema>;
 
-export const EndTripBodySchema = ClosedObject({ expectedVersion: Type.Integer({ minimum: 0 }) });
+export const EndTripBodySchema = ClosedObject({
+  expectedVersion: Type.Integer({ minimum: 0 }),
+});
 export type EndTripBody = Static<typeof EndTripBodySchema>;

@@ -1,4 +1,7 @@
-import type { ApiMediaObjectStore, WorkerMediaObjectDeletionStore } from "../storage/ports.js";
+import type {
+  ApiMediaObjectStore,
+  WorkerMediaObjectDeletionStore,
+} from "../storage/ports.js";
 
 declare const apiStore: ApiMediaObjectStore;
 declare const deletionStore: WorkerMediaObjectDeletionStore;

@@ -15,7 +15,9 @@ describe("HomeScreen", () => {
       "Keep using your normal camera. CrewRoll privately delivers each eligible photo to everyone in the trip.",
     );
     screen.getByText("No active trip");
-    screen.getByText("Photos stay on your phones. Temporary encrypted copies are deleted.");
+    screen.getByText(
+      "Photos stay on your phones. Temporary encrypted copies are deleted.",
+    );
   });
 
   test("exposes create and join as distinct accessible actions", async () => {

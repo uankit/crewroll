@@ -48,7 +48,9 @@ function rejects(schema: Parameters<typeof Value.Check>[0], value: unknown) {
 
 describe("command header variants", () => {
   it("accepts registration with Clerk bearer and idempotency but no device header", () => {
-    expect(Value.Check(DeviceRegistrationHeadersSchema, validRegistrationHeaders())).toBe(true);
+    expect(
+      Value.Check(DeviceRegistrationHeadersSchema, validRegistrationHeaders()),
+    ).toBe(true);
     rejects(DeviceRegistrationHeadersSchema, {
       ...validRegistrationHeaders(),
       "x-crewroll-device-id": "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
@@ -60,15 +62,21 @@ describe("command header variants", () => {
   });
 
   it("requires bearer, device id, and idempotency on every other mobile command", () => {
-    expect(Value.Check(MobileCommandHeadersSchema, validMobileCommandHeaders())).toBe(true);
-    const { "idempotency-key": _idempotency, ...withoutIdempotency } = validMobileCommandHeaders();
+    expect(
+      Value.Check(MobileCommandHeadersSchema, validMobileCommandHeaders()),
+    ).toBe(true);
+    const { "idempotency-key": _idempotency, ...withoutIdempotency } =
+      validMobileCommandHeaders();
     rejects(MobileCommandHeadersSchema, withoutIdempotency);
-    const { "x-crewroll-device-id": _device, ...withoutDevice } = validMobileCommandHeaders();
+    const { "x-crewroll-device-id": _device, ...withoutDevice } =
+      validMobileCommandHeaders();
     rejects(MobileCommandHeadersSchema, withoutDevice);
   });
 
   it("requires bearer and device id but rejects idempotency on mobile queries", () => {
-    expect(Value.Check(MobileQueryHeadersSchema, validMobileQueryHeaders())).toBe(true);
+    expect(
+      Value.Check(MobileQueryHeadersSchema, validMobileQueryHeaders()),
+    ).toBe(true);
     rejects(MobileQueryHeadersSchema, {
       ...validMobileQueryHeaders(),
       "idempotency-key": "018f0d98-76fa-7d1a-b4b4-1f742c2e3121",
@@ -78,7 +86,9 @@ describe("command header variants", () => {
 
 describe("device registration", () => {
   it("requires distinct versioned authentication and X25519 E2EE public keys", () => {
-    expect(Value.Check(RegisterDeviceBodySchema, validRegisterDeviceBody())).toBe(true);
+    expect(
+      Value.Check(RegisterDeviceBodySchema, validRegisterDeviceBody()),
+    ).toBe(true);
     rejects(RegisterDeviceBodySchema, {
       installationId: "install-1",
       platform: "ios",
@@ -90,15 +100,23 @@ describe("device registration", () => {
   });
 
   it("rejects unknown device platforms and malformed key material", () => {
-    rejects(RegisterDeviceBodySchema, { ...validRegisterDeviceBody(), platform: "web" });
-    rejects(RegisterDeviceBodySchema, { ...validRegisterDeviceBody(), e2eePublicKey: "***" });
+    rejects(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      platform: "web",
+    });
+    rejects(RegisterDeviceBodySchema, {
+      ...validRegisterDeviceBody(),
+      e2eePublicKey: "***",
+    });
   });
 
   it("rejects base64 key material with nonzero padding bits", () => {
-    expect(Value.Check(RegisterDeviceBodySchema, {
-      ...validRegisterDeviceBody(),
-      authenticationPublicKey: "AQ==",
-    })).toBe(true);
+    expect(
+      Value.Check(RegisterDeviceBodySchema, {
+        ...validRegisterDeviceBody(),
+        authenticationPublicKey: "AQ==",
+      }),
+    ).toBe(true);
     rejects(RegisterDeviceBodySchema, {
       ...validRegisterDeviceBody(),
       authenticationPublicKey: "AR==",
@@ -112,23 +130,46 @@ describe("device registration", () => {
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
     };
     expect(Value.Check(DeviceResponseSchema, response)).toBe(true);
-    rejects(DeviceResponseSchema, { ...response, backgroundBearerExpiresAt: "next month" });
-    rejects(DeviceResponseSchema, { ...response, backgroundBearerVerifier: "server-only" });
+    rejects(DeviceResponseSchema, {
+      ...response,
+      backgroundBearerExpiresAt: "next month",
+    });
+    rejects(DeviceResponseSchema, {
+      ...response,
+      backgroundBearerVerifier: "server-only",
+    });
   });
 
   it("validates push-token updates as a closed command object", () => {
-    expect(Value.Check(UpdatePushTokenBodySchema, { pushToken: "expo-push-token", appVersion: "1.0.0" })).toBe(true);
-    rejects(UpdatePushTokenBodySchema, { pushToken: "expo-push-token", appVersion: "1.0.0", platform: "ios" });
+    expect(
+      Value.Check(UpdatePushTokenBodySchema, {
+        pushToken: "expo-push-token",
+        appVersion: "1.0.0",
+      }),
+    ).toBe(true);
+    rejects(UpdatePushTokenBodySchema, {
+      pushToken: "expo-push-token",
+      appVersion: "1.0.0",
+      platform: "ios",
+    });
   });
 });
 
 describe("trip and invite contracts", () => {
   it("accepts immediate trips and rejects nightly trips without timezone and local time", () => {
-    expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(true);
+    expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(
+      true,
+    );
     const body = validNightlyTripBody();
     rejects(CreateTripBodySchema, { ...body, release: { mode: "NIGHTLY" } });
-    rejects(CreateTripBodySchema, { ...body, release: { ...body.release, timeZone: "Mars/Olympus" } });
-    rejects(CreateTripBodySchema, { ...body, release: { ...body.release, localTime: "9:30 PM" } });
+    rejects(CreateTripBodySchema, {
+      ...body,
+      release: { ...body.release, timeZone: "Mars/Olympus" },
+    });
+    rejects(CreateTripBodySchema, {
+      ...body,
+      release: { ...body.release, localTime: "9:30 PM" },
+    });
   });
 
   it("rejects impossible RFC 3339 calendar dates instead of normalizing them", () => {
@@ -139,11 +180,21 @@ describe("trip and invite contracts", () => {
   });
 
   it("uses one normalized eight-character Crockford invite code for create and join", () => {
-    expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(true);
-    expect(Value.Check(CreateJoinRequestBodySchema, validCreateJoinRequestBody())).toBe(true);
+    expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(
+      true,
+    );
+    expect(
+      Value.Check(CreateJoinRequestBodySchema, validCreateJoinRequestBody()),
+    ).toBe(true);
     for (const inviteCode of ["ABCDEFG", "ABCDEFGI", "abcd2345", "ABCD-234"]) {
-      rejects(CreateTripBodySchema, { ...validImmediateTripBody(), inviteCode });
-      rejects(CreateJoinRequestBodySchema, { ...validCreateJoinRequestBody(), inviteCode });
+      rejects(CreateTripBodySchema, {
+        ...validImmediateTripBody(),
+        inviteCode,
+      });
+      rejects(CreateJoinRequestBodySchema, {
+        ...validCreateJoinRequestBody(),
+        inviteCode,
+      });
     }
   });
 
@@ -157,9 +208,14 @@ describe("trip and invite contracts", () => {
   });
 
   it("format-checks opaque key envelopes used to approve and start", () => {
-    expect(Value.Check(ApproveJoinRequestBodySchema, validApproveJoinRequestBody())).toBe(true);
+    expect(
+      Value.Check(ApproveJoinRequestBodySchema, validApproveJoinRequestBody()),
+    ).toBe(true);
     expect(Value.Check(StartTripBodySchema, validStartTripBody())).toBe(true);
-    rejects(ApproveJoinRequestBodySchema, { ...validApproveJoinRequestBody(), wrappedKey: "not base64!" });
+    rejects(ApproveJoinRequestBodySchema, {
+      ...validApproveJoinRequestBody(),
+      wrappedKey: "not base64!",
+    });
   });
 });
 
@@ -212,7 +268,10 @@ describe("photo upload contracts", () => {
 
   it("accepts only the frozen PREVIEW then ORIGINAL photo object tuple", () => {
     const body = validUploadSessionBody();
-    rejects(CreateUploadSessionBodySchema, { ...body, objects: [body.objects[0]] });
+    rejects(CreateUploadSessionBodySchema, {
+      ...body,
+      objects: [body.objects[0]],
+    });
     rejects(CreateUploadSessionBodySchema, {
       ...body,
       objects: [{ ...body.objects[0], variant: "VIDEO" }, body.objects[1]],
@@ -235,19 +294,36 @@ describe("photo upload contracts", () => {
   });
 
   it("validates commit, download-session, and saved-receipt commands", () => {
-    expect(Value.Check(CommitAssetBodySchema, validCommitAssetBody())).toBe(true);
-    expect(Value.Check(CreateDownloadSessionBodySchema, validCreateDownloadSessionBody())).toBe(true);
-    expect(Value.Check(SavedReceiptBodySchema, validSavedReceiptBody())).toBe(true);
-    rejects(SavedReceiptBodySchema, { ...validSavedReceiptBody(), savedAt: "yesterday" });
+    expect(Value.Check(CommitAssetBodySchema, validCommitAssetBody())).toBe(
+      true,
+    );
+    expect(
+      Value.Check(
+        CreateDownloadSessionBodySchema,
+        validCreateDownloadSessionBody(),
+      ),
+    ).toBe(true);
+    expect(Value.Check(SavedReceiptBodySchema, validSavedReceiptBody())).toBe(
+      true,
+    );
+    rejects(SavedReceiptBodySchema, {
+      ...validSavedReceiptBody(),
+      savedAt: "yesterday",
+    });
   });
 });
 
 describe("sync and error contracts", () => {
   it("format-checks sync and reconciliation query cursors", () => {
     expect(Value.Check(SyncQuerySchema, validSyncQuery())).toBe(true);
-    expect(Value.Check(ReconciliationQuerySchema, validReconciliationQuery())).toBe(true);
+    expect(
+      Value.Check(ReconciliationQuerySchema, validReconciliationQuery()),
+    ).toBe(true);
     rejects(SyncQuerySchema, { cursor: "contains spaces", limit: "50" });
-    rejects(ReconciliationQuerySchema, { cursor: "opaque_cursor", limit: "101" });
+    rejects(ReconciliationQuerySchema, {
+      cursor: "opaque_cursor",
+      limit: "101",
+    });
   });
 
   it("requires an opaque next cursor, caught-up watermark, cursor expiry, and hasMore", () => {
@@ -271,7 +347,10 @@ describe("sync and error contracts", () => {
       sequence: "42",
     };
     expect(Value.Check(SyncAvailablePushHintSchema, hint)).toBe(true);
-    rejects(SyncAvailablePushHintSchema, { ...hint, deliveryId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3199" });
+    rejects(SyncAvailablePushHintSchema, {
+      ...hint,
+      deliveryId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3199",
+    });
     rejects(SyncAvailablePushHintSchema, { ...hint, type: "DELIVERY_READY" });
   });
 
@@ -299,11 +378,15 @@ describe("public object strictness", () => {
         expect(node.additionalProperties, path).toBe(false);
       }
       for (const [key, child] of Object.entries(node)) {
-        if (Array.isArray(child)) child.forEach((item, index) => visit(item, `${path}.${key}[${index}]`));
+        if (Array.isArray(child))
+          child.forEach((item, index) =>
+            visit(item, `${path}.${key}[${index}]`),
+          );
         else visit(child, `${path}.${key}`);
       }
     };
 
-    for (const [name, schema] of Object.entries(publicObjectSchemas)) visit(schema, name);
+    for (const [name, schema] of Object.entries(publicObjectSchemas))
+      visit(schema, name);
   });
 });

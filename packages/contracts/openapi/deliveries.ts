@@ -12,13 +12,18 @@ import { DeliveryStatusSchema } from "./enums.js";
 import { AssetIdSchema, DeliveryIdSchema } from "./ids.js";
 
 export const CreateDownloadSessionBodySchema = ClosedObject({
-  variants: Type.Array(Type.Union([Type.Literal("PREVIEW"), Type.Literal("ORIGINAL")]), {
-    minItems: 1,
-    maxItems: 2,
-    uniqueItems: true,
-  }),
+  variants: Type.Array(
+    Type.Union([Type.Literal("PREVIEW"), Type.Literal("ORIGINAL")]),
+    {
+      minItems: 1,
+      maxItems: 2,
+      uniqueItems: true,
+    },
+  ),
 });
-export type CreateDownloadSessionBody = Static<typeof CreateDownloadSessionBodySchema>;
+export type CreateDownloadSessionBody = Static<
+  typeof CreateDownloadSessionBodySchema
+>;
 
 const DownloadObjectFields = {
   url: UriSchema,
@@ -40,12 +45,17 @@ export const DownloadSessionResponseSchema = ClosedObject({
   assetId: AssetIdSchema,
   expiresAt: DateTimeSchema,
   encryptedManifest: Base64MaxSchema(65_536),
-  objects: Type.Array(Type.Union([PreviewDownloadObjectSchema, OriginalDownloadObjectSchema]), {
-    minItems: 1,
-    maxItems: 2,
-  }),
+  objects: Type.Array(
+    Type.Union([PreviewDownloadObjectSchema, OriginalDownloadObjectSchema]),
+    {
+      minItems: 1,
+      maxItems: 2,
+    },
+  ),
 });
-export type DownloadSessionResponse = Static<typeof DownloadSessionResponseSchema>;
+export type DownloadSessionResponse = Static<
+  typeof DownloadSessionResponseSchema
+>;
 
 export const SavedReceiptBodySchema = ClosedObject({
   assetId: AssetIdSchema,

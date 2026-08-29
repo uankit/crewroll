@@ -9,7 +9,10 @@ import {
 } from "./app-identity.mjs";
 
 const snapshot = JSON.parse(
-  await readFile(new URL("./app-identity.snapshot.json", import.meta.url), "utf8"),
+  await readFile(
+    new URL("./app-identity.snapshot.json", import.meta.url),
+    "utf8",
+  ),
 );
 
 const publicConfig = {

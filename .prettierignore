@@ -1,0 +1,14 @@
+.superpowers/**
+docs/TECHNICAL_TASKS.md
+docs/superpowers/plans/**
+docs/superpowers/specs/**
+package-lock.json
+**/dist/**
+**/coverage/**
+**/build/**
+**/.expo/**
+outputs/**
+ios/**
+android/**
+packages/contracts/generated/**
+src/shared/api/generated.ts

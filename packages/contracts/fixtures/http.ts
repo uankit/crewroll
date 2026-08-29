@@ -115,8 +115,16 @@ export function validUploadSessionBody(): CreateUploadSessionBody {
     keyEpoch: 1,
     encryptedManifest: "AQID",
     objects: [
-      { variant: "PREVIEW", ciphertextBytes: "262144", checksumSha256: SHA256_BASE64 },
-      { variant: "ORIGINAL", ciphertextBytes: "10485760", checksumSha256: SHA256_BASE64 },
+      {
+        variant: "PREVIEW",
+        ciphertextBytes: "262144",
+        checksumSha256: SHA256_BASE64,
+      },
+      {
+        variant: "ORIGINAL",
+        ciphertextBytes: "10485760",
+        checksumSha256: SHA256_BASE64,
+      },
     ],
   };
 }
@@ -136,7 +144,11 @@ export function validCreateDownloadSessionBody(): CreateDownloadSessionBody {
 }
 
 export function validSavedReceiptBody(): SavedReceiptBody {
-  return { assetId: IDS.asset, savedAt: "2026-08-29T12:05:00.000Z", engineRevision: 12 };
+  return {
+    assetId: IDS.asset,
+    savedAt: "2026-08-29T12:05:00.000Z",
+    engineRevision: 12,
+  };
 }
 
 export function validSyncQuery(): SyncQuery {

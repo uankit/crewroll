@@ -8,7 +8,9 @@ function expectSemanticFixture(key: string, decodedFrontendIdentifier: string) {
   const encodedPayload = key.split("_")[2];
 
   expect(encodedPayload).toBeDefined();
-  expect(globalThis.atob(encodedPayload as string)).toBe(decodedFrontendIdentifier);
+  expect(globalThis.atob(encodedPayload as string)).toBe(
+    decodedFrontendIdentifier,
+  );
   expect(decodedFrontendIdentifier.slice(0, -1)).toContain(".");
   expect(decodedFrontendIdentifier.endsWith("$")).toBe(true);
   expect(decodedFrontendIdentifier.match(/\$/g)).toHaveLength(1);
@@ -100,8 +102,14 @@ describe("readPublicEnv", () => {
   });
 
   it.each([
-    ["EXPO_PUBLIC_API_URL", { EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: TEST_PUBLISHABLE_KEY }],
-    ["EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY", { EXPO_PUBLIC_API_URL: "https://api.crewroll.app" }],
+    [
+      "EXPO_PUBLIC_API_URL",
+      { EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: TEST_PUBLISHABLE_KEY },
+    ],
+    [
+      "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      { EXPO_PUBLIC_API_URL: "https://api.crewroll.app" },
+    ],
   ])("rejects a missing %s", (variableName, source) => {
     expectInvalidVariable(source, variableName);
   });
@@ -116,9 +124,18 @@ describe("readPublicEnv", () => {
     ["a bare fragment delimiter", "https://api.crewroll.app#"],
     ["a path that normalizes to root", "https://api.crewroll.app/foo/.."],
     ["a tab normalized out of the authority", "https://api.\tcrewroll.app"],
-    ["a line feed normalized out of the authority", "https://api.\ncrewroll.app"],
-    ["a carriage return normalized out of the authority", "https://api.\rcrewroll.app"],
-    ["a byte order mark normalized out of the authority", "https://api.\uFEFFcrewroll.app"],
+    [
+      "a line feed normalized out of the authority",
+      "https://api.\ncrewroll.app",
+    ],
+    [
+      "a carriage return normalized out of the authority",
+      "https://api.\rcrewroll.app",
+    ],
+    [
+      "a byte order mark normalized out of the authority",
+      "https://api.\uFEFFcrewroll.app",
+    ],
     ["an empty username marker", "https://@api.crewroll.app"],
     ["empty username and password markers", "https://:@api.crewroll.app"],
     ["an empty port marker", "https://api.crewroll.app:"],
@@ -154,8 +171,14 @@ describe("readPublicEnv", () => {
 
   it.each([
     ["a decoded payload without a dot", "pk_test_c3ludGhldGljJA"],
-    ["a decoded payload without a terminal dollar", "pk_live_Y2xlcmsuY3Jld3JvbGwuYXBw"],
-    ["a decoded payload with an internal dollar", "pk_test_Y2xlcmsuJGNyZXdyb2xsLmFwcCQ"],
+    [
+      "a decoded payload without a terminal dollar",
+      "pk_live_Y2xlcmsuY3Jld3JvbGwuYXBw",
+    ],
+    [
+      "a decoded payload with an internal dollar",
+      "pk_test_Y2xlcmsuJGNyZXdyb2xsLmFwcCQ",
+    ],
     ["invalid base64", "pk_test_A"],
     ["an extra underscore segment", `${TEST_PUBLISHABLE_KEY}_extra`],
   ])("rejects %s", (_label, clerkPublishableKey) => {

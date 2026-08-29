@@ -1,10 +1,19 @@
-import { FormatRegistry, Type, type Static, type TObject, type TProperties } from "@sinclair/typebox";
+import {
+  FormatRegistry,
+  Type,
+  type Static,
+  type TObject,
+  type TProperties,
+} from "@sinclair/typebox";
 
 import { DeviceIdSchema, UuidSchema } from "./ids.js";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const RFC_3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
-const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$";
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RFC_3339 =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+const BASE64_PATTERN =
+  "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$";
 const OPAQUE = /^[A-Za-z0-9_-]+$/;
 
 type FormatValidator = (value: string) => boolean;
@@ -25,8 +34,22 @@ function isRfc3339DateTime(value: string): boolean {
   const second = Number(match[6]);
   const offset = match[7]!;
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]!) return false;
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]!)
+    return false;
   if (hour > 23 || minute > 59 || second > 59) return false;
   if (offset !== "Z") {
     const offsetHour = Number(offset.slice(1, 3));
@@ -47,7 +70,9 @@ function decimalPattern(maximum: number): string {
     if (upper < lower) continue;
     const range = lower === upper ? String(lower) : `[${lower}-${upper}]`;
     const remaining = digits.length - index - 1;
-    alternatives.push(`${digits.slice(0, index)}${range}${remaining === 0 ? "" : `\\d{${remaining}}`}`);
+    alternatives.push(
+      `${digits.slice(0, index)}${range}${remaining === 0 ? "" : `\\d{${remaining}}`}`,
+    );
   }
   alternatives.push(digits);
   return `^(?:${[...new Set(alternatives)].join("|")})$`;
@@ -80,9 +105,13 @@ const CREWROLL_FORMAT_VALIDATORS = {
       return false;
     }
   },
-  "opaque-cursor": (value: string) => value.length >= 8 && value.length <= 256 && OPAQUE.test(value),
+  "opaque-cursor": (value: string) =>
+    value.length >= 8 && value.length <= 256 && OPAQUE.test(value),
   "opaque-source-asset-key": (value: string) =>
-    value.length >= 32 && value.length <= 128 && /^src_[A-Za-z0-9_-]+$/.test(value) && !UUID.test(value),
+    value.length >= 32 &&
+    value.length <= 128 &&
+    /^src_[A-Za-z0-9_-]+$/.test(value) &&
+    !UUID.test(value),
 } satisfies Readonly<Record<string, FormatValidator>>;
 
 export function installCrewRollFormats(registry: CrewRollFormatRegistry): void {
@@ -105,7 +134,8 @@ export type ProtocolVersion = Static<typeof ProtocolVersionSchema>;
 
 export const DateTimeSchema = Type.String({
   format: "date-time",
-  pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+  pattern:
+    "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
 });
 export const UriSchema = Type.String({ format: "uri" });
 export const Base64Schema = Type.String({
@@ -114,15 +144,29 @@ export const Base64Schema = Type.String({
   pattern: BASE64_PATTERN,
 });
 export const OpaqueCursorSchema = Type.String({ format: "opaque-cursor" });
-export const SourceAssetKeySchema = Type.String({ format: "opaque-source-asset-key" });
-export const InviteCodeSchema = Type.String({ pattern: "^[0-9A-HJKMNP-TV-Z]{8}$" });
-export const LocalTimeSchema = Type.String({ pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$" });
+export const SourceAssetKeySchema = Type.String({
+  format: "opaque-source-asset-key",
+});
+export const InviteCodeSchema = Type.String({
+  pattern: "^[0-9A-HJKMNP-TV-Z]{8}$",
+});
+export const LocalTimeSchema = Type.String({
+  pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+});
 export const IanaTimeZoneSchema = Type.String({ format: "iana-time-zone" });
-export const DecimalSequenceSchema = Type.String({ pattern: "^(?:0|[1-9]\\d*)$" });
+export const DecimalSequenceSchema = Type.String({
+  pattern: "^(?:0|[1-9]\\d*)$",
+});
 
 export const DecimalBytesSchema = (maximum: 524_288 | 52_428_800) =>
-  Type.String({ pattern: decimalPattern(maximum), "x-crewroll-maximum": maximum });
-export const DecimalLimitSchema = Type.String({ pattern: decimalPattern(100), "x-crewroll-maximum": 100 });
+  Type.String({
+    pattern: decimalPattern(maximum),
+    "x-crewroll-maximum": maximum,
+  });
+export const DecimalLimitSchema = Type.String({
+  pattern: decimalPattern(100),
+  "x-crewroll-maximum": 100,
+});
 export const Base64ExactSchema = (decodedBytes: number) => {
   const encodedLength = Math.ceil(decodedBytes / 3) * 4;
   return Type.String({
@@ -156,12 +200,16 @@ export const KeyEnvelopeSchema = ClosedObject({
 });
 export type KeyEnvelope = Static<typeof KeyEnvelopeSchema>;
 
-export const BearerAuthorizationSchema = Type.String({ pattern: "^Bearer [^\\s]+$" });
+export const BearerAuthorizationSchema = Type.String({
+  pattern: "^Bearer [^\\s]+$",
+});
 export const DeviceRegistrationHeadersSchema = ClosedObject({
   authorization: BearerAuthorizationSchema,
   "idempotency-key": UuidSchema,
 });
-export type DeviceRegistrationHeaders = Static<typeof DeviceRegistrationHeadersSchema>;
+export type DeviceRegistrationHeaders = Static<
+  typeof DeviceRegistrationHeadersSchema
+>;
 
 export const MobileCommandHeadersSchema = ClosedObject({
   authorization: BearerAuthorizationSchema,

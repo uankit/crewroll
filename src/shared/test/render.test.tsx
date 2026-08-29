@@ -5,15 +5,22 @@ import { createTestQueryClient, renderWithProviders } from "./render";
 
 function QueryClientProbe({ expected }: { expected: QueryClient }) {
   const queryClient = useQueryClient();
-  return <Text>{queryClient === expected ? "provided client" : "unexpected client"}</Text>;
+  return (
+    <Text>
+      {queryClient === expected ? "provided client" : "unexpected client"}
+    </Text>
+  );
 }
 
 describe("renderWithProviders", () => {
   it("makes the provided QueryClient available to descendants", async () => {
     const queryClient = new QueryClient();
-    const view = await renderWithProviders(<QueryClientProbe expected={queryClient} />, {
-      queryClient,
-    });
+    const view = await renderWithProviders(
+      <QueryClientProbe expected={queryClient} />,
+      {
+        queryClient,
+      },
+    );
 
     expect(view.getByText("provided client")).toBeTruthy();
   });

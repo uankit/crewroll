@@ -35,7 +35,9 @@ export type OpenApiDocument = Readonly<{
   components: Readonly<Record<string, unknown>>;
 }>;
 
-const schemaRef = (name: string): JsonSchema => ({ $ref: `#/components/schemas/${name}` });
+const schemaRef = (name: string): JsonSchema => ({
+  $ref: `#/components/schemas/${name}`,
+});
 const response = (name: string, description = "Success") => ({
   description,
   content: { "application/json": { schema: schemaRef(name) } },
@@ -79,7 +81,8 @@ const operation = (
   parameters: readonly unknown[],
   responses: Record<string, unknown>,
   bodyName?: string,
-  securityScheme: "ClerkBearer" | "BackgroundDeviceBearer" = "BackgroundDeviceBearer",
+  securityScheme:
+    "ClerkBearer" | "BackgroundDeviceBearer" = "BackgroundDeviceBearer",
 ) => ({
   operationId,
   security: [{ [securityScheme]: [] }],
@@ -90,7 +93,8 @@ const operation = (
 
 function componentSchemas(): Record<string, unknown> {
   return {
-    DeviceRegistrationHeaders: publicObjectSchemas.DeviceRegistrationHeadersSchema,
+    DeviceRegistrationHeaders:
+      publicObjectSchemas.DeviceRegistrationHeadersSchema,
     MobileCommandHeaders: publicObjectSchemas.MobileCommandHeadersSchema,
     MobileQueryHeaders: publicObjectSchemas.MobileQueryHeadersSchema,
     RegisterDeviceBody: RegisterDeviceBodySchema,
@@ -135,63 +139,156 @@ export function createOpenApiDocument(): OpenApiDocument {
         ),
       },
       "/v1/devices/{deviceId}/push-token": {
-        patch: operation("updatePushToken", [...commandHeaders, pathId("deviceId")], { "204": { description: "Updated" } }, "UpdatePushTokenBody"),
+        patch: operation(
+          "updatePushToken",
+          [...commandHeaders, pathId("deviceId")],
+          { "204": { description: "Updated" } },
+          "UpdatePushTokenBody",
+        ),
       },
       "/v1/devices/{deviceId}": {
-        delete: operation("revokeDevice", [...commandHeaders, pathId("deviceId")], { "204": { description: "Revoked" } }),
+        delete: operation(
+          "revokeDevice",
+          [...commandHeaders, pathId("deviceId")],
+          { "204": { description: "Revoked" } },
+        ),
       },
       "/v1/trips": {
-        post: operation("createTrip", commandHeaders, { "201": response("TripResponse", "Created") }, "CreateTripBody"),
+        post: operation(
+          "createTrip",
+          commandHeaders,
+          { "201": response("TripResponse", "Created") },
+          "CreateTripBody",
+        ),
       },
       "/v1/trips/join-requests": {
-        post: operation("createJoinRequest", commandHeaders, { "201": response("MembershipResponse", "Requested") }, "CreateJoinRequestBody"),
+        post: operation(
+          "createJoinRequest",
+          commandHeaders,
+          { "201": response("MembershipResponse", "Requested") },
+          "CreateJoinRequestBody",
+        ),
       },
       "/v1/trips/{tripId}/join-requests/{membershipId}/approval": {
-        put: operation("approveJoinRequest", [...commandHeaders, pathId("tripId"), pathId("membershipId")], { "200": response("MembershipResponse") }, "ApproveJoinRequestBody"),
+        put: operation(
+          "approveJoinRequest",
+          [...commandHeaders, pathId("tripId"), pathId("membershipId")],
+          { "200": response("MembershipResponse") },
+          "ApproveJoinRequestBody",
+        ),
       },
       "/v1/trips/{tripId}/join-requests/{membershipId}": {
-        delete: operation("rejectJoinRequest", [...commandHeaders, pathId("tripId"), pathId("membershipId")], { "204": { description: "Rejected" } }),
+        delete: operation(
+          "rejectJoinRequest",
+          [...commandHeaders, pathId("tripId"), pathId("membershipId")],
+          { "204": { description: "Rejected" } },
+        ),
       },
       "/v1/trips/{tripId}/start": {
-        post: operation("startTrip", [...commandHeaders, pathId("tripId")], { "200": response("TripResponse") }, "StartTripBody"),
+        post: operation(
+          "startTrip",
+          [...commandHeaders, pathId("tripId")],
+          { "200": response("TripResponse") },
+          "StartTripBody",
+        ),
       },
       "/v1/trips/{tripId}/end": {
-        post: operation("endTrip", [...commandHeaders, pathId("tripId")], { "200": response("TripResponse") }, "EndTripBody"),
+        post: operation(
+          "endTrip",
+          [...commandHeaders, pathId("tripId")],
+          { "200": response("TripResponse") },
+          "EndTripBody",
+        ),
       },
       "/v1/trips/{tripId}": {
-        get: operation("getTrip", [...queryHeaders, pathId("tripId")], { "200": response("TripResponse") }),
+        get: operation("getTrip", [...queryHeaders, pathId("tripId")], {
+          "200": response("TripResponse"),
+        }),
       },
       "/v1/trips/{tripId}/reconciliation": {
-        get: operation("getReconciliation", [...queryHeaders, pathId("tripId"), {
-          name: "cursor", in: "query", required: false, schema: { type: "string", format: "opaque-cursor" },
-        }, {
-          name: "limit", in: "query", required: false, schema: DecimalLimitSchema,
-        }], { "200": response("ReconciliationResponse") }),
+        get: operation(
+          "getReconciliation",
+          [
+            ...queryHeaders,
+            pathId("tripId"),
+            {
+              name: "cursor",
+              in: "query",
+              required: false,
+              schema: { type: "string", format: "opaque-cursor" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              required: false,
+              schema: DecimalLimitSchema,
+            },
+          ],
+          { "200": response("ReconciliationResponse") },
+        ),
       },
       "/v1/assets/upload-sessions": {
-        post: operation("createUploadSession", commandHeaders, { "201": response("UploadSessionResponse", "Created") }, "CreateUploadSessionBody"),
+        post: operation(
+          "createUploadSession",
+          commandHeaders,
+          { "201": response("UploadSessionResponse", "Created") },
+          "CreateUploadSessionBody",
+        ),
       },
       "/v1/assets/{assetId}/commit": {
-        post: operation("commitAsset", [...commandHeaders, pathId("assetId")], { "200": response("CommitAssetResponse") }, "CommitAssetBody"),
+        post: operation(
+          "commitAsset",
+          [...commandHeaders, pathId("assetId")],
+          { "200": response("CommitAssetResponse") },
+          "CommitAssetBody",
+        ),
       },
       "/v1/sync": {
-        get: operation("sync", [...queryHeaders, {
-          name: "cursor", in: "query", required: false, schema: { type: "string", format: "opaque-cursor" },
-        }, {
-          name: "limit", in: "query", required: false, schema: DecimalLimitSchema,
-        }], { "200": response("SyncResponse") }),
+        get: operation(
+          "sync",
+          [
+            ...queryHeaders,
+            {
+              name: "cursor",
+              in: "query",
+              required: false,
+              schema: { type: "string", format: "opaque-cursor" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              required: false,
+              schema: DecimalLimitSchema,
+            },
+          ],
+          { "200": response("SyncResponse") },
+        ),
       },
       "/v1/deliveries/{deliveryId}/download-session": {
-        post: operation("createDownloadSession", [...commandHeaders, pathId("deliveryId")], { "201": response("DownloadSessionResponse", "Created") }, "CreateDownloadSessionBody"),
+        post: operation(
+          "createDownloadSession",
+          [...commandHeaders, pathId("deliveryId")],
+          { "201": response("DownloadSessionResponse", "Created") },
+          "CreateDownloadSessionBody",
+        ),
       },
       "/v1/deliveries/{deliveryId}/saved-receipt": {
-        put: operation("saveReceipt", [...commandHeaders, pathId("deliveryId")], { "200": response("SavedReceiptResponse") }, "SavedReceiptBody"),
+        put: operation(
+          "saveReceipt",
+          [...commandHeaders, pathId("deliveryId")],
+          { "200": response("SavedReceiptResponse") },
+          "SavedReceiptBody",
+        ),
       },
     },
     components: {
       securitySchemes: {
         ClerkBearer: { type: "http", scheme: "bearer", bearerFormat: "Clerk" },
-        BackgroundDeviceBearer: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
+        BackgroundDeviceBearer: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "opaque",
+        },
       },
       schemas: componentSchemas(),
     },

@@ -1,6 +1,10 @@
 import { Type, type Static } from "@sinclair/typebox";
 
-import { ClosedObject, DateTimeSchema, DecimalSequenceSchema } from "./common.js";
+import {
+  ClosedObject,
+  DateTimeSchema,
+  DecimalSequenceSchema,
+} from "./common.js";
 import { DeliveryStatusSchema, TripStatusSchema } from "./enums.js";
 import { AssetIdSchema, DeliveryIdSchema, TripIdSchema } from "./ids.js";
 

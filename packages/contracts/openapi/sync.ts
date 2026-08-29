@@ -9,7 +9,12 @@ import {
 } from "./common.js";
 import { DeliveryStatusSchema } from "./enums.js";
 import { InboxEventSchema } from "./events.js";
-import { AssetIdSchema, DeviceIdSchema, MembershipIdSchema, TripIdSchema } from "./ids.js";
+import {
+  AssetIdSchema,
+  DeviceIdSchema,
+  MembershipIdSchema,
+  TripIdSchema,
+} from "./ids.js";
 
 export const SyncQuerySchema = ClosedObject({
   cursor: Type.Optional(OpaqueCursorSchema),
@@ -42,7 +47,10 @@ export const ReconciliationMemberSchema = ClosedObject({
 export const ReconciliationAssetSchema = ClosedObject({
   assetId: AssetIdSchema,
   capturedAt: DateTimeSchema,
-  members: Type.Array(ReconciliationMemberSchema, { minItems: 1, maxItems: 10 }),
+  members: Type.Array(ReconciliationMemberSchema, {
+    minItems: 1,
+    maxItems: 10,
+  }),
 });
 
 export const ReconciliationResponseSchema = ClosedObject({
@@ -53,4 +61,6 @@ export const ReconciliationResponseSchema = ClosedObject({
   cursorExpiresAt: DateTimeSchema,
   hasMore: Type.Boolean(),
 });
-export type ReconciliationResponse = Static<typeof ReconciliationResponseSchema>;
+export type ReconciliationResponse = Static<
+  typeof ReconciliationResponseSchema
+>;

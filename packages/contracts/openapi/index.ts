@@ -28,7 +28,11 @@ import {
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
 } from "./deliveries.js";
-import { DeviceResponseSchema, RegisterDeviceBodySchema, UpdatePushTokenBodySchema } from "./devices.js";
+import {
+  DeviceResponseSchema,
+  RegisterDeviceBodySchema,
+  UpdatePushTokenBodySchema,
+} from "./devices.js";
 import {
   AssetCommittedEventSchema,
   DeliveryChangedEventSchema,

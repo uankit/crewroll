@@ -15,7 +15,10 @@ export function Screen({ children, scroll = true, testID }: ScreenProps) {
 
   if (!scroll) {
     return (
-      <View testID={testID} style={[styles.root, { backgroundColor: colors.background }]}>
+      <View
+        testID={testID}
+        style={[styles.root, { backgroundColor: colors.background }]}
+      >
         {content}
       </View>
     );

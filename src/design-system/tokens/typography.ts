@@ -3,7 +3,11 @@ export const typography = {
   title1: { fontFamily: "Manrope_800ExtraBold", fontSize: 30, lineHeight: 36 },
   title2: { fontFamily: "Manrope_700Bold", fontSize: 24, lineHeight: 30 },
   headline: { fontFamily: "Manrope_700Bold", fontSize: 18, lineHeight: 24 },
-  bodyStrong: { fontFamily: "Manrope_600SemiBold", fontSize: 16, lineHeight: 24 },
+  bodyStrong: {
+    fontFamily: "Manrope_600SemiBold",
+    fontSize: 16,
+    lineHeight: 24,
+  },
   body: { fontFamily: "Manrope_400Regular", fontSize: 16, lineHeight: 24 },
   label: { fontFamily: "Manrope_600SemiBold", fontSize: 14, lineHeight: 20 },
   caption: { fontFamily: "Manrope_500Medium", fontSize: 12, lineHeight: 17 },

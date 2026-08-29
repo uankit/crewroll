@@ -23,7 +23,10 @@ const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
   try {
     url = new URL(value);
   } catch {
-    context.addIssue({ code: "custom", message: "must be a valid HTTPS origin" });
+    context.addIssue({
+      code: "custom",
+      message: "must be a valid HTTPS origin",
+    });
     return;
   }
 
@@ -37,7 +40,10 @@ const HttpsApiOriginSchema = z.string().superRefine((value, context) => {
     url.search !== "" ||
     url.hash !== ""
   ) {
-    context.addIssue({ code: "custom", message: "must be a valid HTTPS origin" });
+    context.addIssue({
+      code: "custom",
+      message: "must be a valid HTTPS origin",
+    });
   }
 });
 
@@ -115,7 +121,9 @@ export type PublicEnv = {
   readonly clerkPublishableKey: string;
 };
 
-export function readPublicEnv(source: Record<string, string | undefined>): PublicEnv {
+export function readPublicEnv(
+  source: Record<string, string | undefined>,
+): PublicEnv {
   const result = PublicEnvSchema.safeParse(source);
 
   if (!result.success) {
@@ -126,7 +134,9 @@ export function readPublicEnv(source: Record<string, string | undefined>): Publi
           .filter((path): path is string => typeof path === "string"),
       ),
     ];
-    throw new Error(`Invalid public environment variable: ${variableNames.join(", ")}`);
+    throw new Error(
+      `Invalid public environment variable: ${variableNames.join(", ")}`,
+    );
   }
 
   return {

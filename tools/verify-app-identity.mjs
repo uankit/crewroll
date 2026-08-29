@@ -9,7 +9,10 @@ import {
 
 const repositoryRoot = new URL("../", import.meta.url);
 const snapshot = JSON.parse(
-  await readFile(new URL("./app-identity.snapshot.json", import.meta.url), "utf8"),
+  await readFile(
+    new URL("./app-identity.snapshot.json", import.meta.url),
+    "utf8",
+  ),
 );
 const easConfig = JSON.parse(
   await readFile(new URL("../eas.json", import.meta.url), "utf8"),

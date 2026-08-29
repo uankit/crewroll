@@ -16,8 +16,16 @@ const fields = [
 export function assertRootManifest(manifest) {
   assert.equal(manifest.name, "crewroll", "package name must remain crewroll");
   assert.equal(manifest.private, true, "root package must remain private");
-  assert.equal(manifest.main, "expo-router/entry", "Expo Router must stay at repository root");
-  assert.deepEqual(manifest.workspaces, ["packages/*", "services/*"], "workspace topology");
+  assert.equal(
+    manifest.main,
+    "expo-router/entry",
+    "Expo Router must stay at repository root",
+  );
+  assert.deepEqual(
+    manifest.workspaces,
+    ["packages/*", "services/*"],
+    "workspace topology",
+  );
   assert.match(manifest.dependencies?.expo ?? "", /^~57\./, "Expo SDK 57");
 }
 
@@ -45,6 +53,8 @@ export function assertIdentity(actual, expected) {
     );
 
   if (mismatches.length > 0) {
-    throw new Error(`CrewRoll release identity drifted:\n${mismatches.join("\n")}`);
+    throw new Error(
+      `CrewRoll release identity drifted:\n${mismatches.join("\n")}`,
+    );
   }
 }

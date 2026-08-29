@@ -34,7 +34,9 @@ export const CreateUploadSessionBodySchema = ClosedObject({
   encryptedManifest: Base64MaxSchema(65_536),
   objects: Type.Tuple([PreviewUploadObjectSchema, OriginalUploadObjectSchema]),
 });
-export type CreateUploadSessionBody = Static<typeof CreateUploadSessionBodySchema>;
+export type CreateUploadSessionBody = Static<
+  typeof CreateUploadSessionBodySchema
+>;
 
 const PresignedUploadFields = {
   url: UriSchema,
@@ -58,7 +60,10 @@ export const UploadSessionResponseSchema = ClosedObject({
   uploadSessionId: UploadSessionIdSchema,
   assetId: AssetIdSchema,
   expiresAt: DateTimeSchema,
-  objects: Type.Tuple([PresignedPreviewUploadObjectSchema, PresignedOriginalUploadObjectSchema]),
+  objects: Type.Tuple([
+    PresignedPreviewUploadObjectSchema,
+    PresignedOriginalUploadObjectSchema,
+  ]),
 });
 export type UploadSessionResponse = Static<typeof UploadSessionResponseSchema>;
 
@@ -73,7 +78,10 @@ export const CommittedOriginalObjectSchema = ClosedObject({
 
 export const CommitAssetBodySchema = ClosedObject({
   uploadSessionId: UploadSessionIdSchema,
-  objects: Type.Tuple([CommittedPreviewObjectSchema, CommittedOriginalObjectSchema]),
+  objects: Type.Tuple([
+    CommittedPreviewObjectSchema,
+    CommittedOriginalObjectSchema,
+  ]),
 });
 export type CommitAssetBody = Static<typeof CommitAssetBodySchema>;
 

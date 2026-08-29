@@ -14,7 +14,9 @@ export const RegisterDeviceBodySchema = ClosedObject({
   e2eePublicKey: Base64Schema,
   e2eeKeyVersion: Type.Literal(1),
   pushToken: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
-  appVersion: Type.String({ pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" }),
+  appVersion: Type.String({
+    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+  }),
 });
 export type RegisterDeviceBody = Static<typeof RegisterDeviceBodySchema>;
 
@@ -26,7 +28,12 @@ export const DeviceResponseSchema = ClosedObject({
 export type DeviceResponse = Static<typeof DeviceResponseSchema>;
 
 export const UpdatePushTokenBodySchema = ClosedObject({
-  pushToken: Type.Union([Type.String({ minLength: 1, maxLength: 4096 }), Type.Null()]),
-  appVersion: Type.String({ pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" }),
+  pushToken: Type.Union([
+    Type.String({ minLength: 1, maxLength: 4096 }),
+    Type.Null(),
+  ]),
+  appVersion: Type.String({
+    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$",
+  }),
 });
 export type UpdatePushTokenBody = Static<typeof UpdatePushTokenBodySchema>;

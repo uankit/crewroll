@@ -28,8 +28,8 @@ export function HomeScreen({ onCreateTrip, onJoinTrip }: HomeScreenProps) {
           Every trip photo. On every phone.
         </AppText>
         <AppText tone="secondary">
-          Keep using your normal camera. CrewRoll privately delivers each eligible
-          photo to everyone in the trip.
+          Keep using your normal camera. CrewRoll privately delivers each
+          eligible photo to everyone in the trip.
         </AppText>
       </View>
 
@@ -38,8 +38,8 @@ export function HomeScreen({ onCreateTrip, onJoinTrip }: HomeScreenProps) {
         <View style={styles.statusCopy}>
           <AppText variant="title2">No active trip</AppText>
           <AppText tone="secondary">
-            Create a roll or join your friends. Once the trip starts, CrewRoll watches
-            for new photos automatically.
+            Create a roll or join your friends. Once the trip starts, CrewRoll
+            watches for new photos automatically.
           </AppText>
         </View>
       </Surface>

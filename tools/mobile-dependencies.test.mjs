@@ -79,7 +79,11 @@ function satisfiesSdk57Tilde(declaration, resolution) {
 
 function assertForbiddenPackageAbsent(manifest, lockfile, name) {
   for (const section of rootDependencySections) {
-    assert.equal(manifest[section]?.[name], undefined, `${name} must be absent from ${section}`);
+    assert.equal(
+      manifest[section]?.[name],
+      undefined,
+      `${name} must be absent from ${section}`,
+    );
   }
   assert.equal(
     lockfile.packages?.[`node_modules/${name}`],
@@ -118,16 +122,26 @@ function assertMobileDependencyPolicy(manifest, lockfile) {
     );
   }
   for (const name of expoManagedDependencies) {
-    const resolution = lockfile.packages?.[`node_modules/${name}`]?.version ?? "";
-    assert.match(resolution, exactSemver, `lockfile must concretely resolve ${name}`);
+    const resolution =
+      lockfile.packages?.[`node_modules/${name}`]?.version ?? "";
+    assert.match(
+      resolution,
+      exactSemver,
+      `lockfile must concretely resolve ${name}`,
+    );
     assert.ok(
       satisfiesSdk57Tilde(manifest.dependencies[name], resolution),
       `${name} lock version must satisfy ${manifest.dependencies[name]}`,
     );
   }
   for (const name of applicationDependencies) {
-    const resolution = lockfile.packages?.[`node_modules/${name}`]?.version ?? "";
-    assert.match(resolution, exactSemver, `lockfile must concretely resolve ${name}`);
+    const resolution =
+      lockfile.packages?.[`node_modules/${name}`]?.version ?? "";
+    assert.match(
+      resolution,
+      exactSemver,
+      `lockfile must concretely resolve ${name}`,
+    );
     assert.equal(
       resolution,
       manifest.dependencies[name],
@@ -141,7 +155,8 @@ test("keeps the root Expo shape and approved client stack", () => {
 });
 
 test("rejects removal of required mobile dependencies", () => {
-  const { manifest: withoutNotifications, lockfile: notificationsLock } = cloneManifestAndLock();
+  const { manifest: withoutNotifications, lockfile: notificationsLock } =
+    cloneManifestAndLock();
   removeRootDependency(
     withoutNotifications,
     notificationsLock,
@@ -153,7 +168,8 @@ test("rejects removal of required mobile dependencies", () => {
     /expo-notifications must use an SDK 57 compatible range/,
   );
 
-  const { manifest: withoutResolvers, lockfile: resolversLock } = cloneManifestAndLock();
+  const { manifest: withoutResolvers, lockfile: resolversLock } =
+    cloneManifestAndLock();
   removeRootDependency(
     withoutResolvers,
     resolversLock,
@@ -226,14 +242,19 @@ test("rejects lock resolutions outside the approved declarations", () => {
 
 test("rejects forbidden direct lockfile entries", () => {
   const { manifest: oldClerk, lockfile: oldClerkLock } = cloneManifestAndLock();
-  oldClerkLock.packages["node_modules/@clerk/clerk-expo"] = { version: "2.20.0" };
+  oldClerkLock.packages["node_modules/@clerk/clerk-expo"] = {
+    version: "2.20.0",
+  };
   assert.throws(
     () => assertMobileDependencyPolicy(oldClerk, oldClerkLock),
     /@clerk\/clerk-expo lockfile entry must be absent/,
   );
 
-  const { manifest: generator, lockfile: generatorLock } = cloneManifestAndLock();
-  generatorLock.packages["node_modules/openapi-typescript"] = { version: "7.13.0" };
+  const { manifest: generator, lockfile: generatorLock } =
+    cloneManifestAndLock();
+  generatorLock.packages["node_modules/openapi-typescript"] = {
+    version: "7.13.0",
+  };
   assert.throws(
     () => assertMobileDependencyPolicy(generator, generatorLock),
     /openapi-typescript lockfile entry must be absent/,

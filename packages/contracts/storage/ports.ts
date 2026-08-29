@@ -4,19 +4,25 @@ export type PresignedPut = Readonly<{
 }>;
 
 export interface ApiMediaObjectStore {
-  createPutUrl(input: Readonly<{
-    key: string;
-    bytes: bigint;
-    checksumSha256Base64: string;
-    expiresAt: Date;
-  }>): Promise<PresignedPut>;
-  head(input: Readonly<{ key: string }>): Promise<Readonly<{
-    exists: boolean;
-    bytes?: bigint;
-    checksumSha256Base64?: string;
-    etag?: string;
-  }>>;
-  createGetUrl(input: Readonly<{ key: string; expiresAt: Date }>): Promise<string>;
+  createPutUrl(
+    input: Readonly<{
+      key: string;
+      bytes: bigint;
+      checksumSha256Base64: string;
+      expiresAt: Date;
+    }>,
+  ): Promise<PresignedPut>;
+  head(input: Readonly<{ key: string }>): Promise<
+    Readonly<{
+      exists: boolean;
+      bytes?: bigint;
+      checksumSha256Base64?: string;
+      etag?: string;
+    }>
+  >;
+  createGetUrl(
+    input: Readonly<{ key: string; expiresAt: Date }>,
+  ): Promise<string>;
 }
 
 export interface WorkerMediaObjectDeletionStore {
