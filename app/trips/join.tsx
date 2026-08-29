@@ -1,4 +1,4 @@
-import { AppText, Screen } from "../../src/design-system";
+import { AppText, Screen } from "@/design-system";
 
 export default function JoinTripRoute() {
   return (

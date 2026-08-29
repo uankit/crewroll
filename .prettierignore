@@ -11,4 +11,4 @@ outputs/**
 ios/**
 android/**
 packages/contracts/generated/**
-src/shared/api/generated.ts
+src/infrastructure/api/generated.ts

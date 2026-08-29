@@ -16,6 +16,8 @@
     "app/**/*.tsx",
     "__tests__/**/*.ts",
     "__tests__/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
     "src/**/*.ts",
     "src/**/*.tsx",
     "modules/**/*.ts",

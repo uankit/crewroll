@@ -1,6 +1,6 @@
 import { fireEvent, render } from "@testing-library/react-native";
 
-import { HomeScreen } from "../src/features/home/HomeScreen";
+import { HomeScreen } from "@/features/home";
 
 describe("HomeScreen", () => {
   test("explains the CrewRoll promise before asking the member to act", async () => {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -22,6 +22,17 @@ const workspaces = [
   { path: "packages/contracts", manifest: contractsPackageJson },
   { path: "services/control-plane", manifest: controlPlanePackageJson },
 ];
+
+const dependencyOwners = [
+  { path: "", manifest: packageJson },
+  { path: "packages/contracts", manifest: contractsPackageJson },
+  { path: "services/control-plane", manifest: controlPlanePackageJson },
+];
+
+const boundaryToolPins = {
+  "eslint-import-resolver-typescript": "4.4.5",
+  "eslint-plugin-boundaries": "7.2.0",
+};
 
 const forbiddenDependencies = [
   "@noble/ciphers",
@@ -54,6 +65,7 @@ const rootLintPathClasses = [
   "src",
   "modules",
   "__tests__",
+  "tests",
   "tools",
   "eslint.config.js",
   "vitest.config.ts",
@@ -73,7 +85,7 @@ const prettierExclusions = [
   "ios/**",
   "android/**",
   "packages/contracts/generated/**",
-  "src/shared/api/generated.ts",
+  "src/infrastructure/api/generated.ts",
 ];
 
 const unitProjectExclusions = [
@@ -282,6 +294,11 @@ test("formatting is check-only and literal protected/generated exclusions are ac
       `.prettierignore must literally include ${exclusion}`,
     );
   }
+  assert.equal(
+    ignoreLines.includes("src/shared/api/generated.ts"),
+    false,
+    "obsolete mobile generated ownership must be removed",
+  );
 });
 
 test("typecheck builds contracts before checking root and control-plane projects", () => {
@@ -296,6 +313,8 @@ test("root TypeScript checks tests and the root Vitest project config", async ()
   for (const include of [
     "__tests__/**/*.ts",
     "__tests__/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
     "vitest.config.ts",
   ]) {
     assert.ok(
@@ -382,6 +401,89 @@ test("the approved local quality tools are exact dependency pins", () => {
   );
 });
 
+test("every ESLint owner directly pins the approved boundary plugin and TypeScript resolver", async () => {
+  const packageLock = await readJson("package-lock.json");
+
+  for (const { path, manifest } of dependencyOwners) {
+    const lockOwner = packageLock.packages[path];
+    assert.ok(lockOwner, `package-lock.json must contain ${path || "root"}`);
+
+    for (const [dependency, version] of Object.entries(boundaryToolPins)) {
+      assert.equal(
+        manifest.devDependencies?.[dependency],
+        version,
+        `${path || "root"} must directly pin ${dependency}`,
+      );
+      assert.equal(manifest.dependencies?.[dependency], undefined);
+      assert.equal(
+        lockOwner.devDependencies?.[dependency],
+        version,
+        `package-lock.json must record ${path || "root"} ownership of ${dependency}`,
+      );
+    }
+  }
+
+  for (const [dependency, version] of Object.entries(boundaryToolPins)) {
+    const resolution = packageLock.packages[`node_modules/${dependency}`];
+    assert.equal(resolution?.version, version, `${dependency} lock resolution`);
+    assert.match(
+      resolution?.resolved ?? "",
+      new RegExp(
+        `/${dependency}/-/${dependency}-${version.replaceAll(".", "\\.")}\\.tgz$`,
+        "u",
+      ),
+    );
+    assert.match(resolution?.integrity ?? "", /^sha512-/u);
+  }
+});
+
+test("mobile source uses only the locked topology and public route imports", async () => {
+  await assert.rejects(readdir(new URL("src/shared/", root)), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readText("src/shared/config/env.ts"), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readText("src/shared/config/env.test.ts"), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readText("src/shared/test/render.tsx"), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readText("src/shared/test/render.test.tsx"), {
+    code: "ENOENT",
+  });
+
+  await readText("src/bootstrap/config/env.ts");
+  await readText("src/bootstrap/config/env.test.ts");
+  await readText("tests/support/render.tsx");
+  await readText("tests/support/render.test.tsx");
+
+  const publicImports = [
+    ["app/index.tsx", /^import \{ HomeScreen \} from "@\/features\/home";$/mu],
+    [
+      "app/trips/create.tsx",
+      /^import \{ AppText, Screen \} from "@\/design-system";$/mu,
+    ],
+    [
+      "app/trips/join.tsx",
+      /^import \{ AppText, Screen \} from "@\/design-system";$/mu,
+    ],
+    [
+      "__tests__/home-screen-test.tsx",
+      /^import \{ HomeScreen \} from "@\/features\/home";$/mu,
+    ],
+    [
+      "src/features/home/index.ts",
+      /^export \{ HomeScreen \} from "\.\/HomeScreen";$/mu,
+    ],
+  ];
+
+  for (const [path, expectedImport] of publicImports) {
+    assert.match(await readText(path), expectedImport, path);
+  }
+});
+
 test("Doctor uses only the exact locally installed binary", () => {
   assert.equal(packageJson.scripts.doctor, "expo-doctor");
 });
@@ -463,6 +565,7 @@ test("root ESLint ignores duplicate/generated trees and keeps app console strict
     "modules/crewroll-transfer/build/index.js",
     "ios/CrewRoll/AppDelegate.mm",
     "android/app/src/main/java/App.kt",
+    "src/infrastructure/api/generated.ts",
   ]) {
     assert.equal(
       await eslint.isPathIgnored(ignoredPath),
@@ -470,6 +573,12 @@ test("root ESLint ignores duplicate/generated trees and keeps app console strict
       `${ignoredPath} must be globally ignored by root lint`,
     );
   }
+
+  assert.equal(
+    await eslint.isPathIgnored("src/shared/api/generated.ts"),
+    false,
+    "obsolete mobile generated ownership must not stay ignored",
+  );
 
   const appConfig = await eslint.calculateConfigForFile("app/index.tsx");
   const toolsConfig = await eslint.calculateConfigForFile(
