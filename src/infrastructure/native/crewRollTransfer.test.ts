@@ -3,6 +3,7 @@ import type { RevisionInvalidation } from "@crewroll/contracts/native/protocol";
 import {
   createCrewRollTransferPort,
   CrewRollTransferProtocolError,
+  type CrewRollTransferPort,
   type CrewRollTransferNativeModule,
 } from "./crewRollTransfer";
 
@@ -41,7 +42,7 @@ type NativeOverrides = Partial<
 >;
 
 function nativeModule(overrides: NativeOverrides = {}) {
-  let invalidationListener: ((event: unknown) => void) | undefined;
+  const invalidationListeners = new Set<(event: unknown) => void>();
   const module = {
     ensureDeviceIdentity: async () => identity,
     installDeviceSession: async () => undefined,
@@ -75,8 +76,8 @@ function nativeModule(overrides: NativeOverrides = {}) {
       listener: (event: unknown) => void,
     ) => {
       expect(eventName).toBe("engineInvalidated");
-      invalidationListener = listener;
-      return { remove: () => undefined };
+      invalidationListeners.add(listener);
+      return { remove: () => invalidationListeners.delete(listener) };
     },
     ...overrides,
   } as unknown as CrewRollTransferNativeModule;
@@ -84,8 +85,7 @@ function nativeModule(overrides: NativeOverrides = {}) {
   return {
     module,
     emitInvalidation(event: unknown) {
-      if (!invalidationListener) throw new Error("listener not installed");
-      invalidationListener(event);
+      for (const listener of invalidationListeners) listener(event);
     },
   };
 }
@@ -230,6 +230,360 @@ describe("CrewRoll native transfer boundary", () => {
     ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
   });
 
+  it("forwards non-empty pages and opaque cursors without dropping projection state", async () => {
+    const queries: unknown[] = [];
+    const page = {
+      protocolVersion: 1,
+      revision: 9,
+      items: [
+        {
+          workId,
+          assetId: null,
+          capturedAt: "2026-08-29T12:00:00.000Z",
+          previewStage: "TRANSFERRED",
+          originalStage: "SAVED",
+          blocker: null,
+        },
+      ],
+      nextCursor: "cursor_next_01",
+    } as const;
+    const query = {
+      protocolVersion: 1,
+      cursor: "cursor_previous_01",
+      limit: 37,
+    } as const;
+    const native = nativeModule({
+      listAssets: async (received: unknown) => {
+        queries.push(received);
+        return page;
+      },
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+
+    await expect(port.listAssets(query)).resolves.toEqual(page);
+    expect(queries).toEqual([query]);
+  });
+
+  it("rejects protocol-version drift on commands, projections, and invalidations", async () => {
+    const policyCalls: unknown[] = [];
+    const native = nativeModule({
+      setTransferPolicy: async (command: unknown) => {
+        policyCalls.push(command);
+      },
+      getSnapshot: async () => ({
+        ...inactiveSnapshot,
+        protocolVersion: 2,
+      }),
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+    const invalidations: RevisionInvalidation[] = [];
+    port.subscribeToInvalidations((event) => invalidations.push(event));
+
+    await expect(
+      port.setTransferPolicy({
+        protocolVersion: 2,
+        paused: false,
+        cellularAllowed: true,
+      } as unknown as Parameters<CrewRollTransferPort["setTransferPolicy"]>[0]),
+    ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    await expect(port.getSnapshot()).rejects.toBeInstanceOf(
+      CrewRollTransferProtocolError,
+    );
+    expect(() =>
+      native.emitInvalidation({
+        protocolVersion: 2,
+        type: "ENGINE_INVALIDATED",
+        revision: 1,
+      }),
+    ).toThrow(CrewRollTransferProtocolError);
+    expect(policyCalls).toEqual([]);
+    expect(invalidations).toEqual([]);
+  });
+
+  it("fails closed for every canonical command and query before native work", async () => {
+    type CommandCase = Readonly<{
+      name: string;
+      nativeMethod: keyof CrewRollTransferNativeModule;
+      validCommand: unknown;
+      invalidCommand: unknown;
+      nativeResult: unknown;
+      invoke: (
+        port: CrewRollTransferPort,
+        command: unknown,
+      ) => Promise<unknown>;
+    }>;
+
+    const session = {
+      protocolVersion: 1,
+      deviceId,
+      backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+      backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
+      apiBaseUrl: "https://api.crewroll.app",
+    } as const;
+    const createKey = { protocolVersion: 1, tripId, keyEpoch: 1 } as const;
+    const wrapKey = {
+      protocolVersion: 1,
+      tripId,
+      keyEpoch: 1,
+      recipientDeviceId: deviceId,
+      recipientE2eePublicKey: "AQID",
+      recipientE2eeKeyVersion: 1,
+    } as const;
+    const importKey = {
+      protocolVersion: 1,
+      tripId,
+      keyEpoch: 1,
+      wrappedKey: "AQID",
+    } as const;
+    const activation = {
+      protocolVersion: 1,
+      tripId,
+      membershipId,
+      startsAt: "2026-08-29T12:00:00.000Z",
+      endsAt: "2026-09-02T12:00:00.000Z",
+      releaseAt: null,
+      keyEpoch: 1,
+      wrappedTripKey: "AQID",
+    } as const;
+    const deactivation = { protocolVersion: 1, tripId } as const;
+    const policy = {
+      protocolVersion: 1,
+      paused: false,
+      cellularAllowed: true,
+    } as const;
+    const reconciliation = { protocolVersion: 1 } as const;
+    const retry = { protocolVersion: 1, workId } as const;
+    const pageQuery = { protocolVersion: 1, cursor: null, limit: 20 } as const;
+    const cases: readonly CommandCase[] = [
+      {
+        name: "installDeviceSession",
+        nativeMethod: "installDeviceSession",
+        validCommand: session,
+        invalidCommand: { ...session, backgroundBearer: "not-opaque" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.installDeviceSession(
+            command as Parameters<
+              CrewRollTransferPort["installDeviceSession"]
+            >[0],
+          ),
+      },
+      {
+        name: "createTripKey",
+        nativeMethod: "createTripKey",
+        validCommand: createKey,
+        invalidCommand: { ...createKey, keyEpoch: 2 },
+        nativeResult: { protocolVersion: 1, tripId, keyEpoch: 1 },
+        invoke: (port, command) =>
+          port.createTripKey(
+            command as Parameters<CrewRollTransferPort["createTripKey"]>[0],
+          ),
+      },
+      {
+        name: "wrapTripKey",
+        nativeMethod: "wrapTripKey",
+        validCommand: wrapKey,
+        invalidCommand: { ...wrapKey, recipientE2eeKeyVersion: 2 },
+        nativeResult: {
+          protocolVersion: 1,
+          tripId,
+          keyEpoch: 1,
+          recipientDeviceId: deviceId,
+          wrappedKey: "AQID",
+        },
+        invoke: (port, command) =>
+          port.wrapTripKey(
+            command as Parameters<CrewRollTransferPort["wrapTripKey"]>[0],
+          ),
+      },
+      {
+        name: "importTripKey",
+        nativeMethod: "importTripKey",
+        validCommand: importKey,
+        invalidCommand: { ...importKey, wrappedKey: "raw key material" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.importTripKey(
+            command as Parameters<CrewRollTransferPort["importTripKey"]>[0],
+          ),
+      },
+      {
+        name: "activateTrip",
+        nativeMethod: "activateTrip",
+        validCommand: activation,
+        invalidCommand: { ...activation, endsAt: "2026-13-02T12:00:00Z" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.activateTrip(
+            command as Parameters<CrewRollTransferPort["activateTrip"]>[0],
+          ),
+      },
+      {
+        name: "deactivateTrip",
+        nativeMethod: "deactivateTrip",
+        validCommand: deactivation,
+        invalidCommand: { ...deactivation, tripId: "not-a-trip-id" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.deactivateTrip(
+            command as Parameters<CrewRollTransferPort["deactivateTrip"]>[0],
+          ),
+      },
+      {
+        name: "setTransferPolicy",
+        nativeMethod: "setTransferPolicy",
+        validCommand: policy,
+        invalidCommand: { ...policy, paused: "false" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.setTransferPolicy(
+            command as Parameters<CrewRollTransferPort["setTransferPolicy"]>[0],
+          ),
+      },
+      {
+        name: "reconcileNow",
+        nativeMethod: "reconcileNow",
+        validCommand: reconciliation,
+        invalidCommand: { ...reconciliation, fullReset: true },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.reconcileNow(
+            command as Parameters<CrewRollTransferPort["reconcileNow"]>[0],
+          ),
+      },
+      {
+        name: "retry",
+        nativeMethod: "retry",
+        validCommand: retry,
+        invalidCommand: { ...retry, workId: "not-a-work-id" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.retry(command as Parameters<CrewRollTransferPort["retry"]>[0]),
+      },
+      {
+        name: "listAssets",
+        nativeMethod: "listAssets",
+        validCommand: pageQuery,
+        invalidCommand: { ...pageQuery, limit: 101 },
+        nativeResult: {
+          protocolVersion: 1,
+          revision: 0,
+          items: [],
+          nextCursor: null,
+        },
+        invoke: (port, command) =>
+          port.listAssets(
+            command as Parameters<CrewRollTransferPort["listAssets"]>[0],
+          ),
+      },
+    ];
+
+    for (const commandCase of cases) {
+      const received: unknown[] = [];
+      const native = nativeModule({
+        [commandCase.nativeMethod]: async (command: unknown) => {
+          received.push(command);
+          return commandCase.nativeResult;
+        },
+      });
+      const port = createCrewRollTransferPort(() => native.module);
+
+      await expect(
+        commandCase.invoke(port, commandCase.validCommand),
+      ).resolves.toEqual(commandCase.nativeResult);
+      await expect(
+        commandCase.invoke(port, commandCase.invalidCommand),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+      expect(received).toEqual([commandCase.validCommand]);
+    }
+  });
+
+  it("rejects malformed identity, key-operation, snapshot, and page results", async () => {
+    type ResultCase = Readonly<{
+      name: string;
+      nativeMethod: keyof CrewRollTransferNativeModule;
+      malformedResult: unknown;
+      invoke: (port: CrewRollTransferPort) => Promise<unknown>;
+    }>;
+
+    const cases: readonly ResultCase[] = [
+      {
+        name: "ensureDeviceIdentity",
+        nativeMethod: "ensureDeviceIdentity",
+        malformedResult: { ...identity, authenticationKeyVersion: 2 },
+        invoke: (port) => port.ensureDeviceIdentity(),
+      },
+      {
+        name: "createTripKey",
+        nativeMethod: "createTripKey",
+        malformedResult: { protocolVersion: 1, tripId, keyEpoch: 2 },
+        invoke: (port) =>
+          port.createTripKey({ protocolVersion: 1, tripId, keyEpoch: 1 }),
+      },
+      {
+        name: "wrapTripKey",
+        nativeMethod: "wrapTripKey",
+        malformedResult: {
+          protocolVersion: 1,
+          tripId,
+          keyEpoch: 1,
+          recipientDeviceId: deviceId,
+          wrappedKey: "raw key material",
+        },
+        invoke: (port) =>
+          port.wrapTripKey({
+            protocolVersion: 1,
+            tripId,
+            keyEpoch: 1,
+            recipientDeviceId: deviceId,
+            recipientE2eePublicKey: "AQID",
+            recipientE2eeKeyVersion: 1,
+          }),
+      },
+      {
+        name: "getSnapshot",
+        nativeMethod: "getSnapshot",
+        malformedResult: {
+          ...inactiveSnapshot,
+          counts: { ...inactiveSnapshot.counts, blocked: -1 },
+        },
+        invoke: (port) => port.getSnapshot(),
+      },
+      {
+        name: "listAssets",
+        nativeMethod: "listAssets",
+        malformedResult: {
+          protocolVersion: 1,
+          revision: 1,
+          items: [
+            {
+              workId,
+              assetId: null,
+              capturedAt: "not-a-date-time",
+              previewStage: "PENDING",
+              originalStage: "PENDING",
+              blocker: null,
+            },
+          ],
+          nextCursor: null,
+        },
+        invoke: (port) =>
+          port.listAssets({ protocolVersion: 1, cursor: null, limit: 20 }),
+      },
+    ];
+
+    for (const resultCase of cases) {
+      const native = nativeModule({
+        [resultCase.nativeMethod]: async () => resultCase.malformedResult,
+      });
+      const port = createCrewRollTransferPort(() => native.module);
+
+      await expect(resultCase.invoke(port)).rejects.toBeInstanceOf(
+        CrewRollTransferProtocolError,
+      );
+    }
+  });
+
   it("rejects private identity material and non-canonical media projections", async () => {
     const identityLeak = nativeModule({
       ensureDeviceIdentity: async () => ({ ...identity, privateKey: "secret" }),
@@ -290,6 +644,51 @@ describe("CrewRoll native transfer boundary", () => {
       }),
     ).toThrow(CrewRollTransferProtocolError);
     expect(received).toHaveLength(1);
+  });
+
+  it("unsubscribes stale listeners and resubscribes after a simulated JS reload", () => {
+    const native = nativeModule();
+    const beforeReload: RevisionInvalidation[] = [];
+    const afterReload: RevisionInvalidation[] = [];
+    const firstPort = createCrewRollTransferPort(() => native.module);
+    const firstSubscription = firstPort.subscribeToInvalidations((event) =>
+      beforeReload.push(event),
+    );
+
+    native.emitInvalidation({
+      protocolVersion: 1,
+      type: "ENGINE_INVALIDATED",
+      revision: 1,
+    });
+    firstSubscription.remove();
+    native.emitInvalidation({
+      protocolVersion: 1,
+      type: "ENGINE_INVALIDATED",
+      revision: 2,
+    });
+
+    const reloadedPort = createCrewRollTransferPort(() => native.module);
+    const reloadedSubscription = reloadedPort.subscribeToInvalidations(
+      (event) => afterReload.push(event),
+    );
+    native.emitInvalidation({
+      protocolVersion: 1,
+      type: "ENGINE_INVALIDATED",
+      revision: 3,
+    });
+    reloadedSubscription.remove();
+    native.emitInvalidation({
+      protocolVersion: 1,
+      type: "ENGINE_INVALIDATED",
+      revision: 4,
+    });
+
+    expect(beforeReload).toEqual([
+      { protocolVersion: 1, type: "ENGINE_INVALIDATED", revision: 1 },
+    ]);
+    expect(afterReload).toEqual([
+      { protocolVersion: 1, type: "ENGINE_INVALIDATED", revision: 3 },
+    ]);
   });
 
   it("propagates deterministic native not-implemented errors without fallback success", async () => {

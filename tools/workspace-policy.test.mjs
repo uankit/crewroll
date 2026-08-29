@@ -47,6 +47,18 @@ const boundaryToolPins = {
 };
 
 const contractsBuildCommand = "npm run build --workspace @crewroll/contracts";
+const contractsProductionLifecycleHooks = [
+  "prestart",
+  "prestart:clean",
+  "preandroid",
+  "preandroid:device",
+  "preios",
+  "preios:device",
+  "preverify:bundle",
+  "eas-build-post-install",
+];
+const nativeAdapterBundleCommand =
+  "expo export:embed --entry-file src/infrastructure/native/crewRollTransfer.ts --platform ios --dev false --minify false --bundle-output dist/native-adapter.ios.js --max-workers 1";
 
 const forbiddenDependencies = [
   "@noble/ciphers",
@@ -286,6 +298,16 @@ function assertMigrationCheckSurface(rootManifest, controlManifest) {
   }
 }
 
+function assertContractsProductionLifecycle(rootManifest) {
+  for (const hook of contractsProductionLifecycleHooks) {
+    assert.equal(
+      rootManifest.scripts?.[hook],
+      contractsBuildCommand,
+      `${hook} must build dist-only contracts before production mobile resolution`,
+    );
+  }
+}
+
 test("root remains the CrewRoll Expo application and owns the workspaces", () => {
   assert.equal(packageJson.name, "crewroll");
   assert.equal(packageJson.main, "expo-router/entry");
@@ -502,6 +524,37 @@ test("root and control lint lifecycle build contracts first", () => {
   assertLintBuildPrerequisites(packageJson, controlPlanePackageJson);
 });
 
+test("every production mobile lifecycle builds dist-only contracts first", () => {
+  assertContractsProductionLifecycle(packageJson);
+});
+
+test("production lifecycle policy rejects every missing or substituted contracts build", () => {
+  const compliant = structuredClone(packageJson);
+  for (const hook of contractsProductionLifecycleHooks) {
+    compliant.scripts[hook] = contractsBuildCommand;
+  }
+
+  for (const hook of contractsProductionLifecycleHooks) {
+    for (const replacement of [
+      undefined,
+      "npm run typecheck --workspace @crewroll/contracts",
+      "npm run build --workspace @crewroll/control-plane",
+      `${contractsBuildCommand} && true`,
+    ]) {
+      const mutated = structuredClone(compliant);
+      if (replacement === undefined) delete mutated.scripts[hook];
+      else mutated.scripts[hook] = replacement;
+
+      assert.throws(
+        () => assertContractsProductionLifecycle(mutated),
+        new RegExp(
+          `${hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")} must build`,
+        ),
+      );
+    }
+  }
+});
+
 test("lint prerequisite policy rejects removal or a different dependency build", () => {
   for (const owner of ["root", "control"]) {
     for (const replacement of [
@@ -598,7 +651,7 @@ test("root TypeScript checks tests and the root Vitest project config", async ()
 test("unit orchestration builds dependencies and runs every suite exactly once", () => {
   assert.equal(
     packageJson.scripts["test:unit"],
-    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
+    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
   );
   assert.equal(packageJson.scripts.test, "npm run test:unit");
   assert.equal(
@@ -608,6 +661,18 @@ test("unit orchestration builds dependencies and runs every suite exactly once",
   assert.doesNotMatch(
     packageJson.scripts["test:unit"],
     /npm run test --workspace/u,
+  );
+});
+
+test("bundle verification executes the native adapter production graph", () => {
+  assert.deepEqual(packageJson.scripts["verify:bundle"].split(/\s*&&\s*/u), [
+    nativeAdapterBundleCommand,
+    "expo export --platform ios --output-dir dist/ios",
+    "expo export --platform android --output-dir dist/android",
+  ]);
+  assert.equal(
+    packageJson.scripts["test:production-resolution"],
+    "node tools/verify-native-production-resolution.mjs",
   );
 });
 
