@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, readdir, readFile } from "node:fs/promises";
-import { posix, resolve } from "node:path";
+import {
+  access,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import sodium from "libsodium-wrappers";
@@ -109,6 +117,21 @@ type MaintainedSourceEntry = Readonly<{
   path: string;
   kind: "file" | "symlink";
   text: string;
+}>;
+
+type ConformanceInvocation = Readonly<{
+  command: string;
+  args: readonly string[];
+  cwd: string;
+}>;
+
+type ConformanceRunner = Readonly<{
+  runCryptoConformance: (options: {
+    repositoryDirectory: string;
+    execute: (invocation: ConformanceInvocation) => Promise<number>;
+    resolveExecutable: (name: string) => Promise<string | null>;
+    hashFile?: (path: string) => Promise<string>;
+  }) => Promise<void>;
 }>;
 
 const repositoryDirectory = fileURLToPath(
@@ -317,6 +340,14 @@ async function loadMaintainedSourceEntries(): Promise<MaintainedSourceEntry[]> {
   }
 
   return entries;
+}
+
+async function loadConformanceRunner(): Promise<ConformanceRunner> {
+  const moduleUrl = new URL(
+    "../../../tools/run-crypto-conformance.mjs",
+    import.meta.url,
+  );
+  return (await import(moduleUrl.href)) as ConformanceRunner;
 }
 
 beforeAll(async () => {
@@ -557,5 +588,248 @@ describe("fixture RNG source boundary", () => {
         },
       ]),
     ).toHaveLength(2);
+  });
+});
+
+describe("direct all-language conformance runner", () => {
+  it("runs TypeScript, Swift, then strict locked Kotlin with no write or native-suite flags", async () => {
+    const runner = await loadConformanceRunner();
+    const invocations: ConformanceInvocation[] = [];
+    const executableChecks: string[] = [];
+
+    await runner.runCryptoConformance({
+      repositoryDirectory,
+      execute: (invocation) => {
+        invocations.push(invocation);
+        return Promise.resolve(0);
+      },
+      resolveExecutable: (name) => {
+        executableChecks.push(name);
+        return Promise.resolve(`/fake/${name}`);
+      },
+    });
+
+    expect(executableChecks).toEqual(["swift", "java"]);
+    expect(invocations).toHaveLength(3);
+    expect(invocations.map(({ cwd }) => cwd)).toEqual([
+      repositoryDirectory,
+      repositoryDirectory,
+      repositoryDirectory,
+    ]);
+    expect(invocations[0]).toMatchObject({
+      command: resolve(repositoryDirectory, "node_modules/.bin/vitest"),
+      args: [
+        "run",
+        "packages/contracts/test/crypto-vectors.test.ts",
+        "packages/contracts/test/crypto-mutations.test.ts",
+      ],
+    });
+    const swiftScratchIndex =
+      invocations[1]?.args.indexOf("--scratch-path") ?? -1;
+    expect(swiftScratchIndex).toBeGreaterThan(-1);
+    const swiftScratch = invocations[1]?.args[swiftScratchIndex + 1];
+    expect(swiftScratch).toMatch(
+      new RegExp(
+        `^${resolve(repositoryDirectory, ".superpowers/crypto-conformance/run-")}`,
+        "u",
+      ),
+    );
+    const runDirectory = dirname(swiftScratch as string);
+    expect(invocations[1]).toMatchObject({
+      command: "/fake/swift",
+      args: [
+        "test",
+        "--package-path",
+        "packages/contracts/crypto/conformance/swift",
+        "--scratch-path",
+        resolve(runDirectory, "swift-scratch"),
+      ],
+    });
+    expect(invocations[2]).toMatchObject({
+      command: resolve(
+        repositoryDirectory,
+        "packages/contracts/crypto/conformance/kotlin/gradlew",
+      ),
+      args: [
+        "-p",
+        "packages/contracts/crypto/conformance/kotlin",
+        "--project-cache-dir",
+        resolve(runDirectory, "kotlin-project-cache"),
+        `-PcrewrollConformanceBuildDirectory=${resolve(
+          runDirectory,
+          "kotlin-build",
+        )}`,
+        "test",
+        "--dependency-verification=strict",
+        "--no-daemon",
+      ],
+    });
+    const allArguments = invocations.flatMap(({ args }) => args);
+    expect(allArguments).not.toContain("--write-locks");
+    expect(allArguments).not.toContain("--update-locks");
+    expect(allArguments).not.toContain("--write-verification-metadata");
+    expect(allArguments.join(" ")).not.toMatch(/test:native:(?:ios|android)/u);
+    expect(allArguments.join(" ")).not.toMatch(/vectors\/generator/u);
+  });
+
+  it("removes isolated Swift and Kotlin build output after success", async () => {
+    const runner = await loadConformanceRunner();
+    let runDirectory: string | undefined;
+
+    await runner.runCryptoConformance({
+      repositoryDirectory,
+      execute: async (invocation) => {
+        const scratchIndex = invocation.args.indexOf("--scratch-path");
+        if (scratchIndex >= 0) {
+          const scratch = invocation.args[scratchIndex + 1] as string;
+          runDirectory = dirname(scratch);
+          await mkdir(scratch, { recursive: true });
+          await writeFile(resolve(scratch, "swift-output.json"), "{}\n");
+        }
+        const buildArgument = invocation.args.find((argument) =>
+          argument.startsWith("-PcrewrollConformanceBuildDirectory="),
+        );
+        if (buildArgument !== undefined) {
+          const buildDirectory = buildArgument.slice(
+            "-PcrewrollConformanceBuildDirectory=".length,
+          );
+          expect(dirname(buildDirectory)).toBe(runDirectory);
+          await mkdir(buildDirectory, { recursive: true });
+          await writeFile(
+            resolve(buildDirectory, "kotlin-report.json"),
+            "{}\n",
+          );
+        }
+        return 0;
+      },
+      resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+    });
+
+    expect(runDirectory).toBeDefined();
+    await expect(access(runDirectory as string)).rejects.toThrow();
+    await expect(
+      access(
+        resolve(
+          repositoryDirectory,
+          "packages/contracts/crypto/conformance/swift/.build",
+        ),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      access(
+        resolve(
+          repositoryDirectory,
+          "packages/contracts/crypto/conformance/kotlin/build",
+        ),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("removes isolated build output when a language command fails", async () => {
+    const runner = await loadConformanceRunner();
+    let runDirectory: string | undefined;
+
+    await expect(
+      runner.runCryptoConformance({
+        repositoryDirectory,
+        execute: async (invocation) => {
+          const scratchIndex = invocation.args.indexOf("--scratch-path");
+          if (scratchIndex < 0) {
+            return 0;
+          }
+          const scratch = invocation.args[scratchIndex + 1] as string;
+          runDirectory = dirname(scratch);
+          await mkdir(scratch, { recursive: true });
+          await writeFile(resolve(scratch, "partial-output.json"), "{}\n");
+          return 9;
+        },
+        resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+      }),
+    ).rejects.toMatchObject({ code: "COMMAND_FAILED", exitCode: 9 });
+
+    expect(runDirectory).toBeDefined();
+    await expect(access(runDirectory as string)).rejects.toThrow();
+  });
+
+  it("preserves the command failure when isolated output was already removed", async () => {
+    const runner = await loadConformanceRunner();
+    let runDirectory: string | undefined;
+
+    await expect(
+      runner.runCryptoConformance({
+        repositoryDirectory,
+        execute: async (invocation) => {
+          const scratchIndex = invocation.args.indexOf("--scratch-path");
+          if (scratchIndex < 0) {
+            return 0;
+          }
+          const scratch = invocation.args[scratchIndex + 1] as string;
+          runDirectory = dirname(scratch);
+          await rm(runDirectory, { recursive: true, force: false });
+          return 9;
+        },
+        resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+      }),
+    ).rejects.toMatchObject({ code: "COMMAND_FAILED", exitCode: 9 });
+
+    expect(runDirectory).toBeDefined();
+    await expect(access(runDirectory as string)).rejects.toThrow();
+  });
+
+  it("preflights both external toolchains before executing anything", async () => {
+    const runner = await loadConformanceRunner();
+    const invocations: ConformanceInvocation[] = [];
+
+    await expect(
+      runner.runCryptoConformance({
+        repositoryDirectory,
+        execute: (invocation) => {
+          invocations.push(invocation);
+          return Promise.resolve(0);
+        },
+        resolveExecutable: (name) =>
+          Promise.resolve(name === "swift" ? "/fake/swift" : null),
+      }),
+    ).rejects.toMatchObject({ code: "MISSING_EXECUTABLE" });
+    expect(invocations).toEqual([]);
+  });
+
+  it("propagates the first nonzero exit and never starts a later language", async () => {
+    const runner = await loadConformanceRunner();
+    const invocations: ConformanceInvocation[] = [];
+
+    await expect(
+      runner.runCryptoConformance({
+        repositoryDirectory,
+        execute: (invocation) => {
+          invocations.push(invocation);
+          return Promise.resolve(invocations.length === 2 ? 9 : 0);
+        },
+        resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+      }),
+    ).rejects.toMatchObject({ code: "COMMAND_FAILED", exitCode: 9 });
+    expect(invocations).toHaveLength(2);
+  });
+
+  it("rejects Kotlin lock or verification metadata drift", async () => {
+    const runner = await loadConformanceRunner();
+    const seen = new Map<string, number>();
+
+    await expect(
+      runner.runCryptoConformance({
+        repositoryDirectory,
+        execute: () => Promise.resolve(0),
+        resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+        hashFile: (path) => {
+          const count = (seen.get(path) ?? 0) + 1;
+          seen.set(path, count);
+          return Promise.resolve(
+            path.endsWith("verification-metadata.xml") && count === 2
+              ? "changed"
+              : "stable",
+          );
+        },
+      }),
+    ).rejects.toMatchObject({ code: "LOCK_DRIFT" });
   });
 });
