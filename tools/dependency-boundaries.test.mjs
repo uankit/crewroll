@@ -81,6 +81,24 @@ const eslintByOwner = Object.fromEntries(
   ]),
 );
 
+const controlPolicyOracle = new ownerDefinitions.control.ESLint({
+  cwd: controlPath,
+  overrideConfigFile: true,
+  overrideConfig: [
+    {
+      files: ["src/**/*.{ts,tsx,js,mts}"],
+      plugins: { boundaries: controlRequire("eslint-plugin-boundaries") },
+      languageOptions: {
+        parser: controlRequire("typescript-eslint").parser,
+        parserOptions: { tsconfigRootDir: controlPath },
+      },
+      ...rootRequire(policyPath).createControlPlaneBoundaryPolicy({
+        tsconfigPath: path.join(controlPath, "tsconfig.json"),
+      }),
+    },
+  ],
+});
+
 const controlCompositionPaths = [
   "src/index.ts",
   "src/app/buildApp.ts",
@@ -361,6 +379,15 @@ async function lint(owner, code, filePath, eslint = eslintByOwner[owner]) {
   return result;
 }
 
+async function lintControlPolicy(code, filePath) {
+  const [result] = await controlPolicyOracle.lintText(code, { filePath });
+  assert.ok(
+    result,
+    `control-policy:${filePath} did not produce an ESLint result`,
+  );
+  return result;
+}
+
 async function lintFile(owner, filePath, eslint = eslintByOwner[owner]) {
   const [result] = await eslint.lintFiles([filePath]);
   assert.ok(result, `${owner}:${filePath} did not produce an ESLint result`);
@@ -441,6 +468,26 @@ const dependencyForms = {
   "static import": (specifier) => `import ${JSON.stringify(specifier)};\n`,
   require: (specifier) => `require(${JSON.stringify(specifier)});\n`,
 };
+
+function everyDependencyForm(specifiers) {
+  return specifiers
+    .flatMap((specifier) =>
+      Object.values(dependencyForms).map((source) => source(specifier)),
+    )
+    .join("");
+}
+
+function assertForbiddenInEveryDependencyForm(result, expectedCount) {
+  assertNoMasking(result);
+  const boundaryErrors = result.messages.filter(
+    ({ ruleId }) => ruleId === "boundaries/dependencies",
+  );
+  assert.equal(
+    boundaryErrors.length,
+    expectedCount,
+    `expected every dependency form to be rejected:\n${formatMessages(result)}`,
+  );
+}
 
 test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
   const {
@@ -626,41 +673,74 @@ test("only the canonical migration runner may use its three Node adapters", asyn
   const canonicalPath = "src/db/migrate.ts";
 
   for (const specifier of allowed) {
-    await t.test(`allows ${specifier} from the canonical runner`, async () => {
-      assertAllowed(
-        await lint(
-          "control",
-          `import ${JSON.stringify(specifier)};\n`,
-          canonicalPath,
-        ),
-      );
-    });
+    await t.test(
+      `allows every import form of ${specifier} from the canonical runner`,
+      async () => {
+        assertAllowed(
+          await lintControlPolicy(
+            everyDependencyForm([specifier]),
+            canonicalPath,
+          ),
+        );
+      },
+    );
   }
 
-  for (const [name, filePath, specifier] of [
-    ["case mutation", "src/db/Migrate.ts", "node:fs"],
-    ["path mutation", "src/db/runner/migrate.ts", "node:path"],
-    ["extra core module", canonicalPath, "node:child_process"],
-    ["package lookalike", canonicalPath, "node:filesystem"],
-    ["relative substitute", canonicalPath, "./node:fs"],
-    ["database source", "src/db/database.ts", "node:fs"],
-    ["schema source", "src/db/schema/tables.ts", "node:path"],
-    ["migration source", "src/db/migrations/001_initial.ts", "node:url"],
+  for (const [name, filePath, specifiers] of [
+    [
+      "Node-core subpaths",
+      canonicalPath,
+      ["node:fs/promises", "node:path/posix", "node:path/win32", "node:url/x"],
+    ],
+    [
+      "Node-core case variants",
+      canonicalPath,
+      ["node:FS", "node:Path", "node:URL"],
+    ],
+    [
+      "case-mutated importer",
+      "src/db/Migrate.ts",
+      [...allowed, "node:child_process"],
+    ],
+    [
+      "path-mutated importer",
+      "src/db/runner/migrate.ts",
+      [...allowed, "node:child_process"],
+    ],
+    [
+      "TSX alternate importer",
+      "src/db/migrate.tsx",
+      [...allowed, "node:child_process"],
+    ],
+    [
+      "JavaScript alternate importer",
+      "src/db/migrate.js",
+      [...allowed, "node:child_process"],
+    ],
+    [
+      "MTS alternate importer",
+      "src/db/migrate.mts",
+      [...allowed, "node:child_process"],
+    ],
+    [
+      "package and relative lookalikes",
+      canonicalPath,
+      ["node:child_process", "node:filesystem", "./node:fs"],
+    ],
+    ["database source", "src/db/database.ts", allowed],
+    ["schema source", "src/db/schema/tables.ts", allowed],
+    ["migration source", "src/db/migrations/001_initial.ts", allowed],
     [
       "repository source",
       "src/modules/__boundary_alpha__/repositories/databaseRepository.ts",
-      "node:fs",
+      allowed,
     ],
-    ["non-database source", "src/app/__boundary-service.ts", "node:path"],
+    ["non-database source", "src/app/__boundary-service.ts", allowed],
   ]) {
-    await t.test(`rejects ${name}`, async () => {
-      assertForbidden(
-        await lint(
-          "control",
-          `import ${JSON.stringify(specifier)};\n`,
-          filePath,
-        ),
-        "boundaries/dependencies",
+    await t.test(`rejects every import form from ${name}`, async () => {
+      assertForbiddenInEveryDependencyForm(
+        await lintControlPolicy(everyDependencyForm(specifiers), filePath),
+        specifiers.length * Object.keys(dependencyForms).length,
       );
     });
   }

@@ -118,14 +118,23 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
         throw error;
       }
     };
-    const safeRead = async (relativePath) => {
+    const safeRegularRead = async (relativePath) => {
+      const stats = await safeLstat(relativePath);
+      if (!stats || stats.isSymbolicLink() || !stats.isFile()) {
+        return { stats, text: null };
+      }
       try {
-        return await fs.readFile(target(relativePath), "utf8");
+        return {
+          stats,
+          text: await fs.readFile(target(relativePath), "utf8"),
+        };
       } catch (error) {
-        if (isMissing(error)) return null;
+        if (isMissing(error)) return { stats: null, text: null };
         throw error;
       }
     };
+    const safeRead = async (relativePath) =>
+      (await safeRegularRead(relativePath)).text;
     const safeDir = async (relativePath) => {
       const stats = await safeLstat(relativePath);
       if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) return null;
@@ -137,26 +146,38 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       }
     };
     const parseManifest = async (relativePath) => {
-      const text = await safeRead(relativePath);
-      if (text === null) return { valid: false, value: null };
+      const { stats, text } = await safeRegularRead(relativePath);
+      if (text === null) {
+        return {
+          valid: false,
+          value: null,
+          code: stats?.isSymbolicLink()
+            ? "MIGRATION_SYMLINK"
+            : "MIGRATION_TOPOLOGY",
+        };
+      }
       try {
         const value = JSON.parse(text);
         return value && typeof value === "object" && !Array.isArray(value)
-          ? { valid: true, value }
-          : { valid: false, value: null };
+          ? { valid: true, value, code: null }
+          : { valid: false, value: null, code: "MIGRATION_TOPOLOGY" };
       } catch {
-        return { valid: false, value: null };
+        return { valid: false, value: null, code: "MIGRATION_TOPOLOGY" };
       }
     };
     const rootManifest = await parseManifest("package.json");
     const controlManifest = await parseManifest(CONTROL_MANIFEST);
     const findings = [];
+    const findingKeys = new Set();
     const mark = (pathValue, code = "MIGRATION_TOPOLOGY") => {
+      const key = `${pathValue}\u0000${code}`;
+      if (findingKeys.has(key)) return;
+      findingKeys.add(key);
       findings.push({ code, path: pathValue });
     };
 
-    if (!rootManifest.valid) mark("package.json");
-    if (!controlManifest.valid) mark(CONTROL_MANIFEST);
+    if (!rootManifest.valid) mark("package.json", rootManifest.code);
+    if (!controlManifest.valid) mark(CONTROL_MANIFEST, controlManifest.code);
     const rootScripts = rootManifest.value?.scripts;
     const controlScripts = controlManifest.value?.scripts;
     const hasControlScript =
@@ -344,7 +365,7 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       !migrations ||
       findings.length > 0
     ) {
-      return result("partial");
+      return result("partial", [], findings);
     }
     return result("complete", migrationFiles.sort());
   } catch (error) {

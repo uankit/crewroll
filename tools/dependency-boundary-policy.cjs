@@ -433,6 +433,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   const composition = file("composition");
   const route = file("route");
   const repository = file("repository");
+  const migrationRunner = file("migration-runner");
   const production = [
     api,
     worker,
@@ -525,11 +526,16 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     allowModules([api, route], routePackages),
     allowModules(worker, [...servicePackages, "pg-boss"]),
     allowModules([app, module, shared], servicePackages),
-    allowModules(
-      element("db", { fileInternalPath: "migrate.ts" }),
-      ["node:fs", "node:path", "node:url"],
-      "core",
-    ),
+    {
+      from: migrationRunner,
+      allow: [
+        {
+          to: moduleSelector("core", ["node:fs", "node:path", "node:url"], {
+            internalPath: null,
+          }),
+        },
+      ],
+    },
     allowModules(db, [...contractPackages, "kysely", "pg", "pg-boss"]),
     allowModules(platform, [
       ...contractPackages,
@@ -617,6 +623,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       { type: "shared", pattern: "src/shared", partialMatch: false },
     ],
     files: [
+      { category: "migration-runner", pattern: "src/db/migrate.ts" },
       {
         category: "composition",
         pattern: [
@@ -657,7 +664,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       },
     ],
     include: [
-      "src/**/*.ts",
+      "src/**/*.{ts,tsx,js,mts}",
       "test/**/*.ts",
       "*.config.ts",
       "../../src/**/*.{ts,tsx}",
