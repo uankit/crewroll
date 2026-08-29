@@ -18,8 +18,10 @@ import {
   RegisterDeviceBodySchema,
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
+  SetTripReadinessBodySchema,
   StartTripBodySchema,
   SyncResponseSchema,
+  TripIdSchema,
   TripResponseSchema,
   UpdatePushTokenBodySchema,
   UploadSessionResponseSchema,
@@ -42,16 +44,26 @@ const response = (name: string, description = "Success") => ({
   description,
   content: { "application/json": { schema: schemaRef(name) } },
 });
+const problemResponse = (description: string) => ({
+  description,
+  content: {
+    "application/problem+json": {
+      schema: schemaRef("ProblemDetails"),
+    },
+  },
+});
 const requestBody = (name: string) => ({
   required: true,
   content: { "application/json": { schema: schemaRef(name) } },
 });
 const problemResponses = {
-  "400": response("ProblemDetails", "Invalid request"),
-  "401": response("ProblemDetails", "Authentication required"),
-  "403": response("ProblemDetails", "Forbidden"),
-  "404": response("ProblemDetails", "Not found"),
-  "409": response("ProblemDetails", "Conflict"),
+  "400": problemResponse("Invalid request"),
+  "401": problemResponse("Authentication required"),
+  "403": problemResponse("Forbidden"),
+  "404": problemResponse("Not found"),
+  "409": problemResponse("Conflict"),
+  "429": problemResponse("Rate limited"),
+  "500": problemResponse("Internal error"),
 };
 
 const deviceHeader = {
@@ -69,12 +81,16 @@ const idempotencyHeader = {
 const registrationHeaders = [idempotencyHeader];
 const commandHeaders = [deviceHeader, idempotencyHeader];
 const queryHeaders = [deviceHeader];
-const pathId = (name: string) => ({
+const pathId = (
+  name: string,
+  schema: JsonSchema = { type: "string", format: "uuid" },
+) => ({
   name,
   in: "path",
   required: true,
-  schema: { type: "string", format: "uuid" },
+  schema,
 });
+const tripPathId = pathId("tripId", TripIdSchema);
 
 const operation = (
   operationId: string,
@@ -106,6 +122,7 @@ function componentSchemas(): Record<string, unknown> {
     CreateJoinRequestBody: CreateJoinRequestBodySchema,
     MembershipResponse: MembershipResponseSchema,
     ApproveJoinRequestBody: ApproveJoinRequestBodySchema,
+    SetTripReadinessBody: SetTripReadinessBodySchema,
     StartTripBody: StartTripBodySchema,
     EndTripBody: EndTripBodySchema,
     CreateUploadSessionBody: CreateUploadSessionBodySchema,
@@ -144,6 +161,7 @@ export function createOpenApiDocument(): OpenApiDocument {
           [...commandHeaders, pathId("deviceId")],
           { "204": { description: "Updated" } },
           "UpdatePushTokenBody",
+          "ClerkBearer",
         ),
       },
       "/v1/devices/{deviceId}": {
@@ -151,6 +169,8 @@ export function createOpenApiDocument(): OpenApiDocument {
           "revokeDevice",
           [...commandHeaders, pathId("deviceId")],
           { "204": { description: "Revoked" } },
+          undefined,
+          "ClerkBearer",
         ),
       },
       "/v1/trips": {
@@ -159,6 +179,7 @@ export function createOpenApiDocument(): OpenApiDocument {
           commandHeaders,
           { "201": response("TripResponse", "Created") },
           "CreateTripBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/join-requests": {
@@ -167,50 +188,71 @@ export function createOpenApiDocument(): OpenApiDocument {
           commandHeaders,
           { "201": response("MembershipResponse", "Requested") },
           "CreateJoinRequestBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/{tripId}/join-requests/{membershipId}/approval": {
         put: operation(
           "approveJoinRequest",
-          [...commandHeaders, pathId("tripId"), pathId("membershipId")],
+          [...commandHeaders, tripPathId, pathId("membershipId")],
           { "200": response("MembershipResponse") },
           "ApproveJoinRequestBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/{tripId}/join-requests/{membershipId}": {
         delete: operation(
           "rejectJoinRequest",
-          [...commandHeaders, pathId("tripId"), pathId("membershipId")],
+          [...commandHeaders, tripPathId, pathId("membershipId")],
           { "204": { description: "Rejected" } },
+          undefined,
+          "ClerkBearer",
+        ),
+      },
+      "/v1/trips/{tripId}/readiness": {
+        put: operation(
+          "setTripReadiness",
+          [...commandHeaders, tripPathId],
+          { "200": response("TripResponse") },
+          "SetTripReadinessBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/{tripId}/start": {
         post: operation(
           "startTrip",
-          [...commandHeaders, pathId("tripId")],
+          [...commandHeaders, tripPathId],
           { "200": response("TripResponse") },
           "StartTripBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/{tripId}/end": {
         post: operation(
           "endTrip",
-          [...commandHeaders, pathId("tripId")],
+          [...commandHeaders, tripPathId],
           { "200": response("TripResponse") },
           "EndTripBody",
+          "ClerkBearer",
         ),
       },
       "/v1/trips/{tripId}": {
-        get: operation("getTrip", [...queryHeaders, pathId("tripId")], {
-          "200": response("TripResponse"),
-        }),
+        get: operation(
+          "getTrip",
+          [...queryHeaders, tripPathId],
+          {
+            "200": response("TripResponse"),
+          },
+          undefined,
+          "ClerkBearer",
+        ),
       },
       "/v1/trips/{tripId}/reconciliation": {
         get: operation(
           "getReconciliation",
           [
             ...queryHeaders,
-            pathId("tripId"),
+            tripPathId,
             {
               name: "cursor",
               in: "query",

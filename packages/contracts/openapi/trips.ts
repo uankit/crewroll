@@ -7,6 +7,7 @@ import {
   InviteCodeSchema,
   KeyEnvelopeSchema,
   LocalTimeSchema,
+  X25519PublicKeySchema,
 } from "./common.js";
 import { MembershipStatusSchema, TripStatusSchema } from "./enums.js";
 import { DeviceIdSchema, MembershipIdSchema, TripIdSchema } from "./ids.js";
@@ -25,6 +26,7 @@ export const ReleaseSchema = Type.Union([
 ]);
 
 export const CreateTripBodySchema = ClosedObject({
+  tripId: TripIdSchema,
   name: Type.String({ minLength: 1, maxLength: 80 }),
   inviteCode: InviteCodeSchema,
   release: ReleaseSchema,
@@ -34,15 +36,34 @@ export const CreateTripBodySchema = ClosedObject({
 });
 export type CreateTripBody = Static<typeof CreateTripBodySchema>;
 
+export const NominatedDeviceKeySchema = ClosedObject({
+  deviceId: DeviceIdSchema,
+  e2eeKeyAlgorithm: Type.Literal("X25519"),
+  e2eePublicKey: X25519PublicKeySchema,
+  e2eeKeyVersion: Type.Literal(1),
+});
+export type NominatedDeviceKey = Static<typeof NominatedDeviceKeySchema>;
+
+export const TripReadinessSchema = ClosedObject({
+  fullPhotoLibraryAccess: Type.Boolean(),
+});
+export type TripReadiness = Static<typeof TripReadinessSchema>;
+
+export const SetTripReadinessBodySchema = TripReadinessSchema;
+export type SetTripReadinessBody = Static<typeof SetTripReadinessBodySchema>;
+
 export const TripMemberSchema = ClosedObject({
   membershipId: MembershipIdSchema,
-  deviceId: DeviceIdSchema,
+  role: Type.Union([Type.Literal("OWNER"), Type.Literal("MEMBER")]),
   displayName: Type.String({ minLength: 1, maxLength: 80 }),
-  status: MembershipStatusSchema,
+  status: Type.Union([Type.Literal("PENDING_KEY"), Type.Literal("ACTIVE")]),
+  readiness: TripReadinessSchema,
+  nominatedDevice: Type.Union([NominatedDeviceKeySchema, Type.Null()]),
 });
 
 export const TripResponseSchema = ClosedObject({
   id: TripIdSchema,
+  version: Type.Integer({ minimum: 1 }),
   name: Type.String({ minLength: 1, maxLength: 80 }),
   status: TripStatusSchema,
   release: ReleaseSchema,
@@ -88,11 +109,11 @@ export type ApproveJoinRequestBody = Static<
 >;
 
 export const StartTripBodySchema = ClosedObject({
-  expectedVersion: Type.Integer({ minimum: 0 }),
+  expectedVersion: Type.Integer({ minimum: 1 }),
 });
 export type StartTripBody = Static<typeof StartTripBodySchema>;
 
 export const EndTripBodySchema = ClosedObject({
-  expectedVersion: Type.Integer({ minimum: 0 }),
+  expectedVersion: Type.Integer({ minimum: 1 }),
 });
 export type EndTripBody = Static<typeof EndTripBodySchema>;

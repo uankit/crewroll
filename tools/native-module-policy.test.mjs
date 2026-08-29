@@ -103,6 +103,7 @@ test("both native shells fail closed until durable engine work begins", () => {
     "ensureDeviceIdentity",
     "installDeviceSession",
     "createTripKey",
+    "discardProvisionalTripKey",
     "wrapTripKey",
     "importTripKey",
     "activateTrip",
@@ -125,6 +126,11 @@ test("both native shells fail closed until durable engine work begins", () => {
       1,
     );
     assert.match(source, /ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED/);
+    assert.equal(
+      (source.match(/AsyncFunction\("discardProvisionalTripKey"\)/g) ?? [])
+        .length,
+      1,
+    );
     assert.equal(
       (source.match(/promise\.reject\(notImplementedException\(\)\)/g) ?? [])
         .length,

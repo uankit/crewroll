@@ -26,6 +26,9 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("createTripKey") { (_: [String: Any], promise: Promise) in
       promise.reject(notImplementedException())
     }
+    AsyncFunction("discardProvisionalTripKey") { (_: [String: Any], promise: Promise) in
+      promise.reject(notImplementedException())
+    }
     AsyncFunction("wrapTripKey") { (_: [String: Any], promise: Promise) in
       promise.reject(notImplementedException())
     }

@@ -1,13 +1,14 @@
 import { Type, type Static } from "@sinclair/typebox";
 
 import {
-  Base64MaxSchema,
-  Base64Schema,
   ClosedObject,
   DateTimeSchema,
+  KeyEnvelopeSchema,
   OpaqueCursorSchema,
+  P256PublicKeySchema,
   ProtocolVersionSchema,
   UriSchema,
+  X25519PublicKeySchema,
 } from "../openapi/common.js";
 import {
   AssetIdSchema,
@@ -21,10 +22,10 @@ export const NativeDeviceIdentitySchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   installationId: Type.String({ pattern: "^[A-Za-z0-9_-]{8,128}$" }),
   authenticationKeyAlgorithm: Type.Literal("P-256"),
-  authenticationPublicKey: Base64Schema,
+  authenticationPublicKey: P256PublicKeySchema,
   authenticationKeyVersion: Type.Literal(1),
   e2eeKeyAlgorithm: Type.Literal("X25519"),
-  e2eePublicKey: Base64Schema,
+  e2eePublicKey: X25519PublicKeySchema,
   e2eeKeyVersion: Type.Literal(1),
 });
 export type NativeDeviceIdentity = Static<typeof NativeDeviceIdentitySchema>;
@@ -54,12 +55,21 @@ export const CreateTripKeyResultSchema = ClosedObject({
 });
 export type CreateTripKeyResult = Static<typeof CreateTripKeyResultSchema>;
 
+export const DiscardProvisionalTripKeyCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  tripId: TripIdSchema,
+  keyEpoch: Type.Literal(1),
+});
+export type DiscardProvisionalTripKeyCommand = Static<
+  typeof DiscardProvisionalTripKeyCommandSchema
+>;
+
 export const WrapTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
   keyEpoch: Type.Literal(1),
   recipientDeviceId: DeviceIdSchema,
-  recipientE2eePublicKey: Base64Schema,
+  recipientE2eePublicKey: X25519PublicKeySchema,
   recipientE2eeKeyVersion: Type.Literal(1),
 });
 export type WrapTripKeyCommand = Static<typeof WrapTripKeyCommandSchema>;
@@ -68,8 +78,11 @@ export const WrapTripKeyResultSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
   keyEpoch: Type.Literal(1),
+  algorithmVersion: Type.Literal(1),
+  senderDeviceId: DeviceIdSchema,
   recipientDeviceId: DeviceIdSchema,
-  wrappedKey: Base64MaxSchema(4_096),
+  recipientE2eeKeyVersion: Type.Literal(1),
+  wrappedKey: KeyEnvelopeSchema.properties.wrappedKey,
 });
 export type WrapTripKeyResult = Static<typeof WrapTripKeyResultSchema>;
 
@@ -77,7 +90,11 @@ export const ImportTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
   keyEpoch: Type.Literal(1),
-  wrappedKey: Base64MaxSchema(4_096),
+  algorithmVersion: Type.Literal(1),
+  expectedSenderDeviceId: DeviceIdSchema,
+  recipientDeviceId: DeviceIdSchema,
+  recipientE2eeKeyVersion: Type.Literal(1),
+  wrappedKey: KeyEnvelopeSchema.properties.wrappedKey,
 });
 export type ImportTripKeyCommand = Static<typeof ImportTripKeyCommandSchema>;
 
@@ -89,7 +106,6 @@ export const ActivateTripCommandSchema = ClosedObject({
   endsAt: DateTimeSchema,
   releaseAt: Type.Union([DateTimeSchema, Type.Null()]),
   keyEpoch: Type.Literal(1),
-  wrappedTripKey: Base64MaxSchema(4_096),
 });
 export type ActivateTripCommand = Static<typeof ActivateTripCommandSchema>;
 
@@ -125,6 +141,9 @@ export const EngineBlockerSchema = Type.Union([
   Type.Literal("AUTH_REVOKED"),
   Type.Literal("SOURCE_MISSING"),
   Type.Literal("INTEGRITY_FAILURE"),
+  Type.Literal("KEY_ACCESS_LOCKED"),
+  Type.Literal("KEY_MATERIAL_LOST"),
+  Type.Literal("KEY_ENVELOPE_INVALID"),
 ]);
 
 export const EngineCountsSchema = ClosedObject({

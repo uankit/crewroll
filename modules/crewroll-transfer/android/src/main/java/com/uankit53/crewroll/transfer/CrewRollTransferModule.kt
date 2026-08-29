@@ -27,6 +27,9 @@ class CrewRollTransferModule : Module() {
     AsyncFunction("createTripKey") { _: Map<String, Any?>, promise: Promise ->
       promise.reject(notImplementedException())
     }
+    AsyncFunction("discardProvisionalTripKey") { _: Map<String, Any?>, promise: Promise ->
+      promise.reject(notImplementedException())
+    }
     AsyncFunction("wrapTripKey") { _: Map<String, Any?>, promise: Promise ->
       promise.reject(notImplementedException())
     }

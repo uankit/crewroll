@@ -11,15 +11,20 @@ const tripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
 const deviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
 const membershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
 const workId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150";
+const P256_PUBLIC_KEY =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const TRIP_ENVELOPE =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
 const identity = {
   protocolVersion: 1,
   installationId: "install_01J6D4M4KB8J8G3AZXJ3PZV1Z9",
   authenticationKeyAlgorithm: "P-256",
-  authenticationPublicKey: "AQID",
+  authenticationPublicKey: P256_PUBLIC_KEY,
   authenticationKeyVersion: 1,
   e2eeKeyAlgorithm: "X25519",
-  e2eePublicKey: "BAUG",
+  e2eePublicKey: X25519_PUBLIC_KEY,
   e2eeKeyVersion: 1,
 } as const;
 
@@ -51,12 +56,16 @@ function nativeModule(overrides: NativeOverrides = {}) {
       tripId,
       keyEpoch: 1,
     }),
+    discardProvisionalTripKey: async () => undefined,
     wrapTripKey: async () => ({
       protocolVersion: 1,
       tripId,
       keyEpoch: 1,
+      algorithmVersion: 1,
+      senderDeviceId: deviceId,
       recipientDeviceId: deviceId,
-      wrappedKey: "AQID",
+      recipientE2eeKeyVersion: 1,
+      wrappedKey: TRIP_ENVELOPE,
     }),
     importTripKey: async () => undefined,
     activateTrip: async () => undefined,
@@ -99,6 +108,7 @@ describe("CrewRoll native transfer boundary", () => {
       "activateTrip",
       "createTripKey",
       "deactivateTrip",
+      "discardProvisionalTripKey",
       "ensureDeviceIdentity",
       "getSnapshot",
       "importTripKey",
@@ -142,7 +152,6 @@ describe("CrewRoll native transfer boundary", () => {
       endsAt: "2026-09-02T12:00:00.000Z",
       releaseAt: null,
       keyEpoch: 1,
-      wrappedTripKey: "AQID",
     } as const;
 
     await expect(port.installDeviceSession(session)).resolves.toBeUndefined();
@@ -181,41 +190,57 @@ describe("CrewRoll native transfer boundary", () => {
         endsAt: "2026-13-02T12:00:00.000Z",
         releaseAt: null,
         keyEpoch: 1,
-        wrappedTripKey: "AQID",
       }),
     ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
     expect(invoked).toEqual([]);
   });
 
   it("validates opaque key commands and schema-defined results", async () => {
-    const native = nativeModule();
+    const discarded: unknown[] = [];
+    const native = nativeModule({
+      discardProvisionalTripKey: async (command: unknown) => {
+        discarded.push(command);
+      },
+    });
     const port = createCrewRollTransferPort(() => native.module);
+    const discard = { protocolVersion: 1, tripId, keyEpoch: 1 } as const;
 
     await expect(
       port.createTripKey({ protocolVersion: 1, tripId, keyEpoch: 1 }),
     ).resolves.toEqual({ protocolVersion: 1, tripId, keyEpoch: 1 });
+    await expect(
+      port.discardProvisionalTripKey(discard),
+    ).resolves.toBeUndefined();
+    expect(discarded).toEqual([discard]);
     await expect(
       port.wrapTripKey({
         protocolVersion: 1,
         tripId,
         keyEpoch: 1,
         recipientDeviceId: deviceId,
-        recipientE2eePublicKey: "AQID",
+        recipientE2eePublicKey: X25519_PUBLIC_KEY,
         recipientE2eeKeyVersion: 1,
       }),
     ).resolves.toEqual({
       protocolVersion: 1,
       tripId,
       keyEpoch: 1,
+      algorithmVersion: 1,
+      senderDeviceId: deviceId,
       recipientDeviceId: deviceId,
-      wrappedKey: "AQID",
+      recipientE2eeKeyVersion: 1,
+      wrappedKey: TRIP_ENVELOPE,
     });
     await expect(
       port.importTripKey({
         protocolVersion: 1,
         tripId,
         keyEpoch: 1,
-        wrappedKey: "AQID",
+        algorithmVersion: 1,
+        expectedSenderDeviceId: deviceId,
+        recipientDeviceId: deviceId,
+        recipientE2eeKeyVersion: 1,
+        wrappedKey: TRIP_ENVELOPE,
       }),
     ).resolves.toBeUndefined();
     await expect(
@@ -321,19 +346,24 @@ describe("CrewRoll native transfer boundary", () => {
       apiBaseUrl: "https://api.crewroll.app",
     } as const;
     const createKey = { protocolVersion: 1, tripId, keyEpoch: 1 } as const;
+    const discardKey = { protocolVersion: 1, tripId, keyEpoch: 1 } as const;
     const wrapKey = {
       protocolVersion: 1,
       tripId,
       keyEpoch: 1,
       recipientDeviceId: deviceId,
-      recipientE2eePublicKey: "AQID",
+      recipientE2eePublicKey: X25519_PUBLIC_KEY,
       recipientE2eeKeyVersion: 1,
     } as const;
     const importKey = {
       protocolVersion: 1,
       tripId,
       keyEpoch: 1,
-      wrappedKey: "AQID",
+      algorithmVersion: 1,
+      expectedSenderDeviceId: deviceId,
+      recipientDeviceId: deviceId,
+      recipientE2eeKeyVersion: 1,
+      wrappedKey: TRIP_ENVELOPE,
     } as const;
     const activation = {
       protocolVersion: 1,
@@ -343,7 +373,6 @@ describe("CrewRoll native transfer boundary", () => {
       endsAt: "2026-09-02T12:00:00.000Z",
       releaseAt: null,
       keyEpoch: 1,
-      wrappedTripKey: "AQID",
     } as const;
     const deactivation = { protocolVersion: 1, tripId } as const;
     const policy = {
@@ -380,6 +409,19 @@ describe("CrewRoll native transfer boundary", () => {
           ),
       },
       {
+        name: "discardProvisionalTripKey",
+        nativeMethod: "discardProvisionalTripKey",
+        validCommand: discardKey,
+        invalidCommand: { ...discardKey, keyEpoch: 2 },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.discardProvisionalTripKey(
+            command as Parameters<
+              CrewRollTransferPort["discardProvisionalTripKey"]
+            >[0],
+          ),
+      },
+      {
         name: "wrapTripKey",
         nativeMethod: "wrapTripKey",
         validCommand: wrapKey,
@@ -388,8 +430,11 @@ describe("CrewRoll native transfer boundary", () => {
           protocolVersion: 1,
           tripId,
           keyEpoch: 1,
+          algorithmVersion: 1,
+          senderDeviceId: deviceId,
           recipientDeviceId: deviceId,
-          wrappedKey: "AQID",
+          recipientE2eeKeyVersion: 1,
+          wrappedKey: TRIP_ENVELOPE,
         },
         invoke: (port, command) =>
           port.wrapTripKey(
@@ -400,7 +445,10 @@ describe("CrewRoll native transfer boundary", () => {
         name: "importTripKey",
         nativeMethod: "importTripKey",
         validCommand: importKey,
-        invalidCommand: { ...importKey, wrappedKey: "raw key material" },
+        invalidCommand: {
+          ...importKey,
+          expectedSenderDeviceId: undefined,
+        },
         nativeResult: undefined,
         invoke: (port, command) =>
           port.importTripKey(
@@ -411,7 +459,7 @@ describe("CrewRoll native transfer boundary", () => {
         name: "activateTrip",
         nativeMethod: "activateTrip",
         validCommand: activation,
-        invalidCommand: { ...activation, endsAt: "2026-13-02T12:00:00Z" },
+        invalidCommand: { ...activation, wrappedTripKey: TRIP_ENVELOPE },
         nativeResult: undefined,
         invoke: (port, command) =>
           port.activateTrip(
@@ -527,8 +575,11 @@ describe("CrewRoll native transfer boundary", () => {
           protocolVersion: 1,
           tripId,
           keyEpoch: 1,
+          algorithmVersion: 1,
+          senderDeviceId: deviceId,
           recipientDeviceId: deviceId,
-          wrappedKey: "raw key material",
+          recipientE2eeKeyVersion: 1,
+          wrappedKey: Buffer.alloc(147).toString("base64"),
         },
         invoke: (port) =>
           port.wrapTripKey({
@@ -536,7 +587,7 @@ describe("CrewRoll native transfer boundary", () => {
             tripId,
             keyEpoch: 1,
             recipientDeviceId: deviceId,
-            recipientE2eePublicKey: "AQID",
+            recipientE2eePublicKey: X25519_PUBLIC_KEY,
             recipientE2eeKeyVersion: 1,
           }),
       },

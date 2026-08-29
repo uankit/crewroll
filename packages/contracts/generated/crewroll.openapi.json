@@ -48,7 +48,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -58,7 +58,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -68,7 +68,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -78,7 +78,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -88,7 +88,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -103,7 +123,7 @@
         "operationId": "updatePushToken",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -152,7 +172,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -162,7 +182,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -172,7 +192,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -182,7 +202,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -192,7 +212,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -207,7 +247,7 @@
         "operationId": "revokeDevice",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -246,7 +286,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -256,7 +296,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -266,7 +306,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -276,7 +316,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -286,7 +326,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -301,7 +361,7 @@
         "operationId": "createTrip",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -348,7 +408,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -358,7 +418,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -368,7 +428,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -378,7 +438,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -388,7 +448,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -403,7 +483,7 @@
         "operationId": "createJoinRequest",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -450,7 +530,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -460,7 +540,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -470,7 +550,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -480,7 +560,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -490,7 +570,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -505,7 +605,7 @@
         "operationId": "approveJoinRequest",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -532,8 +632,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           },
           {
@@ -570,7 +671,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -580,7 +681,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -590,7 +691,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -600,7 +701,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -610,7 +711,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -625,7 +746,7 @@
         "operationId": "rejectJoinRequest",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -652,8 +773,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           },
           {
@@ -673,7 +795,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -683,7 +805,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -693,7 +815,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -703,7 +825,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -713,7 +835,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -723,12 +865,12 @@
         }
       }
     },
-    "/v1/trips/{tripId}/start": {
-      "post": {
-        "operationId": "startTrip",
+    "/v1/trips/{tripId}/readiness": {
+      "put": {
+        "operationId": "setTripReadiness",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -755,8 +897,141 @@
             "in": "path",
             "required": true,
             "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTripReadinessBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/start": {
+      "post": {
+        "operationId": "startTrip",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           }
         ],
@@ -784,7 +1059,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -794,7 +1069,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -804,7 +1079,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -814,7 +1089,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -824,7 +1099,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -839,7 +1134,7 @@
         "operationId": "endTrip",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -866,8 +1161,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           }
         ],
@@ -895,7 +1191,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -905,7 +1201,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -915,7 +1211,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -925,7 +1221,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -935,7 +1231,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -950,7 +1266,7 @@
         "operationId": "getTrip",
         "security": [
           {
-            "BackgroundDeviceBearer": []
+            "ClerkBearer": []
           }
         ],
         "parameters": [
@@ -968,8 +1284,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           }
         ],
@@ -987,7 +1304,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -997,7 +1314,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1007,7 +1324,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1017,7 +1334,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1027,7 +1344,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1060,8 +1397,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
             }
           },
           {
@@ -1098,7 +1436,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1108,7 +1446,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1118,7 +1456,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1128,7 +1466,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1138,7 +1476,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1200,7 +1558,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1210,7 +1568,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1220,7 +1578,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1230,7 +1588,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1240,7 +1598,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1311,7 +1689,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1321,7 +1699,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1331,7 +1709,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1341,7 +1719,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1351,7 +1729,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1413,7 +1811,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1423,7 +1821,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1433,7 +1831,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1443,7 +1841,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1453,7 +1851,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1524,7 +1942,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1534,7 +1952,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1544,7 +1962,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1554,7 +1972,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1564,7 +1982,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1635,7 +2073,7 @@
           "400": {
             "description": "Invalid request",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1645,7 +2083,7 @@
           "401": {
             "description": "Authentication required",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1655,7 +2093,7 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1665,7 +2103,7 @@
           "404": {
             "description": "Not found",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1675,7 +2113,27 @@
           "409": {
             "description": "Conflict",
             "content": {
-              "application/json": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -1796,8 +2254,10 @@
           },
           "authenticationPublicKey": {
             "contentEncoding": "base64",
-            "minLength": 4,
-            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
+            "minLength": 88,
+            "maxLength": 88,
+            "pattern": "^(?:[A-Za-z0-9+/]{4}){21}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$",
+            "x-crewroll-decodedBytes": 65,
             "type": "string"
           },
           "authenticationKeyVersion": {
@@ -1810,8 +2270,10 @@
           },
           "e2eePublicKey": {
             "contentEncoding": "base64",
-            "minLength": 4,
-            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
+            "minLength": 44,
+            "maxLength": 44,
+            "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$",
+            "x-crewroll-decodedBytes": 32,
             "type": "string"
           },
           "e2eeKeyVersion": {
@@ -1883,6 +2345,7 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "tripId",
           "name",
           "inviteCode",
           "release",
@@ -1891,6 +2354,11 @@
           "ownerKeyEnvelope"
         ],
         "properties": {
+          "tripId": {
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
           "name": {
             "minLength": 1,
             "maxLength": 80,
@@ -1967,24 +2435,12 @@
                 "type": "number"
               },
               "wrappedKey": {
-                "x-crewroll-maxDecodedBytes": 4096,
-                "anyOf": [
-                  {
-                    "contentEncoding": "base64",
-                    "minLength": 4,
-                    "maxLength": 5460,
-                    "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
-                    "type": "string"
-                  },
-                  {
-                    "contentEncoding": "base64",
-                    "minLength": 5464,
-                    "maxLength": 5464,
-                    "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/][AQgw]==$",
-                    "x-crewroll-decodedBytes": 4096,
-                    "type": "string"
-                  }
-                ]
+                "contentEncoding": "base64",
+                "minLength": 200,
+                "maxLength": 200,
+                "pattern": "^(?:[A-Za-z0-9+/]{4}){49}[A-Za-z0-9+/][AQgw]==$",
+                "x-crewroll-decodedBytes": 148,
+                "type": "string"
               }
             }
           }
@@ -1995,6 +2451,7 @@
         "type": "object",
         "required": [
           "id",
+          "version",
           "name",
           "status",
           "release",
@@ -2009,7 +2466,12 @@
         "properties": {
           "id": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer"
           },
           "name": {
             "minLength": 1,
@@ -2133,24 +2595,12 @@
                     "type": "number"
                   },
                   "wrappedKey": {
-                    "x-crewroll-maxDecodedBytes": 4096,
-                    "anyOf": [
-                      {
-                        "contentEncoding": "base64",
-                        "minLength": 4,
-                        "maxLength": 5460,
-                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
-                        "type": "string"
-                      },
-                      {
-                        "contentEncoding": "base64",
-                        "minLength": 5464,
-                        "maxLength": 5464,
-                        "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/][AQgw]==$",
-                        "x-crewroll-decodedBytes": 4096,
-                        "type": "string"
-                      }
-                    ]
+                    "contentEncoding": "base64",
+                    "minLength": 200,
+                    "maxLength": 200,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4}){49}[A-Za-z0-9+/][AQgw]==$",
+                    "x-crewroll-decodedBytes": 148,
+                    "type": "string"
                   }
                 }
               },
@@ -2168,18 +2618,28 @@
               "type": "object",
               "required": [
                 "membershipId",
-                "deviceId",
+                "role",
                 "displayName",
-                "status"
+                "status",
+                "readiness",
+                "nominatedDevice"
               ],
               "properties": {
                 "membershipId": {
                   "format": "uuid",
                   "type": "string"
                 },
-                "deviceId": {
-                  "format": "uuid",
-                  "type": "string"
+                "role": {
+                  "anyOf": [
+                    {
+                      "const": "OWNER",
+                      "type": "string"
+                    },
+                    {
+                      "const": "MEMBER",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "displayName": {
                   "minLength": 1,
@@ -2195,10 +2655,57 @@
                     {
                       "const": "ACTIVE",
                       "type": "string"
+                    }
+                  ]
+                },
+                "readiness": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "fullPhotoLibraryAccess"
+                  ],
+                  "properties": {
+                    "fullPhotoLibraryAccess": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "nominatedDevice": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "deviceId",
+                        "e2eeKeyAlgorithm",
+                        "e2eePublicKey",
+                        "e2eeKeyVersion"
+                      ],
+                      "properties": {
+                        "deviceId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "e2eeKeyAlgorithm": {
+                          "const": "X25519",
+                          "type": "string"
+                        },
+                        "e2eePublicKey": {
+                          "contentEncoding": "base64",
+                          "minLength": 44,
+                          "maxLength": 44,
+                          "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$",
+                          "x-crewroll-decodedBytes": 32,
+                          "type": "string"
+                        },
+                        "e2eeKeyVersion": {
+                          "const": 1,
+                          "type": "number"
+                        }
+                      }
                     },
                     {
-                      "const": "REJECTED",
-                      "type": "string"
+                      "type": "null"
                     }
                   ]
                 }
@@ -2217,6 +2724,7 @@
         "properties": {
           "tripId": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "expiresAt": {
@@ -2262,6 +2770,7 @@
           },
           "tripId": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "deviceId": {
@@ -2308,24 +2817,12 @@
                     "type": "number"
                   },
                   "wrappedKey": {
-                    "x-crewroll-maxDecodedBytes": 4096,
-                    "anyOf": [
-                      {
-                        "contentEncoding": "base64",
-                        "minLength": 4,
-                        "maxLength": 5460,
-                        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
-                        "type": "string"
-                      },
-                      {
-                        "contentEncoding": "base64",
-                        "minLength": 5464,
-                        "maxLength": 5464,
-                        "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/][AQgw]==$",
-                        "x-crewroll-decodedBytes": 4096,
-                        "type": "string"
-                      }
-                    ]
+                    "contentEncoding": "base64",
+                    "minLength": 200,
+                    "maxLength": 200,
+                    "pattern": "^(?:[A-Za-z0-9+/]{4}){49}[A-Za-z0-9+/][AQgw]==$",
+                    "x-crewroll-decodedBytes": 148,
+                    "type": "string"
                   }
                 }
               },
@@ -2354,24 +2851,24 @@
             "type": "number"
           },
           "wrappedKey": {
-            "x-crewroll-maxDecodedBytes": 4096,
-            "anyOf": [
-              {
-                "contentEncoding": "base64",
-                "minLength": 4,
-                "maxLength": 5460,
-                "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
-                "type": "string"
-              },
-              {
-                "contentEncoding": "base64",
-                "minLength": 5464,
-                "maxLength": 5464,
-                "pattern": "^(?:[A-Za-z0-9+/]{4}){1365}[A-Za-z0-9+/][AQgw]==$",
-                "x-crewroll-decodedBytes": 4096,
-                "type": "string"
-              }
-            ]
+            "contentEncoding": "base64",
+            "minLength": 200,
+            "maxLength": 200,
+            "pattern": "^(?:[A-Za-z0-9+/]{4}){49}[A-Za-z0-9+/][AQgw]==$",
+            "x-crewroll-decodedBytes": 148,
+            "type": "string"
+          }
+        }
+      },
+      "SetTripReadinessBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fullPhotoLibraryAccess"
+        ],
+        "properties": {
+          "fullPhotoLibraryAccess": {
+            "type": "boolean"
           }
         }
       },
@@ -2383,7 +2880,7 @@
         ],
         "properties": {
           "expectedVersion": {
-            "minimum": 0,
+            "minimum": 1,
             "type": "integer"
           }
         }
@@ -2396,7 +2893,7 @@
         ],
         "properties": {
           "expectedVersion": {
-            "minimum": 0,
+            "minimum": 1,
             "type": "integer"
           }
         }
@@ -2417,6 +2914,7 @@
         "properties": {
           "tripId": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "assetId": {
@@ -2787,6 +3285,7 @@
                     },
                     "tripId": {
                       "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                       "type": "string"
                     },
                     "assetId": {
@@ -2823,6 +3322,7 @@
                     },
                     "tripId": {
                       "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                       "type": "string"
                     },
                     "assetId": {
@@ -2881,6 +3381,7 @@
                     },
                     "tripId": {
                       "format": "uuid",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                       "type": "string"
                     },
                     "status": {
@@ -3175,6 +3676,7 @@
         "properties": {
           "tripId": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "items": {
@@ -3298,6 +3800,7 @@
           },
           "tripId": {
             "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "type": "string"
           },
           "sequence": {
@@ -3349,7 +3852,23 @@
                 "type": "string"
               },
               {
+                "const": "AUTH_INVALID",
+                "type": "string"
+              },
+              {
+                "const": "DEVICE_NOT_OWNED",
+                "type": "string"
+              },
+              {
                 "const": "DEVICE_REVOKED",
+                "type": "string"
+              },
+              {
+                "const": "DEVICE_NOT_PARTICIPANT",
+                "type": "string"
+              },
+              {
+                "const": "INSTALLATION_OWNED_BY_ANOTHER_USER",
                 "type": "string"
               },
               {
@@ -3361,7 +3880,23 @@
                 "type": "string"
               },
               {
+                "const": "RATE_LIMITED",
+                "type": "string"
+              },
+              {
                 "const": "ACTIVE_TRIP_EXISTS",
+                "type": "string"
+              },
+              {
+                "const": "TRIP_ID_CONFLICT",
+                "type": "string"
+              },
+              {
+                "const": "TRIP_DURATION_INVALID",
+                "type": "string"
+              },
+              {
+                "const": "INVITE_CODE_CONFLICT",
                 "type": "string"
               },
               {
@@ -3369,15 +3904,39 @@
                 "type": "string"
               },
               {
-                "const": "TRIP_FROZEN",
-                "type": "string"
-              },
-              {
                 "const": "INVITE_INVALID",
                 "type": "string"
               },
               {
+                "const": "TRIP_OWNER_REQUIRED",
+                "type": "string"
+              },
+              {
+                "const": "MEMBERSHIP_FROZEN",
+                "type": "string"
+              },
+              {
+                "const": "PENDING_JOIN_REQUESTS",
+                "type": "string"
+              },
+              {
+                "const": "KEY_ENVELOPE_MISSING",
+                "type": "string"
+              },
+              {
                 "const": "KEY_ENVELOPE_INVALID",
+                "type": "string"
+              },
+              {
+                "const": "PHOTO_LIBRARY_ACCESS_REQUIRED",
+                "type": "string"
+              },
+              {
+                "const": "TRIP_STATE_CONFLICT",
+                "type": "string"
+              },
+              {
+                "const": "VERSION_CONFLICT",
                 "type": "string"
               },
               {

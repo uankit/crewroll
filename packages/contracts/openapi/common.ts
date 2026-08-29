@@ -193,10 +193,13 @@ export const Base64MaxSchema = (maximum: 4_096 | 65_536) => {
   );
 };
 
+export const P256PublicKeySchema = Base64ExactSchema(65);
+export const X25519PublicKeySchema = Base64ExactSchema(32);
+
 export const KeyEnvelopeSchema = ClosedObject({
   keyEpoch: Type.Literal(1),
   algorithmVersion: Type.Literal(1),
-  wrappedKey: Base64MaxSchema(4_096),
+  wrappedKey: Base64ExactSchema(148),
 });
 export type KeyEnvelope = Static<typeof KeyEnvelopeSchema>;
 

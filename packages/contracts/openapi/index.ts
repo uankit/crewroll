@@ -56,9 +56,12 @@ import {
   ImmediateReleaseSchema,
   InviteResponseSchema,
   MembershipResponseSchema,
+  NominatedDeviceKeySchema,
   NightlyReleaseSchema,
+  SetTripReadinessBodySchema,
   StartTripBodySchema,
   TripMemberSchema,
+  TripReadinessSchema,
   TripResponseSchema,
 } from "./trips.js";
 
@@ -73,6 +76,9 @@ export const publicObjectSchemas = {
   ImmediateReleaseSchema,
   NightlyReleaseSchema,
   CreateTripBodySchema,
+  NominatedDeviceKeySchema,
+  TripReadinessSchema,
+  SetTripReadinessBodySchema,
   TripMemberSchema,
   TripResponseSchema,
   InviteResponseSchema,

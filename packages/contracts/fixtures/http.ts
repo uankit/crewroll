@@ -12,8 +12,10 @@ import type {
   ReconciliationQuery,
   RegisterDeviceBody,
   SavedReceiptBody,
+  SetTripReadinessBody,
   StartTripBody,
   SyncQuery,
+  TripResponse,
   UpdatePushTokenBody,
 } from "../openapi/index.js";
 
@@ -27,6 +29,11 @@ const IDS = {
 } as const;
 
 const SHA256_BASE64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const P256_PUBLIC_KEY_BASE64 =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const X25519_PUBLIC_KEY_BASE64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const TRIP_ENVELOPE_BASE64 =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
 export function validRegistrationHeaders(): DeviceRegistrationHeaders {
   return {
@@ -55,10 +62,10 @@ export function validRegisterDeviceBody(): RegisterDeviceBody {
     installationId: "install_01J6D4M4KB8J8G3AZXJ3PZV1Z9",
     platform: "ios",
     authenticationKeyAlgorithm: "P-256",
-    authenticationPublicKey: "AQID",
+    authenticationPublicKey: P256_PUBLIC_KEY_BASE64,
     authenticationKeyVersion: 1,
     e2eeKeyAlgorithm: "X25519",
-    e2eePublicKey: "BAUG",
+    e2eePublicKey: X25519_PUBLIC_KEY_BASE64,
     e2eeKeyVersion: 1,
     pushToken: "ExponentPushToken[fixture]",
     appVersion: "1.0.0",
@@ -73,12 +80,17 @@ export function validUpdatePushTokenBody(): UpdatePushTokenBody {
 
 export function validImmediateTripBody(): CreateTripBody {
   return {
+    tripId: IDS.trip,
     name: "Ladakh",
     inviteCode: "ABCD2345",
     release: { mode: "IMMEDIATE" },
     endsAt: "2026-09-02T12:00:00.000Z",
     ownerDeviceId: IDS.device,
-    ownerKeyEnvelope: { keyEpoch: 1, algorithmVersion: 1, wrappedKey: "AQID" },
+    ownerKeyEnvelope: {
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: TRIP_ENVELOPE_BASE64,
+    },
   };
 }
 
@@ -94,7 +106,59 @@ export function validCreateJoinRequestBody(): CreateJoinRequestBody {
 }
 
 export function validApproveJoinRequestBody(): ApproveJoinRequestBody {
-  return { keyEpoch: 1, algorithmVersion: 1, wrappedKey: "AQID" };
+  return {
+    keyEpoch: 1,
+    algorithmVersion: 1,
+    wrappedKey: TRIP_ENVELOPE_BASE64,
+  };
+}
+
+export function validSetTripReadinessBody(
+  fullPhotoLibraryAccess = true,
+): SetTripReadinessBody {
+  return { fullPhotoLibraryAccess };
+}
+
+export function validTripResponse(
+  options: Readonly<{
+    version: number;
+    fullPhotoLibraryAccess: boolean;
+  }> = { version: 1, fullPhotoLibraryAccess: false },
+): TripResponse {
+  return {
+    id: IDS.trip,
+    version: options.version,
+    name: "Ladakh",
+    status: "LOBBY",
+    release: { mode: "IMMEDIATE" },
+    startsAt: null,
+    endsAt: "2026-09-02T12:00:00.000Z",
+    ownerDeviceId: IDS.device,
+    currentMembershipId: IDS.membership,
+    keyEpoch: 1,
+    tripKeyEnvelope: {
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: TRIP_ENVELOPE_BASE64,
+    },
+    members: [
+      {
+        membershipId: IDS.membership,
+        role: "OWNER",
+        displayName: "Owner",
+        status: "ACTIVE",
+        readiness: {
+          fullPhotoLibraryAccess: options.fullPhotoLibraryAccess,
+        },
+        nominatedDevice: {
+          deviceId: IDS.device,
+          e2eeKeyAlgorithm: "X25519",
+          e2eePublicKey: X25519_PUBLIC_KEY_BASE64,
+          e2eeKeyVersion: 1,
+        },
+      },
+    ],
+  };
 }
 
 export function validStartTripBody(): StartTripBody {

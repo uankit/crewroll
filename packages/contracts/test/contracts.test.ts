@@ -11,20 +11,29 @@ import {
   DeliveryStatusSchema,
   DeviceRegistrationHeadersSchema,
   DeviceResponseSchema,
+  EndTripBodySchema,
   InviteResponseSchema,
+  KeyEnvelopeSchema,
   MembershipStatusSchema,
   MobileCommandHeadersSchema,
   MobileQueryHeadersSchema,
+  NominatedDeviceKeySchema,
+  P256PublicKeySchema,
+  ProblemCodeSchema,
   ProblemDetailsSchema,
   ReconciliationQuerySchema,
   RegisterDeviceBodySchema,
   SavedReceiptBodySchema,
+  SetTripReadinessBodySchema,
   StartTripBodySchema,
   SyncAvailablePushHintSchema,
   SyncQuerySchema,
   SyncResponseSchema,
+  TripIdSchema,
+  TripResponseSchema,
   TripStatusSchema,
   UpdatePushTokenBodySchema,
+  X25519PublicKeySchema,
   publicObjectSchemas,
 } from "../openapi/index.js";
 import {
@@ -32,6 +41,7 @@ import {
   validCommitAssetBody,
   validCreateDownloadSessionBody,
   validCreateJoinRequestBody,
+  validEndTripBody,
   validImmediateTripBody,
   validMobileCommandHeaders,
   validMobileQueryHeaders,
@@ -40,10 +50,23 @@ import {
   validRegisterDeviceBody,
   validRegistrationHeaders,
   validSavedReceiptBody,
+  validSetTripReadinessBody,
   validStartTripBody,
   validSyncQuery,
+  validTripResponse,
   validUploadSessionBody,
 } from "../fixtures/http.js";
+
+const P256_PUBLIC_KEY =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const TRIP_ENVELOPE =
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+const TRIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
+const OWNER_DEVICE_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
+const MEMBER_DEVICE_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3122";
+const OWNER_MEMBERSHIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
+const MEMBER_MEMBERSHIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3141";
 
 function rejects(schema: Parameters<typeof Value.Check>[0], value: unknown) {
   expect(Value.Check(schema, value)).toBe(false);
@@ -160,12 +183,12 @@ describe("device registration", () => {
     expect(
       Value.Check(RegisterDeviceBodySchema, {
         ...validRegisterDeviceBody(),
-        authenticationPublicKey: "AQ==",
+        authenticationPublicKey: P256_PUBLIC_KEY,
       }),
     ).toBe(true);
     rejects(RegisterDeviceBodySchema, {
       ...validRegisterDeviceBody(),
-      authenticationPublicKey: "AR==",
+      authenticationPublicKey: `${P256_PUBLIC_KEY.slice(0, -2)}B=`,
     });
   });
 
@@ -202,6 +225,265 @@ describe("device registration", () => {
 });
 
 describe("trip and invite contracts", () => {
+  it("requires a client-generated lowercase UUIDv7 trip id", () => {
+    expect(Value.Check(TripIdSchema, TRIP_ID)).toBe(true);
+    expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(
+      true,
+    );
+    for (const tripId of [
+      "018f0d98-76fa-4d1a-b4b4-1f742c2e3130",
+      "018F0D98-76FA-7D1A-B4B4-1F742C2E3130",
+      "018f0d98-76fa-7d1a-74b4-1f742c2e3130",
+    ]) {
+      rejects(TripIdSchema, tripId);
+      rejects(CreateTripBodySchema, { ...validImmediateTripBody(), tripId });
+    }
+  });
+
+  it("carries the final trip id and owner self-envelope in one closed create body", () => {
+    const body = validImmediateTripBody();
+    const { tripId: _tripId, ...withoutTripId } = body;
+    const { ownerDeviceId: _ownerDeviceId, ...withoutOwnerDeviceId } = body;
+    const { ownerKeyEnvelope: _ownerKeyEnvelope, ...withoutOwnerKeyEnvelope } =
+      body;
+
+    expect(Value.Check(CreateTripBodySchema, body)).toBe(true);
+    expect(body.tripId).toBe(TRIP_ID);
+    expect(body.ownerKeyEnvelope).toEqual({
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: TRIP_ENVELOPE,
+    });
+    rejects(CreateTripBodySchema, withoutTripId);
+    rejects(CreateTripBodySchema, withoutOwnerDeviceId);
+    rejects(CreateTripBodySchema, withoutOwnerKeyEnvelope);
+  });
+
+  it("binds canonical create and join fixtures to the command-header device", () => {
+    const headerDeviceId = validMobileCommandHeaders()["x-crewroll-device-id"];
+    expect(validImmediateTripBody().ownerDeviceId).toBe(headerDeviceId);
+    expect(validCreateJoinRequestBody().deviceId).toBe(headerDeviceId);
+  });
+
+  it("enforces the exact P-256, X25519, and envelope-v1 encodings", () => {
+    expect(TRIP_ENVELOPE).toHaveLength(200);
+    const decodedEnvelope = Buffer.from(TRIP_ENVELOPE, "base64");
+    expect(decodedEnvelope).toHaveLength(148);
+    expect(decodedEnvelope.toString("base64")).toBe(TRIP_ENVELOPE);
+    expect(Value.Check(P256PublicKeySchema, P256_PUBLIC_KEY)).toBe(true);
+    expect(Value.Check(X25519PublicKeySchema, X25519_PUBLIC_KEY)).toBe(true);
+    expect(
+      Value.Check(KeyEnvelopeSchema, {
+        keyEpoch: 1,
+        algorithmVersion: 1,
+        wrappedKey: TRIP_ENVELOPE,
+      }),
+    ).toBe(true);
+    rejects(P256PublicKeySchema, Buffer.alloc(64).toString("base64"));
+    rejects(P256PublicKeySchema, Buffer.alloc(66).toString("base64"));
+    rejects(X25519PublicKeySchema, Buffer.alloc(31).toString("base64"));
+    rejects(X25519PublicKeySchema, Buffer.alloc(33).toString("base64"));
+    rejects(KeyEnvelopeSchema, {
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: Buffer.alloc(147).toString("base64"),
+    });
+    rejects(KeyEnvelopeSchema, {
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: Buffer.alloc(149).toString("base64"),
+    });
+    const nonCanonicalEnvelope = `${TRIP_ENVELOPE.slice(0, -3)}B==`;
+    expect(Buffer.from(nonCanonicalEnvelope, "base64")).toEqual(
+      decodedEnvelope,
+    );
+    expect(
+      Buffer.from(nonCanonicalEnvelope, "base64").toString("base64"),
+    ).not.toBe(nonCanonicalEnvelope);
+    rejects(KeyEnvelopeSchema, {
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      wrappedKey: nonCanonicalEnvelope,
+    });
+  });
+
+  it("publishes one versioned, ready, authorization-filterable trip shape", () => {
+    const ownerDevice = {
+      deviceId: OWNER_DEVICE_ID,
+      e2eeKeyAlgorithm: "X25519",
+      e2eePublicKey: X25519_PUBLIC_KEY,
+      e2eeKeyVersion: 1,
+    } as const;
+    const memberDevice = {
+      ...ownerDevice,
+      deviceId: MEMBER_DEVICE_ID,
+    } as const;
+    const response = {
+      id: TRIP_ID,
+      version: 2,
+      name: "Ladakh",
+      status: "LOBBY",
+      release: { mode: "IMMEDIATE" },
+      startsAt: null,
+      endsAt: "2026-09-02T12:00:00.000Z",
+      ownerDeviceId: OWNER_DEVICE_ID,
+      currentMembershipId: OWNER_MEMBERSHIP_ID,
+      keyEpoch: 1,
+      tripKeyEnvelope: {
+        keyEpoch: 1,
+        algorithmVersion: 1,
+        wrappedKey: TRIP_ENVELOPE,
+      },
+      members: [
+        {
+          membershipId: OWNER_MEMBERSHIP_ID,
+          role: "OWNER",
+          displayName: "Owner",
+          status: "ACTIVE",
+          readiness: { fullPhotoLibraryAccess: true },
+          nominatedDevice: ownerDevice,
+        },
+        {
+          membershipId: MEMBER_MEMBERSHIP_ID,
+          role: "MEMBER",
+          displayName: "Friend",
+          status: "PENDING_KEY",
+          readiness: { fullPhotoLibraryAccess: false },
+          nominatedDevice: memberDevice,
+        },
+      ],
+    } as const;
+    expect(Value.Check(NominatedDeviceKeySchema, ownerDevice)).toBe(true);
+    expect(Value.Check(TripResponseSchema, response)).toBe(true);
+    expect(
+      Value.Check(TripResponseSchema, {
+        ...response,
+        currentMembershipId: MEMBER_MEMBERSHIP_ID,
+        tripKeyEnvelope: null,
+        members: response.members.map((member) => ({
+          ...member,
+          nominatedDevice:
+            member.membershipId === MEMBER_MEMBERSHIP_ID
+              ? member.nominatedDevice
+              : null,
+        })),
+      }),
+    ).toBe(true);
+    rejects(TripResponseSchema, { ...response, version: 0 });
+    rejects(TripResponseSchema, {
+      ...response,
+      members: [{ ...response.members[0], deviceId: OWNER_DEVICE_ID }],
+    });
+    rejects(TripResponseSchema, {
+      ...response,
+      members: [
+        {
+          ...response.members[1],
+          tripKeyEnvelope: response.tripKeyEnvelope,
+        },
+      ],
+    });
+    rejects(TripResponseSchema, {
+      ...response,
+      members: [{ ...response.members[1], status: "REJECTED" }],
+    });
+    rejects(TripResponseSchema, { ...response, inviteCode: "ABCD2345" });
+  });
+
+  it("binds self-only full-photo-library readiness", () => {
+    expect(
+      Value.Check(SetTripReadinessBodySchema, validSetTripReadinessBody(true)),
+    ).toBe(true);
+    expect(
+      Value.Check(SetTripReadinessBodySchema, validSetTripReadinessBody(false)),
+    ).toBe(true);
+    rejects(SetTripReadinessBodySchema, {
+      fullPhotoLibraryAccess: true,
+      membershipId: OWNER_MEMBERSHIP_ID,
+    });
+    rejects(SetTripReadinessBodySchema, { permission: "limited" });
+  });
+
+  it("documents create, membership, readiness-change, and readiness-no-op versions in fixtures", () => {
+    const created = validTripResponse({
+      version: 1,
+      fullPhotoLibraryAccess: false,
+    });
+    const afterMembershipChange = validTripResponse({
+      version: 2,
+      fullPhotoLibraryAccess: false,
+    });
+    const afterReadinessChange = validTripResponse({
+      version: 3,
+      fullPhotoLibraryAccess: true,
+    });
+    const afterReadinessNoOp = validTripResponse({
+      version: 3,
+      fullPhotoLibraryAccess: true,
+    });
+
+    for (const projection of [
+      created,
+      afterMembershipChange,
+      afterReadinessChange,
+      afterReadinessNoOp,
+    ]) {
+      expect(Value.Check(TripResponseSchema, projection)).toBe(true);
+    }
+    expect(created.version).toBe(1);
+    expect(afterMembershipChange.version).toBe(2);
+    expect(afterReadinessChange.version).toBe(3);
+    expect(afterReadinessNoOp.version).toBe(afterReadinessChange.version);
+  });
+
+  it("documents the Start then End CAS sequence and stable replays", () => {
+    const versionN = 3;
+    const lobby = {
+      ...validTripResponse({
+        version: versionN,
+        fullPhotoLibraryAccess: true,
+      }),
+      status: "LOBBY",
+      startsAt: null,
+    } as const;
+    const startCommand = {
+      ...validStartTripBody(),
+      expectedVersion: lobby.version,
+    } as const;
+    const active = {
+      ...lobby,
+      status: "ACTIVE",
+      version: versionN + 1,
+      startsAt: "2026-08-29T12:00:00.000Z",
+    } as const;
+    const startReplay = { ...active };
+    const endCommand = {
+      ...validEndTripBody(),
+      expectedVersion: active.version,
+    } as const;
+    const ending = {
+      ...active,
+      status: "ENDING",
+      version: versionN + 2,
+    } as const;
+    const endReplay = { ...ending };
+
+    expect(Value.Check(StartTripBodySchema, startCommand)).toBe(true);
+    expect(startCommand.expectedVersion).toBe(lobby.version);
+    expect(Value.Check(TripResponseSchema, lobby)).toBe(true);
+    expect(Value.Check(TripResponseSchema, active)).toBe(true);
+    expect(active.version).toBe(lobby.version + 1);
+    expect(startReplay).toEqual(active);
+    expect(startReplay.version).toBe(versionN + 1);
+    expect(Value.Check(EndTripBodySchema, endCommand)).toBe(true);
+    expect(endCommand.expectedVersion).toBe(active.version);
+    rejects(EndTripBodySchema, { expectedVersion: 0 });
+    expect(Value.Check(TripResponseSchema, ending)).toBe(true);
+    expect(ending.version).toBe(active.version + 1);
+    expect(endReplay).toEqual(ending);
+    expect(endReplay.version).toBe(versionN + 2);
+  });
+
   it("accepts immediate trips and rejects nightly trips without timezone and local time", () => {
     expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(
       true,
@@ -292,7 +574,7 @@ describe("photo upload contracts", () => {
     rejects(CreateUploadSessionBodySchema, body);
   });
 
-  it("enforces encrypted manifest and key-envelope decoded byte ceilings", () => {
+  it("enforces the encrypted manifest decoded byte ceiling", () => {
     const body = validUploadSessionBody();
     const maximumManifest = Buffer.alloc(65_536).toString("base64");
     body.encryptedManifest = maximumManifest;
@@ -301,15 +583,6 @@ describe("photo upload contracts", () => {
     rejects(CreateUploadSessionBodySchema, body);
     body.encryptedManifest = Buffer.alloc(65_537).toString("base64");
     rejects(CreateUploadSessionBodySchema, body);
-
-    const trip = validImmediateTripBody();
-    const maximumWrappedKey = Buffer.alloc(4_096).toString("base64");
-    trip.ownerKeyEnvelope.wrappedKey = maximumWrappedKey;
-    expect(Value.Check(CreateTripBodySchema, trip)).toBe(true);
-    trip.ownerKeyEnvelope.wrappedKey = `${maximumWrappedKey.slice(0, -3)}B==`;
-    rejects(CreateTripBodySchema, trip);
-    trip.ownerKeyEnvelope.wrappedKey = Buffer.alloc(4_097).toString("base64");
-    rejects(CreateTripBodySchema, trip);
   });
 
   it("accepts only the frozen PREVIEW then ORIGINAL photo object tuple", () => {
@@ -360,6 +633,41 @@ describe("photo upload contracts", () => {
 });
 
 describe("sync and error contracts", () => {
+  it("publishes the exhaustive accepted ProblemCode set", () => {
+    const codes = ProblemCodeSchema.anyOf.map((candidate) => candidate.const);
+    expect(codes).toEqual([
+      "AUTH_REQUIRED",
+      "AUTH_INVALID",
+      "DEVICE_NOT_OWNED",
+      "DEVICE_REVOKED",
+      "DEVICE_NOT_PARTICIPANT",
+      "INSTALLATION_OWNED_BY_ANOTHER_USER",
+      "IDEMPOTENCY_CONFLICT",
+      "INVALID_REQUEST",
+      "RATE_LIMITED",
+      "ACTIVE_TRIP_EXISTS",
+      "TRIP_ID_CONFLICT",
+      "TRIP_DURATION_INVALID",
+      "INVITE_CODE_CONFLICT",
+      "TRIP_FULL",
+      "INVITE_INVALID",
+      "TRIP_OWNER_REQUIRED",
+      "MEMBERSHIP_FROZEN",
+      "PENDING_JOIN_REQUESTS",
+      "KEY_ENVELOPE_MISSING",
+      "KEY_ENVELOPE_INVALID",
+      "PHOTO_LIBRARY_ACCESS_REQUIRED",
+      "TRIP_STATE_CONFLICT",
+      "VERSION_CONFLICT",
+      "UPLOAD_EXPIRED",
+      "OBJECT_MISMATCH",
+      "CURSOR_EXPIRED",
+      "NOT_FOUND",
+      "CONFLICT",
+      "INTERNAL_ERROR",
+    ]);
+  });
+
   it("format-checks sync and reconciliation query cursors", () => {
     expect(Value.Check(SyncQuerySchema, validSyncQuery())).toBe(true);
     expect(

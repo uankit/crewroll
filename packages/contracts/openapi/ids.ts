@@ -6,7 +6,11 @@ export type Uuid = Static<typeof UuidSchema>;
 export const DeviceIdSchema = UuidSchema;
 export type DeviceId = Static<typeof DeviceIdSchema>;
 
-export const TripIdSchema = UuidSchema;
+export const TripIdSchema = Type.String({
+  format: "uuid",
+  pattern:
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+});
 export type TripId = Static<typeof TripIdSchema>;
 
 export const MembershipIdSchema = UuidSchema;

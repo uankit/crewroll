@@ -5,6 +5,7 @@ import {
   CreateTripKeyCommandSchema,
   CreateTripKeyResultSchema,
   DeactivateTripCommandSchema,
+  DiscardProvisionalTripKeyCommandSchema,
   DurableEngineSnapshotSchema,
   ImportTripKeyCommandSchema,
   InstallDeviceSessionCommandSchema,
@@ -21,6 +22,7 @@ import {
   type CreateTripKeyCommand,
   type CreateTripKeyResult,
   type DeactivateTripCommand,
+  type DiscardProvisionalTripKeyCommand,
   type DurableEngineSnapshot,
   type ImportTripKeyCommand,
   type InstallDeviceSessionCommand,
@@ -68,6 +70,9 @@ export interface CrewRollTransferPort {
   ensureDeviceIdentity(): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
+  discardProvisionalTripKey(
+    command: DiscardProvisionalTripKeyCommand,
+  ): Promise<void>;
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;
@@ -112,6 +117,14 @@ export function createCrewRollTransferPort(
       );
       const result: unknown = await getNativeModule().createTripKey(parsed);
       return parse(CreateTripKeyResultSchema, result, "createTripKey result");
+    },
+    async discardProvisionalTripKey(command) {
+      const parsed = parse(
+        DiscardProvisionalTripKeyCommandSchema,
+        command,
+        "discardProvisionalTripKey command",
+      );
+      await getNativeModule().discardProvisionalTripKey(parsed);
     },
     async wrapTripKey(command) {
       const parsed = parse(

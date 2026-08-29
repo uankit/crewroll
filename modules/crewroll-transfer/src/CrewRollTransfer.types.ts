@@ -4,6 +4,7 @@ import type {
   CreateTripKeyCommand,
   CreateTripKeyResult,
   DeactivateTripCommand,
+  DiscardProvisionalTripKeyCommand,
   DurableEngineSnapshot,
   ImportTripKeyCommand,
   InstallDeviceSessionCommand,
@@ -25,6 +26,9 @@ export interface CrewRollTransferNativeModule {
   ensureDeviceIdentity(): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
+  discardProvisionalTripKey(
+    command: DiscardProvisionalTripKeyCommand,
+  ): Promise<void>;
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;

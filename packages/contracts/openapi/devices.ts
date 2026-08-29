@@ -1,6 +1,11 @@
 import { Type, type Static } from "@sinclair/typebox";
 
-import { Base64Schema, ClosedObject, DateTimeSchema } from "./common.js";
+import {
+  ClosedObject,
+  DateTimeSchema,
+  P256PublicKeySchema,
+  X25519PublicKeySchema,
+} from "./common.js";
 import { DevicePlatformSchema } from "./enums.js";
 import { DeviceIdSchema } from "./ids.js";
 
@@ -8,10 +13,10 @@ export const RegisterDeviceBodySchema = ClosedObject({
   installationId: Type.String({ pattern: "^[A-Za-z0-9_-]{8,128}$" }),
   platform: DevicePlatformSchema,
   authenticationKeyAlgorithm: Type.Literal("P-256"),
-  authenticationPublicKey: Base64Schema,
+  authenticationPublicKey: P256PublicKeySchema,
   authenticationKeyVersion: Type.Literal(1),
   e2eeKeyAlgorithm: Type.Literal("X25519"),
-  e2eePublicKey: Base64Schema,
+  e2eePublicKey: X25519PublicKeySchema,
   e2eeKeyVersion: Type.Literal(1),
   pushToken: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   appVersion: Type.String({
