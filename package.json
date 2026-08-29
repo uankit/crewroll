@@ -41,6 +41,7 @@
     "test:ui": "jest --runInBand",
     "test:ui:watch": "jest --watch",
     "test:integration": "node tools/run-future-suite.mjs integration",
+    "test:integration:run": "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && vitest run --config tests/integration/vitest.config.ts",
     "test:native:ios": "node tools/run-future-suite.mjs native-ios",
     "test:native:android": "node tools/run-future-suite.mjs native-android",
     "test:e2e": "node tools/run-future-suite.mjs e2e",
@@ -95,6 +96,7 @@
     "zustand": "5.0.15"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "11.11.0",
     "@testing-library/react-native": "^14.0.1",
     "@types/jest": "29.5.14",
     "@types/react": "~19.2.2",
@@ -106,6 +108,7 @@
     "jest": "~29.7.0",
     "jest-expo": "~57.0.5",
     "prettier": "3.9.6",
+    "testcontainers": "11.11.0",
     "typescript": "~6.0.3",
     "vitest": "4.1.11"
   },
@@ -114,7 +117,8 @@
     "testPathIgnorePatterns": [
       "/node_modules/",
       "/services/",
-      "/packages/"
+      "/packages/",
+      "/tests/integration/"
     ],
     "moduleNameMapper": {
       "^@crewroll/contracts$": "<rootDir>/packages/contracts/openapi/index.ts",
