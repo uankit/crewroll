@@ -52,7 +52,7 @@ type MobileClient = Readonly<{
 function isProblemCode(
   value: unknown,
 ): value is keyof typeof userFacingProblems {
-  return typeof value === "string" && value in userFacingProblems;
+  return typeof value === "string" && Object.hasOwn(userFacingProblems, value);
 }
 
 function problemFrom(error: unknown): CrewRollApiProblem {

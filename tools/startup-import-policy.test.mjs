@@ -715,6 +715,32 @@ test("rejects unknown script keys in the root and every workspace manifest", asy
   }
 });
 
+test("allows only the exact bounded mobile API generator root script", async (t) => {
+  const scriptName = "generate:mobile-api";
+  const command = "node tools/generate-mobile-api.mjs";
+
+  const acceptedRoot = await fixture(t);
+  const acceptedManifest = await readJson(acceptedRoot, "package.json");
+  acceptedManifest.scripts[scriptName] = command;
+  await writeJson(acceptedRoot, "package.json", acceptedManifest);
+  const accepted = await analyzeStartupGraph({ rootPath: acceptedRoot });
+  assert.deepEqual(accepted.findings, []);
+
+  const mutationRoot = await fixture(t);
+  const mutationManifest = await readJson(mutationRoot, "package.json");
+  mutationManifest.scripts[scriptName] = `${command} --unexpected`;
+  await writeJson(mutationRoot, "package.json", mutationManifest);
+  const mutated = await analyzeStartupGraph({ rootPath: mutationRoot });
+  assertFinding(mutated, "STARTUP_EXECUTABLE_SURFACE", "package.json");
+
+  const unknownKeyRoot = await fixture(t);
+  const unknownKeyManifest = await readJson(unknownKeyRoot, "package.json");
+  unknownKeyManifest.scripts["generate:mobile-api:alternate"] = command;
+  await writeJson(unknownKeyRoot, "package.json", unknownKeyManifest);
+  const unknownKey = await analyzeStartupGraph({ rootPath: unknownKeyRoot });
+  assertFinding(unknownKey, "STARTUP_EXECUTABLE_SURFACE", "package.json");
+});
+
 test("rejects every declared workspace glob base that is not a direct regular directory", async (t) => {
   const hiddenManifest = {
     name: "@crewroll/contracts",

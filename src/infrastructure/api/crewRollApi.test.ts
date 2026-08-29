@@ -2,6 +2,7 @@ import type {
   CreateJoinRequestBody,
   CreateTripBody,
 } from "@crewroll/contracts";
+import { ProblemCodeSchema } from "@crewroll/contracts";
 
 import {
   createCrewRollApi,
@@ -89,6 +90,68 @@ describe("CrewRoll API boundary", () => {
     await expect(
       api.requestJoin(deviceId, commandId, joinBody),
     ).rejects.toEqual(new CrewRollApiProblem("INVITE_INVALID"));
+  });
+
+  it.each(["toString", "constructor", "__proto__", "not-a-problem-code"])(
+    "maps non-canonical problem code %s to INTERNAL_ERROR",
+    async (code) => {
+      const fetchMock = jest.fn(async () =>
+        response({ code }, 400, "application/problem+json"),
+      );
+      const api = apiWith(fetchMock);
+
+      await expect(api.getTrip(deviceId, tripId)).rejects.toEqual(
+        new CrewRollApiProblem("INTERNAL_ERROR"),
+      );
+    },
+  );
+
+  it("preserves every canonical problem code", async () => {
+    const codes = [
+      "AUTH_REQUIRED",
+      "AUTH_INVALID",
+      "DEVICE_NOT_OWNED",
+      "DEVICE_REVOKED",
+      "DEVICE_NOT_PARTICIPANT",
+      "INSTALLATION_OWNED_BY_ANOTHER_USER",
+      "IDEMPOTENCY_CONFLICT",
+      "INVALID_REQUEST",
+      "RATE_LIMITED",
+      "ACTIVE_TRIP_EXISTS",
+      "TRIP_ID_CONFLICT",
+      "TRIP_DURATION_INVALID",
+      "INVITE_CODE_CONFLICT",
+      "TRIP_FULL",
+      "INVITE_INVALID",
+      "TRIP_OWNER_REQUIRED",
+      "MEMBERSHIP_FROZEN",
+      "PENDING_JOIN_REQUESTS",
+      "KEY_ENVELOPE_MISSING",
+      "KEY_ENVELOPE_INVALID",
+      "PHOTO_LIBRARY_ACCESS_REQUIRED",
+      "TRIP_STATE_CONFLICT",
+      "VERSION_CONFLICT",
+      "UPLOAD_EXPIRED",
+      "OBJECT_MISMATCH",
+      "CURSOR_EXPIRED",
+      "NOT_FOUND",
+      "CONFLICT",
+      "INTERNAL_ERROR",
+    ] as const;
+
+    expect([...codes].sort()).toEqual(
+      [...ProblemCodeSchema.anyOf.map((candidate) => candidate.const)].sort(),
+    );
+
+    for (const code of codes) {
+      const fetchMock = jest.fn(async () =>
+        response({ code }, 400, "application/problem+json"),
+      );
+      const api = apiWith(fetchMock);
+      await expect(api.getTrip(deviceId, tripId)).rejects.toEqual(
+        new CrewRollApiProblem(code),
+      );
+    }
   });
 
   it("fails closed before fetch when the Clerk session is absent", async () => {
