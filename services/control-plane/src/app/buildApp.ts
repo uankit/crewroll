@@ -3,6 +3,7 @@ import helmet from "@fastify/helmet";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import Fastify, { type FastifyReply, LogController } from "fastify";
+import { TypeBoxValidatorCompiler } from "@fastify/type-provider-typebox";
 
 import {
   DomainError,
@@ -10,6 +11,7 @@ import {
 } from "../shared/errors/domainError.js";
 import { toProblemDetails } from "../shared/errors/problemMapper.js";
 import type { AppDependencies } from "./dependencies.js";
+import { deviceRoutes } from "../modules/devices/index.js";
 
 const corsMethods = [
   "GET",
@@ -47,6 +49,14 @@ function classifyError(error: unknown): DomainErrorKind {
   if (
     typeof error === "object" &&
     error !== null &&
+    "code" in error &&
+    error.code === "FST_ERR_CTP_BODY_TOO_LARGE"
+  ) {
+    return "INVALID_REQUEST";
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
     "validation" in error &&
     error.validation !== undefined
   ) {
@@ -65,6 +75,7 @@ export function buildApp(dependencies: AppDependencies) {
     loggerInstance: dependencies.logger,
     requestIdHeader: false,
   });
+  app.setValidatorCompiler(TypeBoxValidatorCompiler);
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);
@@ -92,6 +103,15 @@ export function buildApp(dependencies: AppDependencies) {
   if (dependencies.environment.nodeEnvironment !== "production") {
     app.register(swagger, {
       openapi: {
+        components: {
+          securitySchemes: {
+            ClerkBearer: {
+              bearerFormat: "JWT",
+              scheme: "bearer",
+              type: "http",
+            },
+          },
+        },
         info: {
           title: "CrewRoll Control Plane",
           version: "0.1.0",
@@ -103,6 +123,8 @@ export function buildApp(dependencies: AppDependencies) {
       staticCSP: true,
     });
   }
+
+  app.register(deviceRoutes, dependencies.devices);
 
   app.addHook("onResponse", async (request, reply) => {
     request.log.info({

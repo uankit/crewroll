@@ -204,6 +204,20 @@ describe("buildApp", () => {
     expect(fixture.logs()).not.toContain("query-canary");
   });
 
+  it("maps Fastify body-too-large to a static invalid-request problem", async () => {
+    const fixture = createTestDependencies();
+    const app = track(buildApp(fixture.dependencies));
+    app.post("/testing/body-limit", () => ({ accepted: true }));
+    const response = await app.inject({
+      method: "POST",
+      payload: { value: "x".repeat(1_048_577) },
+      url: "/testing/body-limit",
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(expectedProblem(400));
+    expect(fixture.logs()).not.toContain("xxxxxxxxxxxxxxxx");
+  });
+
   it("adds Helmet headers and non-production documentation without health paths", async () => {
     const fixture = createTestDependencies();
     const app = track(buildApp(fixture.dependencies));

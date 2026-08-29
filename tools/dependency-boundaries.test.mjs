@@ -102,7 +102,9 @@ const controlPolicyOracle = new ownerDefinitions.control.ESLint({
 const controlCompositionPaths = [
   "src/index.ts",
   "src/app/buildApp.ts",
+  "src/api/apiRuntime.ts",
   "src/api/main.ts",
+  "src/api/productionApiFactories.ts",
   "src/worker/main.ts",
 ];
 const controlCompositionPathSet = new Set(controlCompositionPaths);
@@ -1147,7 +1149,9 @@ test("all control composition roots reject workspace implementation escapes and 
   const roots = [
     ["src/index.ts", "../../../"],
     ["src/app/buildApp.ts", "../../../../"],
+    ["src/api/apiRuntime.ts", "../../../../"],
     ["src/api/main.ts", "../../../../"],
+    ["src/api/productionApiFactories.ts", "../../../../"],
     ["src/worker/main.ts", "../../../../"],
   ];
 
@@ -1226,6 +1230,8 @@ test("global fetch is rejected in mobile route/feature and locked camel-case con
 test("the oracle never owns locked future control composition entrypoints", () => {
   for (const relativePath of [
     "src/api/main.ts",
+    "src/api/apiRuntime.ts",
+    "src/api/productionApiFactories.ts",
     "src/worker/main.ts",
     "src/app/buildApp.ts",
   ]) {

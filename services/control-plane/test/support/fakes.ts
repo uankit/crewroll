@@ -69,6 +69,20 @@ export function createTestDependencies({
   const readiness = new FakeReadinessProbe(readinessFailure);
   const dependencies: AppDependencies = {
     clock: { now: () => new Date("2026-08-29T12:00:00.000Z") },
+    devices: {
+      registerDevice: {
+        execute: () => Promise.reject(new Error("Unexpected device route")),
+      },
+      revokeDevice: {
+        execute: () => Promise.reject(new Error("Unexpected device route")),
+      },
+      tokenVerifier: {
+        verify: () => Promise.reject(new Error("Unexpected device route")),
+      },
+      updateDevicePushToken: {
+        execute: () => Promise.reject(new Error("Unexpected device route")),
+      },
+    },
     environment,
     ids: { uuid: () => fixedRequestId },
     logger: createSafeLogger(environment, destination),
