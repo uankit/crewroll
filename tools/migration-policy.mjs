@@ -563,6 +563,41 @@ function validateCreateIndex(chain) {
   return null;
 }
 
+function validateAlterTable(chain, context, opaqueCode) {
+  const { steps } = chain;
+  if (
+    steps.length !== 3 ||
+    steps[0].name !== "alterTable" ||
+    steps[0].args.length !== 1 ||
+    !isDirectString(steps[0].args[0]) ||
+    steps[0].hasTypeArgumentList ||
+    steps[2].name !== "execute" ||
+    steps[2].args.length !== 0 ||
+    steps[2].hasTypeArgumentList
+  ) {
+    return { code: opaqueCode, node: steps[0]?.node };
+  }
+
+  const alteration = steps[1];
+  if (alteration.hasTypeArgumentList) {
+    return { code: opaqueCode, node: alteration.node };
+  }
+  if (alteration.name === "dropConstraint") {
+    return alteration.args.length === 1 && isDirectString(alteration.args[0])
+      ? null
+      : { code: opaqueCode, node: alteration.node };
+  }
+  if (alteration.name === "addCheckConstraint") {
+    if (alteration.args.length !== 2 || !isDirectString(alteration.args[0])) {
+      return { code: opaqueCode, node: alteration.node };
+    }
+    return isBoundedSql(alteration.args[1], context)
+      ? null
+      : { code: "MIGRATION_SQL_SHAPE", node: alteration.args[1] };
+  }
+  return { code: opaqueCode, node: alteration.node };
+}
+
 function validateUpExpression(expression, functionInfo, context) {
   const chain = flattenCallChain(expression);
   if (!chain || chain.root !== functionInfo.parameterName) {
@@ -577,11 +612,22 @@ function validateUpExpression(expression, functionInfo, context) {
   if (chain.steps[0]?.name === "createIndex") {
     return validateCreateIndex(chain);
   }
+  if (chain.steps[0]?.name === "alterTable") {
+    return validateAlterTable(chain, context, "MIGRATION_UP_OPAQUE_CALL");
+  }
   return { code: "MIGRATION_UP_OPAQUE_CALL", node: expression };
 }
 
-function validateDownExpression(expression, functionInfo) {
+function validateDownExpression(expression, functionInfo, context) {
   const chain = flattenCallChain(expression);
+  if (
+    chain &&
+    chain.root === functionInfo.parameterName &&
+    chain.scope === "schema" &&
+    chain.steps[0]?.name === "alterTable"
+  ) {
+    return validateAlterTable(chain, context, "MIGRATION_DOWN_OPAQUE_CALL");
+  }
   if (
     !chain ||
     chain.root !== functionInfo.parameterName ||
@@ -783,7 +829,7 @@ function validateFunctionBody(functionInfo, context) {
     const result =
       mode === "up"
         ? validateUpExpression(expression, functionInfo, context)
-        : validateDownExpression(expression, functionInfo);
+        : validateDownExpression(expression, functionInfo, context);
     if (result) context.add(result.node ?? expression, result.code);
   }
 }
