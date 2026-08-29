@@ -5,9 +5,10 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createDatabase } from "../../services/control-plane/src/db/database.js";
-import { migrateToLatest } from "../../services/control-plane/src/db/migrate.js";
-import { startMigratedPostgres } from "./support/postgres.js";
+import {
+  resolveExplicitExternalPostgresUrl,
+  startMigratedPostgres,
+} from "./support/postgres.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const secretCanary = "bootstrap-secret-canary-8e90ad";
@@ -17,57 +18,18 @@ interface BootstrapDatabase {
   stop(): Promise<void>;
 }
 
-function isApprovedLoopbackDatabase(connectionUri: string): boolean {
-  try {
-    const url = new URL(connectionUri);
-    return (
-      url.protocol === "postgresql:" &&
-      url.username === "uankit" &&
-      url.password === "" &&
-      url.hostname === "127.0.0.1" &&
-      url.port === "55432" &&
-      url.pathname === "/crewroll_codex_api_20260829" &&
-      url.search === "" &&
-      url.hash === ""
-    );
-  } catch {
-    return false;
-  }
-}
-
 async function startBootstrapDatabase(): Promise<BootstrapDatabase> {
-  const loopbackUri = process.env.CREWROLL_API_LOOPBACK_DATABASE_URL;
-  if (loopbackUri === undefined) {
-    const context = await startMigratedPostgres();
-    if (context.container === undefined) {
-      await context.stop();
-      throw new Error(
-        "Expected a Testcontainers-backed API bootstrap database",
-      );
-    }
-    return {
-      connectionUri: context.container.getConnectionUri(),
-      stop: () => context.stop(),
-    };
-  }
-
-  if (
-    process.env.CREWROLL_API_ALLOW_LOOPBACK_POSTGRES !== "1" ||
-    !isApprovedLoopbackDatabase(loopbackUri)
-  ) {
-    throw new Error("Unapproved CrewRoll API loopback database configuration");
-  }
-
-  const database = createDatabase(loopbackUri);
-  try {
-    await migrateToLatest(database);
-  } catch (error) {
-    await database.destroy();
-    throw error;
+  const context = await startMigratedPostgres();
+  const connectionUri =
+    context.container?.getConnectionUri() ??
+    resolveExplicitExternalPostgresUrl();
+  if (connectionUri === null) {
+    await context.stop();
+    throw new Error("CrewRoll bootstrap database URI unavailable");
   }
   return {
-    connectionUri: loopbackUri,
-    stop: () => database.destroy(),
+    connectionUri,
+    stop: () => context.stop(),
   };
 }
 
@@ -158,10 +120,17 @@ describe.sequential("API bootstrap", () => {
       {
         cwd: repositoryRoot,
         env: {
+          AWS_REGION: "ap-south-1",
+          BACKGROUND_CREDENTIAL_HMAC_KEY_V1: Buffer.alloc(32, 0xa5).toString(
+            "base64",
+          ),
+          CLERK_AUTHORIZED_PARTIES_JSON: "[]",
+          CLERK_ISSUER: "https://clerk.bootstrap.invalid",
           CLERK_SECRET_KEY: secretCanary,
           DATABASE_URL: postgres.connectionUri,
           HOST: "127.0.0.1",
           LOG_LEVEL: "trace",
+          KMS_PUSH_TOKEN_KEY_ID: "bootstrap-test-key",
           NODE_ENV: "test",
           PORT: String(port),
         },

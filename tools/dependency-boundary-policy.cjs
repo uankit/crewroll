@@ -436,6 +436,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   const config = element("config");
   const shared = element("shared");
   const composition = file("composition");
+  const productionComposition = file("production-composition");
   const route = file("route");
   const repository = file("repository");
   const migrationRunner = file("migration-runner");
@@ -463,6 +464,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     ...servicePackages,
     "@fastify/*",
     "fastify",
+    "kysely",
     "pg-boss",
   ];
   const routeForbiddenPackages = [
@@ -488,6 +490,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     allowElements(api, [
       api,
       element("app", { fileInternalPath: "index.ts" }),
+      element("app", { fileInternalPath: "dependencies.ts" }),
       element("module", { fileInternalPath: "index.ts" }),
       config,
       shared,
@@ -583,6 +586,17 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       shared,
     ]),
     allowModules(composition, compositionPackages),
+    allowElements(productionComposition, [
+      api,
+      worker,
+      app,
+      module,
+      db,
+      platform,
+      config,
+      shared,
+    ]),
+    allowModules(productionComposition, compositionPackages),
     {
       from: production,
       disallow: [
@@ -632,12 +646,11 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       { category: "migration-runner", pattern: "src/db/migrate.ts" },
       {
         category: "composition",
-        pattern: [
-          "src/index.ts",
-          "src/app/buildApp.ts",
-          "src/api/main.ts",
-          "src/worker/main.ts",
-        ],
+        pattern: ["src/index.ts", "src/app/buildApp.ts", "src/worker/main.ts"],
+      },
+      {
+        category: "production-composition",
+        pattern: "src/api/productionApiFactories.ts",
       },
       {
         category: "route",

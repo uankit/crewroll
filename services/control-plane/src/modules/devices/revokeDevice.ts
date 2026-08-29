@@ -12,7 +12,7 @@ import type {
 import { revokeDeviceCommandIdentity } from "./requestFingerprint.js";
 import type { CommandIdentity } from "./types.js";
 
-interface RevokeDependencies {
+export interface RevokeDeviceDependencies {
   readonly clock: Clock;
   readonly snapshots: DeviceAuthorizationSnapshotReader;
   readonly unitOfWork: DeviceUnitOfWork;
@@ -38,7 +38,7 @@ function idempotencyState(
     : "conflict";
 }
 
-export function createRevokeDevice(dependencies: RevokeDependencies) {
+export function createRevokeDevice(dependencies: RevokeDeviceDependencies) {
   return {
     async execute({
       clerkSubject,

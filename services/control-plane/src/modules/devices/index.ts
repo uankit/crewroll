@@ -1,3 +1,13 @@
 export { createRegisterDevice } from "./registerDevice.js";
 export { createRevokeDevice } from "./revokeDevice.js";
 export { createUpdateDevicePushToken } from "./updateDevicePushToken.js";
+export { deviceRoutes, type DeviceRouteDependencies } from "./deviceRoutes.js";
+export type { BackgroundCredentialIssuer } from "./ports/backgroundCredentialIssuer.js";
+export type { ClerkUserDirectory } from "./ports/clerkUserDirectory.js";
+export type { DeviceAuthorizationSnapshotReader } from "./ports/deviceAuthorizationSnapshotReader.js";
+export type { DeviceUnitOfWork } from "./ports/deviceUnitOfWork.js";
+export type { PushTokenProtector } from "./ports/pushTokenProtector.js";
+export type { RegisterDeviceDependencies } from "./registerDevice.js";
+export type { RevokeDeviceDependencies } from "./revokeDevice.js";
+export type { UpdateDevicePushTokenDependencies } from "./updateDevicePushToken.js";
+export type { ClerkTokenVerifier } from "../../shared/auth/clerkTokenVerifier.js";

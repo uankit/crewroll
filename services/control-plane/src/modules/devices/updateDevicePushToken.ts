@@ -18,7 +18,7 @@ import type {
 import { updatePushTokenCommandIdentity } from "./requestFingerprint.js";
 import type { CommandIdentity } from "./types.js";
 
-interface UpdateDependencies {
+export interface UpdateDevicePushTokenDependencies {
   readonly clock: Clock;
   readonly protector: PushTokenProtector;
   readonly snapshots: DeviceAuthorizationSnapshotReader;
@@ -52,7 +52,9 @@ function idempotencyState(
     : "conflict";
 }
 
-export function createUpdateDevicePushToken(dependencies: UpdateDependencies) {
+export function createUpdateDevicePushToken(
+  dependencies: UpdateDevicePushTokenDependencies,
+) {
   return {
     async execute({
       body,
