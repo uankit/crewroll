@@ -2037,6 +2037,10 @@
               {
                 "const": "INCOMPLETE_EXPIRED",
                 "type": "string"
+              },
+              {
+                "const": "CANCELLED",
+                "type": "string"
               }
             ]
           },
@@ -2185,11 +2189,11 @@
                 "status": {
                   "anyOf": [
                     {
-                      "const": "PENDING",
+                      "const": "PENDING_KEY",
                       "type": "string"
                     },
                     {
-                      "const": "APPROVED",
+                      "const": "ACTIVE",
                       "type": "string"
                     },
                     {
@@ -2267,11 +2271,11 @@
           "status": {
             "anyOf": [
               {
-                "const": "PENDING",
+                "const": "PENDING_KEY",
                 "type": "string"
               },
               {
-                "const": "APPROVED",
+                "const": "ACTIVE",
                 "type": "string"
               },
               {
@@ -2840,11 +2844,11 @@
                           "type": "string"
                         },
                         {
-                          "const": "SAVED",
+                          "const": "SAVED_LOCALLY",
                           "type": "string"
                         },
                         {
-                          "const": "FAILED",
+                          "const": "EXPIRED",
                           "type": "string"
                         }
                       ]
@@ -2899,6 +2903,10 @@
                         },
                         {
                           "const": "INCOMPLETE_EXPIRED",
+                          "type": "string"
+                        },
+                        {
+                          "const": "CANCELLED",
                           "type": "string"
                         }
                       ]
@@ -3122,11 +3130,11 @@
                 "type": "string"
               },
               {
-                "const": "SAVED",
+                "const": "SAVED_LOCALLY",
                 "type": "string"
               },
               {
-                "const": "FAILED",
+                "const": "EXPIRED",
                 "type": "string"
               }
             ]
@@ -3223,11 +3231,11 @@
                             "type": "string"
                           },
                           {
-                            "const": "SAVED",
+                            "const": "SAVED_LOCALLY",
                             "type": "string"
                           },
                           {
-                            "const": "FAILED",
+                            "const": "EXPIRED",
                             "type": "string"
                           }
                         ]

@@ -14,13 +14,28 @@ const generatedUrl = new URL(
 
 type JsonSchema = {
   anyOf?: JsonSchema[];
+  const?: string;
   maxLength?: number;
   minLength?: number;
   pattern?: string;
   properties?: Record<string, JsonSchema>;
-  items?: JsonSchema[];
+  items?: JsonSchema | JsonSchema[];
   [key: string]: unknown;
 };
+
+function objectItems(schema: JsonSchema | undefined): JsonSchema | undefined {
+  return Array.isArray(schema?.items) ? undefined : schema?.items;
+}
+
+function tupleItems(schema: JsonSchema | undefined): JsonSchema[] | undefined {
+  return Array.isArray(schema?.items) ? schema.items : undefined;
+}
+
+function literalUnion(
+  schema: JsonSchema | undefined,
+): Array<string | undefined> {
+  return schema?.anyOf?.map((candidate) => candidate.const) ?? [];
+}
 
 function acceptsWithStandardStringKeywords(
   schema: JsonSchema,
@@ -87,6 +102,82 @@ describe("canonical OpenAPI artifact", () => {
     expect(json).not.toContain("media-bytes");
   });
 
+  it("exposes exact lifecycle literals at every public response location", () => {
+    const document = createOpenApiDocument();
+    const schemas = (
+      document.components as { schemas: Record<string, JsonSchema> }
+    ).schemas;
+    const tripStatuses = [
+      "LOBBY",
+      "ACTIVE",
+      "ENDING",
+      "COMPLETE",
+      "INCOMPLETE_EXPIRED",
+      "CANCELLED",
+    ];
+    const membershipStatuses = ["PENDING_KEY", "ACTIVE", "REJECTED"];
+    const deliveryStatuses = ["HELD", "READY", "SAVED_LOCALLY", "EXPIRED"];
+    const tripMembers = objectItems(schemas.TripResponse?.properties?.members);
+    const syncEvents = objectItems(
+      schemas.SyncResponse?.properties?.events,
+    )?.anyOf;
+    const deliveryChanged = syncEvents?.find(
+      (event) => event.properties?.type?.const === "DELIVERY_CHANGED",
+    );
+    const tripChanged = syncEvents?.find(
+      (event) => event.properties?.type?.const === "TRIP_CHANGED",
+    );
+    const reconciliationAssets = objectItems(
+      schemas.ReconciliationResponse?.properties?.items,
+    );
+    const reconciliationMembers = objectItems(
+      reconciliationAssets?.properties?.members,
+    );
+
+    expect
+      .soft(
+        literalUnion(schemas.TripResponse?.properties?.status),
+        "TripResponse.status",
+      )
+      .toEqual(tripStatuses);
+    expect
+      .soft(
+        literalUnion(tripMembers?.properties?.status),
+        "TripResponse.members[].status",
+      )
+      .toEqual(membershipStatuses);
+    expect
+      .soft(
+        literalUnion(schemas.MembershipResponse?.properties?.status),
+        "MembershipResponse.status",
+      )
+      .toEqual(membershipStatuses);
+    expect
+      .soft(
+        literalUnion(schemas.SavedReceiptResponse?.properties?.status),
+        "SavedReceiptResponse.status",
+      )
+      .toEqual(deliveryStatuses);
+    expect
+      .soft(
+        literalUnion(deliveryChanged?.properties?.status),
+        "SyncResponse DELIVERY_CHANGED.status",
+      )
+      .toEqual(deliveryStatuses);
+    expect
+      .soft(
+        literalUnion(tripChanged?.properties?.status),
+        "SyncResponse TRIP_CHANGED.status",
+      )
+      .toEqual(tripStatuses);
+    expect
+      .soft(
+        literalUnion(reconciliationMembers?.properties?.deliveryStatus),
+        "ReconciliationResponse.items[].members[].deliveryStatus",
+      )
+      .toEqual(deliveryStatuses);
+  });
+
   it("models Clerk registration and background-device operation security", () => {
     const all = operations(createOpenApiDocument());
     for (const { path, method, operation } of all) {
@@ -113,7 +204,7 @@ describe("canonical OpenAPI artifact", () => {
     ).schemas;
     const upload = schemas.CreateUploadSessionBody;
     const uploadProperties = upload?.properties;
-    const objects = uploadProperties?.objects?.items;
+    const objects = tupleItems(uploadProperties?.objects);
     const previewBytes = objects?.[0]?.properties?.ciphertextBytes;
     const originalBytes = objects?.[1]?.properties?.ciphertextBytes;
     const checksum = objects?.[0]?.properties?.checksumSha256;
@@ -187,8 +278,8 @@ describe("canonical OpenAPI artifact", () => {
       schemas.RegisterDeviceBody?.properties?.authenticationPublicKey;
     const upload = schemas.CreateUploadSessionBody;
     const uploadProperties = upload?.properties;
-    const checksum =
-      uploadProperties?.objects?.items?.[0]?.properties?.checksumSha256;
+    const checksum = tupleItems(uploadProperties?.objects)?.[0]?.properties
+      ?.checksumSha256;
     const manifest = uploadProperties?.encryptedManifest;
     const wrappedKey =
       schemas.CreateTripBody?.properties?.ownerKeyEnvelope?.properties

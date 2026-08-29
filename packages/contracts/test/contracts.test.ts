@@ -8,9 +8,11 @@ import {
   CreateJoinRequestBodySchema,
   CreateTripBodySchema,
   CreateUploadSessionBodySchema,
+  DeliveryStatusSchema,
   DeviceRegistrationHeadersSchema,
   DeviceResponseSchema,
   InviteResponseSchema,
+  MembershipStatusSchema,
   MobileCommandHeadersSchema,
   MobileQueryHeadersSchema,
   ProblemDetailsSchema,
@@ -21,6 +23,7 @@ import {
   SyncAvailablePushHintSchema,
   SyncQuerySchema,
   SyncResponseSchema,
+  TripStatusSchema,
   UpdatePushTokenBodySchema,
   publicObjectSchemas,
 } from "../openapi/index.js";
@@ -45,6 +48,49 @@ import {
 function rejects(schema: Parameters<typeof Value.Check>[0], value: unknown) {
   expect(Value.Check(schema, value)).toBe(false);
 }
+
+describe("canonical public lifecycle enums", () => {
+  it.each([
+    {
+      canonical: [
+        "LOBBY",
+        "ACTIVE",
+        "ENDING",
+        "COMPLETE",
+        "INCOMPLETE_EXPIRED",
+        "CANCELLED",
+      ],
+      name: "trip",
+      schema: TripStatusSchema,
+    },
+    {
+      canonical: ["PENDING_KEY", "ACTIVE", "REJECTED"],
+      name: "membership",
+      schema: MembershipStatusSchema,
+    },
+    {
+      canonical: ["HELD", "READY", "SAVED_LOCALLY", "EXPIRED"],
+      name: "delivery",
+      schema: DeliveryStatusSchema,
+    },
+  ])("accepts every canonical $name status", ({ canonical, name, schema }) => {
+    for (const status of canonical) {
+      expect.soft(Value.Check(schema, status), `${name}: ${status}`).toBe(true);
+    }
+  });
+
+  it.each([
+    { name: "trip", schema: TripStatusSchema },
+    { name: "membership", schema: MembershipStatusSchema },
+    { name: "delivery", schema: DeliveryStatusSchema },
+  ])("rejects every obsolete $name status", ({ name, schema }) => {
+    for (const status of ["PENDING", "APPROVED", "SAVED", "FAILED"]) {
+      expect
+        .soft(Value.Check(schema, status), `${name}: ${status}`)
+        .toBe(false);
+    }
+  });
+});
 
 describe("command header variants", () => {
   it("accepts registration with Clerk bearer and idempotency but no device header", () => {

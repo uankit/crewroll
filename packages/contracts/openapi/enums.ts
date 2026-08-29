@@ -24,12 +24,13 @@ export const TripStatusSchema = Type.Union([
   Type.Literal("ENDING"),
   Type.Literal("COMPLETE"),
   Type.Literal("INCOMPLETE_EXPIRED"),
+  Type.Literal("CANCELLED"),
 ]);
 export type TripStatus = Static<typeof TripStatusSchema>;
 
 export const MembershipStatusSchema = Type.Union([
-  Type.Literal("PENDING"),
-  Type.Literal("APPROVED"),
+  Type.Literal("PENDING_KEY"),
+  Type.Literal("ACTIVE"),
   Type.Literal("REJECTED"),
 ]);
 export type MembershipStatus = Static<typeof MembershipStatusSchema>;
@@ -37,7 +38,7 @@ export type MembershipStatus = Static<typeof MembershipStatusSchema>;
 export const DeliveryStatusSchema = Type.Union([
   Type.Literal("HELD"),
   Type.Literal("READY"),
-  Type.Literal("SAVED"),
-  Type.Literal("FAILED"),
+  Type.Literal("SAVED_LOCALLY"),
+  Type.Literal("EXPIRED"),
 ]);
 export type DeliveryStatus = Static<typeof DeliveryStatusSchema>;
