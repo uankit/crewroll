@@ -531,6 +531,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     allowModules([api, route], routePackages),
     allowModules(worker, [...servicePackages, "pg-boss"]),
     allowModules([app, module, shared], servicePackages),
+    allowModules([module, platform], ["node:crypto"], "core"),
     {
       from: migrationRunner,
       allow: [
