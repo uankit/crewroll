@@ -1,38 +1,64 @@
 import type { PropsWithChildren } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import {
+  ScrollView,
+  StyleSheet,
+  View,
+  type ScrollViewProps,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 
-type ScreenProps = PropsWithChildren<{
-  scroll?: boolean;
-  testID?: string;
+export type ScreenProps = PropsWithChildren<{
+  readonly scroll?: boolean;
+  readonly testID?: string;
+  readonly style?: StyleProp<ViewStyle>;
+  readonly contentStyle?: StyleProp<ViewStyle>;
+  readonly keyboardShouldPersistTaps?: ScrollViewProps["keyboardShouldPersistTaps"];
 }>;
 
-export function Screen({ children, scroll = true, testID }: ScreenProps) {
+export function Screen({
+  children,
+  scroll = true,
+  testID,
+  style,
+  contentStyle,
+  keyboardShouldPersistTaps = "handled",
+}: ScreenProps) {
   const colors = useCrewRollTheme();
-  const content = <View style={styles.content}>{children}</View>;
+  const content = (
+    <View style={[styles.content, contentStyle]}>{children}</View>
+  );
 
   if (!scroll) {
     return (
-      <View
+      <SafeAreaView
+        edges={["top", "bottom"]}
         testID={testID}
-        style={[styles.root, { backgroundColor: colors.background }]}
+        style={[styles.root, { backgroundColor: colors.background }, style]}
       >
         {content}
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <ScrollView
+    <SafeAreaView
+      edges={["top", "bottom"]}
       testID={testID}
-      style={[styles.root, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.scrollContent}
-      contentInsetAdjustmentBehavior="automatic"
+      style={[styles.root, { backgroundColor: colors.background }, style]}
     >
-      {content}
-    </ScrollView>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+      >
+        {content}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 

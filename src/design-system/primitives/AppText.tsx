@@ -4,24 +4,47 @@ import { Text } from "react-native";
 import { typography, type TypographyVariant } from "../tokens/typography";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 
-type TextProps = ComponentProps<typeof Text> & {
-  variant?: TypographyVariant;
-  tone?: "primary" | "secondary" | "action";
+export type AppTextTone =
+  | "primary"
+  | "secondary"
+  | "action"
+  | "onAction"
+  | "success"
+  | "warning"
+  | "critical"
+  | "info";
+
+export type AppTextProps = ComponentProps<typeof Text> & {
+  readonly variant?: TypographyVariant;
+  readonly tone?: AppTextTone;
 };
 
 export function AppText({
+  allowFontScaling = true,
+  maxFontSizeMultiplier = 2,
   style,
   variant = "body",
   tone = "primary",
   ...props
-}: TextProps) {
+}: AppTextProps) {
   const colors = useCrewRollTheme();
-  const color =
-    tone === "secondary"
-      ? colors.textSecondary
-      : tone === "action"
-        ? colors.action
-        : colors.textPrimary;
+  const color = {
+    action: colors.action,
+    critical: colors.critical,
+    info: colors.info,
+    onAction: colors.onAction,
+    primary: colors.textPrimary,
+    secondary: colors.textSecondary,
+    success: colors.success,
+    warning: colors.warning,
+  }[tone];
 
-  return <Text {...props} style={[typography[variant], { color }, style]} />;
+  return (
+    <Text
+      {...props}
+      allowFontScaling={allowFontScaling}
+      maxFontSizeMultiplier={maxFontSizeMultiplier}
+      style={[typography[variant], { color }, style]}
+    />
+  );
 }

@@ -1,8 +1,44 @@
 export { StatusBadge } from "./feedback/StatusBadge";
-export { AppText } from "./primitives/AppText";
-export { Button } from "./primitives/Button";
-export { Screen } from "./primitives/Screen";
-export { Surface } from "./primitives/Surface";
+export {
+  AppText,
+  type AppTextProps,
+  type AppTextTone,
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  Dialog,
+  type DialogProps,
+  Divider,
+  type DividerProps,
+  IconButton,
+  type IconButtonProps,
+  type IconButtonVariant,
+  Inline,
+  type InlineProps,
+  PressableRow,
+  type PressableRowProps,
+  type PressableRowRole,
+  ProgressBar,
+  type ProgressBarProps,
+  ProgressRing,
+  type ProgressRingProps,
+  Screen,
+  type ScreenProps,
+  Sheet,
+  type SheetProps,
+  Skeleton,
+  type SkeletonProps,
+  type SkeletonWidth,
+  Stack,
+  type LayoutAlignment,
+  type LayoutJustification,
+  type Space,
+  type StackProps,
+  Surface,
+  type SurfaceProps,
+  TextField,
+  type TextFieldProps,
+} from "./primitives";
 export {
   CrewRollThemeProvider,
   type CrewRollThemeProviderProps,

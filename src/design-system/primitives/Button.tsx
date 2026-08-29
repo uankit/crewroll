@@ -1,15 +1,32 @@
-import { Pressable, StyleSheet } from "react-native";
+import type { ReactNode } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  View,
+  type GestureResponderEvent,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 
 import { radius } from "../tokens/radius";
 import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 import { AppText } from "./AppText";
 
-type ButtonProps = {
-  label: string;
-  onPress: () => void;
-  variant?: "primary" | "secondary";
-  disabled?: boolean;
+export type ButtonVariant = "primary" | "secondary" | "critical";
+
+export type ButtonProps = {
+  readonly label: string;
+  readonly onPress: (event: GestureResponderEvent) => void;
+  readonly variant?: ButtonVariant;
+  readonly disabled?: boolean;
+  readonly loading?: boolean;
+  readonly leading?: ReactNode;
+  readonly accessibilityLabel?: string;
+  readonly accessibilityHint?: string;
+  readonly style?: StyleProp<ViewStyle>;
+  readonly testID?: string;
 };
 
 export function Button({
@@ -17,35 +34,77 @@ export function Button({
   onPress,
   variant = "primary",
   disabled = false,
+  loading = false,
+  leading,
+  accessibilityLabel,
+  accessibilityHint,
+  style,
+  testID,
 }: ButtonProps) {
   const colors = useCrewRollTheme();
+  const isUnavailable = disabled || loading;
+  const contentColor =
+    variant === "primary"
+      ? colors.onAction
+      : variant === "critical"
+        ? colors.critical
+        : colors.action;
 
   return (
     <Pressable
+      accessibilityHint={accessibilityHint}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
+      accessibilityState={{ busy: loading, disabled: isUnavailable }}
+      disabled={isUnavailable}
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.base,
-        {
-          backgroundColor:
-            variant === "primary"
+      testID={testID}
+      style={({ pressed }) => {
+        const backgroundColor =
+          variant === "primary"
+            ? pressed
+              ? colors.actionPressed
+              : colors.action
+            : variant === "critical"
               ? pressed
-                ? colors.actionPressed
-                : colors.action
-              : colors.surface,
-          borderColor: variant === "primary" ? colors.action : colors.border,
-          opacity: disabled ? 0.5 : 1,
-        },
-      ]}
+                ? colors.surfaceMuted
+                : colors.criticalSurface
+              : pressed
+                ? colors.surfaceMuted
+                : colors.surface;
+        const borderColor =
+          variant === "critical"
+            ? colors.critical
+            : variant === "primary"
+              ? colors.action
+              : colors.border;
+
+        return [
+          styles.base,
+          {
+            backgroundColor,
+            borderColor,
+            opacity: isUnavailable ? 0.5 : 1,
+          },
+          style,
+        ];
+      }}
     >
-      <AppText
-        variant="bodyStrong"
-        style={{
-          color: variant === "primary" ? colors.onAction : colors.action,
-        }}
-      >
+      {loading ? (
+        <ActivityIndicator
+          accessibilityElementsHidden
+          color={contentColor}
+          importantForAccessibility="no-hide-descendants"
+        />
+      ) : leading ? (
+        <View
+          accessible={false}
+          importantForAccessibility="no-hide-descendants"
+        >
+          {leading}
+        </View>
+      ) : null}
+      <AppText aria-hidden style={{ color: contentColor }} variant="bodyStrong">
         {label}
       </AppText>
     </Pressable>
@@ -57,8 +116,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderRadius: radius.md,
     borderWidth: 1,
+    flexDirection: "row",
+    gap: spacing.xs,
     justifyContent: "center",
-    minHeight: 52,
+    minHeight: spacing.xxxl,
+    minWidth: spacing.xxxl,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
