@@ -12,6 +12,7 @@ import {
 import { toProblemDetails } from "../shared/errors/problemMapper.js";
 import type { AppDependencies } from "./dependencies.js";
 import { deviceRoutes } from "../modules/devices/index.js";
+import { clerkWebhookRoutes } from "../modules/identity/index.js";
 
 const corsMethods = [
   "GET",
@@ -125,6 +126,7 @@ export function buildApp(dependencies: AppDependencies) {
   }
 
   app.register(deviceRoutes, dependencies.devices);
+  app.register(clerkWebhookRoutes, dependencies.identity);
 
   app.addHook("onResponse", async (request, reply) => {
     request.log.info({
