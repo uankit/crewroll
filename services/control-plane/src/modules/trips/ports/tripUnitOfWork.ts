@@ -231,7 +231,26 @@ export interface TripTransaction {
   updateTrip(record: TripRecord): Promise<void>;
 }
 
-type CallbackResult<Result> = Result extends TripTransaction ? never : Result;
+type CallbackContainsTransaction<Result> = [Result] extends [TripTransaction]
+  ? true
+  : Result extends (...arguments_: never[]) => unknown
+    ? false
+    : Result extends PromiseLike<infer AwaitedResult>
+      ? CallbackContainsTransaction<AwaitedResult>
+      : Result extends readonly (infer Item)[]
+        ? true extends CallbackContainsTransaction<Item>
+          ? true
+          : false
+        : Result extends object
+          ? true extends {
+              [Key in keyof Result]-?: CallbackContainsTransaction<Result[Key]>;
+            }[keyof Result]
+            ? true
+            : false
+          : false;
+
+type CallbackResult<Result> =
+  true extends CallbackContainsTransaction<Result> ? never : Result;
 
 export interface TripUnitOfWork {
   findInviteCandidate(

@@ -5,8 +5,11 @@ import type {
   ForegroundActorSnapshotReader,
   ForegroundActorSnapshot,
 } from "../../src/modules/trips/ports/foregroundActorSnapshotReader.js";
-import type { TripUnitOfWork } from "../../src/modules/trips/ports/tripUnitOfWork.js";
-import type { TripRecord } from "../../src/modules/trips/ports/tripUnitOfWork.js";
+import type {
+  TripRecord,
+  TripTransaction,
+  TripUnitOfWork,
+} from "../../src/modules/trips/ports/tripUnitOfWork.js";
 import type { ForegroundTripActor } from "../../src/modules/trips/types.js";
 import { DomainError } from "../../src/shared/errors/domainError.js";
 import { createTripTestHarness } from "../support/tripFakes.js";
@@ -118,11 +121,162 @@ describe("foreground Trip actor resolution", () => {
     expect(test.state.trips.size).toBe(0);
     expect(test.state.activeTrips.size).toBe(0);
   });
+
+  it("freezes and revokes every captured transaction method after commit", async () => {
+    const test = createTripTestHarness();
+    let captured: TripTransaction | undefined;
+    await test.unitOfWork.run((transaction) => {
+      captured = transaction;
+      return Promise.resolve();
+    });
+
+    expect(captured).toBeDefined();
+    expect(Object.isFrozen(captured)).toBe(true);
+    await expectEveryTransactionMethodClosed(captured!);
+  });
+
+  it("revokes returned wrapped handles, closures, and method references", async () => {
+    const test = createTripTestHarness();
+    const wrapped = (await test.unitOfWork.run((transaction) =>
+      Promise.resolve({ transaction } as unknown),
+    )) as { readonly transaction: TripTransaction };
+    const closure = (await test.unitOfWork.run((transaction) =>
+      Promise.resolve((() => transaction.authoritativeNow()) as unknown),
+    )) as () => Promise<Date>;
+    const method = (await test.unitOfWork.run((transaction) =>
+      Promise.resolve(Reflect.get(transaction, "authoritativeNow") as unknown),
+    )) as () => Promise<Date>;
+
+    await expect(wrapped.transaction.authoritativeNow()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+    await expect(closure()).rejects.toThrow("Trip transaction scope is closed");
+    await expect(method()).rejects.toThrow("Trip transaction scope is closed");
+  });
+
+  it("revokes outer captures, closures, and method references after rollback", async () => {
+    const test = createTripTestHarness();
+    let captured: TripTransaction | undefined;
+    let closure: (() => Promise<Date>) | undefined;
+    let method: (() => Promise<Date>) | undefined;
+
+    await expect(
+      test.unitOfWork.run((transaction) => {
+        captured = transaction;
+        closure = () => transaction.authoritativeNow();
+        method = Reflect.get(transaction, "authoritativeNow");
+        return Promise.reject(new Error("rollback canary"));
+      }),
+    ).rejects.toThrow("rollback canary");
+
+    await expect(captured!.authoritativeNow()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+    await expect(closure!()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+    await expect(method!()).rejects.toThrow("Trip transaction scope is closed");
+  });
+
+  it("settles an unawaited operation and forces rollback with a static error", async () => {
+    const test = createTripTestHarness();
+    const held = test.deferAuthoritativeNow();
+    let settled = false;
+    const run = test.unitOfWork
+      .run((transaction) => {
+        void transaction.authoritativeNow();
+        return Promise.resolve("callback-result");
+      })
+      .finally(() => {
+        settled = true;
+      });
+
+    await held.started;
+    expect(settled).toBe(false);
+    held.release();
+    await expect(run).rejects.toThrow(
+      "Trip transaction callback left unsettled work",
+    );
+    expect(test.trace.at(-1)).toBe("transaction.rollback");
+  });
 });
 
-function callbackResultCannotBeTransaction(unitOfWork: TripUnitOfWork): void {
-  // @ts-expect-error A transaction object cannot be returned from its callback.
-  void unitOfWork.run((transaction) => Promise.resolve(transaction));
+const transactionMethodNames = [
+  "acquireCreateCommandLock",
+  "authoritativeNow",
+  "deleteActiveTrip",
+  "deleteIdempotency",
+  "findEnvelope",
+  "findIdempotency",
+  "insertActiveTrip",
+  "insertEnvelope",
+  "insertIdempotency",
+  "insertInbox",
+  "insertInvite",
+  "insertMembership",
+  "insertOutbox",
+  "insertTrip",
+  "lockActiveTrip",
+  "lockDevice",
+  "lockDevices",
+  "lockInvite",
+  "lockMembership",
+  "lockMembershipForUser",
+  "lockMemberships",
+  "lockTrip",
+  "readProjection",
+  "reauthorizeForegroundActor",
+  "tryAcquireCreateCommandLock",
+  "updateInvite",
+  "updateMembership",
+  "updateTrip",
+] as const satisfies readonly (keyof TripTransaction)[];
+
+async function expectEveryTransactionMethodClosed(
+  transaction: TripTransaction,
+): Promise<void> {
+  expect(Object.keys(transaction).sort()).toEqual(
+    [...transactionMethodNames].sort(),
+  );
+  const outcomes = await Promise.allSettled(
+    transactionMethodNames.map((method) =>
+      Promise.resolve().then(() => {
+        const operation: unknown = Reflect.get(transaction, method);
+        if (typeof operation !== "function") {
+          throw new Error(`Missing transaction method: ${method}`);
+        }
+        return (operation as () => Promise<unknown>)();
+      }),
+    ),
+  );
+  expect(outcomes).toHaveLength(transactionMethodNames.length);
+  for (const outcome of outcomes) {
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status === "rejected") {
+      expect(outcome.reason).toBeInstanceOf(Error);
+      expect((outcome.reason as Error).message).toBe(
+        "Trip transaction scope is closed",
+      );
+    }
+  }
 }
 
-void callbackResultCannotBeTransaction;
+function callbackResultCannotContainTransaction(
+  unitOfWork: TripUnitOfWork,
+): void {
+  // @ts-expect-error A transaction object cannot be returned from its callback.
+  void unitOfWork.run((transaction) => Promise.resolve(transaction));
+  // @ts-expect-error A transaction cannot escape in a direct object property.
+  void unitOfWork.run((transaction) => Promise.resolve({ transaction }));
+  void unitOfWork.run((transaction) =>
+    // @ts-expect-error A transaction cannot escape in a nested object property.
+    Promise.resolve({ nested: { transaction } }),
+  );
+  // @ts-expect-error A transaction cannot escape in an array.
+  void unitOfWork.run((transaction) => Promise.resolve([transaction]));
+
+  // TypeScript cannot decide whether an arbitrary closure captures a value.
+  // Runtime revocation is therefore the authoritative lifetime boundary.
+}
+
+void callbackResultCannotContainTransaction;

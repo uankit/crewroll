@@ -91,6 +91,87 @@ function bytesEqual(
   return Buffer.from(left).equals(Buffer.from(right));
 }
 
+const CLOSED_TRANSACTION_MESSAGE = "Trip transaction scope is closed";
+const UNSETTLED_TRANSACTION_MESSAGE =
+  "Trip transaction callback left unsettled work";
+
+function callbackTransactionScope(raw: TripTransaction) {
+  let active = true;
+  const pending = new Set<Promise<unknown>>();
+
+  function invoke<Result>(operation: () => Promise<Result>): Promise<Result> {
+    if (!active) {
+      return Promise.reject(new Error(CLOSED_TRANSACTION_MESSAGE));
+    }
+    let result: Promise<Result>;
+    try {
+      result = Promise.resolve(operation());
+    } catch (error) {
+      result = Promise.reject(
+        error instanceof Error
+          ? error
+          : new Error("Trip transaction operation failed"),
+      );
+    }
+    pending.add(result);
+    void result.then(
+      () => pending.delete(result),
+      () => pending.delete(result),
+    );
+    return result;
+  }
+
+  const transaction = Object.freeze<TripTransaction>({
+    acquireCreateCommandLock: (identity) =>
+      invoke(() => raw.acquireCreateCommandLock(identity)),
+    authoritativeNow: () => invoke(() => raw.authoritativeNow()),
+    deleteActiveTrip: (userId, tripId) =>
+      invoke(() => raw.deleteActiveTrip(userId, tripId)),
+    deleteIdempotency: (record) => invoke(() => raw.deleteIdempotency(record)),
+    findEnvelope: (tripId, recipientDeviceId) =>
+      invoke(() => raw.findEnvelope(tripId, recipientDeviceId)),
+    findIdempotency: (input) => invoke(() => raw.findIdempotency(input)),
+    insertActiveTrip: (record) => invoke(() => raw.insertActiveTrip(record)),
+    insertEnvelope: (record) => invoke(() => raw.insertEnvelope(record)),
+    insertIdempotency: (record) => invoke(() => raw.insertIdempotency(record)),
+    insertInbox: (record) => invoke(() => raw.insertInbox(record)),
+    insertInvite: (record) => invoke(() => raw.insertInvite(record)),
+    insertMembership: (record) => invoke(() => raw.insertMembership(record)),
+    insertOutbox: (record) => invoke(() => raw.insertOutbox(record)),
+    insertTrip: (record) => invoke(() => raw.insertTrip(record)),
+    lockActiveTrip: (userId) => invoke(() => raw.lockActiveTrip(userId)),
+    lockDevice: (deviceId) => invoke(() => raw.lockDevice(deviceId)),
+    lockDevices: (deviceIds) => invoke(() => raw.lockDevices(deviceIds)),
+    lockInvite: (inviteId) => invoke(() => raw.lockInvite(inviteId)),
+    lockMembership: (tripId, membershipId) =>
+      invoke(() => raw.lockMembership(tripId, membershipId)),
+    lockMembershipForUser: (tripId, userId) =>
+      invoke(() => raw.lockMembershipForUser(tripId, userId)),
+    lockMemberships: (tripId) => invoke(() => raw.lockMemberships(tripId)),
+    lockTrip: (tripId) => invoke(() => raw.lockTrip(tripId)),
+    readProjection: (actor, tripId) =>
+      invoke(() => raw.readProjection(actor, tripId)),
+    reauthorizeForegroundActor: (actor) =>
+      invoke(() => raw.reauthorizeForegroundActor(actor)),
+    tryAcquireCreateCommandLock: (identity) =>
+      invoke(() => raw.tryAcquireCreateCommandLock(identity)),
+    updateInvite: (record) => invoke(() => raw.updateInvite(record)),
+    updateMembership: (record) => invoke(() => raw.updateMembership(record)),
+    updateTrip: (record) => invoke(() => raw.updateTrip(record)),
+  });
+
+  return {
+    transaction,
+    hasPending: () => pending.size > 0,
+    invalidate() {
+      active = false;
+    },
+    async settlePending() {
+      await Promise.allSettled([...pending]);
+    },
+  };
+}
+
 function fakeProjection(
   state: TripFakeState,
   actor: ForegroundTripActor,
@@ -221,6 +302,12 @@ export function createTripTestHarness() {
   let failedWrite: number | undefined;
   let writes = 0;
   let createTryLockAvailable = true;
+  let authoritativeNowGate:
+    | Readonly<{
+        release: Promise<void>;
+        started: () => void;
+      }>
+    | undefined;
 
   function recordWrite(label: string): void {
     trace.push(label);
@@ -236,8 +323,14 @@ export function createTripTestHarness() {
         trace.push("lock.create.blocking");
         return Promise.resolve();
       },
-      authoritativeNow() {
-        return Promise.resolve(new Date(authoritativeNow.getTime()));
+      async authoritativeNow() {
+        const gate = authoritativeNowGate;
+        authoritativeNowGate = undefined;
+        if (gate !== undefined) {
+          gate.started();
+          await gate.release;
+        }
+        return new Date(authoritativeNow.getTime());
       },
       deleteActiveTrip(userId, tripId) {
         working.activeTrips.delete(userId);
@@ -421,8 +514,21 @@ export function createTripTestHarness() {
       trace.push("transaction.begin");
       const working = cloneState(state);
       writes = 0;
+      const scope = callbackTransactionScope(transactionFor(working));
       try {
-        const result = await operation(transactionFor(working));
+        let result;
+        try {
+          result = await operation(scope.transaction);
+        } catch (error) {
+          scope.invalidate();
+          await scope.settlePending();
+          throw error;
+        }
+        scope.invalidate();
+        if (scope.hasPending()) {
+          await scope.settlePending();
+          throw new Error(UNSETTLED_TRANSACTION_MESSAGE);
+        }
         replaceState(state, working);
         trace.push("transaction.commit");
         return result;
@@ -434,6 +540,21 @@ export function createTripTestHarness() {
   };
 
   return {
+    deferAuthoritativeNow() {
+      let signalStarted!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
+      const releasePromise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      authoritativeNowGate = {
+        release: releasePromise,
+        started: signalStarted,
+      };
+      return { release, started };
+    },
     failAfterWrite(boundary: number | undefined) {
       failedWrite = boundary;
     },

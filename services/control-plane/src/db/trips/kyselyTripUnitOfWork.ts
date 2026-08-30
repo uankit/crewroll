@@ -965,6 +965,98 @@ function transactionAdapter(
   };
 }
 
+const CLOSED_TRANSACTION_MESSAGE = "Trip transaction scope is closed";
+const UNSETTLED_TRANSACTION_MESSAGE =
+  "Trip transaction callback left unsettled work";
+
+interface CallbackTransactionScope {
+  readonly transaction: TripTransaction;
+  hasPending(): boolean;
+  invalidate(): void;
+  settlePending(): Promise<void>;
+}
+
+function callbackTransactionScope(
+  raw: TripTransaction,
+): CallbackTransactionScope {
+  let active = true;
+  const pending = new Set<Promise<unknown>>();
+
+  function invoke<Result>(operation: () => Promise<Result>): Promise<Result> {
+    if (!active) {
+      return Promise.reject(new Error(CLOSED_TRANSACTION_MESSAGE));
+    }
+    let result: Promise<Result>;
+    try {
+      result = Promise.resolve(operation());
+    } catch (error) {
+      result = Promise.reject(
+        error instanceof Error
+          ? error
+          : new Error("Trip transaction operation failed"),
+      );
+    }
+    pending.add(result);
+    void result.then(
+      () => pending.delete(result),
+      () => pending.delete(result),
+    );
+    return result;
+  }
+
+  const transaction = Object.freeze<TripTransaction>({
+    acquireCreateCommandLock: (identity) =>
+      invoke(() => raw.acquireCreateCommandLock(identity)),
+    authoritativeNow: () => invoke(() => raw.authoritativeNow()),
+    deleteActiveTrip: (userId, tripId) =>
+      invoke(() => raw.deleteActiveTrip(userId, tripId)),
+    deleteIdempotency: (record) => invoke(() => raw.deleteIdempotency(record)),
+    findEnvelope: (tripId, recipientDeviceId) =>
+      invoke(() => raw.findEnvelope(tripId, recipientDeviceId)),
+    findIdempotency: (input) => invoke(() => raw.findIdempotency(input)),
+    insertActiveTrip: (record) => invoke(() => raw.insertActiveTrip(record)),
+    insertEnvelope: (record) => invoke(() => raw.insertEnvelope(record)),
+    insertIdempotency: (record) => invoke(() => raw.insertIdempotency(record)),
+    insertInbox: (record) => invoke(() => raw.insertInbox(record)),
+    insertInvite: (record) => invoke(() => raw.insertInvite(record)),
+    insertMembership: (record) => invoke(() => raw.insertMembership(record)),
+    insertOutbox: (record) => invoke(() => raw.insertOutbox(record)),
+    insertTrip: (record) => invoke(() => raw.insertTrip(record)),
+    lockActiveTrip: (userId) => invoke(() => raw.lockActiveTrip(userId)),
+    lockDevice: (deviceId) => invoke(() => raw.lockDevice(deviceId)),
+    lockDevices: (deviceIds) => invoke(() => raw.lockDevices(deviceIds)),
+    lockInvite: (inviteId) => invoke(() => raw.lockInvite(inviteId)),
+    lockMembership: (tripId, membershipId) =>
+      invoke(() => raw.lockMembership(tripId, membershipId)),
+    lockMembershipForUser: (tripId, userId) =>
+      invoke(() => raw.lockMembershipForUser(tripId, userId)),
+    lockMemberships: (tripId) => invoke(() => raw.lockMemberships(tripId)),
+    lockTrip: (tripId) => invoke(() => raw.lockTrip(tripId)),
+    readProjection: (actor, tripId) =>
+      invoke(() => raw.readProjection(actor, tripId)),
+    reauthorizeForegroundActor: (actor) =>
+      invoke(() => raw.reauthorizeForegroundActor(actor)),
+    tryAcquireCreateCommandLock: (identity) =>
+      invoke(() => raw.tryAcquireCreateCommandLock(identity)),
+    updateInvite: (record) => invoke(() => raw.updateInvite(record)),
+    updateMembership: (record) => invoke(() => raw.updateMembership(record)),
+    updateTrip: (record) => invoke(() => raw.updateTrip(record)),
+  });
+
+  return {
+    transaction,
+    hasPending() {
+      return pending.size > 0;
+    },
+    invalidate() {
+      active = false;
+    },
+    async settlePending() {
+      await Promise.allSettled([...pending]);
+    },
+  };
+}
+
 export function createKyselyTripUnitOfWork(
   database: Kysely<Database>,
 ): TripUnitOfWork {
@@ -983,9 +1075,23 @@ export function createKyselyTripUnitOfWork(
       return readProjection(database, actor, tripId);
     },
     async run(operation) {
-      return database
-        .transaction()
-        .execute((transaction) => operation(transactionAdapter(transaction)));
+      return database.transaction().execute(async (transaction) => {
+        const scope = callbackTransactionScope(transactionAdapter(transaction));
+        let result;
+        try {
+          result = await operation(scope.transaction);
+        } catch (error) {
+          scope.invalidate();
+          await scope.settlePending();
+          throw error;
+        }
+        scope.invalidate();
+        if (scope.hasPending()) {
+          await scope.settlePending();
+          throw new Error(UNSETTLED_TRANSACTION_MESSAGE);
+        }
+        return result;
+      });
     },
   };
 }

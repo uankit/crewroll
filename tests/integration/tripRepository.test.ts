@@ -9,6 +9,7 @@ import type {
 import type {
   TripProjection,
   TripProjectionRead,
+  TripTransaction,
 } from "../../services/control-plane/src/modules/trips/ports/tripUnitOfWork.js";
 import type { PostgresTestContext } from "./support/postgres.js";
 import {
@@ -132,6 +133,91 @@ describe("Kysely Trip transaction repository", () => {
         }),
       ),
     ).resolves.toBe(true);
+  });
+
+  it("freezes and revokes real transaction escape forms after success and rollback", async () => {
+    const unitOfWork = createKyselyTripUnitOfWork(context.db);
+    let captured: TripTransaction | undefined;
+    await unitOfWork.run((transaction) => {
+      captured = transaction;
+      return Promise.resolve();
+    });
+    expect(Object.isFrozen(captured)).toBe(true);
+    await expect(captured!.authoritativeNow()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+
+    const wrapped = (await unitOfWork.run((transaction) =>
+      Promise.resolve({ transaction } as unknown),
+    )) as { readonly transaction: TripTransaction };
+    const closure = (await unitOfWork.run((transaction) =>
+      Promise.resolve((() => transaction.authoritativeNow()) as unknown),
+    )) as () => Promise<Date>;
+    const method = (await unitOfWork.run((transaction) =>
+      Promise.resolve(transaction.authoritativeNow as unknown),
+    )) as () => Promise<Date>;
+    await expect(wrapped.transaction.authoritativeNow()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+    await expect(closure()).rejects.toThrow("Trip transaction scope is closed");
+    await expect(method()).rejects.toThrow("Trip transaction scope is closed");
+
+    let rolledBack: TripTransaction | undefined;
+    await expect(
+      unitOfWork.run((transaction) => {
+        rolledBack = transaction;
+        return Promise.reject(new Error("rollback escape canary"));
+      }),
+    ).rejects.toThrow("rollback escape canary");
+    await expect(rolledBack!.authoritativeNow()).rejects.toThrow(
+      "Trip transaction scope is closed",
+    );
+  });
+
+  it("settles an unawaited real statement and forces rollback with a static error", async () => {
+    const fixtures = createIdentityTripFixtures(context.db);
+    const user = await fixtures.user({
+      clerk_subject: "user_unawaited_transaction",
+    });
+    const identity = {
+      idempotencyKey: IDEMPOTENCY_KEY,
+      userId: user.id,
+    };
+    const unitOfWork = createKyselyTripUnitOfWork(context.db);
+    let signalHeld!: () => void;
+    let releaseHolder!: () => void;
+    const held = new Promise<void>((resolve) => {
+      signalHeld = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = unitOfWork.run(async (transaction) => {
+      await transaction.acquireCreateCommandLock(identity);
+      signalHeld();
+      await release;
+    });
+    await held;
+
+    let unawaited!: Promise<void>;
+    let settled = false;
+    const violatingRun = unitOfWork
+      .run((transaction) => {
+        unawaited = transaction.acquireCreateCommandLock(identity);
+        return Promise.resolve("callback-result");
+      })
+      .finally(() => {
+        settled = true;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    releaseHolder();
+    await holder;
+    await Promise.allSettled([unawaited]);
+    await expect(violatingRun).rejects.toThrow(
+      "Trip transaction callback left unsettled work",
+    );
   });
 
   it.each([
