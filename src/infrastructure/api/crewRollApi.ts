@@ -17,6 +17,7 @@ import type {
   DeviceRegistrationPort,
   SessionTokenSource,
 } from "../../application/auth/ports";
+import { CrewRollApiProblem } from "../../application/problems/crewRollApiProblem";
 import { userFacingProblems } from "../../application/problems/userFacingProblem";
 import type { TripApiPort } from "../../application/trips/ports";
 import type {
@@ -25,14 +26,7 @@ import type {
   MobilePaths,
 } from "./generated";
 
-export class CrewRollApiProblem extends Error {
-  readonly kind = "API_PROBLEM";
-
-  constructor(readonly code: keyof typeof userFacingProblems) {
-    super(code);
-    this.name = "CrewRollApiProblem";
-  }
-}
+export { CrewRollApiProblem };
 
 export class CrewRollTransportProblem extends Error {
   readonly kind = "TRANSPORT_UNAVAILABLE";

@@ -9,6 +9,7 @@ import type {
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
 
+import { CrewRollApiProblem as ApplicationCrewRollApiProblem } from "../../application/problems/crewRollApiProblem";
 import {
   createCrewRollApi,
   CrewRollApiProblem,
@@ -127,6 +128,21 @@ function apiWith(
 }
 
 describe("CrewRoll API boundary", () => {
+  it("re-exports the application-owned API problem class", () => {
+    expect(CrewRollApiProblem).toBe(ApplicationCrewRollApiProblem);
+  });
+
+  it("preserves an application-owned AUTH_REQUIRED failure before fetch", async () => {
+    const fetchMock = jest.fn();
+    const authRequired = new ApplicationCrewRollApiProblem("AUTH_REQUIRED");
+    const api = apiWith(fetchMock, async () => {
+      throw authRequired;
+    });
+
+    await expect(api.getTrip(deviceId, tripId)).rejects.toBe(authRequired);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uses the exact authoritative create-outcome request contract", async () => {
     const fetchMock = jest.fn(async () =>
       response({ outcome: "STILL_UNKNOWN" }, 200),
