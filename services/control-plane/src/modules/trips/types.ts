@@ -3,6 +3,18 @@ declare const normalizedInviteCodeBrand: unique symbol;
 declare const validatedEndsAtBrand: unique symbol;
 declare const validatedReleaseBrand: unique symbol;
 
+export interface ForegroundTripActor {
+  readonly clerkSubject: string;
+  readonly deviceId: string;
+  readonly userId: string;
+}
+
+export type ForegroundActorSnapshot =
+  | Readonly<{ actor: ForegroundTripActor; kind: "ACTIVE" }>
+  | Readonly<{ kind: "AUTH_INVALID" }>
+  | Readonly<{ kind: "DEVICE_NOT_OWNED" }>
+  | Readonly<{ kind: "DEVICE_REVOKED" }>;
+
 export type CanonicalTripName = string & {
   readonly [canonicalTripNameBrand]: true;
 };
