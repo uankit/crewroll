@@ -61,7 +61,8 @@ export function validateDevicePublicKeys(
       undefined,
       "uncompressed",
     );
-    if (!roundTrip.equals(authenticationPublicKey)) return invalid();
+    if (!Buffer.from(roundTrip).equals(authenticationPublicKey))
+      return invalid();
   } catch {
     return invalid();
   }
