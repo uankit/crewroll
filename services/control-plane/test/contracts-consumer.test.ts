@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CreateTripBodySchema,
+  CreateTripOutcomeBodySchema,
+  CreateTripOutcomeResponseSchema,
   DateTimeSchema,
   DeviceRegistrationHeadersSchema,
   DeviceResponseSchema,
@@ -17,6 +19,7 @@ import {
   validImmediateTripBody,
   validRegisterDeviceBody,
   validRegistrationHeaders,
+  validTripResponse,
   validUpdatePushTokenBody,
 } from "@crewroll/contracts/fixtures/http";
 
@@ -57,6 +60,39 @@ describe("compiled CrewRoll contracts in the control-plane TypeBox instance", ()
       expect(Value.Check(schema, fixture)).toBe(true);
       expect(TypeCompiler.Compile(schema).Check(fixture)).toBe(true);
     }
+  });
+
+  it("compiles the authoritative create outcome and preserves Unicode code-point name limits", () => {
+    const trip = validImmediateTripBody();
+    const outcomeBody = { tripId: trip.tripId };
+    const committed = {
+      outcome: "COMMITTED",
+      trip: validTripResponse(),
+    } as const;
+    const bodyCompiler = TypeCompiler.Compile(CreateTripOutcomeBodySchema);
+    const createTripCompiler = TypeCompiler.Compile(CreateTripBodySchema);
+    const responseCompiler = TypeCompiler.Compile(
+      CreateTripOutcomeResponseSchema,
+    );
+
+    expect(bodyCompiler.Check(outcomeBody)).toBe(true);
+    expect(responseCompiler.Check(committed)).toBe(true);
+    expect(responseCompiler.Check({ outcome: "TERMINAL_NOT_COMMITTED" })).toBe(
+      true,
+    );
+    expect(responseCompiler.Check({ outcome: "STILL_UNKNOWN" })).toBe(true);
+    expect(
+      Value.Check(CreateTripBodySchema, { ...trip, name: "🛶".repeat(80) }),
+    ).toBe(true);
+    expect(createTripCompiler.Check({ ...trip, name: "🛶".repeat(80) })).toBe(
+      true,
+    );
+    expect(
+      Value.Check(CreateTripBodySchema, { ...trip, name: "🛶".repeat(81) }),
+    ).toBe(false);
+    expect(createTripCompiler.Check({ ...trip, name: "🛶".repeat(81) })).toBe(
+      false,
+    );
   });
 
   it("exposes an idempotent installer with the complete semantic format set", () => {

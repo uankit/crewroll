@@ -18,6 +18,8 @@ const OPENAPI_P256_PUBLIC_KEY =
   "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=";
 const UUID_V7 =
   "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const CREATE_OUTCOME_PATH = "/v1/trips/create-outcome";
+const PROBLEM_STATUSES = ["400", "401", "403", "404", "409", "429", "500"];
 const EXACT_PROBLEM_CODES = [
   "AUTH_REQUIRED",
   "AUTH_INVALID",
@@ -137,6 +139,150 @@ function requiredSchema(
   return schema;
 }
 
+function jsonObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function requiredJsonObject(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  const object = jsonObject(value);
+  if (object === undefined) throw new Error(`Missing object: ${label}`);
+  return object;
+}
+
+function createOutcomeProjection(
+  document: ReturnType<typeof createOpenApiDocument>,
+) {
+  const pathItem = jsonObject(document.paths[CREATE_OUTCOME_PATH]);
+  const operation = jsonObject(pathItem?.post);
+  const parameters = Array.isArray(operation?.parameters)
+    ? operation.parameters.map((parameter) => {
+        const object = jsonObject(parameter);
+        return {
+          in: object?.in,
+          name: object?.name,
+          required: object?.required,
+          schema: object?.schema,
+        };
+      })
+    : [];
+  const requestBody = jsonObject(operation?.requestBody);
+  const requestContent = jsonObject(requestBody?.content);
+  const requestMedia = jsonObject(requestContent?.["application/json"]);
+  const responses = jsonObject(operation?.responses) ?? {};
+  const success = jsonObject(responses["200"]);
+  const successContent = jsonObject(success?.content);
+  const successMedia = jsonObject(successContent?.["application/json"]);
+  const components = requiredJsonObject(document.components, "components");
+  const schemas = requiredJsonObject(components.schemas, "components.schemas");
+  const bodySchema = jsonObject(schemas.CreateTripOutcomeBody);
+  const responseSchema = jsonObject(schemas.CreateTripOutcomeResponse);
+  const tripResponse = jsonObject(schemas.TripResponse);
+  const bodyProperties = jsonObject(bodySchema?.properties);
+  const bodyTripId = jsonObject(bodyProperties?.tripId);
+  const branches = Array.isArray(responseSchema?.anyOf)
+    ? responseSchema.anyOf.map((candidate) => {
+        const branch = jsonObject(candidate);
+        const properties = jsonObject(branch?.properties);
+        const outcome = jsonObject(properties?.outcome);
+        return {
+          additionalProperties: branch?.additionalProperties,
+          outcome: outcome?.const,
+          required: branch?.required,
+          tripMatchesTripResponse:
+            properties?.trip === undefined
+              ? undefined
+              : JSON.stringify(properties.trip) ===
+                JSON.stringify(tripResponse),
+        };
+      })
+    : [];
+
+  return {
+    bodySchema: {
+      additionalProperties: bodySchema?.additionalProperties,
+      required: bodySchema?.required,
+      tripId: {
+        format: bodyTripId?.format,
+        pattern: bodyTripId?.pattern,
+        type: bodyTripId?.type,
+      },
+      type: bodySchema?.type,
+    },
+    methods: pathItem === undefined ? [] : Object.keys(pathItem),
+    operationId: operation?.operationId,
+    parameters,
+    problems: PROBLEM_STATUSES.map((status) => {
+      const response = jsonObject(responses[status]);
+      const content = jsonObject(response?.content);
+      const media = jsonObject(content?.["application/problem+json"]);
+      return [status, media?.schema];
+    }),
+    requestBody: requestMedia?.schema,
+    responseBranches: branches,
+    responseStatuses: Object.keys(responses),
+    security: operation?.security,
+    success: successMedia?.schema,
+  };
+}
+
+const expectedCreateOutcomeProjection = {
+  bodySchema: {
+    additionalProperties: false,
+    required: ["tripId"],
+    tripId: { type: "string", format: "uuid", pattern: UUID_V7 },
+    type: "object",
+  },
+  methods: ["post"],
+  operationId: "resolveCreateTripOutcome",
+  parameters: [
+    {
+      in: "header",
+      name: "X-CrewRoll-Device-Id",
+      required: true,
+      schema: { type: "string", format: "uuid" },
+    },
+    {
+      in: "header",
+      name: "Idempotency-Key",
+      required: true,
+      schema: { type: "string", format: "uuid" },
+    },
+  ],
+  problems: PROBLEM_STATUSES.map((status) => [
+    status,
+    { $ref: "#/components/schemas/ProblemDetails" },
+  ]),
+  requestBody: { $ref: "#/components/schemas/CreateTripOutcomeBody" },
+  responseBranches: [
+    {
+      additionalProperties: false,
+      outcome: "COMMITTED",
+      required: ["outcome", "trip"],
+      tripMatchesTripResponse: true,
+    },
+    {
+      additionalProperties: false,
+      outcome: "TERMINAL_NOT_COMMITTED",
+      required: ["outcome"],
+      tripMatchesTripResponse: undefined,
+    },
+    {
+      additionalProperties: false,
+      outcome: "STILL_UNKNOWN",
+      required: ["outcome"],
+      tripMatchesTripResponse: undefined,
+    },
+  ],
+  responseStatuses: ["200", ...PROBLEM_STATUSES],
+  security: [{ ClerkBearer: [] }],
+  success: { $ref: "#/components/schemas/CreateTripOutcomeResponse" },
+} as const;
+
 describe("canonical OpenAPI artifact", () => {
   it("regenerates byte-for-byte deterministically", async () => {
     const first = serializeOpenApiDocument(createOpenApiDocument());
@@ -153,6 +299,7 @@ describe("canonical OpenAPI artifact", () => {
       "/v1/devices/{deviceId}/push-token",
       "/v1/devices/{deviceId}",
       "/v1/trips",
+      "/v1/trips/create-outcome",
       "/v1/trips/join-requests",
       "/v1/trips/{tripId}/join-requests/{membershipId}/approval",
       "/v1/trips/{tripId}/join-requests/{membershipId}",
@@ -281,6 +428,7 @@ describe("canonical OpenAPI artifact", () => {
       "PATCH /v1/devices/{deviceId}/push-token": "ClerkBearer",
       "DELETE /v1/devices/{deviceId}": "ClerkBearer",
       "POST /v1/trips": "ClerkBearer",
+      "POST /v1/trips/create-outcome": "ClerkBearer",
       "POST /v1/trips/join-requests": "ClerkBearer",
       "PUT /v1/trips/{tripId}/join-requests/{membershipId}/approval":
         "ClerkBearer",
@@ -297,6 +445,134 @@ describe("canonical OpenAPI artifact", () => {
         "BackgroundDeviceBearer",
       "PUT /v1/deliveries/{deliveryId}/saved-receipt": "BackgroundDeviceBearer",
     });
+  });
+
+  it("publishes the exact authoritative create-outcome operation and closed union", () => {
+    expect(createOutcomeProjection(createOpenApiDocument())).toEqual(
+      expectedCreateOutcomeProjection,
+    );
+    expect(
+      createOpenApiDocument().paths[CREATE_OUTCOME_PATH],
+    ).not.toHaveProperty("get");
+  });
+
+  it("detects every independent create-outcome generator drift", () => {
+    type MutableDocument = Record<string, unknown>;
+    type Mutation = {
+      readonly name: string;
+      readonly mutate: (document: MutableDocument) => void;
+    };
+    const operationFor = (document: MutableDocument) => {
+      const paths = requiredJsonObject(document.paths, "paths");
+      const pathItem = requiredJsonObject(
+        paths[CREATE_OUTCOME_PATH],
+        CREATE_OUTCOME_PATH,
+      );
+      return requiredJsonObject(pathItem.post, `${CREATE_OUTCOME_PATH}.post`);
+    };
+    const schemaFor = (document: MutableDocument, name: string) => {
+      const components = requiredJsonObject(document.components, "components");
+      const schemas = requiredJsonObject(
+        components.schemas,
+        "components.schemas",
+      );
+      return requiredJsonObject(schemas[name], name);
+    };
+    const mutations: Mutation[] = [
+      {
+        name: "method",
+        mutate(document) {
+          const paths = requiredJsonObject(document.paths, "paths");
+          const pathItem = requiredJsonObject(
+            paths[CREATE_OUTCOME_PATH],
+            CREATE_OUTCOME_PATH,
+          );
+          pathItem.get = pathItem.post;
+          delete pathItem.post;
+        },
+      },
+      {
+        name: "path",
+        mutate(document) {
+          const paths = requiredJsonObject(document.paths, "paths");
+          paths["/v1/trips/create-outcomes"] = paths[CREATE_OUTCOME_PATH];
+          delete paths[CREATE_OUTCOME_PATH];
+        },
+      },
+      {
+        name: "operation id",
+        mutate(document) {
+          operationFor(document).operationId = "getCreateTripOutcome";
+        },
+      },
+      {
+        name: "security",
+        mutate(document) {
+          operationFor(document).security = [{ BackgroundDeviceBearer: [] }];
+        },
+      },
+      ...["X-CrewRoll-Device-Id", "Idempotency-Key"].map(
+        (header): Mutation => ({
+          name: `${header} header`,
+          mutate(document) {
+            const operation = operationFor(document);
+            const parameters = Array.isArray(operation.parameters)
+              ? operation.parameters
+              : [];
+            operation.parameters = parameters.filter(
+              (parameter) => jsonObject(parameter)?.name !== header,
+            );
+          },
+        }),
+      ),
+      {
+        name: "request body",
+        mutate(document) {
+          delete operationFor(document).requestBody;
+        },
+      },
+      {
+        name: "success body",
+        mutate(document) {
+          const responses = requiredJsonObject(
+            operationFor(document).responses,
+            "responses",
+          );
+          delete responses["200"];
+        },
+      },
+      ...[0, 1, 2].map((branchIndex): Mutation => ({
+        name: `response union branch ${branchIndex}`,
+        mutate(document) {
+          const response = schemaFor(document, "CreateTripOutcomeResponse");
+          const branches = Array.isArray(response.anyOf) ? response.anyOf : [];
+          branches.splice(branchIndex, 1);
+        },
+      })),
+      ...PROBLEM_STATUSES.map((status): Mutation => ({
+        name: `${status} problem`,
+        mutate(document) {
+          const responses = requiredJsonObject(
+            operationFor(document).responses,
+            "responses",
+          );
+          delete responses[status];
+        },
+      })),
+    ];
+
+    for (const { name, mutate } of mutations) {
+      const document = structuredClone(
+        createOpenApiDocument(),
+      ) as unknown as MutableDocument;
+      mutate(document);
+      expect(
+        createOutcomeProjection(
+          document as ReturnType<typeof createOpenApiDocument>,
+        ),
+        name,
+      ).not.toEqual(expectedCreateOutcomeProjection);
+    }
   });
 
   it("publishes one readiness command and exact ProblemDetails media on every operation", () => {
