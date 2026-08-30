@@ -213,6 +213,102 @@ describe.sequential("identity and trip schema", () => {
     await expectPostgresError(fixture.user({ display_name: "   " }), "23514");
   });
 
+  it("defaults member readiness to false and persists explicit true", async () => {
+    const owner = await fixture.user();
+    const member = await fixture.user();
+    const trip = await fixture.trip(owner.id);
+    const device = await fixture.device(member.id);
+    const membership = await fixture.member(trip.id, member.id, device.id);
+
+    const defaulted = await sql<{ full_photo_library_access: boolean }>`
+      select full_photo_library_access
+      from trip_members
+      where id = ${membership.id}::uuid
+    `.execute(db);
+    expect(defaulted.rows).toEqual([{ full_photo_library_access: false }]);
+
+    const explicit = await sql<{ full_photo_library_access: boolean }>`
+      update trip_members
+      set full_photo_library_access = true
+      where id = ${membership.id}::uuid
+      returning full_photo_library_access
+    `.execute(db);
+    expect(explicit.rows).toEqual([{ full_photo_library_access: true }]);
+
+    const column = await sql<{
+      column_default: string;
+      is_nullable: "NO" | "YES";
+      udt_name: string;
+    }>`
+      select column_default, is_nullable, udt_name
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trip_members'
+        and column_name = 'full_photo_library_access'
+    `.execute(db);
+    expect(column.rows).toEqual([
+      { column_default: "false", is_nullable: "NO", udt_name: "bool" },
+    ]);
+  });
+
+  it("defaults trip version to one and rejects zero with the named check", async () => {
+    const owner = await fixture.user();
+    const endsAt = new Date(FIXED_NOW.getTime() + ONE_DAY_MS);
+    const defaulted = await db
+      .insertInto("trips")
+      .values({
+        cancelled_at: null,
+        completed_at: null,
+        created_at: FIXED_NOW,
+        ending_started_at: null,
+        ends_at: endsAt,
+        hard_delete_at: new Date(endsAt.getTime() + 7 * ONE_DAY_MS),
+        id: "018f0d98-76fa-7d1a-b4b4-1f742c2e3190",
+        member_count: 1,
+        name: "Default version",
+        owner_user_id: owner.id,
+        release_local_time: null,
+        release_mode: "IMMEDIATE",
+        release_timezone: null,
+        started_at: null,
+        state: "LOBBY",
+        updated_at: FIXED_NOW,
+      })
+      .returning("version")
+      .executeTakeFirstOrThrow();
+
+    expect(defaulted.version).toBe(1);
+    await fixture.trip(owner.id, { version: 1 });
+    await expectPostgresError(
+      fixture.trip(owner.id, { version: 0 }),
+      "23514",
+      "trips_version_check",
+    );
+
+    const catalog = await sql<{
+      column_default: string;
+      convalidated: boolean;
+      definition: string;
+    }>`
+      select column_record.column_default,
+             constraint_record.convalidated,
+             pg_get_constraintdef(constraint_record.oid) as definition
+      from information_schema.columns as column_record
+      join pg_constraint as constraint_record
+        on constraint_record.conrelid = 'trips'::regclass
+       and constraint_record.conname = 'trips_version_check'
+      where column_record.table_schema = 'public'
+        and column_record.table_name = 'trips'
+        and column_record.column_name = 'version'
+    `.execute(db);
+    expect(catalog.rows).toHaveLength(1);
+    expect(catalog.rows[0]).toMatchObject({
+      column_default: "1",
+      convalidated: true,
+    });
+    expect(catalog.rows[0]!.definition).toContain("version >= 1");
+  });
+
   it("keeps Clerk subjects, device installations, and credential hashes unique", async () => {
     const firstUser = await fixture.user({ clerk_subject: "user_subject" });
     const secondUser = await fixture.user();
@@ -741,15 +837,17 @@ describe.sequential("identity and trip schema", () => {
     );
     await expectPostgresError(
       fixture.envelope(trip.id, ownerDevice.id, recipientDevice.id, {
-        wrapped_key: new Uint8Array(),
+        wrapped_key: new Uint8Array(147),
       }),
       "23514",
+      "trip_key_envelopes_wrapped_key_check",
     );
     await expectPostgresError(
       fixture.envelope(trip.id, ownerDevice.id, recipientDevice.id, {
-        wrapped_key: new Uint8Array(4097),
+        wrapped_key: new Uint8Array(149),
       }),
       "23514",
+      "trip_key_envelopes_wrapped_key_check",
     );
   });
 
@@ -788,6 +886,79 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
+    await migrateDown(db);
+
+    const readinessAfterFifthDown = await sql<{ column_name: string }>`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trip_members'
+        and column_name = 'full_photo_library_access'
+    `.execute(db);
+    const priorVersionDefault = await sql<{ column_default: string }>`
+      select column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trips'
+        and column_name = 'version'
+    `.execute(db);
+    const priorTripChecks = await sql<{
+      conname: string;
+      convalidated: boolean;
+      definition: string;
+    }>`
+      select constraint_record.conname,
+             constraint_record.convalidated,
+             pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname in (
+        'trips_version_check',
+        'trip_key_envelopes_wrapped_key_check'
+      )
+      order by constraint_record.conname
+    `.execute(db);
+    const retainedApi002Index = await sql<{ indexname: string }>`
+      select indexname
+      from pg_indexes
+      where schemaname = 'public'
+        and indexname = 'api_idempotency_expires_at_idx'
+    `.execute(db);
+    const retainedApi002AuthenticationCheck = await sql<{
+      definition: string;
+    }>`
+      select pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname = 'devices_authentication_key_check'
+        and constraint_record.conrelid = 'devices'::regclass
+    `.execute(db);
+
+    expect(readinessAfterFifthDown.rows).toEqual([]);
+    expect(priorVersionDefault.rows).toEqual([{ column_default: "0" }]);
+    expect(priorTripChecks.rows).toHaveLength(2);
+    expect(priorTripChecks.rows.every(({ convalidated }) => convalidated)).toBe(
+      true,
+    );
+    expect(priorTripChecks.rows[0]).toMatchObject({
+      conname: "trip_key_envelopes_wrapped_key_check",
+    });
+    expect(priorTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) >= 1",
+    );
+    expect(priorTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) <= 4096",
+    );
+    expect(priorTripChecks.rows[1]).toMatchObject({
+      conname: "trips_version_check",
+    });
+    expect(priorTripChecks.rows[1]!.definition).toContain("version >= 0");
+    expect(retainedApi002Index.rows).toEqual([
+      { indexname: "api_idempotency_expires_at_idx" },
+    ]);
+    expect(retainedApi002AuthenticationCheck.rows).toHaveLength(1);
+    expect(retainedApi002AuthenticationCheck.rows[0]!.definition).toContain(
+      "octet_length(authentication_public_key) = 65",
+    );
+
     await migrateDown(db);
     await migrateDown(db);
     await migrateDown(db);
@@ -876,6 +1047,50 @@ describe.sequential("identity and trip schema", () => {
     expect(restoredAuthenticationChecks.rows[0]!.definition).toContain(
       "get_byte(authentication_public_key, 0) = 4",
     );
+
+    const restoredReadiness = await sql<{
+      column_default: string;
+      is_nullable: "NO" | "YES";
+    }>`
+      select column_default, is_nullable
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trip_members'
+        and column_name = 'full_photo_library_access'
+    `.execute(db);
+    const restoredVersionDefault = await sql<{ column_default: string }>`
+      select column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trips'
+        and column_name = 'version'
+    `.execute(db);
+    const restoredTripChecks = await sql<{
+      conname: string;
+      convalidated: boolean;
+      definition: string;
+    }>`
+      select constraint_record.conname,
+             constraint_record.convalidated,
+             pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname in (
+        'trips_version_check',
+        'trip_key_envelopes_wrapped_key_check'
+      )
+      order by constraint_record.conname
+    `.execute(db);
+    expect(restoredReadiness.rows).toEqual([
+      { column_default: "false", is_nullable: "NO" },
+    ]);
+    expect(restoredVersionDefault.rows).toEqual([{ column_default: "1" }]);
+    expect(
+      restoredTripChecks.rows.every(({ convalidated }) => convalidated),
+    ).toBe(true);
+    expect(restoredTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) = 148",
+    );
+    expect(restoredTripChecks.rows[1]!.definition).toContain("version >= 1");
   });
 });
 

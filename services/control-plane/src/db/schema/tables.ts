@@ -115,6 +115,7 @@ export interface TripMemberTable {
   role: TripMemberRole;
   state: TripMemberState;
   key_epoch: number | null;
+  full_photo_library_access: Generated<boolean>;
   created_at: GeneratedTimestamp;
   updated_at: GeneratedTimestamp;
   approved_at: NullableTimestamp;

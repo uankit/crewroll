@@ -1097,6 +1097,7 @@ describe.sequential("media and coordination schema", () => {
       await migrateDown(prior.db);
       await migrateDown(prior.db);
       await migrateDown(prior.db);
+      await migrateDown(prior.db);
       const priorFixture = createMediaCoordinationFixtures(prior.db);
       const user = await priorFixture.identity.user();
       const trip = await priorFixture.identity.trip(user.id);
@@ -1135,6 +1136,79 @@ describe.sequential("media and coordination schema", () => {
   });
 
   it("migrates an empty database up, fully down, and up again", async () => {
+    await migrateDown(db);
+
+    const readinessAfterFifthDown = await sql<{ column_name: string }>`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trip_members'
+        and column_name = 'full_photo_library_access'
+    `.execute(db);
+    const priorVersionDefault = await sql<{ column_default: string }>`
+      select column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trips'
+        and column_name = 'version'
+    `.execute(db);
+    const priorTripChecks = await sql<{
+      conname: string;
+      convalidated: boolean;
+      definition: string;
+    }>`
+      select constraint_record.conname,
+             constraint_record.convalidated,
+             pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname in (
+        'trips_version_check',
+        'trip_key_envelopes_wrapped_key_check'
+      )
+      order by constraint_record.conname
+    `.execute(db);
+    const retainedApi002Index = await sql<{ indexname: string }>`
+      select indexname
+      from pg_indexes
+      where schemaname = 'public'
+        and indexname = 'api_idempotency_expires_at_idx'
+    `.execute(db);
+    const retainedApi002AuthenticationCheck = await sql<{
+      definition: string;
+    }>`
+      select pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname = 'devices_authentication_key_check'
+        and constraint_record.conrelid = 'devices'::regclass
+    `.execute(db);
+
+    expect(readinessAfterFifthDown.rows).toEqual([]);
+    expect(priorVersionDefault.rows).toEqual([{ column_default: "0" }]);
+    expect(priorTripChecks.rows).toHaveLength(2);
+    expect(priorTripChecks.rows.every(({ convalidated }) => convalidated)).toBe(
+      true,
+    );
+    expect(priorTripChecks.rows[0]).toMatchObject({
+      conname: "trip_key_envelopes_wrapped_key_check",
+    });
+    expect(priorTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) >= 1",
+    );
+    expect(priorTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) <= 4096",
+    );
+    expect(priorTripChecks.rows[1]).toMatchObject({
+      conname: "trips_version_check",
+    });
+    expect(priorTripChecks.rows[1]!.definition).toContain("version >= 0");
+    expect(retainedApi002Index.rows).toEqual([
+      { indexname: "api_idempotency_expires_at_idx" },
+    ]);
+    expect(retainedApi002AuthenticationCheck.rows).toHaveLength(1);
+    expect(retainedApi002AuthenticationCheck.rows[0]!.definition).toContain(
+      "octet_length(authentication_public_key) = 65",
+    );
+
     await migrateDown(db);
     await migrateDown(db);
     await migrateDown(db);
@@ -1209,5 +1283,59 @@ describe.sequential("media and coordination schema", () => {
     expect(indexesAfterSecondUp.rows).toEqual([
       { indexname: "api_idempotency_expires_at_idx" },
     ]);
+    const restoredReadiness = await sql<{
+      column_default: string;
+      is_nullable: "NO" | "YES";
+    }>`
+      select column_default, is_nullable
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trip_members'
+        and column_name = 'full_photo_library_access'
+    `.execute(db);
+    const restoredVersionDefault = await sql<{ column_default: string }>`
+      select column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'trips'
+        and column_name = 'version'
+    `.execute(db);
+    const restoredTripChecks = await sql<{
+      conname: string;
+      convalidated: boolean;
+      definition: string;
+    }>`
+      select constraint_record.conname,
+             constraint_record.convalidated,
+             pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname in (
+        'trips_version_check',
+        'trip_key_envelopes_wrapped_key_check'
+      )
+      order by constraint_record.conname
+    `.execute(db);
+    const restoredAuthenticationChecks = await sql<{ definition: string }>`
+      select pg_get_constraintdef(constraint_record.oid) as definition
+      from pg_constraint as constraint_record
+      where constraint_record.conname = 'devices_authentication_key_check'
+        and constraint_record.conrelid = 'devices'::regclass
+    `.execute(db);
+
+    expect(restoredReadiness.rows).toEqual([
+      { column_default: "false", is_nullable: "NO" },
+    ]);
+    expect(restoredVersionDefault.rows).toEqual([{ column_default: "1" }]);
+    expect(
+      restoredTripChecks.rows.every(({ convalidated }) => convalidated),
+    ).toBe(true);
+    expect(restoredTripChecks.rows[0]!.definition).toContain(
+      "octet_length(wrapped_key) = 148",
+    );
+    expect(restoredTripChecks.rows[1]!.definition).toContain("version >= 1");
+    expect(restoredAuthenticationChecks.rows).toHaveLength(1);
+    expect(restoredAuthenticationChecks.rows[0]!.definition).toContain(
+      "octet_length(authentication_public_key) = 65",
+    );
   });
 });

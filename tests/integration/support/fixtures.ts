@@ -141,7 +141,7 @@ export function createIdentityTripFixtures(
           started_at: null,
           state: "LOBBY",
           updated_at: FIXED_NOW,
-          version: 0,
+          version: 1,
           ...overrides,
         })
         .returningAll()
@@ -213,7 +213,7 @@ export function createIdentityTripFixtures(
           recipient_device_id: recipientDeviceId,
           sender_device_id: senderDeviceId,
           trip_id: tripId,
-          wrapped_key: fixedBytes(sequence, 64),
+          wrapped_key: fixedBytes(sequence, 148),
           ...overrides,
         })
         .returningAll()
