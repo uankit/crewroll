@@ -476,6 +476,18 @@ test("complete topology reports bounded, repository-relative migrations", async 
   assert.deepEqual(result.findings, []);
 });
 
+test("complete topology admits only the bounded API identity repositories", async (t) => {
+  const rootPath = await fixture(t);
+  await makeComplete(rootPath);
+  await mkdir(path.join(rootPath, "services/control-plane/src/db/devices"));
+  await mkdir(path.join(rootPath, "services/control-plane/src/db/identity"));
+
+  const result = await classifyMigrationContract({ rootPath });
+
+  assert.equal(result.state, "complete");
+  assert.deepEqual(result.findings, []);
+});
+
 test("adapter failures are internal and never leak raw exceptions", async (t) => {
   const rootPath = await fixture(t);
   const result = await classifyMigrationContract({

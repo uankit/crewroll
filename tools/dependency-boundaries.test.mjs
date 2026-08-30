@@ -1462,10 +1462,10 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
       "src/app/buildApp.ts",
     ],
     [
-      "control api composition main to db",
+      "control production factories composition to db",
       "control",
       'import "../db/__boundary-target.js";\n',
-      "src/api/main.ts",
+      "src/api/productionApiFactories.ts",
     ],
     [
       "control worker composition main to platform",

@@ -239,14 +239,29 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
     const migrations = await expect(`${DB_ROOT}/migrations`, "directory");
 
     const dbEntries = await safeDir(DB_ROOT);
+    const requiredDbEntries = [
+      "migrate.ts",
+      "database.ts",
+      "schema",
+      "migrations",
+    ];
+    const optionalApiRepositories = ["devices", "identity"];
     if (
       !dbEntries ||
-      new Set(dbEntries).size !== 4 ||
-      !["migrate.ts", "database.ts", "schema", "migrations"].every((entry) =>
-        dbEntries.includes(entry),
+      new Set(dbEntries).size !== dbEntries.length ||
+      !requiredDbEntries.every((entry) => dbEntries.includes(entry)) ||
+      dbEntries.some(
+        (entry) =>
+          !requiredDbEntries.includes(entry) &&
+          !optionalApiRepositories.includes(entry),
       )
     ) {
       mark(DB_ROOT);
+    }
+    for (const repository of optionalApiRepositories) {
+      if (dbEntries?.includes(repository)) {
+        await expect(`${DB_ROOT}/${repository}`, "directory");
+      }
     }
 
     if (schema) {
