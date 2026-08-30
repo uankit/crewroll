@@ -1114,7 +1114,9 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
       "postgresql://uankit@127.0.0.1:5432/postgres",
       "postgresql://uankit@127.0.0.1:55434/postgres",
       "postgresql://uankit@127.0.0.1:55433/user_database",
+      "postgresql://uankit@127.0.0.1:55433/postgres?",
       "postgresql://uankit@127.0.0.1:55433/postgres?sslmode=disable",
+      "postgresql://uankit@127.0.0.1:55433/postgres#",
       "postgresql://uankit@127.0.0.1:55433/postgres#fragment",
     ]) {
       expect(() =>

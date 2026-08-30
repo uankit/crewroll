@@ -58,6 +58,8 @@ export function resolveExplicitExternalPostgresUrl(
 
   const parsed = new URL(connectionString);
   if (
+    connectionString.includes("?") ||
+    connectionString.includes("#") ||
     parsed.protocol !== "postgresql:" ||
     parsed.hostname !== "127.0.0.1" ||
     !["55432", "55433"].includes(parsed.port) ||
