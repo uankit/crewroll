@@ -588,6 +588,33 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
     "dist/**",
     "generated/**",
   ]);
+  assert.equal(
+    mobilePolicy.settings["boundaries/additional-dependency-nodes"],
+    undefined,
+  );
+  assert.equal(
+    contractsPolicy.settings["boundaries/additional-dependency-nodes"],
+    undefined,
+  );
+  const controlPolicy = createControlPlaneBoundaryPolicy({
+    tsconfigPath: "/sentinel/control/tsconfig.json",
+  });
+  assert.deepEqual(
+    controlPolicy.settings["boundaries/additional-dependency-nodes"],
+    [
+      {
+        selector: "TSImportType > Literal",
+        kind: "type",
+        name: "type-query",
+      },
+      {
+        selector:
+          "TSImportEqualsDeclaration TSExternalModuleReference > Literal",
+        kind: "value",
+        name: "import-equals",
+      },
+    ],
+  );
 });
 
 test("effective configs independently wire the owning ESLint/plugin/resolver", async () => {
@@ -1304,6 +1331,46 @@ test("Trip database adapters consume only Trip ports through type imports", asyn
       "Trip port to Kysely",
       'import type { Kysely } from "kysely";\n',
       "src/modules/trips/ports/__boundary-port.ts",
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, filePath),
+        "boundaries/dependencies",
+      );
+    });
+  }
+
+  for (const [name, source, filePath] of [
+    [
+      "type query from Trip adapter to Trip internal",
+      'export type InternalTarget = import("../../modules/trips/__boundary-internal.js").target;\n',
+      tripAdapter,
+    ],
+    [
+      "type query from Trip adapter to another module port",
+      'export type OtherPort = import("../../modules/devices/ports/__boundary-port.js").Port;\n',
+      tripAdapter,
+    ],
+    [
+      "reverse type query from Trip port to database adapter",
+      'export type DatabaseAdapter = import("../../../db/trips/__boundary-adapter.js");\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "type query from Trip port to Kysely",
+      'export type TripDatabase = import("kysely").Kysely<never>;\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "typeof import from Trip adapter to exact Trip port",
+      `export type RuntimeTripPort = typeof import(${JSON.stringify(tripPort)});\n`,
+      tripAdapter,
+    ],
+    [
+      "import-equals runtime from Trip adapter to exact Trip port",
+      `import TripPort = require(${JSON.stringify(tripPort)});\nvoid TripPort;\n`,
+      tripAdapter,
     ],
   ]) {
     await t.test(name, async () => {
