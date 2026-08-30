@@ -6,6 +6,8 @@ import {
   CommitAssetBodySchema,
   CreateDownloadSessionBodySchema,
   CreateJoinRequestBodySchema,
+  CreateTripOutcomeBodySchema,
+  CreateTripOutcomeResponseSchema,
   CreateTripBodySchema,
   CreateUploadSessionBodySchema,
   DeliveryStatusSchema,
@@ -347,6 +349,45 @@ describe("trip and invite contracts", () => {
     rejects(CreateTripBodySchema, withoutTripId);
     rejects(CreateTripBodySchema, withoutOwnerDeviceId);
     rejects(CreateTripBodySchema, withoutOwnerKeyEnvelope);
+  });
+
+  it("publishes one closed authoritative create-outcome request and three-way response", () => {
+    const body = { tripId: TRIP_ID };
+    const trip = validTripResponse();
+    const committed = { outcome: "COMMITTED", trip } as const;
+    const terminal = { outcome: "TERMINAL_NOT_COMMITTED" } as const;
+    const unknown = { outcome: "STILL_UNKNOWN" } as const;
+
+    expect(Value.Check(CreateTripOutcomeBodySchema, body)).toBe(true);
+    for (const response of [committed, terminal, unknown]) {
+      expect(Value.Check(CreateTripOutcomeResponseSchema, response)).toBe(true);
+    }
+
+    rejects(CreateTripOutcomeBodySchema, {});
+    rejects(CreateTripOutcomeBodySchema, {
+      tripId: "018f0d98-76fa-4d1a-b4b4-1f742c2e3130",
+    });
+    rejects(CreateTripOutcomeBodySchema, { ...body, commandId: TRIP_ID });
+    rejects(CreateTripOutcomeResponseSchema, { trip });
+    rejects(CreateTripOutcomeResponseSchema, { outcome: "UNKNOWN" });
+    rejects(CreateTripOutcomeResponseSchema, {
+      outcome: "COMMITTED",
+      trip: null,
+    });
+    rejects(CreateTripOutcomeResponseSchema, { outcome: "COMMITTED" });
+    rejects(CreateTripOutcomeResponseSchema, {
+      ...committed,
+      trip: {
+        ...trip,
+        id: "018f0d98-76fa-4d1a-b4b4-1f742c2e3130",
+      },
+    });
+    rejects(CreateTripOutcomeResponseSchema, { ...terminal, trip });
+    rejects(CreateTripOutcomeResponseSchema, { ...unknown, trip });
+    rejects(CreateTripOutcomeResponseSchema, {
+      ...committed,
+      reconciliationId: TRIP_ID,
+    });
   });
 
   it("binds canonical create and join fixtures to the command-header device", () => {

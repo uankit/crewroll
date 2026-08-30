@@ -478,6 +478,128 @@
         }
       }
     },
+    "/v1/trips/create-outcome": {
+      "post": {
+        "operationId": "resolveCreateTripOutcome",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTripOutcomeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateTripOutcomeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/trips/join-requests": {
       "post": {
         "operationId": "createJoinRequest",
@@ -2366,9 +2488,10 @@
             "type": "string"
           },
           "name": {
+            "type": "string",
             "minLength": 1,
             "maxLength": 80,
-            "type": "string"
+            "pattern": "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$"
           },
           "inviteCode": {
             "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
@@ -2451,6 +2574,332 @@
             }
           }
         }
+      },
+      "CreateTripOutcomeBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        }
+      },
+      "CreateTripOutcomeResponse": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "outcome",
+              "trip"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "COMMITTED",
+                "type": "string"
+              },
+              "trip": {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "id",
+                  "version",
+                  "name",
+                  "status",
+                  "release",
+                  "startsAt",
+                  "endsAt",
+                  "ownerDeviceId",
+                  "currentMembershipId",
+                  "keyEpoch",
+                  "tripKeyEnvelope",
+                  "members"
+                ],
+                "properties": {
+                  "id": {
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "type": "string"
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "const": "LOBBY",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ACTIVE",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ENDING",
+                        "type": "string"
+                      },
+                      {
+                        "const": "COMPLETE",
+                        "type": "string"
+                      },
+                      {
+                        "const": "INCOMPLETE_EXPIRED",
+                        "type": "string"
+                      },
+                      {
+                        "const": "CANCELLED",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "release": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "mode"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "const": "IMMEDIATE",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "mode",
+                          "timeZone",
+                          "localTime"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "const": "NIGHTLY",
+                            "type": "string"
+                          },
+                          "timeZone": {
+                            "format": "iana-time-zone",
+                            "type": "string"
+                          },
+                          "localTime": {
+                            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "startsAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "endsAt": {
+                    "format": "date-time",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                    "type": "string"
+                  },
+                  "ownerDeviceId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "currentMembershipId": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "keyEpoch": {
+                    "const": 1,
+                    "type": "number"
+                  },
+                  "tripKeyEnvelope": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyEpoch",
+                          "algorithmVersion",
+                          "wrappedKey"
+                        ],
+                        "properties": {
+                          "keyEpoch": {
+                            "const": 1,
+                            "type": "number"
+                          },
+                          "algorithmVersion": {
+                            "const": 1,
+                            "type": "number"
+                          },
+                          "wrappedKey": {
+                            "contentEncoding": "base64",
+                            "minLength": 200,
+                            "maxLength": 200,
+                            "pattern": "^(?:[A-Za-z0-9+/]{4}){49}[A-Za-z0-9+/][AQgw]==$",
+                            "x-crewroll-decodedBytes": 148,
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "members": {
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "additionalProperties": false,
+                      "type": "object",
+                      "required": [
+                        "membershipId",
+                        "role",
+                        "displayName",
+                        "status",
+                        "readiness",
+                        "nominatedDevice"
+                      ],
+                      "properties": {
+                        "membershipId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "role": {
+                          "anyOf": [
+                            {
+                              "const": "OWNER",
+                              "type": "string"
+                            },
+                            {
+                              "const": "MEMBER",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "displayName": {
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "type": "string"
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "const": "PENDING_KEY",
+                              "type": "string"
+                            },
+                            {
+                              "const": "ACTIVE",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "readiness": {
+                          "additionalProperties": false,
+                          "type": "object",
+                          "required": [
+                            "fullPhotoLibraryAccess"
+                          ],
+                          "properties": {
+                            "fullPhotoLibraryAccess": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "nominatedDevice": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "type": "object",
+                              "required": [
+                                "deviceId",
+                                "e2eeKeyAlgorithm",
+                                "e2eePublicKey",
+                                "e2eeKeyVersion"
+                              ],
+                              "properties": {
+                                "deviceId": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                "e2eeKeyAlgorithm": {
+                                  "const": "X25519",
+                                  "type": "string"
+                                },
+                                "e2eePublicKey": {
+                                  "contentEncoding": "base64",
+                                  "minLength": 44,
+                                  "maxLength": 44,
+                                  "pattern": "^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=$",
+                                  "x-crewroll-decodedBytes": 32,
+                                  "type": "string"
+                                },
+                                "e2eeKeyVersion": {
+                                  "const": 1,
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "TERMINAL_NOT_COMMITTED",
+                "type": "string"
+              }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "STILL_UNKNOWN",
+                "type": "string"
+              }
+            }
+          }
+        ]
       },
       "TripResponse": {
         "additionalProperties": false,

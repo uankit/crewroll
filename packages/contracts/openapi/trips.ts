@@ -1,4 +1,4 @@
-import { Type, type Static } from "@sinclair/typebox";
+import { Kind, Type, type Static } from "@sinclair/typebox";
 
 import {
   ClosedObject,
@@ -25,9 +25,18 @@ export const ReleaseSchema = Type.Union([
   NightlyReleaseSchema,
 ]);
 
+const TripNameSchema = Type.Unsafe<string>({
+  [Kind]: "TemplateLiteral",
+  type: "string",
+  minLength: 1,
+  maxLength: 80,
+  pattern:
+    "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$",
+});
+
 export const CreateTripBodySchema = ClosedObject({
   tripId: TripIdSchema,
-  name: Type.String({ minLength: 1, maxLength: 80 }),
+  name: TripNameSchema,
   inviteCode: InviteCodeSchema,
   release: ReleaseSchema,
   endsAt: DateTimeSchema,
@@ -35,6 +44,11 @@ export const CreateTripBodySchema = ClosedObject({
   ownerKeyEnvelope: KeyEnvelopeSchema,
 });
 export type CreateTripBody = Static<typeof CreateTripBodySchema>;
+
+export const CreateTripOutcomeBodySchema = ClosedObject({
+  tripId: TripIdSchema,
+});
+export type CreateTripOutcomeBody = Static<typeof CreateTripOutcomeBodySchema>;
 
 export const NominatedDeviceKeySchema = ClosedObject({
   deviceId: DeviceIdSchema,
@@ -76,6 +90,18 @@ export const TripResponseSchema = ClosedObject({
   members: Type.Array(TripMemberSchema, { minItems: 1, maxItems: 10 }),
 });
 export type TripResponse = Static<typeof TripResponseSchema>;
+
+export const CreateTripOutcomeResponseSchema = Type.Union([
+  ClosedObject({
+    outcome: Type.Literal("COMMITTED"),
+    trip: TripResponseSchema,
+  }),
+  ClosedObject({ outcome: Type.Literal("TERMINAL_NOT_COMMITTED") }),
+  ClosedObject({ outcome: Type.Literal("STILL_UNKNOWN") }),
+]);
+export type CreateTripOutcomeResponse = Static<
+  typeof CreateTripOutcomeResponseSchema
+>;
 
 export const InviteResponseSchema = ClosedObject({
   tripId: TripIdSchema,
