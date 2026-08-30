@@ -34,6 +34,7 @@ export function createBackgroundDeviceAuthenticator(
       authorization,
       headerDeviceId,
     }: BackgroundAuthenticationInput): Promise<BackgroundDeviceActor> {
+      const canonicalHeaderDeviceId = headerDeviceId.toLowerCase();
       const bearer = requireBearerToken(authorization);
       if (!Value.Check(BackgroundBearerV1Schema, bearer)) {
         throw new DomainError("AUTH_INVALID");
@@ -55,7 +56,7 @@ export function createBackgroundDeviceAuthenticator(
           ) {
             throw new DomainError("AUTH_INVALID");
           }
-          if (record.device.deviceId !== headerDeviceId) {
+          if (record.device.deviceId !== canonicalHeaderDeviceId) {
             throw new DomainError("DEVICE_NOT_OWNED");
           }
           await transaction.updateDevice({

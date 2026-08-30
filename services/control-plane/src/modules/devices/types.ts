@@ -19,8 +19,6 @@ export interface InstallationSnapshot {
   readonly authenticationKeyAlgorithm: "P-256";
   readonly authenticationKeyVersion: 1;
   readonly authenticationPublicKey: Readonly<Uint8Array>;
-  readonly backgroundCredentialExpiresAt: Date;
-  readonly backgroundCredentialHash: Readonly<Uint8Array>;
   readonly deviceId: string;
   readonly e2eeKeyAlgorithm: "X25519";
   readonly e2eeKeyVersion: 1;

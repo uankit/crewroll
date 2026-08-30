@@ -1,9 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { validRegisterDeviceBody } from "@crewroll/contracts/fixtures/http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createApiRuntime,
+  runApi,
   type ApiRuntimeFactories,
 } from "../../src/api/apiRuntime.js";
+import { productionApiFactories } from "../../src/api/productionApiFactories.js";
+import {
+  createDeviceTestHarness,
+  fixedDeviceId,
+} from "../support/deviceFakes.js";
+
+const clerkSubject = "user_clerk_subject";
+const registrationKey = "018f0d98-76fa-7d1a-b4b4-1f742c2e3170";
+const commandKey = "018f0d98-76fa-7d1a-b4b4-1f742c2e3171";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const stages = [
   "environment",
@@ -175,7 +190,91 @@ function createRuntimeHarness(
   return { calls, close, destroyDatabase, destroyKms, factories, listen };
 }
 
+type ApiSignal = "SIGINT" | "SIGTERM";
+
+function createSignalHarness(failOn?: ApiSignal) {
+  const listeners = new Map<ApiSignal, Set<() => void>>([
+    ["SIGINT", new Set()],
+    ["SIGTERM", new Set()],
+  ]);
+  const signals = {
+    exitCode: undefined as number | undefined,
+    off: vi.fn((signal: ApiSignal, listener: () => void) => {
+      listeners.get(signal)!.delete(listener);
+      return signals;
+    }),
+    once: vi.fn((signal: ApiSignal, listener: () => void) => {
+      if (signal === failOn) throw new Error("signal install canary");
+      listeners.get(signal)!.add(listener);
+      return signals;
+    }),
+  };
+  return {
+    emit(signal: ApiSignal) {
+      for (const listener of [...listeners.get(signal)!]) listener();
+    },
+    listenerCount(signal: ApiSignal) {
+      return listeners.get(signal)!.size;
+    },
+    signals,
+  };
+}
+
 describe("API runtime", () => {
+  it.each(["registration", "PATCH", "DELETE"] as const)(
+    "uses a whole-second production clock for %s orchestration",
+    async (operation) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-30T00:00:00.123Z"));
+      const test = createDeviceTestHarness();
+      const clock = productionApiFactories.clock();
+
+      if (operation === "registration") {
+        await expect(
+          productionApiFactories
+            .registerDevice({ ...test.dependencies, clock })
+            .execute({
+              body: validRegisterDeviceBody(),
+              clerkSubject,
+              idempotencyKey: registrationKey,
+            }),
+        ).resolves.toMatchObject({ deviceId: fixedDeviceId });
+      } else {
+        await productionApiFactories.registerDevice(test.dependencies).execute({
+          body: validRegisterDeviceBody(),
+          clerkSubject,
+          idempotencyKey: registrationKey,
+        });
+        if (operation === "PATCH") {
+          await expect(
+            productionApiFactories
+              .updateDevicePushToken({ ...test.dependencies, clock })
+              .execute({
+                body: { appVersion: "1.0.1", pushToken: null },
+                clerkSubject,
+                deviceId: fixedDeviceId,
+                headerDeviceId: fixedDeviceId,
+                idempotencyKey: commandKey,
+              }),
+          ).resolves.toBeUndefined();
+        } else {
+          await expect(
+            productionApiFactories
+              .revokeDevice({ ...test.dependencies, clock })
+              .execute({
+                clerkSubject,
+                deviceId: fixedDeviceId,
+                headerDeviceId: fixedDeviceId,
+                idempotencyKey: commandKey,
+              }),
+          ).resolves.toBeUndefined();
+        }
+      }
+
+      expect(clock.now().getMilliseconds()).toBe(0);
+    },
+  );
+
   it("constructs every singleton once in exact order and preserves identity", async () => {
     const test = createRuntimeHarness();
     const runtime = await createApiRuntime(test.factories);
@@ -186,6 +285,92 @@ describe("API runtime", () => {
     expect(test.close).toHaveBeenCalledTimes(1);
     expect(test.destroyKms).toHaveBeenCalledTimes(1);
     expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("runApi installs signals and removes them on programmatic close", async () => {
+    const test = createRuntimeHarness();
+    const signal = createSignalHarness();
+    const runtime = await runApi(test.factories, signal.signals);
+
+    expect(signal.listenerCount("SIGINT")).toBe(1);
+    expect(signal.listenerCount("SIGTERM")).toBe(1);
+    await Promise.all([runtime.close(), runtime.close()]);
+
+    expect(signal.listenerCount("SIGINT")).toBe(0);
+    expect(signal.listenerCount("SIGTERM")).toBe(0);
+    expect(signal.signals.off).toHaveBeenCalledTimes(2);
+    expect(test.close).toHaveBeenCalledTimes(1);
+    expect(test.destroyKms).toHaveBeenCalledTimes(1);
+    expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("runApi removes signals and all handles on listen failure", async () => {
+    const test = createRuntimeHarness({ listenFailure: true });
+    const signal = createSignalHarness();
+
+    await expect(runApi(test.factories, signal.signals)).rejects.toThrow(
+      "CrewRoll API listen failed",
+    );
+
+    expect(signal.listenerCount("SIGINT")).toBe(0);
+    expect(signal.listenerCount("SIGTERM")).toBe(0);
+    expect(test.close).toHaveBeenCalledTimes(1);
+    expect(test.destroyKms).toHaveBeenCalledTimes(1);
+    expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("runApi removes a partially installed signal and closes on setup failure", async () => {
+    const test = createRuntimeHarness();
+    const signal = createSignalHarness("SIGTERM");
+
+    await expect(runApi(test.factories, signal.signals)).rejects.toThrow(
+      "CrewRoll API signal setup failed",
+    );
+
+    expect(signal.listenerCount("SIGINT")).toBe(0);
+    expect(signal.listenerCount("SIGTERM")).toBe(0);
+    expect(test.listen).toHaveBeenCalledTimes(0);
+    expect(test.close).toHaveBeenCalledTimes(1);
+    expect(test.destroyKms).toHaveBeenCalledTimes(1);
+    expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("competing signals share one close and remove both listeners", async () => {
+    const test = createRuntimeHarness();
+    const signal = createSignalHarness();
+    const runtime = await runApi(test.factories, signal.signals);
+
+    signal.emit("SIGINT");
+    signal.emit("SIGTERM");
+    await runtime.close();
+
+    expect(signal.listenerCount("SIGINT")).toBe(0);
+    expect(signal.listenerCount("SIGTERM")).toBe(0);
+    expect(test.close).toHaveBeenCalledTimes(1);
+    expect(test.destroyKms).toHaveBeenCalledTimes(1);
+    expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+    expect(signal.signals.exitCode).toBe(0);
+  });
+
+  it("isolates listener cleanup across repeated starts", async () => {
+    const first = createRuntimeHarness();
+    const second = createRuntimeHarness();
+    const signal = createSignalHarness();
+    const firstRuntime = await runApi(first.factories, signal.signals);
+    const secondRuntime = await runApi(second.factories, signal.signals);
+
+    expect(signal.listenerCount("SIGINT")).toBe(2);
+    expect(signal.listenerCount("SIGTERM")).toBe(2);
+    await firstRuntime.close();
+    expect(signal.listenerCount("SIGINT")).toBe(1);
+    expect(signal.listenerCount("SIGTERM")).toBe(1);
+    signal.emit("SIGTERM");
+    await secondRuntime.close();
+
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(second.close).toHaveBeenCalledTimes(1);
+    expect(signal.listenerCount("SIGINT")).toBe(0);
+    expect(signal.listenerCount("SIGTERM")).toBe(0);
   });
 
   it.each(stages)(

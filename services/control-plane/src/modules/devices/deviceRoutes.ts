@@ -68,6 +68,11 @@ const errorResponses = {
   500: ProblemDetailsSchema,
 } as const;
 
+function canonicalUuidHeader(value: string | string[] | undefined): string {
+  if (typeof value !== "string") throw new DomainError("INVALID_REQUEST");
+  return value.toLowerCase();
+}
+
 export function deviceRoutes(
   app: FastifyInstance,
   dependencies: DeviceRouteDependencies,
@@ -104,7 +109,7 @@ export function deviceRoutes(
       const response = await dependencies.registerDevice.execute({
         body: request.body,
         clerkSubject: actor.clerkSubject,
-        idempotencyKey: request.headers["idempotency-key"] as string,
+        idempotencyKey: canonicalUuidHeader(request.headers["idempotency-key"]),
       });
       return reply.code(201).send(response);
     },
@@ -127,15 +132,19 @@ export function deviceRoutes(
     },
     async (request, reply) => {
       const actor = actorFor(request);
-      if (request.headers["x-crewroll-device-id"] !== request.params.deviceId) {
+      const deviceId = request.params.deviceId.toLowerCase();
+      const headerDeviceId = canonicalUuidHeader(
+        request.headers["x-crewroll-device-id"],
+      );
+      if (headerDeviceId !== deviceId) {
         throw new DomainError("DEVICE_NOT_OWNED");
       }
       await dependencies.updateDevicePushToken.execute({
         body: request.body,
         clerkSubject: actor.clerkSubject,
-        deviceId: request.params.deviceId,
-        headerDeviceId: request.headers["x-crewroll-device-id"],
-        idempotencyKey: request.headers["idempotency-key"] as string,
+        deviceId,
+        headerDeviceId,
+        idempotencyKey: canonicalUuidHeader(request.headers["idempotency-key"]),
       });
       return reply.code(204).send();
     },
@@ -154,14 +163,18 @@ export function deviceRoutes(
     },
     async (request, reply) => {
       const actor = actorFor(request);
-      if (request.headers["x-crewroll-device-id"] !== request.params.deviceId) {
+      const deviceId = request.params.deviceId.toLowerCase();
+      const headerDeviceId = canonicalUuidHeader(
+        request.headers["x-crewroll-device-id"],
+      );
+      if (headerDeviceId !== deviceId) {
         throw new DomainError("DEVICE_NOT_OWNED");
       }
       await dependencies.revokeDevice.execute({
         clerkSubject: actor.clerkSubject,
-        deviceId: request.params.deviceId,
-        headerDeviceId: request.headers["x-crewroll-device-id"],
-        idempotencyKey: request.headers["idempotency-key"] as string,
+        deviceId,
+        headerDeviceId,
+        idempotencyKey: canonicalUuidHeader(request.headers["idempotency-key"]),
       });
       return reply.code(204).send();
     },

@@ -1,3 +1,5 @@
+import { createECDH } from "node:crypto";
+
 import { validRegisterDeviceBody } from "@crewroll/contracts/fixtures/http";
 import { describe, expect, it } from "vitest";
 
@@ -16,6 +18,13 @@ import {
 } from "../support/deviceFakes.js";
 
 const idempotencyKey = "018f0d98-76fa-7d1a-b4b4-1f742c2e3170";
+const alternateAuthenticationPublicKey = (() => {
+  const key = createECDH("prime256v1");
+  const privateKey = Buffer.alloc(32);
+  privateKey[31] = 2;
+  key.setPrivateKey(privateKey);
+  return key.getPublicKey();
+})();
 
 function required<Value>(value: Value | undefined): Value {
   expect(value).toBeDefined();
@@ -35,8 +44,6 @@ function installationSnapshot(
       body.authenticationPublicKey,
       "base64",
     ),
-    backgroundCredentialExpiresAt: new Date("2026-09-29T00:00:00.000Z"),
-    backgroundCredentialHash: Uint8Array.from({ length: 32 }, () => 0xaa),
     deviceId,
     e2eeKeyAlgorithm: "X25519",
     e2eeKeyVersion: 1,
@@ -135,6 +142,70 @@ describe("registerDevice", () => {
     expect(test.calls.protect).toBe(1);
     expect(test.calls.transaction).toBe(3);
     expect(test.devices.get(body.installationId)).toEqual(afterSecond);
+  });
+
+  it("canonicalizes a mixed-case idempotency key before exact replay", async () => {
+    const test = createDeviceTestHarness();
+    const register = createRegisterDevice(test.dependencies);
+    const body = validRegisterDeviceBody();
+
+    const first = await register.execute({
+      body,
+      clerkSubject: "user_clerk_subject",
+      idempotencyKey: idempotencyKey.toUpperCase(),
+    });
+    const stored = required(test.devices.get(body.installationId));
+    const replay = await register.execute({
+      body,
+      clerkSubject: "user_clerk_subject",
+      idempotencyKey,
+    });
+
+    expect(replay).toEqual(first);
+    expect(test.devices.get(body.installationId)).toEqual(stored);
+    expect(test.idempotencies.size).toBe(1);
+    expect(test.idempotencies.has(`${userId}:${idempotencyKey}`)).toBe(true);
+  });
+
+  it("retries re-registration outside the transaction when the locked push fingerprint changed", async () => {
+    const test = createDeviceTestHarness();
+    const register = createRegisterDevice(test.dependencies);
+    const body = validRegisterDeviceBody();
+    await register.execute({
+      body,
+      clerkSubject: "user_clerk_subject",
+      idempotencyKey,
+    });
+    test.resetCalls();
+    let raced = false;
+    test.setBeforeTransaction(() => {
+      if (raced) return;
+      raced = true;
+      test.replaceDevice(deviceId, {
+        encryptedPushToken: Uint8Array.from([9, 9, 9]),
+        pushTokenHash: Uint8Array.from({ length: 32 }, () => 0xcc),
+      });
+    });
+    const retryKey = "018f0d98-76fa-7d1a-b4b4-1f742c2e3173";
+
+    await register.execute({
+      body,
+      clerkSubject: "user_clerk_subject",
+      idempotencyKey: retryKey,
+    });
+
+    expect(test.calls).toMatchObject({
+      directory: 0,
+      fingerprint: 1,
+      protect: 1,
+      transaction: 2,
+    });
+    expect(test.wasProtectCalledInsideTransaction()).toBe(false);
+    expect(required(test.devices.get(body.installationId))).toMatchObject({
+      encryptedPushToken: Uint8Array.from([1, 2, 3]),
+      pushTokenHash: Uint8Array.from({ length: 32 }, () => 0xbb),
+    });
+    expect(test.idempotencies.has(`${userId}:${retryKey}`)).toBe(true);
   });
 
   it("preserves push ciphertext when omitted and refreshes credentials at seven days", async () => {
@@ -264,6 +335,9 @@ describe("registerDevice", () => {
       test.devices.set(body.installationId, {
         appVersion: body.appVersion,
         ...installationSnapshot(userId, false),
+        authenticationPublicKey: alternateAuthenticationPublicKey,
+        backgroundCredentialExpiresAt: new Date("2026-09-29T00:00:00.000Z"),
+        backgroundCredentialHash: Uint8Array.from({ length: 32 }, () => 0xaa),
         encryptedPushToken: null,
         installationId: body.installationId,
         lastSeenAt: now,
@@ -280,6 +354,50 @@ describe("registerDevice", () => {
     expect(error).toBeInstanceOf(DomainError);
     expect((error as DomainError).kind).toBe("CONFLICT");
     expect(test.idempotencies.size).toBe(0);
+  });
+
+  it("converges on an identical installation winner with a different idempotency key", async () => {
+    const test = createDeviceTestHarness();
+    const body = validRegisterDeviceBody();
+    const winningDeviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3190";
+    let raced = false;
+    test.setBeforeTransaction(() => {
+      if (raced) return;
+      raced = true;
+      test.users.set("user_clerk_subject", {
+        clerkSubject: "user_clerk_subject",
+        deleted: false,
+        displayName: "CrewRoll member",
+        state: "active",
+        userId,
+      });
+      test.devices.set(body.installationId, {
+        appVersion: body.appVersion,
+        ...installationSnapshot(userId, false),
+        backgroundCredentialExpiresAt: new Date("2026-09-29T00:00:00.000Z"),
+        backgroundCredentialHash: Uint8Array.from({ length: 32 }, () => 0xaa),
+        deviceId: winningDeviceId,
+        encryptedPushToken: null,
+        installationId: body.installationId,
+        lastSeenAt: now,
+        pushTokenHash: null,
+        revoked: false,
+      });
+    });
+    const register = createRegisterDevice(test.dependencies);
+
+    await expect(
+      register.execute({
+        body,
+        clerkSubject: "user_clerk_subject",
+        idempotencyKey,
+      }),
+    ).resolves.toMatchObject({ deviceId: winningDeviceId });
+
+    expect(test.calls).toMatchObject({ protect: 2, transaction: 2 });
+    expect(test.protectedDeviceIds).toEqual([deviceId, winningDeviceId]);
+    expect(test.wasProtectCalledInsideTransaction()).toBe(false);
+    expect(test.idempotencies.has(`${userId}:${idempotencyKey}`)).toBe(true);
   });
 
   const rejectionCases: readonly (readonly [

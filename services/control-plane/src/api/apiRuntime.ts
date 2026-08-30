@@ -75,6 +75,14 @@ export interface ApiRuntime {
   listen(): Promise<void>;
 }
 
+type ApiSignal = "SIGINT" | "SIGTERM";
+
+export interface ApiSignalTarget {
+  exitCode: string | number | null | undefined;
+  off(signal: ApiSignal, listener: () => void): unknown;
+  once(signal: ApiSignal, listener: () => void): unknown;
+}
+
 async function attemptAll(
   actions: readonly (() => unknown)[],
 ): Promise<boolean> {
@@ -205,4 +213,53 @@ export async function createApiRuntime(
     ]);
     throw new Error("CrewRoll API construction failed");
   }
+}
+
+export async function runApi(
+  factories: ApiRuntimeFactories,
+  signalTarget: ApiSignalTarget = process,
+): Promise<ApiRuntime> {
+  const runtime = await createApiRuntime(factories);
+  let sigintInstalled = false;
+  let sigtermInstalled = false;
+  let listenersRemoved = false;
+  const removeListeners = (): void => {
+    if (listenersRemoved) return;
+    listenersRemoved = true;
+    if (sigintInstalled) signalTarget.off("SIGINT", shutdown);
+    if (sigtermInstalled) signalTarget.off("SIGTERM", shutdown);
+  };
+  const close = (): Promise<void> => {
+    removeListeners();
+    return runtime.close();
+  };
+  function shutdown(): void {
+    void close().then(
+      () => {
+        signalTarget.exitCode = 0;
+      },
+      () => {
+        signalTarget.exitCode = 1;
+      },
+    );
+  }
+
+  try {
+    signalTarget.once("SIGINT", shutdown);
+    sigintInstalled = true;
+    signalTarget.once("SIGTERM", shutdown);
+    sigtermInstalled = true;
+  } catch {
+    removeListeners();
+    await runtime.close().catch(() => undefined);
+    throw new Error("CrewRoll API signal setup failed");
+  }
+
+  try {
+    await runtime.listen();
+  } catch (error) {
+    removeListeners();
+    throw error;
+  }
+  return { close, listen: () => runtime.listen() };
 }

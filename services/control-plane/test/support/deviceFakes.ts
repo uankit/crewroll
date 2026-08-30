@@ -20,12 +20,15 @@ type FakeUserRecord = LocalUserRecord & {
 
 export function createDeviceTestHarness() {
   const calls = { directory: 0, fingerprint: 0, protect: 0, transaction: 0 };
+  const protectedDeviceIds: string[] = [];
   const users = new Map<string, FakeUserRecord>();
   const devices = new Map<string, DeviceRecord>();
   const idempotencies = new Map<string, DeviceIdempotencyRecord>();
   const ids = [fixedUserId, fixedDeviceId];
   let snapshotOverride: RegistrationAuthorizationSnapshot | undefined;
   let beforeTransaction: (() => void) | undefined;
+  let inTransaction = false;
+  let protectInsideTransaction = false;
   let currentNow = fixedNow;
   let foregroundState:
     "conflict" | "deleted" | "revoked" | "unknown" | undefined;
@@ -120,8 +123,10 @@ export function createDeviceTestHarness() {
         calls.fingerprint += 1;
         return Uint8Array.from({ length: 32 }, () => 0xbb);
       },
-      protect() {
+      protect(_token, deviceId) {
         calls.protect += 1;
+        protectInsideTransaction ||= inTransaction;
+        protectedDeviceIds.push(deviceId);
         return Promise.resolve({
           encryptedToken: Uint8Array.from([1, 2, 3]),
           fingerprint: Uint8Array.from({ length: 32 }, () => 0xbb),
@@ -172,10 +177,15 @@ export function createDeviceTestHarness() {
       },
     },
     unitOfWork: {
-      run<Result>(operation: (tx: DeviceTransaction) => Promise<Result>) {
+      async run<Result>(operation: (tx: DeviceTransaction) => Promise<Result>) {
         calls.transaction += 1;
         beforeTransaction?.();
-        return operation(transaction);
+        inTransaction = true;
+        try {
+          return await operation(transaction);
+        } finally {
+          inTransaction = false;
+        }
       },
     },
   };
@@ -208,6 +218,7 @@ export function createDeviceTestHarness() {
       return device;
     },
     idempotencies,
+    protectedDeviceIds,
     replaceDevice(deviceId: string, patch: Partial<DeviceRecord>) {
       const device = [...devices.values()].find(
         (candidate) => candidate.deviceId === deviceId,
@@ -231,5 +242,8 @@ export function createDeviceTestHarness() {
       foregroundState = state;
     },
     users,
+    wasProtectCalledInsideTransaction() {
+      return protectInsideTransaction;
+    },
   };
 }

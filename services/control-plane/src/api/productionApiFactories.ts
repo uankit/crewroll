@@ -16,7 +16,7 @@ import { createClerkWebhookVerifier } from "../platform/clerk/verifyClerkWebhook
 import { createHmacBackgroundCredentialIssuer } from "../platform/crypto/hmacBackgroundCredentialIssuer.js";
 import { createKmsPushTokenProtector } from "../platform/kms/kmsPushTokenProtector.js";
 import { createSafeLogger } from "../shared/observability/safeLogger.js";
-import { createApiRuntime, type ApiRuntimeFactories } from "./apiRuntime.js";
+import type { ApiRuntimeFactories } from "./apiRuntime.js";
 
 function required<Value>(value: Value | undefined): Value {
   if (value === undefined)
@@ -35,7 +35,9 @@ export const productionApiFactories: ApiRuntimeFactories = {
       required(environment.backgroundCredentialHmacKeyV1),
     ),
   buildApp,
-  clock: () => ({ now: () => new Date() }),
+  clock: () => ({
+    now: () => new Date(Math.floor(Date.now() / 1_000) * 1_000),
+  }),
   clerkWebhookService: createClerkWebhookService,
   database: databaseHandle,
   directory: (environment) =>
@@ -79,21 +81,3 @@ export const productionApiFactories: ApiRuntimeFactories = {
       signingSecret: required(environment.clerkWebhookSecret),
     }),
 };
-
-export async function startProductionApi() {
-  const runtime = await createApiRuntime(productionApiFactories);
-  const shutdown = (): void => {
-    void runtime.close().then(
-      () => {
-        process.exitCode = 0;
-      },
-      () => {
-        process.exitCode = 1;
-      },
-    );
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
-  await runtime.listen();
-  return runtime;
-}

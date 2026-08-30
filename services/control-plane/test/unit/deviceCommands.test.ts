@@ -55,6 +55,69 @@ describe("device foreground commands", () => {
         revokeDeviceCommandIdentity(fixedDeviceId, commandKey).requestSha256,
       ).toString("hex"),
     ).toBe("e91baac4c5fbe202fd288870619777606678c30e43af9b79fe79e4950278e242");
+
+    const upperDeviceId = fixedDeviceId.toUpperCase();
+    const upperCommandKey = commandKey.toUpperCase();
+    expect(
+      updatePushTokenCommandIdentity(
+        upperDeviceId,
+        { appVersion: "1.0.1", pushToken: null },
+        upperCommandKey,
+      ),
+    ).toEqual(
+      updatePushTokenCommandIdentity(
+        fixedDeviceId,
+        { appVersion: "1.0.1", pushToken: null },
+        commandKey,
+      ),
+    );
+    expect(revokeDeviceCommandIdentity(upperDeviceId, upperCommandKey)).toEqual(
+      revokeDeviceCommandIdentity(fixedDeviceId, commandKey),
+    );
+  });
+
+  it("canonicalizes mixed-case PATCH and DELETE identities before replay", async () => {
+    const patch = await registeredHarness();
+    const update = createUpdateDevicePushToken(patch.dependencies);
+    await update.execute({
+      body: { appVersion: "1.0.1", pushToken: null },
+      clerkSubject,
+      deviceId: fixedDeviceId.toUpperCase(),
+      headerDeviceId: fixedDeviceId,
+      idempotencyKey: commandKey.toUpperCase(),
+    });
+    const afterPatch = patch.findDevice(fixedDeviceId);
+    await update.execute({
+      body: { appVersion: "1.0.1", pushToken: null },
+      clerkSubject,
+      deviceId: fixedDeviceId,
+      headerDeviceId: fixedDeviceId.toUpperCase(),
+      idempotencyKey: commandKey,
+    });
+    expect(patch.findDevice(fixedDeviceId)).toEqual(afterPatch);
+    expect(patch.idempotencies.has(`${afterPatch.userId}:${commandKey}`)).toBe(
+      true,
+    );
+
+    const deletion = await registeredHarness();
+    const revoke = createRevokeDevice(deletion.dependencies);
+    await revoke.execute({
+      clerkSubject,
+      deviceId: fixedDeviceId.toUpperCase(),
+      headerDeviceId: fixedDeviceId,
+      idempotencyKey: commandKey.toUpperCase(),
+    });
+    const afterDelete = deletion.findDevice(fixedDeviceId);
+    await revoke.execute({
+      clerkSubject,
+      deviceId: fixedDeviceId,
+      headerDeviceId: fixedDeviceId.toUpperCase(),
+      idempotencyKey: commandKey,
+    });
+    expect(deletion.findDevice(fixedDeviceId)).toEqual(afterDelete);
+    expect(
+      deletion.idempotencies.has(`${afterDelete.userId}:${commandKey}`),
+    ).toBe(true);
   });
 
   it("same token fingerprints locally, skips KMS, and updates app/last-seen", async () => {
@@ -74,6 +137,43 @@ describe("device foreground commands", () => {
     const device = test.findDevice(fixedDeviceId);
     expect(device.appVersion).toBe("1.0.1");
     expect(device.lastSeenAt).toEqual(fixedNow);
+  });
+
+  it("retries PATCH outside the transaction when the locked push fingerprint changed", async () => {
+    const test = await registeredHarness();
+    let raced = false;
+    test.setBeforeTransaction(() => {
+      if (raced) return;
+      raced = true;
+      test.replaceDevice(fixedDeviceId, {
+        encryptedPushToken: Uint8Array.from([9, 9, 9]),
+        pushTokenHash: Uint8Array.from({ length: 32 }, () => 0xcc),
+      });
+    });
+
+    await createUpdateDevicePushToken(test.dependencies).execute({
+      body: { appVersion: "1.0.1", pushToken: "same-token" },
+      clerkSubject,
+      deviceId: fixedDeviceId,
+      headerDeviceId: fixedDeviceId,
+      idempotencyKey: commandKey,
+    });
+
+    expect(test.calls).toMatchObject({
+      fingerprint: 1,
+      protect: 1,
+      transaction: 2,
+    });
+    expect(test.wasProtectCalledInsideTransaction()).toBe(false);
+    expect(test.findDevice(fixedDeviceId)).toMatchObject({
+      encryptedPushToken: Uint8Array.from([1, 2, 3]),
+      pushTokenHash: Uint8Array.from({ length: 32 }, () => 0xbb),
+    });
+    expect(
+      test.idempotencies.has(
+        `${test.findDevice(fixedDeviceId).userId}:${commandKey}`,
+      ),
+    ).toBe(true);
   });
 
   it("changed token protects once while null clears the encrypted/hash pair", async () => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createKyselyDeviceAuthorizationSnapshotReader } from "../../services/control-plane/src/db/devices/kyselyDeviceAuthorizationSnapshotReader.js";
@@ -18,6 +18,13 @@ const p256 = Buffer.from(
   "BGsX0fLhLEJH+Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT+NC4v4af5uO5+tKfA+eFivOM1drMV7Oy7ZAaDe/UfU=",
   "base64",
 );
+const alternateP256 = (() => {
+  const key = createECDH("prime256v1");
+  const privateKey = Buffer.alloc(32);
+  privateKey[31] = 2;
+  key.setPrivateKey(privateKey);
+  return key.getPublicKey().toString("base64");
+})();
 const body = {
   appVersion: "0.2.0",
   authenticationKeyAlgorithm: "P-256" as const,
@@ -144,7 +151,7 @@ describe("device repository concurrency", () => {
     });
   });
 
-  it("allows one same-owner different-key winner and rejects the loser", async () => {
+  it("converges same-owner identical registrations with different idempotency keys", async () => {
     await context.db
       .insertInto("users")
       .values({
@@ -185,13 +192,14 @@ describe("device repository concurrency", () => {
       }),
     ]);
 
+    expect(results.every((result) => result.status === "fulfilled")).toBe(true);
     expect(
-      results.filter((result) => result.status === "fulfilled"),
-    ).toHaveLength(1);
-    const rejected = results.find((result) => result.status === "rejected");
-    expect(
-      rejected?.status === "rejected" ? rejected.reason : null,
-    ).toMatchObject({ kind: "CONFLICT" });
+      new Set(
+        results.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value.deviceId] : [],
+        ),
+      ).size,
+    ).toBe(1);
     const devices = await context.db
       .selectFrom("devices")
       .selectAll()
@@ -201,7 +209,63 @@ describe("device repository concurrency", () => {
       .selectAll()
       .execute();
     expect(devices).toHaveLength(1);
-    expect(keys).toHaveLength(1);
+    expect(keys).toHaveLength(2);
+  });
+
+  it("allows one same-owner different-key winner and rejects the loser", async () => {
+    await context.db
+      .insertInto("users")
+      .values({
+        clerk_subject: "different_key_subject",
+        display_name: "Different key owner",
+        id: "63000000-0000-4000-8000-000000000001",
+      })
+      .execute();
+    const baseSnapshots = createKyselyDeviceAuthorizationSnapshotReader(
+      context.db,
+    );
+    const barrier = createPostgresBarrier(2);
+    const snapshots: DeviceAuthorizationSnapshotReader = {
+      readForegroundDevice: (...arguments_) =>
+        baseSnapshots.readForegroundDevice(...arguments_),
+      async readRegistration(...arguments_) {
+        const result = await baseSnapshots.readRegistration(...arguments_);
+        await barrier.arrive();
+        return result;
+      },
+    };
+    const service = createRaceService(
+      snapshots,
+      createKyselyDeviceUnitOfWork(context.db),
+      uuidSequence("64000000"),
+    );
+
+    const results = await Promise.allSettled([
+      service.execute({
+        body,
+        clerkSubject: "different_key_subject",
+        idempotencyKey: "65000000-0000-4000-8000-000000000001",
+      }),
+      service.execute({
+        body: { ...body, authenticationPublicKey: alternateP256 },
+        clerkSubject: "different_key_subject",
+        idempotencyKey: "65000000-0000-4000-8000-000000000002",
+      }),
+    ]);
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(
+      rejected?.status === "rejected" ? rejected.reason : null,
+    ).toMatchObject({ kind: "CONFLICT" });
+    expect(
+      await context.db.selectFrom("devices").selectAll().execute(),
+    ).toHaveLength(1);
+    expect(
+      await context.db.selectFrom("api_idempotency").selectAll().execute(),
+    ).toHaveLength(1);
   });
 
   it("rolls back the losing user when two subjects race one installation", async () => {

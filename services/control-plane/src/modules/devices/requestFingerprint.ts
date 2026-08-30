@@ -20,12 +20,16 @@ function digest(values: readonly unknown[]): Readonly<Uint8Array> {
   }
 }
 
+function canonicalUuid(value: string): string {
+  return value.toLowerCase();
+}
+
 export function registrationCommandIdentity(
   body: RegisterDeviceBody,
   idempotencyKey: string,
 ): CommandIdentity {
   return {
-    idempotencyKey,
+    idempotencyKey: canonicalUuid(idempotencyKey),
     requestSha256: digest([
       "devices.register.v1",
       body.installationId,
@@ -48,11 +52,12 @@ export function updatePushTokenCommandIdentity(
   body: UpdatePushTokenBody,
   idempotencyKey: string,
 ): CommandIdentity {
+  const canonicalDeviceId = canonicalUuid(deviceId);
   return {
-    idempotencyKey,
+    idempotencyKey: canonicalUuid(idempotencyKey),
     requestSha256: digest([
       "devices.push-token.patch.v1",
-      deviceId,
+      canonicalDeviceId,
       body.pushToken,
       body.appVersion,
     ]),
@@ -65,8 +70,8 @@ export function revokeDeviceCommandIdentity(
   idempotencyKey: string,
 ): CommandIdentity {
   return {
-    idempotencyKey,
-    requestSha256: digest(["devices.revoke.v1", deviceId]),
+    idempotencyKey: canonicalUuid(idempotencyKey),
+    requestSha256: digest(["devices.revoke.v1", canonicalUuid(deviceId)]),
     routeKey: "devices.revoke.v1",
   };
 }
