@@ -1,6 +1,8 @@
 import type {
+  ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  StartTripBody,
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
 
@@ -34,6 +36,13 @@ const createBody = {
 } as CreateTripBody;
 
 const joinBody = { deviceId, inviteCode: "ABCD2345" } as CreateJoinRequestBody;
+const approvalBody = {
+  algorithmVersion: 1,
+  keyEpoch: 1,
+  wrappedKey: "opaque-wrapped-key",
+} as ApproveJoinRequestBody;
+const startBody = { expectedVersion: 3 } as StartTripBody;
+const membershipId = "5a95305d-c558-4c79-b78c-a075be7bff85";
 
 function response(
   body: unknown,
@@ -75,6 +84,41 @@ describe("CrewRoll API boundary", () => {
     expect(request.headers.get("Authorization")).toBe("Bearer clerk-session");
     expect(request.headers.get("X-CrewRoll-Device-Id")).toBe(deviceId);
     expect(request.headers.get("Idempotency-Key")).toBe(commandId);
+  });
+
+  it("interpolates every required path parameter for trip operations", async () => {
+    const fetchMock = jest.fn(async () => response({ id: tripId }, 200));
+    const api = apiWith(fetchMock);
+
+    await api.approveMember(
+      deviceId,
+      commandId,
+      tripId,
+      membershipId,
+      approvalBody,
+    );
+    await api.startTrip(deviceId, commandId, tripId, startBody);
+    await api.getTrip(deviceId, tripId);
+
+    expect(
+      fetchMock.mock.calls.map((call) => {
+        const request = requestFrom(call);
+        return { method: request.method, url: request.url };
+      }),
+    ).toEqual([
+      {
+        method: "PUT",
+        url: `https://api.crewroll.app/v1/trips/${tripId}/join-requests/${membershipId}/approval`,
+      },
+      {
+        method: "POST",
+        url: `https://api.crewroll.app/v1/trips/${tripId}/start`,
+      },
+      {
+        method: "GET",
+        url: `https://api.crewroll.app/v1/trips/${tripId}`,
+      },
+    ]);
   });
 
   it("never returns RFC 9457 detail to callers", async () => {

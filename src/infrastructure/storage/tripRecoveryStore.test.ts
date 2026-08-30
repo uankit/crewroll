@@ -6,6 +6,24 @@ import {
   type TripRecoveryScope,
 } from "./tripRecoveryStore";
 
+jest.mock(
+  "expo-crypto",
+  () => ({
+    CryptoDigestAlgorithm: { SHA256: "SHA-256" },
+    digestStringAsync: jest.fn(),
+  }),
+  { virtual: true },
+);
+jest.mock(
+  "expo-secure-store",
+  () => ({
+    deleteItemAsync: jest.fn(),
+    getItemAsync: jest.fn(),
+    setItemAsync: jest.fn(),
+  }),
+  { virtual: true },
+);
+
 const scope: TripRecoveryScope = {
   clerkSubject: "user_2wC5zabc",
   deviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
@@ -23,6 +41,12 @@ const unknownJoin: TripRecoveryRecord = {
   inviteCode: "ABCD2345",
   deviceId: scope.deviceId,
   commandId: "5a95305d-c558-4c79-b78c-a075be7bff84",
+};
+
+const confirmed: TripRecoveryRecord = {
+  state: "CONFIRMED",
+  tripId: unknownCreate.tripId,
+  membershipId: "5a95305d-c558-4c79-b78c-a075be7bff86",
 };
 
 function createStore() {
@@ -56,6 +80,37 @@ function createStore() {
 }
 
 describe("TripRecoveryStore", () => {
+  it.each([
+    ["UUIDv4", "5a95305d-c558-4c79-b78c-a075be7bff84"],
+    ["non-lowercase UUIDv7", unknownCreate.tripId.toUpperCase()],
+    ["non-v7 UUID", "018f0d98-76fa-6d1a-b4b4-1f742c2e3130"],
+  ])("rejects a %s tripId in UNKNOWN_CREATE", async (_name, tripId) => {
+    const { store } = createStore();
+
+    await expect(
+      store.save(scope, { ...unknownCreate, tripId }),
+    ).rejects.toThrow("invalid trip recovery record");
+  });
+
+  it.each([
+    ["UUIDv4", "5a95305d-c558-4c79-b78c-a075be7bff84"],
+    ["non-lowercase UUIDv7", confirmed.tripId.toUpperCase()],
+    ["non-v7 UUID", "018f0d98-76fa-8d1a-b4b4-1f742c2e3130"],
+  ])("rejects a %s tripId in CONFIRMED", async (_name, tripId) => {
+    const { store } = createStore();
+
+    await expect(store.save(scope, { ...confirmed, tripId })).rejects.toThrow(
+      "invalid trip recovery record",
+    );
+  });
+
+  it("retains UUIDv4 command and membership identifier rules", async () => {
+    const { store } = createStore();
+
+    await expect(store.save(scope, unknownCreate)).resolves.toBeUndefined();
+    await expect(store.save(scope, confirmed)).resolves.toBeUndefined();
+  });
+
   it("distinguishes unknown create from a confirmed trip across restart", async () => {
     const { digest, secureStore, values, store } = createStore();
 

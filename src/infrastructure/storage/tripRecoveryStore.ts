@@ -5,6 +5,8 @@ const STORAGE_PREFIX = "crewroll.trip-recovery.v1";
 const INVITE_CODE = /^[0-9A-HJKMNP-TV-Z]{8}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V7 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type TripRecoveryRecord =
   | Readonly<{
@@ -58,6 +60,10 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);
 }
 
+function isUuidV7(value: unknown): value is string {
+  return typeof value === "string" && UUID_V7.test(value);
+}
+
 function isInviteCode(value: unknown): value is string {
   return typeof value === "string" && INVITE_CODE.test(value);
 }
@@ -71,7 +77,7 @@ function validateRecord(value: unknown): TripRecoveryRecord | null {
   if (
     record.state === "UNKNOWN_CREATE" &&
     hasExactKeys(record, ["state", "tripId", "commandId", "ownerInviteCode"]) &&
-    isUuid(record.tripId) &&
+    isUuidV7(record.tripId) &&
     isUuid(record.commandId) &&
     isInviteCode(record.ownerInviteCode)
   ) {
@@ -111,7 +117,7 @@ function validateRecord(value: unknown): TripRecoveryRecord | null {
         ? [...confirmedKeys, "ownerInviteCode"]
         : confirmedKeys,
     ) ||
-    !isUuid(record.tripId) ||
+    !isUuidV7(record.tripId) ||
     !isUuid(record.membershipId)
   ) {
     return null;

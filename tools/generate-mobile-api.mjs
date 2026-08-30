@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const root = path.dirname(
   fileURLToPath(new URL("../package.json", import.meta.url)),
@@ -15,56 +16,80 @@ export const requiredOperations = [
   "startTrip",
 ];
 
+const UUID_SCHEMA = Object.freeze({ type: "string", format: "uuid" });
+const UUID_V7_SCHEMA = Object.freeze({
+  format: "uuid",
+  pattern:
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  type: "string",
+});
+const PROBLEM_STATUSES = ["400", "401", "403", "404", "409", "429", "500"];
+const CLERK_BEARER_SCHEME = Object.freeze({
+  type: "http",
+  scheme: "bearer",
+  bearerFormat: "Clerk",
+});
+
+function parameter(name, location, schema) {
+  return { name, in: location, required: true, schema };
+}
+
+const deviceHeader = () =>
+  parameter("X-CrewRoll-Device-Id", "header", UUID_SCHEMA);
+const commandHeader = () => parameter("Idempotency-Key", "header", UUID_SCHEMA);
+const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
+const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
+
 const operationExpectations = [
   {
-    headers: ["X-CrewRoll-Device-Id", "Idempotency-Key"],
     method: "put",
     operationId: "approveJoinRequest",
+    parameters: [deviceHeader(), commandHeader(), tripPath(), membershipPath()],
     path: "/v1/trips/{tripId}/join-requests/{membershipId}/approval",
     request: "ApproveJoinRequestBody",
     response: "MembershipResponse",
     successStatus: "200",
   },
   {
-    headers: ["X-CrewRoll-Device-Id", "Idempotency-Key"],
     method: "post",
     operationId: "createJoinRequest",
+    parameters: [deviceHeader(), commandHeader()],
     path: "/v1/trips/join-requests",
     request: "CreateJoinRequestBody",
     response: "MembershipResponse",
     successStatus: "201",
   },
   {
-    headers: ["X-CrewRoll-Device-Id", "Idempotency-Key"],
     method: "post",
     operationId: "createTrip",
+    parameters: [deviceHeader(), commandHeader()],
     path: "/v1/trips",
     request: "CreateTripBody",
     response: "TripResponse",
     successStatus: "201",
   },
   {
-    headers: ["X-CrewRoll-Device-Id"],
     method: "get",
     operationId: "getTrip",
+    parameters: [deviceHeader(), tripPath()],
     path: "/v1/trips/{tripId}",
     request: null,
     response: "TripResponse",
     successStatus: "200",
   },
   {
-    headers: ["Idempotency-Key"],
     method: "post",
     operationId: "registerDevice",
+    parameters: [commandHeader()],
     path: "/v1/devices",
     request: "RegisterDeviceBody",
     response: "DeviceResponse",
     successStatus: "201",
   },
   {
-    headers: ["X-CrewRoll-Device-Id", "Idempotency-Key"],
     method: "post",
     operationId: "startTrip",
+    parameters: [deviceHeader(), commandHeader(), tripPath()],
     path: "/v1/trips/{tripId}/start",
     request: "StartTripBody",
     response: "TripResponse",
@@ -83,11 +108,153 @@ function requireObject(value, description) {
   return value;
 }
 
+function validateSecurityScheme(contract) {
+  const components = requireObject(contract.components, "OpenAPI components");
+  const schemes = requireObject(
+    components.securitySchemes,
+    "OpenAPI security schemes",
+  );
+  if (!isDeepStrictEqual(schemes.ClerkBearer, CLERK_BEARER_SCHEME)) {
+    throw new Error("ClerkBearer security scheme definition drifted");
+  }
+}
+
+function parameterIdentity(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return typeof value.name === "string" && typeof value.in === "string"
+    ? `${value.in}:${value.name}`
+    : null;
+}
+
+function validateParameters(operation, expected) {
+  if (!Array.isArray(operation.parameters)) {
+    throw new Error(`${expected.operationId} parameters must be an array`);
+  }
+
+  for (const expectedParameter of expected.parameters) {
+    const identity = parameterIdentity(expectedParameter);
+    const actual = operation.parameters.find(
+      (candidate) => parameterIdentity(candidate) === identity,
+    );
+    if (actual === undefined) {
+      throw new Error(
+        `${expected.operationId} ${expectedParameter.name} ${expectedParameter.in} parameter is required`,
+      );
+    }
+    if (!isDeepStrictEqual(actual, expectedParameter)) {
+      throw new Error(
+        `${expected.operationId} ${expectedParameter.name} ${expectedParameter.in} parameter drifted`,
+      );
+    }
+  }
+
+  for (const actual of operation.parameters) {
+    const identity = parameterIdentity(actual);
+    if (
+      !expected.parameters.some(
+        (expectedParameter) =>
+          parameterIdentity(expectedParameter) === identity,
+      )
+    ) {
+      const label =
+        identity ??
+        (typeof actual?.$ref === "string"
+          ? actual.$ref.split("/").at(-1)
+          : "invalid");
+      throw new Error(
+        `${expected.operationId} ${label} parameter is unexpected`,
+      );
+    }
+  }
+
+  if (operation.parameters.length !== expected.parameters.length) {
+    throw new Error(`${expected.operationId} parameter set drifted`);
+  }
+}
+
+function validateContent(content, contentType, refName, description) {
+  const contentObject = requireObject(content, `${description} content`);
+  const contentTypes = Object.keys(contentObject).sort();
+  if (!isDeepStrictEqual(contentTypes, [contentType])) {
+    throw new Error(`${description} content types drifted`);
+  }
+
+  const media = requireObject(
+    contentObject[contentType],
+    `${description} ${contentType}`,
+  );
+  if (!isDeepStrictEqual(media.schema, { $ref: schemaRef(refName) })) {
+    throw new Error(`${description} schema ref must be ${refName}`);
+  }
+}
+
+function validateRequest(operation, expected) {
+  if (expected.request === null) {
+    if (operation.requestBody !== undefined) {
+      throw new Error(`${expected.operationId} must not have a request body`);
+    }
+    return;
+  }
+
+  const requestBody = requireObject(
+    operation.requestBody,
+    `${expected.operationId} request body`,
+  );
+  if (requestBody.required !== true) {
+    throw new Error(`${expected.operationId} request body must be required`);
+  }
+  validateContent(
+    requestBody.content,
+    "application/json",
+    expected.request,
+    `${expected.operationId} request`,
+  );
+}
+
+function validateResponses(operation, expected) {
+  const responses = requireObject(
+    operation.responses,
+    `${expected.operationId} responses`,
+  );
+  const expectedStatuses = [expected.successStatus, ...PROBLEM_STATUSES].sort();
+  const actualStatuses = Object.keys(responses).sort();
+  if (!isDeepStrictEqual(actualStatuses, expectedStatuses)) {
+    throw new Error(`${expected.operationId} response statuses drifted`);
+  }
+
+  validateContent(
+    requireObject(
+      responses[expected.successStatus],
+      `${expected.operationId} response ${expected.successStatus}`,
+    ).content,
+    "application/json",
+    expected.response,
+    `${expected.operationId} response ${expected.successStatus}`,
+  );
+
+  for (const status of PROBLEM_STATUSES) {
+    validateContent(
+      requireObject(
+        responses[status],
+        `${expected.operationId} response ${status}`,
+      ).content,
+      "application/problem+json",
+      "ProblemDetails",
+      `${expected.operationId} response ${status}`,
+    );
+  }
+}
+
 function validateOperation(contract, expected) {
   const pathItem = requireObject(
     contract.paths?.[expected.path],
     expected.operationId,
   );
+  if (pathItem.parameters !== undefined) {
+    throw new Error(`${expected.operationId} path-level parameters drifted`);
+  }
   const operation = requireObject(
     pathItem[expected.method],
     expected.operationId,
@@ -95,63 +262,66 @@ function validateOperation(contract, expected) {
   if (operation.operationId !== expected.operationId) {
     throw new Error(`${expected.operationId} operationId drifted`);
   }
-  if (
-    JSON.stringify(operation.security) !== JSON.stringify([{ ClerkBearer: [] }])
-  ) {
+  if (!isDeepStrictEqual(operation.security, [{ ClerkBearer: [] }])) {
     throw new Error(`${expected.operationId} must require ClerkBearer`);
   }
 
-  const parameters = Array.isArray(operation.parameters)
-    ? operation.parameters
-    : [];
-  const headers = parameters
-    .filter(
-      (parameter) => parameter?.in === "header" && parameter.required === true,
-    )
-    .map((parameter) => parameter.name)
-    .sort();
-  const expectedHeaders = [...expected.headers].sort();
-  if (JSON.stringify(headers) !== JSON.stringify(expectedHeaders)) {
-    throw new Error(
-      `${expected.operationId} required headers must be ${expectedHeaders.join(", ")}`,
+  validateParameters(operation, expected);
+  validateRequest(operation, expected);
+  validateResponses(operation, expected);
+}
+
+function renderParameters(operation, lines) {
+  lines.push("      parameters: {");
+  for (const location of ["query", "header", "path"]) {
+    const parameters = operation.parameters.filter(
+      (candidate) => candidate.in === location,
     );
-  }
-
-  if (expected.request === null) {
-    if (operation.requestBody !== undefined) {
-      throw new Error(`${expected.operationId} must not have a request body`);
+    if (parameters.length === 0) continue;
+    lines.push(`        ${location}: {`);
+    for (const candidate of parameters) {
+      lines.push(`          ${JSON.stringify(candidate.name)}: string;`);
     }
-  } else {
-    const request =
-      operation.requestBody?.content?.["application/json"]?.schema?.$ref;
-    if (request !== schemaRef(expected.request)) {
-      throw new Error(
-        `${expected.operationId} request schema must be ${expected.request}`,
-      );
-    }
+    lines.push("        };");
   }
+  lines.push("      };");
+}
 
-  const response =
-    operation.responses?.[expected.successStatus]?.content?.["application/json"]
-      ?.schema?.$ref;
-  if (response !== schemaRef(expected.response)) {
-    throw new Error(
-      `${expected.operationId} response schema must be ${expected.response}`,
-    );
+function renderResponses(operation, lines) {
+  lines.push("      responses: {");
+  lines.push(`        ${operation.successStatus}: {`);
+  lines.push("          content: {");
+  lines.push(`            "application/json": ${operation.response};`);
+  lines.push("          };");
+  lines.push("        };");
+  for (const status of PROBLEM_STATUSES) {
+    lines.push(`        ${status}: {`);
+    lines.push("          content: {");
+    lines.push('            "application/problem+json": ProblemDetails;');
+    lines.push("          };");
+    lines.push("        };");
   }
+  lines.push("      };");
+}
 
-  for (const [status, definition] of Object.entries(
-    operation.responses ?? {},
-  )) {
-    if (status === expected.successStatus) continue;
-    const problem =
-      definition?.content?.["application/problem+json"]?.schema?.$ref;
-    if (problem !== schemaRef("ProblemDetails")) {
-      throw new Error(
-        `${expected.operationId} problem response ${status} drifted`,
-      );
+function renderPaths(lines) {
+  lines.push("export type MobilePaths = {");
+  for (const operation of operationExpectations) {
+    lines.push(`  ${JSON.stringify(operation.path)}: {`);
+    lines.push(`    ${operation.method}: {`);
+    renderParameters(operation, lines);
+    if (operation.request !== null) {
+      lines.push("      requestBody: {");
+      lines.push("        content: {");
+      lines.push(`          "application/json": ${operation.request};`);
+      lines.push("        };");
+      lines.push("      };");
     }
+    renderResponses(operation, lines);
+    lines.push("    };");
+    lines.push("  };");
   }
+  lines.push("};", "");
 }
 
 function renderGeneratedTypes() {
@@ -161,6 +331,7 @@ function renderGeneratedTypes() {
     "CreateTripBody",
     "DeviceResponse",
     "MembershipResponse",
+    "ProblemDetails",
     "RegisterDeviceBody",
     "StartTripBody",
     "TripResponse",
@@ -171,17 +342,21 @@ function renderGeneratedTypes() {
     "",
     `export type MobileOperationId = ${requiredOperations.map((id) => JSON.stringify(id)).join(" | ")};`,
     "",
-    "export type MobileOperationMap = {",
   ];
 
+  renderPaths(lines);
+  lines.push("export type MobileOperationMap = {");
   for (const operation of operationExpectations) {
+    const headers = operation.parameters
+      .filter((candidate) => candidate.in === "header")
+      .map((candidate) => candidate.name);
     lines.push(`  ${operation.operationId}: {`);
     lines.push(
       `    method: ${JSON.stringify(operation.method.toUpperCase())};`,
     );
     lines.push(`    path: ${JSON.stringify(operation.path)};`);
     lines.push(
-      `    headers: ${operation.headers.map((header) => JSON.stringify(header)).join(" | ")};`,
+      `    headers: ${headers.map((header) => JSON.stringify(header)).join(" | ")};`,
     );
     if (operation.request !== null) {
       lines.push(`    request: ${operation.request};`);
@@ -203,6 +378,7 @@ export async function generateMobileApi({
 } = {}) {
   const contract = JSON.parse(await readFile(inputPath, "utf8"));
   requireObject(contract, "OpenAPI document");
+  validateSecurityScheme(contract);
 
   for (const expected of operationExpectations) {
     validateOperation(contract, expected);

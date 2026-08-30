@@ -54,6 +54,7 @@ test("generates the exact bounded current mobile operations deterministically", 
       assert.equal(first, second);
       assert.doesNotMatch(first, /\/private\/|Generated at|\\Users\\/);
       assert.match(first, /export type MobileOperationId =/);
+      assert.match(first, /export type MobilePaths =/);
     },
   );
 });
@@ -107,6 +108,120 @@ test("fails generation when Clerk security, required headers, or body schema dri
 
   for (const { mutate, name, pattern } of cases) {
     await t.test(`rejects ${name} drift`, async () => {
+      await withContract(
+        async (contract) => mutate(contract),
+        async ({ inputPath, outputPath }) => {
+          await assert.rejects(
+            generateMobileApi({ inputPath, outputPath }),
+            pattern,
+          );
+        },
+      );
+    });
+  }
+});
+
+test("fails generation when the ClerkBearer scheme definition drifts", async () => {
+  await withContract(
+    async (contract) => {
+      contract.components.securitySchemes.ClerkBearer.bearerFormat = "JWT";
+    },
+    async ({ inputPath, outputPath }) => {
+      await assert.rejects(
+        generateMobileApi({ inputPath, outputPath }),
+        /ClerkBearer.*definition/i,
+      );
+    },
+  );
+});
+
+test("fails generation on exact header, path, and query parameter drift", async (t) => {
+  const cases = [
+    {
+      mutate: (contract) => {
+        const header = contract.paths["/v1/trips"].post.parameters.find(
+          (parameter) => parameter.name === "Idempotency-Key",
+        );
+        header.schema.format = "crewroll-command-id";
+      },
+      name: "header schema",
+      pattern: /createTrip.*Idempotency-Key.*parameter/i,
+    },
+    {
+      mutate: (contract) => {
+        contract.paths["/v1/trips/{tripId}"].get.parameters = contract.paths[
+          "/v1/trips/{tripId}"
+        ].get.parameters.filter((parameter) => parameter.name !== "tripId");
+      },
+      name: "required tripId path parameter",
+      pattern: /getTrip.*tripId.*parameter/i,
+    },
+    {
+      mutate: (contract) => {
+        contract.paths["/v1/trips/{tripId}"].get.parameters.push({
+          in: "query",
+          name: "includeSecrets",
+          required: false,
+          schema: { type: "boolean" },
+        });
+      },
+      name: "unexpected query parameter",
+      pattern: /getTrip.*includeSecrets.*parameter/i,
+    },
+    {
+      mutate: (contract) => {
+        const parameters = contract.paths["/v1/trips/{tripId}"].get.parameters;
+        const index = parameters.findIndex(
+          (parameter) => parameter.name === "tripId",
+        );
+        parameters[index] = {
+          $ref: "#/components/parameters/TripId",
+        };
+      },
+      name: "parameter ref",
+      pattern: /getTrip.*tripId.*parameter/i,
+    },
+  ];
+
+  for (const { mutate, name, pattern } of cases) {
+    await t.test(`rejects ${name}`, async () => {
+      await withContract(
+        async (contract) => mutate(contract),
+        async ({ inputPath, outputPath }) => {
+          await assert.rejects(
+            generateMobileApi({ inputPath, outputPath }),
+            pattern,
+          );
+        },
+      );
+    });
+  }
+});
+
+test("fails generation on extra request or response content types", async (t) => {
+  const cases = [
+    {
+      mutate: (contract) => {
+        contract.paths["/v1/trips"].post.requestBody.content["text/plain"] = {
+          schema: { type: "string" },
+        };
+      },
+      name: "request text/plain",
+      pattern: /createTrip.*request.*content/i,
+    },
+    {
+      mutate: (contract) => {
+        contract.paths["/v1/trips"].post.responses["201"].content[
+          "text/plain"
+        ] = { schema: { type: "string" } };
+      },
+      name: "response text/plain",
+      pattern: /createTrip.*response 201.*content/i,
+    },
+  ];
+
+  for (const { mutate, name, pattern } of cases) {
+    await t.test(`rejects ${name}`, async () => {
       await withContract(
         async (contract) => mutate(contract),
         async ({ inputPath, outputPath }) => {

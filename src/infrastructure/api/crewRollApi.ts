@@ -2,10 +2,12 @@ import type {
   ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  ProblemDetails,
   RegisterDeviceBody,
   StartTripBody,
 } from "@crewroll/contracts";
 import createClient from "openapi-fetch";
+import type { Client } from "openapi-fetch";
 
 import type {
   DeviceRegistrationPort,
@@ -13,7 +15,11 @@ import type {
 } from "../../application/auth/ports";
 import { userFacingProblems } from "../../application/problems/userFacingProblem";
 import type { TripApiPort } from "../../application/trips/ports";
-import type { MobileOperationId, MobileOperationMap } from "./generated";
+import type {
+  MobileOperationId,
+  MobileOperationMap,
+  MobilePaths,
+} from "./generated";
 
 export class CrewRollApiProblem extends Error {
   readonly kind = "API_PROBLEM";
@@ -38,16 +44,11 @@ export type CrewRollApi = DeviceRegistrationPort & TripApiPort;
 type GeneratedResponse<Operation extends MobileOperationId> =
   MobileOperationMap[Operation]["response"];
 
-type ApiResult = Readonly<{
-  data?: unknown;
-  error?: unknown;
-}>;
+type ApiResult<Response> =
+  | Readonly<{ data: Response; error?: never }>
+  | Readonly<{ data?: never; error: ProblemDetails }>;
 
-type MobileClient = Readonly<{
-  GET(path: string, options: unknown): Promise<ApiResult>;
-  POST(path: string, options: unknown): Promise<ApiResult>;
-  PUT(path: string, options: unknown): Promise<ApiResult>;
-}>;
+type MobileClient = Client<MobilePaths>;
 
 function isProblemCode(
   value: unknown,
@@ -70,7 +71,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     commandId: string,
     body: RegisterDeviceBody,
   ): Promise<GeneratedResponse<"registerDevice">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"registerDevice">>(() =>
       this.client.POST("/v1/devices", {
         body,
         params: { header: { "Idempotency-Key": commandId } },
@@ -83,7 +84,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     commandId: string,
     body: CreateTripBody,
   ): Promise<GeneratedResponse<"createTrip">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"createTrip">>(() =>
       this.client.POST("/v1/trips", {
         body,
         params: { header: commandHeaders(deviceId, commandId) },
@@ -96,7 +97,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     commandId: string,
     body: CreateJoinRequestBody,
   ): Promise<GeneratedResponse<"createJoinRequest">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"createJoinRequest">>(() =>
       this.client.POST("/v1/trips/join-requests", {
         body,
         params: { header: commandHeaders(deviceId, commandId) },
@@ -111,7 +112,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     membershipId: string,
     body: ApproveJoinRequestBody,
   ): Promise<GeneratedResponse<"approveJoinRequest">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"approveJoinRequest">>(() =>
       this.client.PUT(
         "/v1/trips/{tripId}/join-requests/{membershipId}/approval",
         {
@@ -131,7 +132,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     tripId: string,
     body: StartTripBody,
   ): Promise<GeneratedResponse<"startTrip">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"startTrip">>(() =>
       this.client.POST("/v1/trips/{tripId}/start", {
         body,
         params: {
@@ -146,7 +147,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     deviceId: string,
     tripId: string,
   ): Promise<GeneratedResponse<"getTrip">> {
-    return this.request(() =>
+    return this.request<GeneratedResponse<"getTrip">>(() =>
       this.client.GET("/v1/trips/{tripId}", {
         params: {
           header: { "X-CrewRoll-Device-Id": deviceId },
@@ -157,7 +158,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
   }
 
   private async request<Response>(
-    operation: () => Promise<ApiResult>,
+    operation: () => Promise<ApiResult<Response>>,
   ): Promise<Response> {
     try {
       const result = await operation();
@@ -189,7 +190,7 @@ export function createCrewRollApi(
     sessionTokenSource: SessionTokenSource;
   }>,
 ): CrewRollApi {
-  const client = createClient<any>({
+  const client = createClient<MobilePaths>({
     baseUrl: input.apiBaseUrl,
     fetch: input.fetch,
   });
