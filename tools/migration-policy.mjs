@@ -230,7 +230,8 @@ function validateAlterTableAddColumn(alteration, context, opaqueCode) {
   if (
     alteration.args.length !== 3 ||
     !isDirectString(alteration.args[0]) ||
-    !isDirectString(alteration.args[1])
+    !isDirectString(alteration.args[1]) ||
+    alteration.args[1].text !== "boolean"
   ) {
     return { code: opaqueCode, node: alteration.node };
   }
@@ -902,10 +903,9 @@ function buildHelperGraph(context) {
 
 function validateFunctionBody(functionInfo, context) {
   if (!functionInfo.body) return;
-  const mode =
-    functionInfo.name === "up" || functionInfo.contexts.has("up")
-      ? "up"
-      : "down";
+  const modes = functionInfo.lifecycle
+    ? [functionInfo.name]
+    : functionInfo.contexts;
   let returnSeen = false;
   for (let index = 0; index < functionInfo.body.statements.length; index += 1) {
     const statement = functionInfo.body.statements[index];
@@ -923,11 +923,13 @@ function validateFunctionBody(functionInfo, context) {
     }
     const helper = inspectHelperCall(expression, functionInfo, context);
     if (helper.isHelper) continue;
-    const result =
-      mode === "up"
-        ? validateUpExpression(expression, functionInfo, context)
-        : validateDownExpression(expression, functionInfo, context);
-    if (result) context.add(result.node ?? expression, result.code);
+    for (const mode of modes) {
+      const result =
+        mode === "up"
+          ? validateUpExpression(expression, functionInfo, context)
+          : validateDownExpression(expression, functionInfo, context);
+      if (result) context.add(result.node ?? expression, result.code);
+    }
   }
 }
 

@@ -174,6 +174,26 @@ export async function down(db: Kysely<unknown>): Promise<void> {
     .execute();
 }
 `;
+const sharedApi3AddColumnHelperMigration = `
+import type { Kysely } from "kysely";
+
+async function applyReadiness(db: Kysely<unknown>): Promise<void> {
+  await db.schema
+    .alterTable("trip_members")
+    .addColumn("full_photo_library_access", "boolean", (column) =>
+      column.notNull().defaultTo(false),
+    )
+    .execute();
+}
+
+export async function up(db: Kysely<unknown>): Promise<void> {
+  await applyReadiness(db);
+}
+
+export async function down(db: Kysely<unknown>): Promise<void> {
+  await applyReadiness(db);
+}
+`;
 const migrationPath = "services/control-plane/src/db/migrations/001_initial.ts";
 const runnerPath = "services/control-plane/src/db/migrate.ts";
 const indexPath = "services/control-plane/src/index.ts";
@@ -345,6 +365,15 @@ test("complete composition accepts the exact API3 migration shape", async (t) =>
 test("complete composition rejects API3 migration grammar mutations directly and end to end", async (t) => {
   const cases = [
     {
+      name: "wrong literal add-column type",
+      code: "MIGRATION_UP_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        '.addColumn("full_photo_library_access", "boolean", (column) =>',
+        '.addColumn("full_photo_library_access", "text", (column) =>',
+      ),
+    },
+    {
       name: "wrong add-column default",
       code: "MIGRATION_UP_OPAQUE_CALL",
       source: replaceOnce(
@@ -397,6 +426,11 @@ test("complete composition rejects API3 migration grammar mutations directly and
         '.dropColumn("full_photo_library_access")\n    .execute();',
         '.dropColumn("full_photo_library_access")\n    .execute()\n    .dropColumn("late");',
       ),
+    },
+    {
+      name: "shared add-column helper reaches down",
+      code: "MIGRATION_DOWN_OPAQUE_CALL",
+      source: sharedApi3AddColumnHelperMigration,
     },
   ];
 
