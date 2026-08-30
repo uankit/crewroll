@@ -6,6 +6,10 @@ import type {
   RegisterDeviceBody,
   StartTripBody,
 } from "@crewroll/contracts";
+import {
+  installCrewRollFormats,
+  TripResponseSchema,
+} from "@crewroll/contracts";
 import createClient from "openapi-fetch";
 import type { Client } from "openapi-fetch";
 
@@ -55,6 +59,31 @@ type ApiResult<Response> =
 
 type MobileClient = Client<MobilePaths>;
 
+type RuntimeSchema = Readonly<{
+  additionalProperties?: boolean;
+  anyOf?: readonly RuntimeSchema[];
+  const?: unknown;
+  format?: string;
+  items?: RuntimeSchema;
+  maxItems?: number;
+  maxLength?: number;
+  minItems?: number;
+  minLength?: number;
+  minimum?: number;
+  pattern?: string;
+  properties?: Readonly<Record<string, RuntimeSchema>>;
+  required?: readonly string[];
+  type?: string;
+}>;
+
+const tripResponseFormats = new Map<string, (value: string) => boolean>();
+installCrewRollFormats({
+  Get: (format) => tripResponseFormats.get(format),
+  Set: (format, validator) => {
+    tripResponseFormats.set(format, validator);
+  },
+});
+
 function isProblemCode(
   value: unknown,
 ): value is keyof typeof userFacingProblems {
@@ -82,6 +111,97 @@ function hasExactKeys(value: object, expected: readonly string[]): boolean {
   );
 }
 
+function matchesRuntimeSchema(schema: RuntimeSchema, value: unknown): boolean {
+  if (
+    schema.anyOf !== undefined &&
+    !schema.anyOf.some((branch) => matchesRuntimeSchema(branch, value))
+  ) {
+    return false;
+  }
+  if (Object.hasOwn(schema, "const") && !Object.is(value, schema.const)) {
+    return false;
+  }
+
+  switch (schema.type) {
+    case undefined:
+      return schema.anyOf !== undefined || Object.hasOwn(schema, "const");
+    case "array": {
+      const itemSchema = schema.items;
+      return (
+        Array.isArray(value) &&
+        (schema.minItems === undefined || value.length >= schema.minItems) &&
+        (schema.maxItems === undefined || value.length <= schema.maxItems) &&
+        (itemSchema === undefined ||
+          value.every((item) => matchesRuntimeSchema(itemSchema, item)))
+      );
+    }
+    case "boolean":
+      return typeof value === "boolean";
+    case "integer":
+      return (
+        Number.isInteger(value) &&
+        (schema.minimum === undefined ||
+          (typeof value === "number" && value >= schema.minimum))
+      );
+    case "null":
+      return value === null;
+    case "number":
+      return (
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        (schema.minimum === undefined || value >= schema.minimum)
+      );
+    case "object": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return false;
+      }
+      const properties = schema.properties ?? {};
+      if (schema.required?.some((key) => !Object.hasOwn(value, key)) === true) {
+        return false;
+      }
+      return Object.entries(value).every(([key, propertyValue]) => {
+        if (!Object.hasOwn(properties, key)) {
+          return schema.additionalProperties !== false;
+        }
+        const propertySchema = properties[key];
+        return (
+          propertySchema !== undefined &&
+          matchesRuntimeSchema(propertySchema, propertyValue)
+        );
+      });
+    }
+    case "string": {
+      if (typeof value !== "string") return false;
+      const codePointLength = Array.from(value).length;
+      if (
+        schema.minLength !== undefined &&
+        codePointLength < schema.minLength
+      ) {
+        return false;
+      }
+      if (
+        schema.maxLength !== undefined &&
+        codePointLength > schema.maxLength
+      ) {
+        return false;
+      }
+      if (
+        schema.pattern !== undefined &&
+        !new RegExp(schema.pattern).test(value)
+      ) {
+        return false;
+      }
+      if (schema.format !== undefined) {
+        const validator = tripResponseFormats.get(schema.format);
+        if (validator === undefined || !validator(value)) return false;
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 function unhandledCreateOutcome(_outcome: never): never {
   return malformedCreateOutcome();
 }
@@ -98,9 +218,10 @@ function parseCreateTripOutcome(
     case "COMMITTED": {
       if (
         !hasExactKeys(candidate, ["outcome", "trip"]) ||
-        typeof candidate.trip !== "object" ||
-        candidate.trip === null ||
-        Array.isArray(candidate.trip)
+        !matchesRuntimeSchema(
+          TripResponseSchema as RuntimeSchema,
+          candidate.trip,
+        )
       ) {
         return malformedCreateOutcome();
       }
@@ -161,7 +282,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
       GeneratedResponse<"resolveCreateTripOutcome">
     >(() =>
       this.client.POST("/v1/trips/create-outcome", {
-        body,
+        body: { tripId: body.tripId },
         params: { header: commandHeaders(deviceId, commandId) },
       }),
     );

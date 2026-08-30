@@ -77,6 +77,14 @@ test("fails generation on every authoritative create-outcome drift", async (t) =
       },
     },
     {
+      name: "parallel sibling method",
+      mutate: (contract) => {
+        contract.paths[createOutcomePath].get = structuredClone(
+          operation(contract),
+        );
+      },
+    },
+    {
       name: "path",
       mutate: (contract) => {
         contract.paths["/v1/trips/create-outcomes"] =
@@ -119,6 +127,14 @@ test("fails generation on every authoritative create-outcome drift", async (t) =
           type: "string",
           format: "uuid",
         };
+      },
+    },
+    {
+      name: "synchronized TripResponse and embedded response drift",
+      mutate: (contract) => {
+        delete contract.components.schemas.TripResponse.properties.name.pattern;
+        delete contract.components.schemas.CreateTripOutcomeResponse.anyOf[0]
+          .properties.trip.properties.name.pattern;
       },
     },
     {

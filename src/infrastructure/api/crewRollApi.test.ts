@@ -73,7 +73,11 @@ const tripResponse: TripResponse = {
   release: { mode: "IMMEDIATE" },
   startsAt: null,
   status: "LOBBY",
-  tripKeyEnvelope: createBody.ownerKeyEnvelope,
+  tripKeyEnvelope: {
+    algorithmVersion: 1,
+    keyEpoch: 1,
+    wrappedKey: createBody.ownerKeyEnvelope.wrappedKey,
+  },
   version: 1,
 };
 
@@ -142,6 +146,28 @@ describe("CrewRoll API boundary", () => {
     await expect(request.json()).resolves.toEqual({ tripId });
   });
 
+  it("projects a persisted create command to the closed outcome body", async () => {
+    const fetchMock = jest.fn(async () =>
+      response({ outcome: "STILL_UNKNOWN" }, 200),
+    );
+    const api = apiWith(fetchMock);
+    const persistedCreateCommand = {
+      commandId,
+      ownerInviteCode: "ABCD2345",
+      tripId,
+    };
+
+    await api.resolveCreateTripOutcome(
+      deviceId,
+      commandId,
+      persistedCreateCommand,
+    );
+
+    const request = requestFrom(fetchMock.mock.calls[0]);
+    expect(request.headers.get("Idempotency-Key")).toBe(commandId);
+    await expect(request.json()).resolves.toEqual({ tripId });
+  });
+
   it("returns every exact closed create-outcome variant", async () => {
     const outcomes: readonly CreateTripOutcomeResponse[] = [
       { outcome: "COMMITTED", trip: tripResponse },
@@ -164,6 +190,26 @@ describe("CrewRoll API boundary", () => {
         "https://api.crewroll.app/v1/trips/create-outcome",
       );
     }
+  });
+
+  it.each([
+    ["80 astral characters", "🛶".repeat(80)],
+    ["79 BMP and one astral character", `${"a".repeat(79)}🛶`],
+  ])("accepts a COMMITTED trip name with %s", async (_caseName, name) => {
+    const committed = {
+      outcome: "COMMITTED",
+      trip: { ...tripResponse, name },
+    } as const;
+    const fetchMock = jest.fn(async () => response(committed, 200));
+
+    await expect(
+      apiWith(fetchMock).resolveCreateTripOutcome(
+        deviceId,
+        commandId,
+        createOutcomeBody,
+      ),
+    ).resolves.toEqual(committed);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects create-outcome wire metadata without exposing it", async () => {
@@ -194,6 +240,46 @@ describe("CrewRoll API boundary", () => {
       expect(error).not.toHaveProperty("cause");
       expect(JSON.stringify(error)).not.toContain("private row");
     }
+  });
+
+  it.each([
+    [
+      "nested private metadata",
+      {
+        ...tripResponse,
+        detail: "private row and request context",
+        requestId,
+        wireStatus: 200,
+      },
+    ],
+    [
+      "a missing required field",
+      (({ version: _version, ...tripWithoutVersion }) => tripWithoutVersion)(
+        tripResponse,
+      ),
+    ],
+  ])("rejects a COMMITTED trip with %s", async (_caseName, trip) => {
+    const fetchMock = jest.fn(async () =>
+      response({ outcome: "COMMITTED", trip }, 200),
+    );
+
+    try {
+      await apiWith(fetchMock).resolveCreateTripOutcome(
+        deviceId,
+        commandId,
+        createOutcomeBody,
+      );
+      throw new Error("expected malformed committed trip rejection");
+    } catch (error) {
+      expect(error).toEqual(new CrewRollApiProblem("INTERNAL_ERROR"));
+      expect(error).not.toHaveProperty("detail");
+      expect(error).not.toHaveProperty("status");
+      expect(error).not.toHaveProperty("requestId");
+      expect(error).not.toHaveProperty("cause");
+      expect(JSON.stringify(error)).not.toContain("private row");
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("preserves every canonical create-outcome problem without private fields", async () => {

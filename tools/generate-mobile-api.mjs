@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,19 @@ const UUID_V7_SCHEMA = Object.freeze({
   type: "string",
 });
 const PROBLEM_STATUSES = ["400", "401", "403", "404", "409", "429", "500"];
+const HTTP_METHODS = [
+  "delete",
+  "get",
+  "head",
+  "options",
+  "patch",
+  "post",
+  "put",
+  "trace",
+];
+// Canonical-key SHA-256 of the accepted API3 TripResponseSchema at 9e12cb8.
+const ACCEPTED_TRIP_RESPONSE_SCHEMA_SHA256 =
+  "cb150f5ded252ff4b16e0c49e526aaec26f3955694ae678cd483a29c1fa1f3c1";
 const CLERK_BEARER_SCHEME = Object.freeze({
   type: "http",
   scheme: "bearer",
@@ -116,6 +130,23 @@ function requireObject(value, description) {
     throw new Error(`${description} must be an object`);
   }
   return value;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function schemaSha256(schema) {
+  return createHash("sha256").update(canonicalJson(schema)).digest("hex");
 }
 
 function validateSecurityScheme(contract) {
@@ -274,6 +305,11 @@ function validateCreateOutcomeSchemas(contract) {
   }
 
   const trip = requireObject(schemas.TripResponse, "TripResponse schema");
+  if (schemaSha256(trip) !== ACCEPTED_TRIP_RESPONSE_SCHEMA_SHA256) {
+    throw new Error(
+      "resolveCreateTripOutcome accepted TripResponse schema drifted",
+    );
+  }
   const expectedResponse = {
     anyOf: [
       {
@@ -317,6 +353,16 @@ function validateOperation(contract, expected) {
   );
   if (pathItem.parameters !== undefined) {
     throw new Error(`${expected.operationId} path-level parameters drifted`);
+  }
+  const expectedMethods = operationExpectations
+    .filter((operation) => operation.path === expected.path)
+    .map((operation) => operation.method)
+    .sort();
+  const actualMethods = Object.keys(pathItem)
+    .filter((key) => HTTP_METHODS.includes(key))
+    .sort();
+  if (!isDeepStrictEqual(actualMethods, expectedMethods)) {
+    throw new Error(`${expected.operationId} HTTP method set drifted`);
   }
   const operation = requireObject(
     pathItem[expected.method],
