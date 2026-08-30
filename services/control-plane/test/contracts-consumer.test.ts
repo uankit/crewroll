@@ -5,9 +5,20 @@ import { describe, expect, it } from "vitest";
 import {
   CreateTripBodySchema,
   DateTimeSchema,
+  DeviceRegistrationHeadersSchema,
+  DeviceResponseSchema,
+  MobileCommandHeadersSchema,
+  RegisterDeviceBodySchema,
+  UpdatePushTokenBodySchema,
   installCrewRollFormats,
 } from "@crewroll/contracts";
-import { validImmediateTripBody } from "@crewroll/contracts/fixtures/http";
+import {
+  validClerkCommandHeaders,
+  validImmediateTripBody,
+  validRegisterDeviceBody,
+  validRegistrationHeaders,
+  validUpdatePushTokenBody,
+} from "@crewroll/contracts/fixtures/http";
 
 import { controlPlaneWorkspace } from "../src/index.js";
 
@@ -24,6 +35,28 @@ describe("compiled CrewRoll contracts in the control-plane TypeBox instance", ()
     expect(TypeCompiler.Compile(CreateTripBodySchema).Check(validTrip)).toBe(
       true,
     );
+  });
+
+  it("compiles the complete API-002 bootstrap surface from shared contracts", () => {
+    const cases = [
+      [DeviceRegistrationHeadersSchema, validRegistrationHeaders()],
+      [MobileCommandHeadersSchema, validClerkCommandHeaders()],
+      [RegisterDeviceBodySchema, validRegisterDeviceBody()],
+      [
+        DeviceResponseSchema,
+        {
+          backgroundBearer: `crb_${"A".repeat(43)}`,
+          backgroundBearerExpiresAt: "2026-09-29T12:00:00.000Z",
+          deviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
+        },
+      ],
+      [UpdatePushTokenBodySchema, validUpdatePushTokenBody()],
+    ] as const;
+
+    for (const [schema, fixture] of cases) {
+      expect(Value.Check(schema, fixture)).toBe(true);
+      expect(TypeCompiler.Compile(schema).Check(fixture)).toBe(true);
+    }
   });
 
   it("exposes an idempotent installer with the complete semantic format set", () => {
