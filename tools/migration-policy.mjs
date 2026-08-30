@@ -194,7 +194,11 @@ function isBoundedSql(node, context) {
   );
 }
 
-function validateCallbackParameter(callback, context) {
+function validateCallbackParameter(
+  callback,
+  context,
+  opaqueCode = "MIGRATION_UP_OPAQUE_CALL",
+) {
   if (
     !ts.isArrowFunction(callback) ||
     callback.modifiers?.some(
@@ -204,7 +208,7 @@ function validateCallbackParameter(callback, context) {
     callback.parameters.length !== 1 ||
     ts.isBlock(callback.body)
   ) {
-    return { code: "MIGRATION_UP_OPAQUE_CALL", node: callback };
+    return { code: opaqueCode, node: callback };
   }
   const parameter = callback.parameters[0];
   if (
@@ -220,6 +224,82 @@ function validateCallbackParameter(callback, context) {
     return { code: "MIGRATION_BINDING_SHAPE", node: parameter };
   }
   return { parameter: parameter.name.text };
+}
+
+function validateAlterTableAddColumn(alteration, context, opaqueCode) {
+  if (
+    alteration.args.length !== 3 ||
+    !isDirectString(alteration.args[0]) ||
+    !isDirectString(alteration.args[1])
+  ) {
+    return { code: opaqueCode, node: alteration.node };
+  }
+
+  const callback = alteration.args[2];
+  const parameterResult = validateCallbackParameter(
+    callback,
+    context,
+    opaqueCode,
+  );
+  if (!parameterResult.parameter) return parameterResult;
+  const chain = flattenCallChain(callback.body);
+  if (
+    !chain ||
+    chain.scope !== "direct" ||
+    chain.root !== parameterResult.parameter
+  ) {
+    return { code: "MIGRATION_BINDING_SHAPE", node: callback.body };
+  }
+
+  const [notNull, defaultTo] = chain.steps;
+  if (
+    chain.steps.length !== 2 ||
+    notNull.name !== "notNull" ||
+    notNull.args.length !== 0 ||
+    notNull.hasTypeArgumentList ||
+    defaultTo.name !== "defaultTo" ||
+    defaultTo.args.length !== 1 ||
+    defaultTo.args[0].kind !== ts.SyntaxKind.FalseKeyword ||
+    defaultTo.hasTypeArgumentList
+  ) {
+    return { code: opaqueCode, node: callback.body };
+  }
+  return null;
+}
+
+function validateAlterColumnDefault(alteration, context, opaqueCode) {
+  if (alteration.args.length !== 2 || !isDirectString(alteration.args[0])) {
+    return { code: opaqueCode, node: alteration.node };
+  }
+
+  const callback = alteration.args[1];
+  const parameterResult = validateCallbackParameter(
+    callback,
+    context,
+    opaqueCode,
+  );
+  if (!parameterResult.parameter) return parameterResult;
+  const chain = flattenCallChain(callback.body);
+  if (
+    !chain ||
+    chain.scope !== "direct" ||
+    chain.root !== parameterResult.parameter
+  ) {
+    return { code: "MIGRATION_BINDING_SHAPE", node: callback.body };
+  }
+
+  const [setDefault] = chain.steps;
+  if (
+    chain.steps.length !== 1 ||
+    setDefault.name !== "setDefault" ||
+    setDefault.args.length !== 1 ||
+    !ts.isNumericLiteral(setDefault.args[0]) ||
+    !["0", "1"].includes(setDefault.args[0].text) ||
+    setDefault.hasTypeArgumentList
+  ) {
+    return { code: opaqueCode, node: callback.body };
+  }
+  return null;
 }
 
 function validateColumnCallback(callback, context) {
@@ -563,8 +643,10 @@ function validateCreateIndex(chain) {
   return null;
 }
 
-function validateAlterTable(chain, context, opaqueCode) {
+function validateAlterTable(chain, context, mode) {
   const { steps } = chain;
+  const opaqueCode =
+    mode === "up" ? "MIGRATION_UP_OPAQUE_CALL" : "MIGRATION_DOWN_OPAQUE_CALL";
   if (
     steps.length !== 3 ||
     steps[0].name !== "alterTable" ||
@@ -581,6 +663,21 @@ function validateAlterTable(chain, context, opaqueCode) {
   const alteration = steps[1];
   if (alteration.hasTypeArgumentList) {
     return { code: opaqueCode, node: alteration.node };
+  }
+  if (alteration.name === "addColumn") {
+    return mode === "up"
+      ? validateAlterTableAddColumn(alteration, context, opaqueCode)
+      : { code: opaqueCode, node: alteration.node };
+  }
+  if (alteration.name === "alterColumn") {
+    return validateAlterColumnDefault(alteration, context, opaqueCode);
+  }
+  if (alteration.name === "dropColumn") {
+    return mode === "down" &&
+      alteration.args.length === 1 &&
+      isDirectString(alteration.args[0])
+      ? null
+      : { code: opaqueCode, node: alteration.node };
   }
   if (alteration.name === "dropConstraint") {
     return alteration.args.length === 1 && isDirectString(alteration.args[0])
@@ -613,7 +710,7 @@ function validateUpExpression(expression, functionInfo, context) {
     return validateCreateIndex(chain);
   }
   if (chain.steps[0]?.name === "alterTable") {
-    return validateAlterTable(chain, context, "MIGRATION_UP_OPAQUE_CALL");
+    return validateAlterTable(chain, context, "up");
   }
   return { code: "MIGRATION_UP_OPAQUE_CALL", node: expression };
 }
@@ -626,7 +723,7 @@ function validateDownExpression(expression, functionInfo, context) {
     chain.scope === "schema" &&
     chain.steps[0]?.name === "alterTable"
   ) {
-    return validateAlterTable(chain, context, "MIGRATION_DOWN_OPAQUE_CALL");
+    return validateAlterTable(chain, context, "down");
   }
   if (
     !chain ||

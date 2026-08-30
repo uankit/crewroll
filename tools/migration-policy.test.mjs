@@ -154,6 +154,211 @@ test("accepts only the exact bounded alter-table constraint grammar", async (t) 
   assert.deepEqual(result.findings, []);
 });
 
+test("accepts the bounded API3 alter-table column grammar", async (t) => {
+  const result = await analyzeSource(
+    t,
+    migrationSource({
+      imports: sqlImports,
+      upBody: `
+        await db.schema
+          .alterTable("trip_members")
+          .addColumn("full_photo_library_access", "boolean", (column) =>
+            column.notNull().defaultTo(false),
+          )
+          .execute();
+        await db.schema
+          .alterTable("trips")
+          .alterColumn("version", (column) => column.setDefault(1))
+          .execute();
+        await db.schema
+          .alterTable("trips")
+          .dropConstraint("trips_version_check")
+          .execute();
+        await db.schema
+          .alterTable("trips")
+          .addCheckConstraint("trips_version_check", sql\`version >= 1\`)
+          .execute();
+      `,
+      downBody: `
+        await db.schema
+          .alterTable("trips")
+          .dropConstraint("trips_version_check")
+          .execute();
+        await db.schema
+          .alterTable("trips")
+          .addCheckConstraint("trips_version_check", sql\`version >= 0\`)
+          .execute();
+        await db.schema
+          .alterTable("trips")
+          .alterColumn("version", (column) => column.setDefault(0))
+          .execute();
+        await db.schema
+          .alterTable("trip_members")
+          .dropColumn("full_photo_library_access")
+          .execute();
+      `,
+    }),
+  );
+
+  assert.equal(result.migrationCount, 1);
+  assert.deepEqual(result.findings, []);
+});
+
+test("rejects every widening of the API3 alter-table column grammar", async (t) => {
+  const cases = [
+    [
+      "dynamic add-column table",
+      "up",
+      'await db.schema.alterTable(tableName).addColumn("access", "boolean", (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
+      "dynamic add-column name",
+      "up",
+      'await db.schema.alterTable("members").addColumn(columnName, "boolean", (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
+      "dynamic add-column type",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", columnType, (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
+      "missing add-column callback",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean").execute();',
+    ],
+    [
+      "wrong add-column default",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().defaultTo(true)).execute();',
+    ],
+    [
+      "dynamic add-column default",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().defaultTo(defaultValue)).execute();',
+    ],
+    [
+      "reordered add-column callback",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.defaultTo(false).notNull()).execute();',
+    ],
+    [
+      "arbitrary add-column callback method",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().unique().defaultTo(false)).execute();',
+    ],
+    [
+      "raw add-column default",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().defaultTo(sql.raw("false"))).execute();',
+    ],
+    [
+      "effectful add-column callback",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => { sideEffect(); return column.notNull().defaultTo(false); }).execute();',
+    ],
+    [
+      "add column during down",
+      "down",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
+      "dynamic alter-column name",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn(columnName, (column) => column.setDefault(1)).execute();',
+    ],
+    [
+      "wrong Kysely alter-column method",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefaultTo(1)).execute();',
+    ],
+    [
+      "non-binary alter-column default",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefault(2)).execute();',
+    ],
+    [
+      "dynamic alter-column default",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefault(nextVersion)).execute();',
+    ],
+    [
+      "raw alter-column default",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefault(sql`1`)).execute();',
+    ],
+    [
+      "alter-column callback suffix",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefault(1).setNotNull()).execute();',
+    ],
+    [
+      "effectful alter-column callback",
+      "down",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => { sideEffect(); return column.setDefault(0); }).execute();',
+    ],
+    [
+      "dynamic drop-column name",
+      "down",
+      'await db.schema.alterTable("members").dropColumn(columnName).execute();',
+    ],
+    [
+      "drop column during up",
+      "up",
+      'await db.schema.alterTable("members").dropColumn("access").execute();',
+    ],
+    [
+      "add index",
+      "up",
+      'await db.schema.alterTable("members").addIndex("members_access_idx").execute();',
+    ],
+    [
+      "drop index",
+      "down",
+      'await db.schema.alterTable("members").dropIndex("members_access_idx").execute();',
+    ],
+    [
+      "new constraint method",
+      "up",
+      'await db.schema.alterTable("members").addUniqueConstraint("members_access_unique", ["access"]).execute();',
+    ],
+    [
+      "combined alterations",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "boolean", (column) => column.notNull().defaultTo(false)).alterColumn("version", (column) => column.setDefault(1)).execute();',
+    ],
+    [
+      "execute argument",
+      "down",
+      'await db.schema.alterTable("members").dropColumn("access").execute("now");',
+    ],
+    [
+      "execute chain suffix",
+      "down",
+      'await db.schema.alterTable("members").dropColumn("access").execute().dropColumn("late");',
+    ],
+    [
+      "second execute",
+      "up",
+      'await db.schema.alterTable("trips").alterColumn("version", (column) => column.setDefault(1)).execute().execute();',
+    ],
+  ];
+
+  for (const [name, mode, body] of cases) {
+    await t.test(name, (subtest) =>
+      assertRejected(
+        subtest,
+        migrationSource({
+          imports: sqlImports,
+          ...(mode === "up" ? { upBody: body } : { downBody: body }),
+        }),
+        mode === "up"
+          ? "MIGRATION_UP_OPAQUE_CALL"
+          : "MIGRATION_DOWN_OPAQUE_CALL",
+      ),
+    );
+  }
+});
+
 test("rejects every alter-table widening outside exact constraint replacement", async (t) => {
   const cases = [
     [
@@ -168,7 +373,7 @@ test("rejects every alter-table widening outside exact constraint replacement", 
     ],
     [
       "opaque method",
-      'await db.schema.alterTable("devices").dropColumn("key").execute();',
+      'await db.schema.alterTable("devices").renameColumn("key", "next_key").execute();',
       "MIGRATION_UP_OPAQUE_CALL",
     ],
     [

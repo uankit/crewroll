@@ -104,6 +104,76 @@ export async function down(db: Kysely<unknown>): Promise<void> {
   await db.schema.dropTable("users").execute();
 }
 `;
+const canonicalApi3Migration = `
+import { sql } from "kysely";
+import type { Kysely } from "kysely";
+
+export async function up(db: Kysely<unknown>): Promise<void> {
+  await db.schema
+    .alterTable("trip_members")
+    .addColumn("full_photo_library_access", "boolean", (column) =>
+      column.notNull().defaultTo(false),
+    )
+    .execute();
+
+  await db.schema
+    .alterTable("trips")
+    .alterColumn("version", (column) => column.setDefault(1))
+    .execute();
+  await db.schema
+    .alterTable("trips")
+    .dropConstraint("trips_version_check")
+    .execute();
+  await db.schema
+    .alterTable("trips")
+    .addCheckConstraint("trips_version_check", sql\`version >= 1\`)
+    .execute();
+
+  await db.schema
+    .alterTable("trip_key_envelopes")
+    .dropConstraint("trip_key_envelopes_wrapped_key_check")
+    .execute();
+  await db.schema
+    .alterTable("trip_key_envelopes")
+    .addCheckConstraint(
+      "trip_key_envelopes_wrapped_key_check",
+      sql\`octet_length(wrapped_key) = 148\`,
+    )
+    .execute();
+}
+
+export async function down(db: Kysely<unknown>): Promise<void> {
+  await db.schema
+    .alterTable("trip_key_envelopes")
+    .dropConstraint("trip_key_envelopes_wrapped_key_check")
+    .execute();
+  await db.schema
+    .alterTable("trip_key_envelopes")
+    .addCheckConstraint(
+      "trip_key_envelopes_wrapped_key_check",
+      sql\`octet_length(wrapped_key) between 1 and 4096\`,
+    )
+    .execute();
+
+  await db.schema
+    .alterTable("trips")
+    .dropConstraint("trips_version_check")
+    .execute();
+  await db.schema
+    .alterTable("trips")
+    .addCheckConstraint("trips_version_check", sql\`version >= 0\`)
+    .execute();
+  await db.schema
+    .alterTable("trips")
+    .alterColumn("version", (column) => column.setDefault(0))
+    .execute();
+
+  await db.schema
+    .alterTable("trip_members")
+    .dropColumn("full_photo_library_access")
+    .execute();
+}
+`;
 const migrationPath = "services/control-plane/src/db/migrations/001_initial.ts";
 const runnerPath = "services/control-plane/src/db/migrate.ts";
 const indexPath = "services/control-plane/src/index.ts";
@@ -246,6 +316,118 @@ test("complete safe topology reaches the composed active policy", async (t) => {
     "CrewRoll migration check: known-risk static policy passed for 1 contiguous migration(s); this is not proof of safety, reversibility, PostgreSQL compatibility, or runtime success — DB-001 integration tests remain authoritative.\n",
   );
   assert.equal(result.stderr, "");
+});
+
+test("complete composition accepts the exact API3 migration shape", async (t) => {
+  const rootPath = await fixture(t);
+  await makeComplete(rootPath);
+  await writeFile(
+    path.join(rootPath, migrationPath),
+    canonicalApi3Migration,
+    "utf8",
+  );
+
+  const direct = await analyzeMigrationModules({
+    rootPath,
+    migrationFiles: [migrationPath],
+  });
+  assert.deepEqual(direct.findings, []);
+
+  const result = await run(rootPath);
+  assert.equal(result.code, 0);
+  assert.equal(
+    result.stdout,
+    "CrewRoll migration check: known-risk static policy passed for 1 contiguous migration(s); this is not proof of safety, reversibility, PostgreSQL compatibility, or runtime success — DB-001 integration tests remain authoritative.\n",
+  );
+  assert.equal(result.stderr, "");
+});
+
+test("complete composition rejects API3 migration grammar mutations directly and end to end", async (t) => {
+  const cases = [
+    {
+      name: "wrong add-column default",
+      code: "MIGRATION_UP_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        "column.notNull().defaultTo(false)",
+        "column.notNull().defaultTo(true)",
+      ),
+    },
+    {
+      name: "wrong Kysely alter-column method",
+      code: "MIGRATION_UP_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        "column.setDefault(1)",
+        "column.setDefaultTo(1)",
+      ),
+    },
+    {
+      name: "dynamic rollback default",
+      code: "MIGRATION_DOWN_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        "column.setDefault(0)",
+        "column.setDefault(previousDefault)",
+      ),
+    },
+    {
+      name: "dynamic rollback column",
+      code: "MIGRATION_DOWN_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        '.dropColumn("full_photo_library_access")',
+        ".dropColumn(columnName)",
+      ),
+    },
+    {
+      name: "extra alteration",
+      code: "MIGRATION_UP_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        '.addColumn("full_photo_library_access", "boolean", (column) =>\n      column.notNull().defaultTo(false),\n    )\n    .execute();',
+        '.addColumn("full_photo_library_access", "boolean", (column) =>\n      column.notNull().defaultTo(false),\n    )\n    .addUniqueConstraint("trip_members_access_unique", ["full_photo_library_access"])\n    .execute();',
+      ),
+    },
+    {
+      name: "execute suffix",
+      code: "MIGRATION_DOWN_OPAQUE_CALL",
+      source: replaceOnce(
+        canonicalApi3Migration,
+        '.dropColumn("full_photo_library_access")\n    .execute();',
+        '.dropColumn("full_photo_library_access")\n    .execute()\n    .dropColumn("late");',
+      ),
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      await makeComplete(rootPath);
+      await writeFile(
+        path.join(rootPath, migrationPath),
+        testCase.source,
+        "utf8",
+      );
+
+      const direct = await analyzeMigrationModules({
+        rootPath,
+        migrationFiles: [migrationPath],
+      });
+      assert.ok(
+        direct.findings.some(({ code }) => code === testCase.code),
+        `${testCase.name}: expected ${testCase.code}, received ${JSON.stringify(direct.findings)}`,
+      );
+
+      const result = await run(rootPath);
+      assert.equal(result.code, 65);
+      assert.equal(result.stdout, "");
+      assert.match(
+        result.stderr,
+        /^CrewRoll migration check: rejected with [1-9][0-9]* deterministic finding\(s\); the static known-risk policy did not pass\.\n$/u,
+      );
+    });
+  }
 });
 
 test("usage returns before any repository adapter is inspected", async (t) => {
