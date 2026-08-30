@@ -188,8 +188,15 @@ const fixtureFiles = {
       'export { target } from "./internal";\n',
     "src/modules/__boundary_beta__/internal.ts":
       "export const target = true;\n",
+    "src/modules/trips/__boundary-internal.ts": "export const target = true;\n",
+    "src/modules/trips/ports/__boundary-port.ts":
+      "export interface Port { readonly ready: boolean }\n",
+    "src/modules/devices/ports/__boundary-port.ts":
+      "export interface Port { readonly ready: boolean }\n",
     "src/db/__boundary-adapter.ts": "export {};\n",
     "src/db/__boundary-target.ts": "export const target = true;\n",
+    "src/db/trips/__boundary-adapter.ts": "export {};\n",
+    "src/db/devices/__boundary-adapter.ts": "export {};\n",
     "src/platform/__boundary_fixture__/source.ts": "export {};\n",
     "src/platform/__boundary_fixture__/target.ts":
       "export const target = true;\n",
@@ -1240,6 +1247,71 @@ test("the oracle never owns locked future control composition entrypoints", () =
       false,
       `${relativePath} must remain available for its planned implementation`,
     );
+  }
+});
+
+test("Trip database adapters consume only Trip ports through type imports", async (t) => {
+  const tripAdapter = "src/db/trips/__boundary-adapter.ts";
+  const tripPort = "../../modules/trips/ports/__boundary-port.js";
+
+  await t.test("exact Trip type import is allowed", async () => {
+    assertAllowed(
+      await lint(
+        "control",
+        `import type { Port } from ${JSON.stringify(tripPort)};\nexport type AdapterPort = Port;\n`,
+        tripAdapter,
+      ),
+    );
+  });
+
+  await t.test(
+    "every Trip port value dependency form is rejected",
+    async () => {
+      assertForbiddenInEveryDependencyForm(
+        await lint("control", everyDependencyForm([tripPort]), tripAdapter),
+        Object.keys(dependencyForms).length,
+      );
+    },
+  );
+
+  for (const [name, source, filePath] of [
+    [
+      "type re-export",
+      `export type { Port } from ${JSON.stringify(tripPort)};\n`,
+      tripAdapter,
+    ],
+    [
+      "other database adapter to Trip port",
+      `import type { Port } from ${JSON.stringify(tripPort)};\nexport type AdapterPort = Port;\n`,
+      "src/db/devices/__boundary-adapter.ts",
+    ],
+    [
+      "Trip adapter to another module port",
+      'import type { Port } from "../../modules/devices/ports/__boundary-port.js";\nexport type AdapterPort = Port;\n',
+      tripAdapter,
+    ],
+    [
+      "Trip adapter to Trip internal",
+      'import type { target } from "../../modules/trips/__boundary-internal.js";\n',
+      tripAdapter,
+    ],
+    [
+      "reverse Trip port to database adapter",
+      'import type {} from "../../../db/trips/__boundary-adapter.js";\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "Trip port to Kysely",
+      'import type { Kysely } from "kysely";\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, filePath),
+        "boundaries/dependencies",
+      );
+    });
   }
 });
 

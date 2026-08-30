@@ -432,6 +432,12 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   const app = element("app");
   const module = element("module");
   const db = element("db");
+  const tripDb = element("db", { fileInternalPath: "trips/**/*.ts" });
+  const tripModule = element("module", { captured: { module: "trips" } });
+  const tripPorts = element("module", {
+    captured: { module: "trips" },
+    fileInternalPath: "ports/**/*.ts",
+  });
   const platform = element("platform");
   const config = element("config");
   const shared = element("shared");
@@ -521,6 +527,23 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       config,
       shared,
     ]),
+    {
+      from: db,
+      disallow: [{ to: tripModule }],
+    },
+    {
+      from: tripDb,
+      disallow: [{ to: module }],
+    },
+    {
+      from: tripDb,
+      allow: [
+        {
+          dependency: { kind: "type", nodeKind: "import" },
+          to: tripPorts,
+        },
+      ],
+    },
     allowElements(platform, [
       element("platform", {
         captured: { adapter: "{{from.element.captured.adapter}}" },
