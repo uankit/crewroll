@@ -43,6 +43,14 @@ interface RegisterDeviceInput {
   readonly idempotencyKey: string;
 }
 
+const retryPushProtection = new Error("Retry push protection");
+
+interface PreparedPush {
+  readonly deviceId: string;
+  readonly platform: RegisterDeviceBody["platform"];
+  readonly value: ProtectedPushToken;
+}
+
 function bytesEqual(
   left: Readonly<Uint8Array> | null,
   right: Readonly<Uint8Array> | null,
@@ -157,152 +165,200 @@ export function createRegisterDevice(dependencies: RegisterDeviceDependencies) {
           : dependencies.ids.uuid();
       const candidateDeviceId =
         snapshot.installation?.deviceId ?? dependencies.ids.uuid();
-      let preparedPush: ProtectedPushToken | undefined;
-      if (
-        snapshot.idempotency !== "live-match" &&
-        body.pushToken !== undefined
-      ) {
-        const fingerprint = dependencies.protector.fingerprint(body.pushToken);
+      let requestedPushFingerprint: Readonly<Uint8Array> | undefined;
+
+      for (;;) {
+        let preparedPush: PreparedPush | undefined;
         if (
-          !bytesEqual(fingerprint, snapshot.installation?.pushTokenHash ?? null)
+          snapshot.idempotency !== "live-match" &&
+          body.pushToken !== undefined
         ) {
-          preparedPush = await dependencies.protector.protect(
+          requestedPushFingerprint ??= dependencies.protector.fingerprint(
             body.pushToken,
-            candidateDeviceId,
-            snapshot.installation?.platform ?? body.platform,
           );
+          if (
+            !bytesEqual(
+              requestedPushFingerprint,
+              snapshot.installation?.pushTokenHash ?? null,
+            )
+          ) {
+            const targetDeviceId =
+              snapshot.installation?.deviceId ?? candidateDeviceId;
+            const targetPlatform =
+              snapshot.installation?.platform ?? body.platform;
+            const value = await dependencies.protector.protect(
+              body.pushToken,
+              targetDeviceId,
+              targetPlatform,
+            );
+            if (!bytesEqual(value.fingerprint, requestedPushFingerprint)) {
+              throw new DomainError("INTERNAL_ERROR");
+            }
+            preparedPush = {
+              deviceId: targetDeviceId,
+              platform: targetPlatform,
+              value,
+            };
+          }
         }
-      }
 
-      return dependencies.unitOfWork.run(async (transaction) => {
-        let user = await transaction.findUserByClerkSubject(clerkSubject);
-        if (user?.deleted === true) throw new DomainError("AUTH_INVALID");
-        if (user === null) {
-          const candidate: LocalUserRecord = {
-            clerkSubject,
-            deleted: false,
-            displayName: projectedDisplayName ?? "CrewRoll member",
-            userId: candidateUserId,
-          };
-          user = await transaction.insertUser(candidate);
-          if (user.deleted) throw new DomainError("AUTH_INVALID");
-        }
+        try {
+          return await dependencies.unitOfWork.run(async (transaction) => {
+            let user = await transaction.findUserByClerkSubject(clerkSubject);
+            if (user?.deleted === true) throw new DomainError("AUTH_INVALID");
+            if (user === null) {
+              const candidate: LocalUserRecord = {
+                clerkSubject,
+                deleted: false,
+                displayName: projectedDisplayName ?? "CrewRoll member",
+                userId: candidateUserId,
+              };
+              user = await transaction.insertUser(candidate);
+              if (user.deleted) throw new DomainError("AUTH_INVALID");
+            }
 
-        const priorIdempotency = await transaction.findIdempotency(
-          command,
-          user.userId,
-        );
-        if (priorIdempotency !== null) {
-          const state = liveIdempotency(priorIdempotency, command, now);
-          if (state === "conflict")
-            throw new DomainError("IDEMPOTENCY_CONFLICT");
-          if (state === "expired") {
-            await transaction.deleteIdempotency(priorIdempotency);
-          } else {
-            const replayDevice = await transaction.findDeviceByInstallation(
+            const priorIdempotency = await transaction.findIdempotency(
+              command,
+              user.userId,
+            );
+            if (priorIdempotency !== null) {
+              const state = liveIdempotency(priorIdempotency, command, now);
+              if (state === "conflict")
+                throw new DomainError("IDEMPOTENCY_CONFLICT");
+              if (state === "expired") {
+                await transaction.deleteIdempotency(priorIdempotency);
+              } else {
+                const replayDevice = await transaction.findDeviceByInstallation(
+                  body.installationId,
+                );
+                if (
+                  replayDevice === null ||
+                  replayDevice.userId !== user.userId ||
+                  replayDevice.revoked
+                ) {
+                  throw new DomainError(
+                    replayDevice?.revoked === true
+                      ? "DEVICE_REVOKED"
+                      : "AUTH_INVALID",
+                  );
+                }
+                return responseFor(
+                  replayDevice,
+                  dependencies.backgroundCredentials,
+                );
+              }
+            }
+
+            let device = await transaction.findDeviceByInstallation(
               body.installationId,
             );
-            if (
-              replayDevice === null ||
-              replayDevice.userId !== user.userId ||
-              replayDevice.revoked
-            ) {
-              throw new DomainError(
-                replayDevice?.revoked === true
-                  ? "DEVICE_REVOKED"
-                  : "AUTH_INVALID",
-              );
+            if (device !== null) {
+              if (device.userId !== user.userId) {
+                throw new DomainError("INSTALLATION_OWNED_BY_ANOTHER_USER");
+              }
+              if (device.revoked) throw new DomainError("DEVICE_REVOKED");
+              if (
+                device.platform !== body.platform ||
+                !bytesEqual(
+                  device.authenticationPublicKey,
+                  keys.authenticationPublicKey,
+                ) ||
+                !bytesEqual(device.e2eePublicKey, keys.e2eePublicKey)
+              ) {
+                throw new DomainError("CONFLICT");
+              }
             }
-            return responseFor(
-              replayDevice,
-              dependencies.backgroundCredentials,
+
+            const credentialExpiresAt =
+              device === null ||
+              device.backgroundCredentialExpiresAt.getTime() <=
+                addWholeSeconds(now, 7 * 86_400).getTime()
+                ? addWholeSeconds(now, 30 * 86_400)
+                : device.backgroundCredentialExpiresAt;
+            const issued = dependencies.backgroundCredentials.issue({
+              deviceId: device?.deviceId ?? candidateDeviceId,
+              expiresAt: credentialExpiresAt,
+              userId: user.userId,
+            });
+            let encryptedPushToken = device?.encryptedPushToken ?? null;
+            let pushTokenHash = device?.pushTokenHash ?? null;
+            if (body.pushToken !== undefined) {
+              const finalDeviceId = device?.deviceId ?? candidateDeviceId;
+              const finalPlatform = device?.platform ?? body.platform;
+              if (
+                requestedPushFingerprint !== undefined &&
+                bytesEqual(pushTokenHash, requestedPushFingerprint)
+              ) {
+                // The locked row already contains the requested token.
+              } else if (
+                requestedPushFingerprint !== undefined &&
+                preparedPush?.deviceId === finalDeviceId &&
+                preparedPush.platform === finalPlatform
+              ) {
+                encryptedPushToken = preparedPush.value.encryptedToken;
+                pushTokenHash = preparedPush.value.fingerprint;
+              } else {
+                throw retryPushProtection;
+              }
+            }
+            const next: DeviceRecord = {
+              appVersion: body.appVersion,
+              authenticationKeyAlgorithm: "P-256",
+              authenticationKeyVersion: 1,
+              authenticationPublicKey: keys.authenticationPublicKey,
+              backgroundCredentialExpiresAt: credentialExpiresAt,
+              backgroundCredentialHash: issued.bearerHash,
+              deviceId: device?.deviceId ?? candidateDeviceId,
+              e2eeKeyAlgorithm: "X25519",
+              e2eeKeyVersion: 1,
+              e2eePublicKey: keys.e2eePublicKey,
+              encryptedPushToken,
+              installationId: body.installationId,
+              lastSeenAt: now,
+              platform: body.platform,
+              pushTokenHash,
+              revoked: false,
+              userId: user.userId,
+            };
+            device =
+              device === null
+                ? await transaction.insertDevice(next)
+                : await transaction.updateDevice(next);
+            const sanitizedResponse = {
+              backgroundBearerExpiresAt: credentialExpiresAt.toISOString(),
+              credentialVersion: 1,
+              deviceId: device.deviceId,
+            } as const;
+            await transaction.writeIdempotency({
+              command,
+              expiresAt: addWholeSeconds(now, idempotencyLifetimeSeconds),
+              responseBody: sanitizedResponse,
+              responseStatus: 201,
+              userId: user.userId,
+            });
+            await transaction.pruneExpiredIdempotency(
+              now,
+              command,
+              user.userId,
+              100,
             );
-          }
+            return {
+              backgroundBearer: issued.bearer,
+              backgroundBearerExpiresAt: credentialExpiresAt.toISOString(),
+              deviceId: device.deviceId,
+            };
+          });
+        } catch (error) {
+          if (error !== retryPushProtection) throw error;
+          snapshot = await dependencies.snapshots.readRegistration(
+            clerkSubject,
+            body.installationId,
+            command,
+            now,
+          );
+          preauthorize(snapshot, body, keys);
         }
-
-        let device = await transaction.findDeviceByInstallation(
-          body.installationId,
-        );
-        if (device !== null) {
-          if (device.userId !== user.userId) {
-            throw new DomainError("INSTALLATION_OWNED_BY_ANOTHER_USER");
-          }
-          if (snapshot.installation === null) {
-            throw new DomainError("CONFLICT");
-          }
-          if (device.revoked) throw new DomainError("DEVICE_REVOKED");
-          if (
-            device.platform !== body.platform ||
-            !bytesEqual(
-              device.authenticationPublicKey,
-              keys.authenticationPublicKey,
-            ) ||
-            !bytesEqual(device.e2eePublicKey, keys.e2eePublicKey)
-          ) {
-            throw new DomainError("CONFLICT");
-          }
-        }
-
-        const credentialExpiresAt =
-          device === null ||
-          device.backgroundCredentialExpiresAt.getTime() <=
-            addWholeSeconds(now, 7 * 86_400).getTime()
-            ? addWholeSeconds(now, 30 * 86_400)
-            : device.backgroundCredentialExpiresAt;
-        const issued = dependencies.backgroundCredentials.issue({
-          deviceId: device?.deviceId ?? candidateDeviceId,
-          expiresAt: credentialExpiresAt,
-          userId: user.userId,
-        });
-        const next: DeviceRecord = {
-          appVersion: body.appVersion,
-          authenticationKeyAlgorithm: "P-256",
-          authenticationKeyVersion: 1,
-          authenticationPublicKey: keys.authenticationPublicKey,
-          backgroundCredentialExpiresAt: credentialExpiresAt,
-          backgroundCredentialHash: issued.bearerHash,
-          deviceId: device?.deviceId ?? candidateDeviceId,
-          e2eeKeyAlgorithm: "X25519",
-          e2eeKeyVersion: 1,
-          e2eePublicKey: keys.e2eePublicKey,
-          encryptedPushToken:
-            preparedPush?.encryptedToken ?? device?.encryptedPushToken ?? null,
-          installationId: body.installationId,
-          lastSeenAt: now,
-          platform: body.platform,
-          pushTokenHash:
-            preparedPush?.fingerprint ?? device?.pushTokenHash ?? null,
-          revoked: false,
-          userId: user.userId,
-        };
-        device =
-          device === null
-            ? await transaction.insertDevice(next)
-            : await transaction.updateDevice(next);
-        const sanitizedResponse = {
-          backgroundBearerExpiresAt: credentialExpiresAt.toISOString(),
-          credentialVersion: 1,
-          deviceId: device.deviceId,
-        } as const;
-        await transaction.writeIdempotency({
-          command,
-          expiresAt: addWholeSeconds(now, idempotencyLifetimeSeconds),
-          responseBody: sanitizedResponse,
-          responseStatus: 201,
-          userId: user.userId,
-        });
-        await transaction.pruneExpiredIdempotency(
-          now,
-          command,
-          user.userId,
-          100,
-        );
-        return {
-          backgroundBearer: issued.bearer,
-          backgroundBearerExpiresAt: credentialExpiresAt.toISOString(),
-          deviceId: device.deviceId,
-        };
-      });
+      }
     },
   };
 }

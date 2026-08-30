@@ -82,7 +82,19 @@ export function createKyselyDeviceAuthorizationSnapshotReader(
           .executeTakeFirst(),
         database
           .selectFrom("devices")
-          .selectAll()
+          .select([
+            "id",
+            "user_id",
+            "platform",
+            "authentication_key_algorithm",
+            "authentication_key_version",
+            "authentication_public_key",
+            "e2ee_key_algorithm",
+            "e2ee_key_version",
+            "e2ee_public_key",
+            "push_token_hash",
+            "revoked_at",
+          ])
           .where("installation_id", "=", installationId)
           .executeTakeFirst(),
       ]);
@@ -106,9 +118,6 @@ export function createKyselyDeviceAuthorizationSnapshotReader(
                   deviceRow.authentication_key_algorithm,
                 authenticationKeyVersion: deviceRow.authentication_key_version,
                 authenticationPublicKey: deviceRow.authentication_public_key,
-                backgroundCredentialExpiresAt:
-                  deviceRow.background_credential_expires_at,
-                backgroundCredentialHash: deviceRow.background_credential_hash,
                 deviceId: deviceRow.id,
                 e2eeKeyAlgorithm: deviceRow.e2ee_key_algorithm,
                 e2eeKeyVersion: deviceRow.e2ee_key_version,

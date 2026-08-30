@@ -46,17 +46,22 @@ export function createRevokeDevice(dependencies: RevokeDeviceDependencies) {
       headerDeviceId,
       idempotencyKey,
     }: RevokeInput): Promise<void> {
-      if (headerDeviceId !== deviceId)
+      const canonicalDeviceId = deviceId.toLowerCase();
+      const canonicalHeaderDeviceId = headerDeviceId.toLowerCase();
+      if (canonicalHeaderDeviceId !== canonicalDeviceId)
         throw new DomainError("DEVICE_NOT_OWNED");
       const now = dependencies.clock.now();
-      const command = revokeDeviceCommandIdentity(deviceId, idempotencyKey);
+      const command = revokeDeviceCommandIdentity(
+        canonicalDeviceId,
+        idempotencyKey,
+      );
       const snapshot = await dependencies.snapshots.readForegroundDevice(
         clerkSubject,
-        deviceId,
+        canonicalDeviceId,
         command,
         now,
       );
-      if (snapshot === null || snapshot.deviceId !== deviceId) {
+      if (snapshot === null || snapshot.deviceId !== canonicalDeviceId) {
         throw new DomainError("DEVICE_NOT_OWNED");
       }
       if (snapshot.userDeleted) throw new DomainError("AUTH_INVALID");
@@ -78,7 +83,7 @@ export function createRevokeDevice(dependencies: RevokeDeviceDependencies) {
         }
         const device = await transaction.findDeviceByOwnerAndId(
           user.userId,
-          deviceId,
+          canonicalDeviceId,
         );
         if (device === null) throw new DomainError("DEVICE_NOT_OWNED");
         if (!device.revoked) {

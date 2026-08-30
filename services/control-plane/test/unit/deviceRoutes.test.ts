@@ -25,6 +25,9 @@ describe("device routes", () => {
   let registerExecute: MockedFunction<
     DeviceRouteDependencies["registerDevice"]["execute"]
   >;
+  let updateExecute: MockedFunction<
+    DeviceRouteDependencies["updateDevicePushToken"]["execute"]
+  >;
 
   beforeEach(async () => {
     const clerk = await createLocalClerkFixture();
@@ -37,6 +40,7 @@ describe("device routes", () => {
         backgroundBearerExpiresAt: "2026-09-29T06:00:00.000Z",
         deviceId,
       });
+    updateExecute = vi.fn().mockResolvedValue(undefined);
     dependencies = {
       registerDevice: {
         execute: registerExecute,
@@ -44,7 +48,7 @@ describe("device routes", () => {
       revokeDevice: { execute: vi.fn().mockResolvedValue(undefined) },
       tokenVerifier: clerk.verifier,
       updateDevicePushToken: {
-        execute: vi.fn().mockResolvedValue(undefined),
+        execute: updateExecute,
       },
     };
   });
@@ -106,6 +110,29 @@ describe("device routes", () => {
 
     expect(response.statusCode).toBe(204);
     expect(response.body).toBe("");
+  });
+
+  it("canonicalizes mixed-case UUID headers and params before command dispatch", async () => {
+    const { instance } = app();
+    const response = await instance.inject({
+      headers: {
+        authorization,
+        "idempotency-key": idempotencyKey.toUpperCase(),
+        "x-crewroll-device-id": deviceId,
+      },
+      method: "PATCH",
+      payload: { appVersion: "0.2.1", pushToken: null },
+      url: `/v1/devices/${deviceId.toUpperCase()}/push-token`,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(updateExecute).toHaveBeenCalledWith({
+      body: { appVersion: "0.2.1", pushToken: null },
+      clerkSubject: "user_route_subject",
+      deviceId,
+      headerDeviceId: deviceId,
+      idempotencyKey,
+    });
   });
 
   it("maps missing authorization to 401 and rejects a background bearer", async () => {

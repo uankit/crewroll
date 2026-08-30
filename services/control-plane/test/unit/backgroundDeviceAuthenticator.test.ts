@@ -64,6 +64,21 @@ describe("backgroundDeviceAuthenticator", () => {
     expect(test.findDevice(fixedDeviceId).lastSeenAt).toEqual(fixedNow);
   });
 
+  it("canonicalizes a mixed-case device header before authentication", async () => {
+    const test = await registeredHarness();
+    const authenticate = createBackgroundDeviceAuthenticator({
+      clock: test.dependencies.clock,
+      unitOfWork: test.dependencies.unitOfWork,
+    });
+
+    await expect(
+      authenticate.authenticate({
+        authorization: `Bearer ${bearer}`,
+        headerDeviceId: fixedDeviceId.toUpperCase(),
+      }),
+    ).resolves.toEqual({ deviceId: fixedDeviceId, userId: fixedUserId });
+  });
+
   it.each([
     ["short bearer", "Bearer crb_short", {}],
     ["unknown bearer", `Bearer crb_${"B".repeat(43)}`, {}],
