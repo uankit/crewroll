@@ -60,7 +60,7 @@ export function resolveExplicitExternalPostgresUrl(
   if (
     parsed.protocol !== "postgresql:" ||
     parsed.hostname !== "127.0.0.1" ||
-    parsed.port !== "55432" ||
+    !["55432", "55433"].includes(parsed.port) ||
     !["/postgres", "/crewroll_test_task4_green"].includes(parsed.pathname) ||
     parsed.search !== "" ||
     parsed.hash !== ""
