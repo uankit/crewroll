@@ -30,8 +30,24 @@ export const NativeDeviceIdentitySchema = ClosedObject({
 });
 export type NativeDeviceIdentity = Static<typeof NativeDeviceIdentitySchema>;
 
+export const NativeAccountIdSchema = Type.String({
+  minLength: 1,
+  maxLength: 255,
+  pattern: "^[A-Za-z0-9_-]+$",
+});
+
+export const EnsureDeviceIdentityCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+});
+export type EnsureDeviceIdentityCommand = Static<
+  typeof EnsureDeviceIdentityCommandSchema
+>;
+
 export const InstallDeviceSessionCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+  installationId: NativeDeviceIdentitySchema.properties.installationId,
   deviceId: DeviceIdSchema,
   backgroundBearer: Type.String({ pattern: "^crb_[A-Za-z0-9_-]{12,512}$" }),
   backgroundBearerExpiresAt: DateTimeSchema,

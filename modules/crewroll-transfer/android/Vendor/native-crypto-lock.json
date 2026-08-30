@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "coordinate": "com.goterl:lazysodium-android:5.2.0",
+      "packaging": "aar",
+      "path": "modules/crewroll-transfer/android/Vendor/lazysodium-android-5.2.0.aar",
+      "sha256": "b5378c1d9db2573d61b304e89cf83db187a05c3e4ff081d9b2ef3d0bb00ca314",
+      "classesJarSha256": "3540e71bbad48ae40f54c76fec6e9d3fed43c4e823bd0aedd5ed1d1cb1c09dbb",
+      "aarMetadataSha256": "9cc8517bbdf06d879f57a2cfd6f8c6914e48800d443421cd850971945f98e7b2",
+      "licensePath": "modules/crewroll-transfer/android/Vendor/LICENSE.lazysodium",
+      "licenseSha256": "4b89d4518bd135ab4ee154a7bce722246b57a98c3d7efc1a09409898160c2bd1"
+    },
+    {
+      "coordinate": "net.java.dev.jna:jna:5.17.0",
+      "packaging": "aar",
+      "path": "modules/crewroll-transfer/android/Vendor/jna-5.17.0.aar",
+      "sha256": "4dbeffffa665d97ad5aa7eee297531d3c841a86716ab7f774fd6956422b3cf38",
+      "classesJarSha256": "d139557765f1668044aaf88ca258b319cacf73748b58fdb7b95a7fc4011d4129",
+      "licensePath": "modules/crewroll-transfer/android/Vendor/LICENSE.jna",
+      "licenseSha256": "07c938b23950ab7d47a24ef35f9f5da3a05ae164278dc959ad6994135ed59ff1",
+      "selectedLicensePath": "modules/crewroll-transfer/android/Vendor/LICENSE.jna-apache-2.0",
+      "selectedLicenseSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    }
+  ]
+}

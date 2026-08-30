@@ -9,6 +9,7 @@ import {
   DiscardProvisionalTripKeyCommandSchema,
   DurableEngineSnapshotSchema,
   EngineBlockerSchema,
+  EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
   InstallDeviceSessionCommandSchema,
   NativeDeviceIdentitySchema,
@@ -29,6 +30,8 @@ import {
 const tripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
 const deviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
 const membershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
+const accountId = "user_2abcDEF-123";
+const installationId = "install_01J6D4M4KB8J8G3AZXJ3PZV1Z9";
 const P256_PUBLIC_KEY =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -55,6 +58,22 @@ describe("crypto protocol metadata", () => {
 });
 
 describe("native bridge protocol", () => {
+  it("requires one closed opaque account identity command", () => {
+    const command = { protocolVersion: 1, accountId };
+    expect(Value.Check(EnsureDeviceIdentityCommandSchema, command)).toBe(true);
+    for (const invalid of [
+      { protocolVersion: 1 },
+      { ...command, accountId: "" },
+      { ...command, accountId: "user@example.com" },
+      { ...command, accountId: "a".repeat(256) },
+      { ...command, rawAccountAlias: accountId },
+    ]) {
+      expect(Value.Check(EnsureDeviceIdentityCommandSchema, invalid)).toBe(
+        false,
+      );
+    }
+  });
+
   it("requires protocol version 1 and distinct versioned public keys", () => {
     const identity = {
       protocolVersion: 1,
@@ -108,6 +127,8 @@ describe("native bridge protocol", () => {
   it("installs only an opaque expiring background bearer", () => {
     const command = {
       protocolVersion: 1,
+      accountId,
+      installationId,
       deviceId,
       backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",

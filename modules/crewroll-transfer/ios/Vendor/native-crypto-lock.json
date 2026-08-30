@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "swiftSodiumVersion": "0.11.0",
+  "libsodiumVersion": "1.0.22",
+  "xcframeworkPath": "modules/crewroll-transfer/ios/Vendor/Clibsodium.xcframework",
+  "fileCount": 791,
+  "inventoryAlgorithm": "sha256(path-utf8 || nul || sha256(file-bytes)) for sorted portable paths",
+  "inventorySha256": "d63396012090ae91657484d892cae9b83aeaeb1202e4ea52ef563a21a68dce5b",
+  "macosSlicePath": "modules/crewroll-transfer/ios/Vendor/Clibsodium.xcframework/macos-arm64_arm64e_x86_64/libsodium.a",
+  "macosSliceSha256": "9e00d236b5fc294f48825edbc1ca8971dc418363dae8cc7787004d63454ed563",
+  "infoPlistPath": "modules/crewroll-transfer/ios/Vendor/Clibsodium.xcframework/Info.plist",
+  "infoPlistSha256": "b33b6160100ac0307b351cba8056d347db80df62b2782624d9e06a86407dbcbd",
+  "licensePath": "modules/crewroll-transfer/ios/Vendor/LICENSE.swift-sodium",
+  "licenseSha256": "65bdb1ccfab986d20315fe5384c09c9eadabaa7128eac584e1daf6bc558346d3"
+}

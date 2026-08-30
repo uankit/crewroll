@@ -259,6 +259,8 @@ function referencesGenerator(path: string, text: string): boolean {
 function fixtureRngBoundaryViolations(
   entries: readonly MaintainedSourceEntry[],
 ): string[] {
+  const reviewedSodiumVendorRoot =
+    "modules/crewroll-transfer/ios/Vendor/Clibsodium.xcframework/";
   const forbiddenTokens = [
     ["CR", "Fixture", "Rng"].join(""),
     ["randombytes", "implementation"].join("_"),
@@ -285,6 +287,12 @@ function fixtureRngBoundaryViolations(
       violations.push(
         `${entry.path}: maintained-source symlink is not allowed`,
       );
+      continue;
+    }
+    // This exact vendored, pinned upstream XCFramework legitimately declares
+    // libsodium's RNG-pluggability API. Production code is separately bound to
+    // randombytes_buf and never to the deterministic fixture hook.
+    if (portablePath.startsWith(reviewedSodiumVendorRoot)) {
       continue;
     }
     if (!isSourceOrManifest(portablePath)) {

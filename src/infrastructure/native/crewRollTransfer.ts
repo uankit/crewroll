@@ -7,6 +7,7 @@ import {
   DeactivateTripCommandSchema,
   DiscardProvisionalTripKeyCommandSchema,
   DurableEngineSnapshotSchema,
+  EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
   InstallDeviceSessionCommandSchema,
   ListAssetsQuerySchema,
@@ -24,6 +25,7 @@ import {
   type DeactivateTripCommand,
   type DiscardProvisionalTripKeyCommand,
   type DurableEngineSnapshot,
+  type EnsureDeviceIdentityCommand,
   type ImportTripKeyCommand,
   type InstallDeviceSessionCommand,
   type ListAssetsQuery,
@@ -67,7 +69,9 @@ function parse<Schema extends TSchema>(
 }
 
 export interface CrewRollTransferPort {
-  ensureDeviceIdentity(): Promise<NativeDeviceIdentity>;
+  ensureDeviceIdentity(
+    command: EnsureDeviceIdentityCommand,
+  ): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
   discardProvisionalTripKey(
@@ -93,8 +97,14 @@ export function createCrewRollTransferPort(
   getNativeModule: NativeModuleProvider,
 ): CrewRollTransferPort {
   return {
-    async ensureDeviceIdentity() {
-      const result: unknown = await getNativeModule().ensureDeviceIdentity();
+    async ensureDeviceIdentity(command) {
+      const parsed = parse(
+        EnsureDeviceIdentityCommandSchema,
+        command,
+        "ensureDeviceIdentity command",
+      );
+      const result: unknown =
+        await getNativeModule().ensureDeviceIdentity(parsed);
       return parse(
         NativeDeviceIdentitySchema,
         result,

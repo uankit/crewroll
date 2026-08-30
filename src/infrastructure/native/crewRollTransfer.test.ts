@@ -10,6 +10,7 @@ import {
 const tripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130";
 const deviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
 const membershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
+const accountId = "user_2abcDEF-123";
 const workId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150";
 const P256_PUBLIC_KEY =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -125,6 +126,34 @@ describe("CrewRoll native transfer boundary", () => {
     expect(port).not.toHaveProperty("tripKey");
   });
 
+  it("validates and forwards the closed account identity command", async () => {
+    const received: unknown[] = [];
+    const native = nativeModule({
+      ensureDeviceIdentity: async (command: unknown) => {
+        received.push(command);
+        return identity;
+      },
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+    const command = { protocolVersion: 1, accountId } as const;
+
+    await expect(
+      (
+        port.ensureDeviceIdentity as unknown as (
+          value: unknown,
+        ) => Promise<unknown>
+      )(command),
+    ).resolves.toEqual(identity);
+    await expect(
+      (
+        port.ensureDeviceIdentity as unknown as (
+          value: unknown,
+        ) => Promise<unknown>
+      )({ ...command, accountId: "user@example.com" }),
+    ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    expect(received).toEqual([command]);
+  });
+
   it("accepts canonical formatted session and activation commands", async () => {
     const installed: unknown[] = [];
     const activated: unknown[] = [];
@@ -139,6 +168,8 @@ describe("CrewRoll native transfer boundary", () => {
     const port = createCrewRollTransferPort(() => native.module);
     const session = {
       protocolVersion: 1,
+      accountId,
+      installationId: identity.installationId,
       deviceId,
       backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
@@ -175,6 +206,8 @@ describe("CrewRoll native transfer boundary", () => {
     await expect(
       port.installDeviceSession({
         protocolVersion: 1,
+        accountId,
+        installationId: identity.installationId,
         deviceId,
         backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
         backgroundBearerExpiresAt: "2026-09-31T12:00:00.000Z",
@@ -340,6 +373,8 @@ describe("CrewRoll native transfer boundary", () => {
 
     const session = {
       protocolVersion: 1,
+      accountId,
+      installationId: identity.installationId,
       deviceId,
       backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
@@ -559,7 +594,8 @@ describe("CrewRoll native transfer boundary", () => {
         name: "ensureDeviceIdentity",
         nativeMethod: "ensureDeviceIdentity",
         malformedResult: { ...identity, authenticationKeyVersion: 2 },
-        invoke: (port) => port.ensureDeviceIdentity(),
+        invoke: (port) =>
+          port.ensureDeviceIdentity({ protocolVersion: 1, accountId }),
       },
       {
         name: "createTripKey",
@@ -661,7 +697,7 @@ describe("CrewRoll native transfer boundary", () => {
     await expect(
       createCrewRollTransferPort(
         () => identityLeak.module,
-      ).ensureDeviceIdentity(),
+      ).ensureDeviceIdentity({ protocolVersion: 1, accountId }),
     ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
     await expect(
       createCrewRollTransferPort(() => projectionLeak.module).listAssets({
@@ -754,6 +790,8 @@ describe("CrewRoll native transfer boundary", () => {
     });
     const port = createCrewRollTransferPort(() => native.module);
 
-    await expect(port.ensureDeviceIdentity()).rejects.toBe(unavailable);
+    await expect(
+      port.ensureDeviceIdentity({ protocolVersion: 1, accountId }),
+    ).rejects.toBe(unavailable);
   });
 });

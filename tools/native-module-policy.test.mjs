@@ -78,7 +78,7 @@ test("Expo autolinking discovers only the canonical CrewRoll native shells", () 
   ]);
 });
 
-test("both native shells fail closed until durable engine work begins", () => {
+test("both native shells expose only the accepted key vertical and keep engine work closed", () => {
   const moduleRoot = path.join(root, "modules", "crewroll-transfer");
   const swift = readFileSync(
     path.join(moduleRoot, "ios", "CrewRollTransferModule.swift"),
@@ -99,7 +99,7 @@ test("both native shells fail closed until durable engine work begins", () => {
     ),
     "utf8",
   );
-  const mutationNames = [
+  const keyMethodNames = [
     "ensureDeviceIdentity",
     "installDeviceSession",
     "createTripKey",
@@ -108,10 +108,13 @@ test("both native shells fail closed until durable engine work begins", () => {
     "importTripKey",
     "activateTrip",
     "deactivateTrip",
+  ];
+  const pendingEngineMethodNames = [
     "setTransferPolicy",
     "reconcileNow",
     "retry",
   ];
+  const mutationNames = [...keyMethodNames, ...pendingEngineMethodNames];
   const allMethodNames = [...mutationNames, "getSnapshot", "listAssets"];
 
   for (const source of [swift, kotlin]) {
@@ -125,18 +128,21 @@ test("both native shells fail closed until durable engine work begins", () => {
       (source.match(/Events\("engineInvalidated"\)/g) ?? []).length,
       1,
     );
-    assert.match(source, /ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED/);
+    assert.doesNotMatch(source, /ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED/);
+    assert.match(source, /ERR_CREWROLL_TRANSFER_SCOPE_PENDING/);
     assert.equal(
       (source.match(/AsyncFunction\("discardProvisionalTripKey"\)/g) ?? [])
         .length,
       1,
     );
+    for (const method of keyMethodNames) {
+      assert.match(source, new RegExp(`lifecycle\\.${method}`));
+    }
     assert.equal(
-      (source.match(/promise\.reject\(notImplementedException\(\)\)/g) ?? [])
+      (source.match(/promise\.reject\(pendingScopeException\(\)\)/g) ?? [])
         .length,
-      mutationNames.length,
+      pendingEngineMethodNames.length,
     );
-    assert.doesNotMatch(source, /promise\.resolve/);
   }
 
   assert.match(swift, /"protocolVersion": 1/);

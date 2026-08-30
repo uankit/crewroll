@@ -14,3 +14,9 @@ android {
     versionName '0.1.0'
   }
 }
+
+dependencies {
+  // Reviewed, hash-locked artifacts; see Vendor/native-crypto-lock.json.
+  implementation files('Vendor/lazysodium-android-5.2.0.aar')
+  implementation files('Vendor/jna-5.17.0.aar')
+}
