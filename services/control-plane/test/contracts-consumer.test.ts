@@ -11,6 +11,7 @@ import {
   DeviceResponseSchema,
   MobileCommandHeadersSchema,
   RegisterDeviceBodySchema,
+  TripResponseSchema,
   UpdatePushTokenBodySchema,
   installCrewRollFormats,
 } from "@crewroll/contracts";
@@ -93,6 +94,32 @@ describe("compiled CrewRoll contracts in the control-plane TypeBox instance", ()
     expect(createTripCompiler.Check({ ...trip, name: "🛶".repeat(81) })).toBe(
       false,
     );
+  });
+
+  it("compiles identical Unicode name limits for direct and committed trip responses", () => {
+    const trip = validTripResponse();
+    const responseCompiler = TypeCompiler.Compile(TripResponseSchema);
+    const outcomeCompiler = TypeCompiler.Compile(
+      CreateTripOutcomeResponseSchema,
+    );
+    const cases = [
+      [responseCompiler, (name: string) => ({ ...trip, name })],
+      [
+        outcomeCompiler,
+        (name: string) => ({
+          outcome: "COMMITTED",
+          trip: { ...trip, name },
+        }),
+      ],
+    ] as const;
+
+    for (const [compiler, project] of cases) {
+      expect(compiler.Check(project("🛶".repeat(80)))).toBe(true);
+      expect(compiler.Check(project(`${"a".repeat(79)}🛶`))).toBe(true);
+      expect(compiler.Check(project("🛶".repeat(81)))).toBe(false);
+      expect(compiler.Check(project("\uD800"))).toBe(false);
+      expect(compiler.Check(project("\uDC00"))).toBe(false);
+    }
   });
 
   it("exposes an idempotent installer with the complete semantic format set", () => {
