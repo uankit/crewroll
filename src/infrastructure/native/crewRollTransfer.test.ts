@@ -14,6 +14,7 @@ const workId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150";
 const P256_PUBLIC_KEY =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const X25519_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const BACKGROUND_BEARER = `crb_${"A".repeat(43)}`;
 const TRIP_ENVELOPE =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -140,7 +141,7 @@ describe("CrewRoll native transfer boundary", () => {
     const session = {
       protocolVersion: 1,
       deviceId,
-      backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+      backgroundBearer: BACKGROUND_BEARER,
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
       apiBaseUrl: "https://api.crewroll.app",
     } as const;
@@ -176,7 +177,7 @@ describe("CrewRoll native transfer boundary", () => {
       port.installDeviceSession({
         protocolVersion: 1,
         deviceId,
-        backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+        backgroundBearer: BACKGROUND_BEARER,
         backgroundBearerExpiresAt: "2026-09-31T12:00:00.000Z",
         apiBaseUrl: "not-a-uri",
       }),
@@ -341,7 +342,7 @@ describe("CrewRoll native transfer boundary", () => {
     const session = {
       protocolVersion: 1,
       deviceId,
-      backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
+      backgroundBearer: BACKGROUND_BEARER,
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
       apiBaseUrl: "https://api.crewroll.app",
     } as const;
