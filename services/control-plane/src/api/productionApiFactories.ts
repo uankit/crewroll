@@ -3,13 +3,16 @@ import { loadEnvironment, type Environment } from "../config/env.js";
 import { createDatabase } from "../db/database.js";
 import { createKyselyDeviceAuthorizationSnapshotReader } from "../db/devices/kyselyDeviceAuthorizationSnapshotReader.js";
 import { createKyselyDeviceUnitOfWork } from "../db/devices/kyselyDeviceUnitOfWork.js";
+import { createKyselyIdentityUnitOfWork } from "../db/identity/kyselyIdentityUnitOfWork.js";
 import {
   createRegisterDevice,
   createRevokeDevice,
   createUpdateDevicePushToken,
 } from "../modules/devices/index.js";
+import { createClerkWebhookService } from "../modules/identity/index.js";
 import { createClerkUserDirectory } from "../platform/clerk/clerkUserDirectory.js";
 import { createRemoteJoseClerkTokenVerifier } from "../platform/clerk/joseClerkTokenVerifier.js";
+import { createClerkWebhookVerifier } from "../platform/clerk/verifyClerkWebhook.js";
 import { createHmacBackgroundCredentialIssuer } from "../platform/crypto/hmacBackgroundCredentialIssuer.js";
 import { createKmsPushTokenProtector } from "../platform/kms/kmsPushTokenProtector.js";
 import { createSafeLogger } from "../shared/observability/safeLogger.js";
@@ -33,6 +36,7 @@ export const productionApiFactories: ApiRuntimeFactories = {
     ),
   buildApp,
   clock: () => ({ now: () => new Date() }),
+  clerkWebhookService: createClerkWebhookService,
   database: databaseHandle,
   directory: (environment) =>
     createClerkUserDirectory({
@@ -40,6 +44,10 @@ export const productionApiFactories: ApiRuntimeFactories = {
     }),
   environment: () => loadEnvironment(process.env),
   ids: () => ({ uuid: () => globalThis.crypto.randomUUID() }),
+  identityUnitOfWork: (database) =>
+    createKyselyIdentityUnitOfWork(
+      database as Parameters<typeof createKyselyIdentityUnitOfWork>[0],
+    ),
   logger: createSafeLogger,
   pushTokenProtector: (environment) =>
     createKmsPushTokenProtector({
@@ -65,6 +73,11 @@ export const productionApiFactories: ApiRuntimeFactories = {
       database as Parameters<typeof createKyselyDeviceUnitOfWork>[0],
     ),
   updateDevicePushToken: createUpdateDevicePushToken,
+  webhookVerifier: (environment, clock) =>
+    createClerkWebhookVerifier({
+      clock,
+      signingSecret: required(environment.clerkWebhookSecret),
+    }),
 };
 
 export async function startProductionApi() {

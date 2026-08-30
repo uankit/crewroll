@@ -127,6 +127,7 @@ describe.sequential("API bootstrap", () => {
           CLERK_AUTHORIZED_PARTIES_JSON: "[]",
           CLERK_ISSUER: "https://clerk.bootstrap.invalid",
           CLERK_SECRET_KEY: secretCanary,
+          CLERK_WEBHOOK_SECRET: "whsec_bootstrap_test",
           DATABASE_URL: postgres.connectionUri,
           HOST: "127.0.0.1",
           LOG_LEVEL: "trace",

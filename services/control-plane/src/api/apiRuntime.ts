@@ -11,6 +11,12 @@ import type {
   RevokeDeviceDependencies,
   UpdateDevicePushTokenDependencies,
 } from "../modules/devices/index.js";
+import type {
+  ClerkWebhookRouteDependencies,
+  ClerkWebhookServiceDependencies,
+  ClerkWebhookVerifier,
+  IdentityUnitOfWork,
+} from "../modules/identity/index.js";
 
 type Environment = AppDependencies["environment"];
 type Logger = AppDependencies["logger"];
@@ -39,10 +45,14 @@ export interface ApiRuntimeFactories {
   backgroundCredentials(environment: Environment): BackgroundCredentialIssuer;
   buildApp(dependencies: AppDependencies): RuntimeApp;
   clock(): Clock;
+  clerkWebhookService(
+    dependencies: ClerkWebhookServiceDependencies,
+  ): ClerkWebhookRouteDependencies["webhookService"];
   database(environment: Environment): DatabaseHandle;
   directory(environment: Environment): ClerkUserDirectory;
   environment(): Environment;
   ids(): IdGenerator;
+  identityUnitOfWork(database: unknown): IdentityUnitOfWork;
   logger(environment: Environment): Logger;
   pushTokenProtector(environment: Environment): KmsPushTokenProtectorHandle;
   registerDevice(
@@ -57,6 +67,7 @@ export interface ApiRuntimeFactories {
   updateDevicePushToken(
     dependencies: UpdateDevicePushTokenDependencies,
   ): DeviceRouteDependencies["updateDevicePushToken"];
+  webhookVerifier(environment: Environment, clock: Clock): ClerkWebhookVerifier;
 }
 
 export interface ApiRuntime {
@@ -91,11 +102,15 @@ export async function createApiRuntime(
     const ids = factories.ids();
     databaseHandle = factories.database(environment);
     const tokenVerifier = factories.tokenVerifier(environment, clock);
+    const webhookVerifier = factories.webhookVerifier(environment, clock);
     const directory = factories.directory(environment);
     const backgroundCredentials = factories.backgroundCredentials(environment);
     kmsHandle = factories.pushTokenProtector(environment);
     const snapshots = factories.snapshots(databaseHandle.database);
     const unitOfWork = factories.unitOfWork(databaseHandle.database);
+    const identityUnitOfWork = factories.identityUnitOfWork(
+      databaseHandle.database,
+    );
     const registerDevice = factories.registerDevice({
       backgroundCredentials,
       clock,
@@ -116,6 +131,12 @@ export async function createApiRuntime(
       snapshots,
       unitOfWork,
     });
+    const webhookService = factories.clerkWebhookService({
+      clock,
+      ids,
+      unitOfWork: identityUnitOfWork,
+      verifier: webhookVerifier,
+    });
     app = factories.buildApp({
       clock,
       devices: {
@@ -126,6 +147,7 @@ export async function createApiRuntime(
       },
       environment,
       ids,
+      identity: { webhookService },
       logger,
       readiness: {
         async check() {

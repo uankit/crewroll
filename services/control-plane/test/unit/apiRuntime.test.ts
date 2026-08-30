@@ -12,14 +12,17 @@ const stages = [
   "ids",
   "database",
   "tokenVerifier",
+  "webhookVerifier",
   "directory",
   "backgroundCredentials",
   "pushTokenProtector",
   "snapshots",
   "unitOfWork",
+  "identityUnitOfWork",
   "registerDevice",
   "updateDevicePushToken",
   "revokeDevice",
+  "clerkWebhookService",
   "buildApp",
 ] as const;
 type Stage = (typeof stages)[number];
@@ -40,14 +43,17 @@ function createRuntimeHarness(
   const ids = { slot: "ids", uuid: () => "id" };
   const database = { slot: "database" };
   const tokenVerifier = { slot: "tokenVerifier" };
+  const webhookVerifier = { slot: "webhookVerifier" };
   const directory = { slot: "directory" };
   const backgroundCredentials = { slot: "backgroundCredentials" };
   const protector = { slot: "protector" };
   const snapshots = { slot: "snapshots" };
   const unitOfWork = { slot: "unitOfWork" };
+  const identityUnitOfWork = { slot: "identityUnitOfWork" };
   const registerDevice = { slot: "registerDevice" };
   const updateDevicePushToken = { slot: "updateDevicePushToken" };
   const revokeDevice = { slot: "revokeDevice" };
+  const webhookService = { slot: "webhookService" };
   const close = vi.fn(() =>
     options.appCloseFailure
       ? Promise.reject(new Error("app close canary"))
@@ -90,6 +96,11 @@ function createRuntimeHarness(
       expect(actualClock).toBe(clock);
       return step("tokenVerifier", tokenVerifier);
     },
+    webhookVerifier: (actualEnvironment: unknown, actualClock: unknown) => {
+      expect(actualEnvironment).toBe(environment);
+      expect(actualClock).toBe(clock);
+      return step("webhookVerifier", webhookVerifier);
+    },
     directory: (actual: unknown) => {
       expect(actual).toBe(environment);
       return step("directory", directory);
@@ -109,6 +120,10 @@ function createRuntimeHarness(
     unitOfWork: (actual: unknown) => {
       expect(actual).toBe(database);
       return step("unitOfWork", unitOfWork);
+    },
+    identityUnitOfWork: (actual: unknown) => {
+      expect(actual).toBe(database);
+      return step("identityUnitOfWork", identityUnitOfWork);
     },
     registerDevice: (actual: Record<string, unknown>) => {
       expect(actual).toEqual({
@@ -130,6 +145,15 @@ function createRuntimeHarness(
       expect(actual).toEqual({ clock, snapshots, unitOfWork });
       return step("revokeDevice", revokeDevice);
     },
+    clerkWebhookService: (actual: Record<string, unknown>) => {
+      expect(actual).toEqual({
+        clock,
+        ids,
+        unitOfWork: identityUnitOfWork,
+        verifier: webhookVerifier,
+      });
+      return step("clerkWebhookService", webhookService);
+    },
     buildApp: (actual: Record<string, unknown>) => {
       expect(actual).toMatchObject({
         clock,
@@ -141,6 +165,7 @@ function createRuntimeHarness(
         },
         environment,
         ids,
+        identity: { webhookService },
         logger,
       });
       return step("buildApp", { close, listen });

@@ -36,6 +36,7 @@ const productionProviderEnvironment = {
   INVITE_CODE_HMAC_KEY: "invite_hmac_key",
   KMS_PUSH_TOKEN_KEY_ID: "kms_push_key",
   MEDIA_BUCKET: "crewroll-media",
+  NODE_ENV: "production",
 } satisfies NodeJS.ProcessEnv;
 
 interface TestDependenciesOptions {
@@ -84,6 +85,11 @@ export function createTestDependencies({
       },
     },
     environment,
+    identity: {
+      webhookService: {
+        handle: () => Promise.reject(new Error("Unexpected webhook route")),
+      },
+    },
     ids: { uuid: () => fixedRequestId },
     logger: createSafeLogger(environment, destination),
     readiness,

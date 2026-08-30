@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 
+import {
+  validRegisterDeviceBody,
+  validRegistrationHeaders,
+} from "@crewroll/contracts/fixtures/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../../src/app/buildApp.js";
@@ -54,6 +58,108 @@ function expectedProblem(
 }
 
 describe("buildApp", () => {
+  it("isolates Clerk raw bytes without changing device JSON parsing", async () => {
+    const fixture = createTestDependencies();
+    const rawBody = Buffer.from(
+      '{"type":"user.updated","data":{"id":"user_raw"}}',
+    );
+    let receivedBody: Readonly<Uint8Array> | undefined;
+    let receivedHeaders: Record<string, string | undefined> | undefined;
+    let receivedDeviceBody: unknown;
+    const app = track(
+      buildApp({
+        ...fixture.dependencies,
+        devices: {
+          ...fixture.dependencies.devices,
+          registerDevice: {
+            execute: ({ body }) => {
+              receivedDeviceBody = body;
+              return Promise.resolve({
+                backgroundBearer: `crb_${"A".repeat(43)}`,
+                backgroundBearerExpiresAt: "2026-09-29T12:00:00.000Z",
+                deviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3120",
+              });
+            },
+          },
+          tokenVerifier: {
+            verify: () => Promise.resolve({ clerkSubject: "user_raw_parser" }),
+          },
+        },
+        identity: {
+          webhookService: {
+            handle: (body, headers) => {
+              receivedBody = body;
+              receivedHeaders = headers;
+              return Promise.resolve({ received: true });
+            },
+          },
+        },
+      }),
+    );
+
+    const webhook = await app.inject({
+      headers: {
+        "content-type": "application/json",
+        "svix-id": "evt_raw",
+        "svix-signature": "v1,signature",
+        "svix-timestamp": "1788004800",
+      },
+      method: "POST",
+      payload: rawBody,
+      url: "/webhooks/clerk",
+    });
+    const device = await app.inject({
+      headers: {
+        ...validRegistrationHeaders(),
+        "content-type": "application/json",
+      },
+      method: "POST",
+      payload: validRegisterDeviceBody(),
+      url: "/v1/devices",
+    });
+
+    expect(webhook.statusCode).toBe(200);
+    expect(webhook.json()).toEqual({ received: true });
+    expect(Buffer.from(receivedBody ?? [])).toEqual(rawBody);
+    expect(receivedHeaders).toEqual({
+      svixId: "evt_raw",
+      svixSignature: "v1,signature",
+      svixTimestamp: "1788004800",
+    });
+    expect(device.statusCode).toBe(201);
+    expect(receivedDeviceBody).toEqual(validRegisterDeviceBody());
+  });
+
+  it("rejects oversized Clerk bytes before verification", async () => {
+    const fixture = createTestDependencies();
+    let verificationCalls = 0;
+    const app = track(
+      buildApp({
+        ...fixture.dependencies,
+        identity: {
+          webhookService: {
+            handle: () => {
+              verificationCalls += 1;
+              return Promise.resolve({ received: true });
+            },
+          },
+        },
+      }),
+    );
+
+    const response = await app.inject({
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      payload: Buffer.alloc(1_048_577, 0x78),
+      url: "/webhooks/clerk",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(expectedProblem(400));
+    expect(verificationCalls).toBe(0);
+    expect(fixture.logs()).not.toContain("xxxxxxxxxxxxxxxx");
+  });
+
   it("keeps the injected request-ID contract shared and dependency-free", () => {
     const ids: IdGenerator = { uuid: () => fixedRequestId };
     const sharedContract = readFileSync(
