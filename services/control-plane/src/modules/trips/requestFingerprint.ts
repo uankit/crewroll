@@ -13,6 +13,8 @@ import { isCanonicalTripName, isValidatedTripRelease } from "./tripPolicy.js";
 const FRAME_DOMAIN = Buffer.from("CREWROLL-TRIP-FINGERPRINT-V1\0", "ascii");
 const UUID_V7_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const INVALID_MESSAGE = "Invalid trip fingerprint input";
 
 type FieldValue = string | Readonly<Uint8Array>;
@@ -41,6 +43,12 @@ function exactInputKeys(
 
 function uuidV7(value: unknown): string {
   return typeof value === "string" && UUID_V7_PATTERN.test(value)
+    ? value
+    : invalid();
+}
+
+function canonicalUuid(value: unknown): string {
+  return typeof value === "string" && CANONICAL_UUID_PATTERN.test(value)
     ? value
     : invalid();
 }
@@ -137,7 +145,7 @@ export function createTripRequestFingerprint(
     ["releaseTimeZone", releaseTimeZone],
     ["releaseLocalTime", releaseLocalTime],
     ["endsAtEpochMs", String(input.endsAt.getTime())],
-    ["ownerDeviceId", uuidV7(input.ownerDeviceId)],
+    ["ownerDeviceId", canonicalUuid(input.ownerDeviceId)],
     ["ownerKeyEpoch", "1"],
     ["ownerAlgorithmVersion", "1"],
     ["ownerKeyEnvelope", exactBytes(input.ownerKeyEnvelope, 148)],
@@ -150,7 +158,7 @@ export function joinTripRequestFingerprint(
   exactInputKeys(input, ["deviceId", "inviteCodeHmac"]);
   return fingerprint("trips.join.v1", [
     ["inviteCodeHmac", exactBytes(input.inviteCodeHmac, 32)],
-    ["deviceId", uuidV7(input.deviceId)],
+    ["deviceId", canonicalUuid(input.deviceId)],
   ]);
 }
 
@@ -167,7 +175,7 @@ export function approveTripRequestFingerprint(
   if (input.keyEpoch !== 1 || input.algorithmVersion !== 1) return invalid();
   return fingerprint("trips.approve.v1", [
     ["tripId", uuidV7(input.tripId)],
-    ["membershipId", uuidV7(input.membershipId)],
+    ["membershipId", canonicalUuid(input.membershipId)],
     ["keyEpoch", "1"],
     ["algorithmVersion", "1"],
     ["wrappedKey", exactBytes(input.wrappedKey, 148)],
@@ -180,7 +188,7 @@ export function rejectTripRequestFingerprint(
   exactInputKeys(input, ["membershipId", "tripId"]);
   return fingerprint("trips.reject.v1", [
     ["tripId", uuidV7(input.tripId)],
-    ["membershipId", uuidV7(input.membershipId)],
+    ["membershipId", canonicalUuid(input.membershipId)],
   ]);
 }
 

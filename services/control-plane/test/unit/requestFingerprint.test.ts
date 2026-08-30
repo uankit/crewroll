@@ -29,6 +29,17 @@ const OTHER_DEVICE_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3121";
 const MEMBERSHIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
 const OTHER_MEMBERSHIP_ID = "018f0d98-76fa-7d1a-b4b4-1f742c2e3141";
 const NOW = new Date("2026-08-30T12:00:00.000Z");
+const GENERIC_UUIDS = [
+  ["v4", "550e8400-e29b-41d4-a716-446655440000"],
+  ["v6", "1e016bcc-7ab4-6a30-8000-000000000001"],
+  ["v8", "018f0d98-76fa-8d1a-b4b4-1f742c2e3140"],
+] as const;
+const INVALID_GENERIC_UUIDS = [
+  ["uppercase", "550E8400-E29B-41D4-A716-446655440000"],
+  ["braced", "{550e8400-e29b-41d4-a716-446655440000}"],
+  ["nonvariant", "550e8400-e29b-41d4-7716-446655440000"],
+  ["noncanonical", "550e8400e29b41d4a716446655440000"],
+] as const;
 
 function valueOf<Value>(result: TripPolicyResult<Value>): Value {
   if (!result.ok)
@@ -126,6 +137,98 @@ describe("Trip command request fingerprints", () => {
         "4884216d29be718664088722633ed25e91eaafb7af59d2d2e0a9be77ce9acbcb",
       start: "5a58bc975dab2c1fe7e57098ee0fbfa6994ad2f79287523b83b7959819b95f1c",
     });
+  });
+
+  it.each(GENERIC_UUIDS)(
+    "accepts lowercase canonical %s device and membership IDs",
+    (_version, id) => {
+      const create = baseCreate();
+
+      expect(
+        createTripRequestFingerprint({ ...create, ownerDeviceId: id }),
+      ).toHaveLength(32);
+      expect(
+        joinTripRequestFingerprint({
+          deviceId: id,
+          inviteCodeHmac: new Uint8Array(32),
+        }),
+      ).toHaveLength(32);
+      expect(
+        approveTripRequestFingerprint({
+          algorithmVersion: 1,
+          keyEpoch: 1,
+          membershipId: id,
+          tripId: TRIP_ID,
+          wrappedKey: new Uint8Array(148),
+        }),
+      ).toHaveLength(32);
+      expect(
+        rejectTripRequestFingerprint({ membershipId: id, tripId: TRIP_ID }),
+      ).toHaveLength(32);
+    },
+  );
+
+  it.each(INVALID_GENERIC_UUIDS)(
+    "rejects %s generic device and membership IDs",
+    (_kind, id) => {
+      const create = baseCreate();
+      const invalidCases: Array<() => Readonly<Uint8Array>> = [
+        () => createTripRequestFingerprint({ ...create, ownerDeviceId: id }),
+        () =>
+          joinTripRequestFingerprint({
+            deviceId: id,
+            inviteCodeHmac: new Uint8Array(32),
+          }),
+        () =>
+          approveTripRequestFingerprint({
+            algorithmVersion: 1,
+            keyEpoch: 1,
+            membershipId: id,
+            tripId: TRIP_ID,
+            wrappedKey: new Uint8Array(148),
+          }),
+        () =>
+          rejectTripRequestFingerprint({ membershipId: id, tripId: TRIP_ID }),
+      ];
+
+      for (const invalid of invalidCases) {
+        expect(invalid).toThrow("Invalid trip fingerprint input");
+      }
+    },
+  );
+
+  it.each([
+    ["v4", "550e8400-e29b-41d4-a716-446655440000"],
+    ["v6", "1e016bcc-7ab4-6a30-8000-000000000001"],
+    ["v8", "018f0d98-76fa-8d1a-b4b4-1f742c2e3140"],
+    ["uppercase v7", TRIP_ID.toUpperCase()],
+    ["braced v7", `{${TRIP_ID}}`],
+    ["nonvariant v7", "018f0d98-76fa-7d1a-74b4-1f742c2e3130"],
+  ])("rejects %s trip IDs across every trip command", (_kind, tripId) => {
+    const create = baseCreate();
+    const invalidCases: Array<() => Readonly<Uint8Array>> = [
+      () => createTripRequestFingerprint({ ...create, tripId }),
+      () =>
+        approveTripRequestFingerprint({
+          algorithmVersion: 1,
+          keyEpoch: 1,
+          membershipId: MEMBERSHIP_ID,
+          tripId,
+          wrappedKey: new Uint8Array(148),
+        }),
+      () =>
+        rejectTripRequestFingerprint({ membershipId: MEMBERSHIP_ID, tripId }),
+      () =>
+        readinessTripRequestFingerprint({
+          fullPhotoLibraryAccess: true,
+          tripId,
+        }),
+      () => startTripRequestFingerprint({ expectedVersion: 1, tripId }),
+    ];
+
+    for (const invalid of invalidCases) {
+      expect(invalid).toThrow("Invalid trip fingerprint input");
+    }
   });
 
   it("frames every create semantic field independently", () => {
@@ -382,6 +485,16 @@ describe("Trip command request fingerprints", () => {
         createTripRequestFingerprint({
           ...create,
           canonicalTripName: " Trip " as CanonicalTripName,
+        }),
+      () =>
+        createTripRequestFingerprint({
+          ...create,
+          canonicalTripName: "\u0000" as CanonicalTripName,
+        }),
+      () =>
+        createTripRequestFingerprint({
+          ...create,
+          canonicalTripName: "A\u0000B" as CanonicalTripName,
         }),
       () =>
         createTripRequestFingerprint({

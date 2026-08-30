@@ -79,6 +79,8 @@ describe("pure Trip Room policy", () => {
     "a".repeat(81),
     "🛶".repeat(81),
     ` ${"a".repeat(80)}`,
+    "\u0000",
+    "A\u0000B",
     "\uD800",
     "\uDC00",
   ])("returns only safe INVALID_REQUEST for bad trip name", (input) => {
