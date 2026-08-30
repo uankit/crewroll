@@ -222,6 +222,16 @@ test("rejects every widening of the API3 alter-table column grammar", async (t) 
       'await db.schema.alterTable("members").addColumn("access", columnType, (column) => column.notNull().defaultTo(false)).execute();',
     ],
     [
+      "computed add-column type",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "bool" + "ean", (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
+      "other literal add-column type",
+      "up",
+      'await db.schema.alterTable("members").addColumn("access", "text", (column) => column.notNull().defaultTo(false)).execute();',
+    ],
+    [
       "missing add-column callback",
       "up",
       'await db.schema.alterTable("members").addColumn("access", "boolean").execute();',
@@ -357,6 +367,103 @@ test("rejects every widening of the API3 alter-table column grammar", async (t) 
       ),
     );
   }
+});
+
+test("validates helper alterations in every reachable lifecycle context", async (t) => {
+  const passingCases = [
+    [
+      "up-only add-column helper",
+      migrationSource({
+        declarations: `
+          async function applyReadiness(db: Kysely<unknown>): Promise<void> {
+            await db.schema
+              .alterTable("trip_members")
+              .addColumn("full_photo_library_access", "boolean", (column) =>
+                column.notNull().defaultTo(false),
+              )
+              .execute();
+          }
+        `,
+        upBody: "await applyReadiness(db);",
+      }),
+    ],
+    [
+      "down-only drop-column helper",
+      migrationSource({
+        declarations: `
+          async function removeReadiness(db: Kysely<unknown>): Promise<void> {
+            await db.schema
+              .alterTable("trip_members")
+              .dropColumn("full_photo_library_access")
+              .execute();
+          }
+        `,
+        downBody: "await removeReadiness(db);",
+      }),
+    ],
+    [
+      "shared direction-neutral constraint helper",
+      migrationSource({
+        declarations: `
+          async function replaceConstraint(db: Kysely<unknown>): Promise<void> {
+            await db.schema
+              .alterTable("trips")
+              .dropConstraint("trips_version_check")
+              .execute();
+          }
+        `,
+        upBody: "await replaceConstraint(db);",
+        downBody: "await replaceConstraint(db);",
+      }),
+    ],
+  ];
+
+  for (const [name, source] of passingCases) {
+    await t.test(name, async (subtest) => {
+      const result = await analyzeSource(subtest, source);
+      assert.deepEqual(result.findings, []);
+    });
+  }
+
+  await t.test("shared add-column helper reaches down", (subtest) =>
+    assertRejected(
+      subtest,
+      migrationSource({
+        declarations: `
+          async function applyReadiness(db: Kysely<unknown>): Promise<void> {
+            await db.schema
+              .alterTable("trip_members")
+              .addColumn("full_photo_library_access", "boolean", (column) =>
+                column.notNull().defaultTo(false),
+              )
+              .execute();
+          }
+        `,
+        upBody: "await applyReadiness(db);",
+        downBody: "await applyReadiness(db);",
+      }),
+      "MIGRATION_DOWN_OPAQUE_CALL",
+    ),
+  );
+
+  await t.test("shared drop-column helper reaches up", (subtest) =>
+    assertRejected(
+      subtest,
+      migrationSource({
+        declarations: `
+          async function removeReadiness(db: Kysely<unknown>): Promise<void> {
+            await db.schema
+              .alterTable("trip_members")
+              .dropColumn("full_photo_library_access")
+              .execute();
+          }
+        `,
+        upBody: "await removeReadiness(db);",
+        downBody: "await removeReadiness(db);",
+      }),
+      "MIGRATION_UP_OPAQUE_CALL",
+    ),
+  );
 });
 
 test("rejects every alter-table widening outside exact constraint replacement", async (t) => {
@@ -595,7 +702,7 @@ test("accepts every locked referential action and partial-index operator", async
   }
 });
 
-test("accepts every primitive position and an up-compatible shared helper", async (t) => {
+test("accepts every primitive position and an up-only helper", async (t) => {
   const result = await analyzeSource(
     t,
     migrationSource({
@@ -625,7 +732,6 @@ test("accepts every primitive position and an up-compatible shared helper", asyn
         await db.schema.dropIndex("users_state_idx").execute();
         await db.schema.dropIndex("users_rank_idx").execute();
         await db.schema.dropTable("users").execute();
-        await shared(db);
       `,
     }),
   );
