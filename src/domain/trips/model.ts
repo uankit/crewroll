@@ -1,0 +1,47 @@
+export const memberStatuses = ["ACTIVE", "PENDING_KEY"] as const;
+
+export type MemberStatus = (typeof memberStatuses)[number];
+
+export type MemberView = Readonly<{
+  membershipId: string;
+  role: "OWNER" | "MEMBER";
+  displayName: string;
+  status: MemberStatus;
+  fullPhotoLibraryAccess: boolean;
+  deviceState: "AVAILABLE" | "MISSING" | "NOT_DISCLOSED";
+  isCurrentMember: boolean;
+}>;
+
+export type TripReleaseView =
+  | Readonly<{ mode: "IMMEDIATE" }>
+  | Readonly<{
+      mode: "NIGHTLY";
+      timeZone: string;
+      localTime: string;
+    }>;
+
+export type TripView = Readonly<{
+  id: string;
+  version: number;
+  name: string;
+  status:
+    | "LOBBY"
+    | "ACTIVE"
+    | "ENDING"
+    | "COMPLETE"
+    | "INCOMPLETE_EXPIRED"
+    | "CANCELLED";
+  release: TripReleaseView;
+  startsAt: string | null;
+  endsAt: string;
+  ownerDeviceId: string;
+  currentMembershipId: string;
+  members: readonly MemberView[];
+}>;
+
+export type StartBlocker =
+  | "OWNER_ONLY"
+  | "NOT_LOBBY"
+  | "MEMBER_PENDING_KEY"
+  | "MEMBER_NEEDS_FULL_ACCESS"
+  | "MEMBER_DEVICE_MISSING";
