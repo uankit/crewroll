@@ -1,29 +1,44 @@
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, type StyleProp, type ViewStyle } from "react-native";
 
 import { radius } from "../tokens/radius";
 import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
-import { AppText } from "../primitives/AppText";
+import { AppText, Inline } from "../primitives";
+import { feedbackToneColors, type FeedbackTone } from "./types";
 
-type StatusBadgeProps = {
-  label: string;
+export type StatusBadgeProps = {
+  readonly icon?: string;
+  readonly label: string;
+  readonly tone?: FeedbackTone;
+  readonly style?: StyleProp<ViewStyle>;
+  readonly testID?: string;
 };
 
-export function StatusBadge({ label }: StatusBadgeProps) {
+export function StatusBadge({
+  icon = "●",
+  label,
+  tone = "success",
+  style,
+  testID,
+}: StatusBadgeProps) {
   const colors = useCrewRollTheme();
+  const toneColors = feedbackToneColors(colors, tone);
 
   return (
-    <View
+    <Inline
       accessibilityLabel={`Status: ${label}`}
-      style={[styles.root, { backgroundColor: colors.successSurface }]}
+      accessible
+      gap="xs"
+      style={[styles.root, { backgroundColor: toneColors.surface }, style]}
+      testID={testID}
     >
-      <AppText aria-hidden variant="caption" style={{ color: colors.success }}>
-        ●
+      <AppText aria-hidden variant="caption" style={{ color: toneColors.text }}>
+        {icon}
       </AppText>
-      <AppText variant="label" style={{ color: colors.success }}>
+      <AppText aria-hidden variant="label" style={{ color: toneColors.text }}>
         {label}
       </AppText>
-    </View>
+    </Inline>
   );
 }
 
@@ -32,8 +47,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     alignSelf: "flex-start",
     borderRadius: radius.pill,
-    flexDirection: "row",
-    gap: spacing.xs,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
   },
