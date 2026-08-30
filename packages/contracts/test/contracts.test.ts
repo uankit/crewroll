@@ -390,6 +390,31 @@ describe("trip and invite contracts", () => {
     });
   });
 
+  it("keeps direct and committed trip response names on the Unicode code-point boundary", () => {
+    const trip = validTripResponse();
+    const responseCases = [
+      TripResponseSchema,
+      CreateTripOutcomeResponseSchema,
+    ] as const;
+    const project = (
+      schema: (typeof responseCases)[number],
+      name: string,
+    ): unknown =>
+      schema === TripResponseSchema
+        ? { ...trip, name }
+        : { outcome: "COMMITTED", trip: { ...trip, name } };
+
+    for (const schema of responseCases) {
+      expect(Value.Check(schema, project(schema, "🛶".repeat(80)))).toBe(true);
+      expect(Value.Check(schema, project(schema, `${"a".repeat(79)}🛶`))).toBe(
+        true,
+      );
+      expect(Value.Check(schema, project(schema, "🛶".repeat(81)))).toBe(false);
+      expect(Value.Check(schema, project(schema, "\uD800"))).toBe(false);
+      expect(Value.Check(schema, project(schema, "\uDC00"))).toBe(false);
+    }
+  });
+
   it("binds canonical create and join fixtures to the command-header device", () => {
     const headerDeviceId = validClerkCommandHeaders()["x-crewroll-device-id"];
     expect(validImmediateTripBody().ownerDeviceId).toBe(headerDeviceId);

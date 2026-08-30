@@ -87,9 +87,10 @@ function acceptsWithStandardStringKeywords(
     return schema.anyOf.some((candidate) =>
       acceptsWithStandardStringKeywords(candidate, value),
     );
-  if (schema.minLength !== undefined && value.length < schema.minLength)
+  const codePointLength = Array.from(value).length;
+  if (schema.minLength !== undefined && codePointLength < schema.minLength)
     return false;
-  if (schema.maxLength !== undefined && value.length > schema.maxLength)
+  if (schema.maxLength !== undefined && codePointLength > schema.maxLength)
     return false;
   return schema.pattern === undefined || new RegExp(schema.pattern).test(value);
 }
@@ -290,6 +291,36 @@ describe("canonical OpenAPI artifact", () => {
     const committed = await readFile(fileURLToPath(generatedUrl), "utf8");
     expect(first).toBe(second);
     expect(first).toBe(committed);
+  });
+
+  it("keeps generated direct and committed trip names on the Unicode code-point boundary", async () => {
+    const generated = JSON.parse(
+      await readFile(fileURLToPath(generatedUrl), "utf8"),
+    ) as { components: { schemas: Record<string, JsonSchema> } };
+    const directName =
+      generated.components.schemas.TripResponse?.properties?.name;
+    const committedName =
+      generated.components.schemas.CreateTripOutcomeResponse?.anyOf?.[0]
+        ?.properties?.trip?.properties?.name;
+
+    for (const schema of [directName, committedName]) {
+      expect(schema).toBeDefined();
+      expect(
+        acceptsWithStandardStringKeywords(schema ?? {}, "🛶".repeat(80)),
+      ).toBe(true);
+      expect(
+        acceptsWithStandardStringKeywords(schema ?? {}, `${"a".repeat(79)}🛶`),
+      ).toBe(true);
+      expect(
+        acceptsWithStandardStringKeywords(schema ?? {}, "🛶".repeat(81)),
+      ).toBe(false);
+      expect(acceptsWithStandardStringKeywords(schema ?? {}, "\uD800")).toBe(
+        false,
+      );
+      expect(acceptsWithStandardStringKeywords(schema ?? {}, "\uDC00")).toBe(
+        false,
+      );
+    }
   });
 
   it("contains only the canonical v1 routes and header variants", () => {

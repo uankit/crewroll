@@ -25,7 +25,7 @@ export const ReleaseSchema = Type.Union([
   NightlyReleaseSchema,
 ]);
 
-const TripNameSchema = Type.Unsafe<string>({
+export const TripNameSchema = Type.Unsafe<string>({
   [Kind]: "TemplateLiteral",
   type: "string",
   minLength: 1,
@@ -78,7 +78,7 @@ export const TripMemberSchema = ClosedObject({
 export const TripResponseSchema = ClosedObject({
   id: TripIdSchema,
   version: Type.Integer({ minimum: 1 }),
-  name: Type.String({ minLength: 1, maxLength: 80 }),
+  name: TripNameSchema,
   status: TripStatusSchema,
   release: ReleaseSchema,
   startsAt: Type.Union([DateTimeSchema, Type.Null()]),

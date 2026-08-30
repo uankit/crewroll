@@ -2631,9 +2631,10 @@
                     "type": "integer"
                   },
                   "name": {
+                    "type": "string",
                     "minLength": 1,
                     "maxLength": 80,
-                    "type": "string"
+                    "pattern": "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$"
                   },
                   "status": {
                     "anyOf": [
@@ -2929,9 +2930,10 @@
             "type": "integer"
           },
           "name": {
+            "type": "string",
             "minLength": 1,
             "maxLength": 80,
-            "type": "string"
+            "pattern": "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$"
           },
           "status": {
             "anyOf": [
