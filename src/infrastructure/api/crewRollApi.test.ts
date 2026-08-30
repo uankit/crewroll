@@ -2,7 +2,10 @@ import type {
   ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  CreateTripOutcomeResponse,
+  ProblemCode,
   StartTripBody,
+  TripResponse,
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
 
@@ -43,6 +46,36 @@ const approvalBody = {
 } as ApproveJoinRequestBody;
 const startBody = { expectedVersion: 3 } as StartTripBody;
 const membershipId = "5a95305d-c558-4c79-b78c-a075be7bff85";
+const requestId = "5a95305d-c558-4c79-b78c-a075be7bff86";
+const createOutcomeBody = { tripId } as const;
+const tripResponse: TripResponse = {
+  currentMembershipId: membershipId,
+  endsAt: "2026-09-02T12:00:00.000Z",
+  id: tripId,
+  keyEpoch: 1,
+  members: [
+    {
+      displayName: "Owner",
+      membershipId,
+      nominatedDevice: {
+        deviceId,
+        e2eeKeyAlgorithm: "X25519",
+        e2eeKeyVersion: 1,
+        e2eePublicKey: `${"A".repeat(43)}=`,
+      },
+      readiness: { fullPhotoLibraryAccess: false },
+      role: "OWNER",
+      status: "ACTIVE",
+    },
+  ],
+  name: "Weekend",
+  ownerDeviceId: deviceId,
+  release: { mode: "IMMEDIATE" },
+  startsAt: null,
+  status: "LOBBY",
+  tripKeyEnvelope: createBody.ownerKeyEnvelope,
+  version: 1,
+};
 
 function response(
   body: unknown,
@@ -53,6 +86,22 @@ function response(
     headers: { "content-type": contentType },
     status,
   });
+}
+
+function problemResponse(code: ProblemCode, status = 409) {
+  return response(
+    {
+      code,
+      detail: "private row and request context",
+      instance: "/v1/trips/create-outcome",
+      requestId,
+      status,
+      title: "Private provider detail",
+      type: "https://crewroll.app/problems/private",
+    },
+    status,
+    "application/problem+json",
+  );
 }
 
 function requestFrom(call: unknown[] | undefined): Request {
@@ -74,6 +123,127 @@ function apiWith(
 }
 
 describe("CrewRoll API boundary", () => {
+  it("uses the exact authoritative create-outcome request contract", async () => {
+    const fetchMock = jest.fn(async () =>
+      response({ outcome: "STILL_UNKNOWN" }, 200),
+    );
+    const api = apiWith(fetchMock);
+
+    await api.resolveCreateTripOutcome(deviceId, commandId, createOutcomeBody);
+
+    const request = requestFrom(fetchMock.mock.calls[0]);
+    expect(request.method).toBe("POST");
+    expect(request.url).toBe(
+      "https://api.crewroll.app/v1/trips/create-outcome",
+    );
+    expect(request.headers.get("Authorization")).toBe("Bearer clerk-session");
+    expect(request.headers.get("X-CrewRoll-Device-Id")).toBe(deviceId);
+    expect(request.headers.get("Idempotency-Key")).toBe(commandId);
+    await expect(request.json()).resolves.toEqual({ tripId });
+  });
+
+  it("returns every exact closed create-outcome variant", async () => {
+    const outcomes: readonly CreateTripOutcomeResponse[] = [
+      { outcome: "COMMITTED", trip: tripResponse },
+      { outcome: "TERMINAL_NOT_COMMITTED" },
+      { outcome: "STILL_UNKNOWN" },
+    ];
+
+    for (const outcome of outcomes) {
+      const fetchMock = jest.fn(async () => response(outcome, 200));
+
+      const result = await apiWith(fetchMock).resolveCreateTripOutcome(
+        deviceId,
+        commandId,
+        createOutcomeBody,
+      );
+
+      expect(result).toEqual(outcome);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(requestFrom(fetchMock.mock.calls[0]).url).toBe(
+        "https://api.crewroll.app/v1/trips/create-outcome",
+      );
+    }
+  });
+
+  it("rejects create-outcome wire metadata without exposing it", async () => {
+    const fetchMock = jest.fn(async () =>
+      response(
+        {
+          outcome: "STILL_UNKNOWN",
+          detail: "private row and request context",
+          requestId,
+          wireStatus: 200,
+        },
+        200,
+      ),
+    );
+
+    try {
+      await apiWith(fetchMock).resolveCreateTripOutcome(
+        deviceId,
+        commandId,
+        createOutcomeBody,
+      );
+      throw new Error("expected closed response rejection");
+    } catch (error) {
+      expect(error).toEqual(new CrewRollApiProblem("INTERNAL_ERROR"));
+      expect(error).not.toHaveProperty("detail");
+      expect(error).not.toHaveProperty("status");
+      expect(error).not.toHaveProperty("requestId");
+      expect(error).not.toHaveProperty("cause");
+      expect(JSON.stringify(error)).not.toContain("private row");
+    }
+  });
+
+  it("preserves every canonical create-outcome problem without private fields", async () => {
+    const codes = ProblemCodeSchema.anyOf.map(
+      (candidate) => candidate.const,
+    ) as ProblemCode[];
+
+    for (const code of codes) {
+      const fetchMock = jest.fn(async () => problemResponse(code));
+      const api = apiWith(fetchMock);
+
+      try {
+        await api.resolveCreateTripOutcome(
+          deviceId,
+          commandId,
+          createOutcomeBody,
+        );
+        throw new Error("expected create-outcome problem");
+      } catch (error) {
+        expect(error).toEqual(new CrewRollApiProblem(code));
+        expect(error).not.toHaveProperty("detail");
+        expect(error).not.toHaveProperty("status");
+        expect(error).not.toHaveProperty("requestId");
+        expect(error).not.toHaveProperty("instance");
+        expect(error).not.toHaveProperty("cause");
+        expect(JSON.stringify(error)).not.toContain("private row");
+      }
+    }
+  });
+
+  it("keeps getTrip 404 separate from authoritative create-outcome resolution", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(problemResponse("NOT_FOUND", 404))
+      .mockResolvedValueOnce(response({ outcome: "STILL_UNKNOWN" }, 200));
+    const api = apiWith(fetchMock);
+
+    await expect(api.getTrip(deviceId, tripId)).rejects.toEqual(
+      new CrewRollApiProblem("NOT_FOUND"),
+    );
+    await expect(
+      api.resolveCreateTripOutcome(deviceId, commandId, createOutcomeBody),
+    ).resolves.toEqual({ outcome: "STILL_UNKNOWN" });
+
+    expect(fetchMock.mock.calls.map((call) => requestFrom(call).url)).toEqual([
+      `https://api.crewroll.app/v1/trips/${tripId}`,
+      "https://api.crewroll.app/v1/trips/create-outcome",
+    ]);
+  });
+
   it("uses a Clerk bearer and exact trip command headers", async () => {
     const fetchMock = jest.fn(async () => response({ id: tripId }));
     const api = apiWith(fetchMock);
@@ -208,15 +378,15 @@ describe("CrewRoll API boundary", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("maps aborted transport once without retaining a provider cause or retrying", async () => {
+  it("maps an aborted create-outcome request without retaining a cause or retrying", async () => {
     const fetchMock = jest.fn(async () => {
       throw new DOMException("cancelled", "AbortError");
     });
     const api = apiWith(fetchMock);
 
-    await expect(api.getTrip(deviceId, tripId)).rejects.toEqual(
-      new CrewRollTransportProblem(),
-    );
+    await expect(
+      api.resolveCreateTripOutcome(deviceId, commandId, createOutcomeBody),
+    ).rejects.toEqual(new CrewRollTransportProblem());
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

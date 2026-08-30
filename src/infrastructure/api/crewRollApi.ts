@@ -44,6 +44,11 @@ export type CrewRollApi = DeviceRegistrationPort & TripApiPort;
 type GeneratedResponse<Operation extends MobileOperationId> =
   MobileOperationMap[Operation]["response"];
 
+type GeneratedRequest<Operation extends MobileOperationId> =
+  MobileOperationMap[Operation] extends { request: infer Request }
+    ? Request
+    : never;
+
 type ApiResult<Response> =
   | Readonly<{ data: Response; error?: never }>
   | Readonly<{ data?: never; error: ProblemDetails }>;
@@ -62,6 +67,61 @@ function problemFrom(error: unknown): CrewRollApiProblem {
     if (isProblemCode(code)) return new CrewRollApiProblem(code);
   }
   return new CrewRollApiProblem("INTERNAL_ERROR");
+}
+
+function malformedCreateOutcome(): never {
+  throw new CrewRollApiProblem("INTERNAL_ERROR");
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expectedKeys = [...expected].sort();
+  return (
+    actual.length === expectedKeys.length &&
+    actual.every((key, index) => key === expectedKeys[index])
+  );
+}
+
+function unhandledCreateOutcome(_outcome: never): never {
+  return malformedCreateOutcome();
+}
+
+function parseCreateTripOutcome(
+  value: GeneratedResponse<"resolveCreateTripOutcome">,
+): GeneratedResponse<"resolveCreateTripOutcome"> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return malformedCreateOutcome();
+  }
+
+  const candidate = value as Record<string, unknown>;
+  switch (value.outcome) {
+    case "COMMITTED": {
+      if (
+        !hasExactKeys(candidate, ["outcome", "trip"]) ||
+        typeof candidate.trip !== "object" ||
+        candidate.trip === null ||
+        Array.isArray(candidate.trip)
+      ) {
+        return malformedCreateOutcome();
+      }
+      return {
+        outcome: "COMMITTED",
+        trip: value.trip,
+      };
+    }
+    case "TERMINAL_NOT_COMMITTED":
+      if (!hasExactKeys(candidate, ["outcome"])) {
+        return malformedCreateOutcome();
+      }
+      return { outcome: "TERMINAL_NOT_COMMITTED" };
+    case "STILL_UNKNOWN":
+      if (!hasExactKeys(candidate, ["outcome"])) {
+        return malformedCreateOutcome();
+      }
+      return { outcome: "STILL_UNKNOWN" };
+    default:
+      return unhandledCreateOutcome(value);
+  }
 }
 
 class OpenApiCrewRollApi implements CrewRollApi {
@@ -90,6 +150,22 @@ class OpenApiCrewRollApi implements CrewRollApi {
         params: { header: commandHeaders(deviceId, commandId) },
       }),
     );
+  }
+
+  async resolveCreateTripOutcome(
+    deviceId: string,
+    commandId: string,
+    body: GeneratedRequest<"resolveCreateTripOutcome">,
+  ): Promise<GeneratedResponse<"resolveCreateTripOutcome">> {
+    const outcome = await this.request<
+      GeneratedResponse<"resolveCreateTripOutcome">
+    >(() =>
+      this.client.POST("/v1/trips/create-outcome", {
+        body,
+        params: { header: commandHeaders(deviceId, commandId) },
+      }),
+    );
+    return parseCreateTripOutcome(outcome);
   }
 
   async requestJoin(

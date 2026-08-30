@@ -17,6 +17,8 @@ const canonicalInput = path.join(
   root,
   "packages/contracts/generated/crewroll.openapi.json",
 );
+const createOutcomePath = "/v1/trips/create-outcome";
+const problemStatuses = ["400", "401", "403", "404", "409", "429", "500"];
 
 async function withContract(mutator, assertion) {
   const directory = await mkdtemp(path.join(tmpdir(), "crewroll-mobile-api-"));
@@ -43,6 +45,7 @@ test("generates the exact bounded current mobile operations deterministically", 
         "createTrip",
         "getTrip",
         "registerDevice",
+        "resolveCreateTripOutcome",
         "startTrip",
       ]);
 
@@ -53,10 +56,107 @@ test("generates the exact bounded current mobile operations deterministically", 
 
       assert.equal(first, second);
       assert.doesNotMatch(first, /\/private\/|Generated at|\\Users\\/);
+      assert.doesNotMatch(first, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+      assert.doesNotMatch(first, /\bunknown\b|\bResponse\b|status:\s*string/);
       assert.match(first, /export type MobileOperationId =/);
       assert.match(first, /export type MobilePaths =/);
+      assert.match(first, /"\/v1\/trips\/create-outcome"/);
+      assert.match(first, /resolveCreateTripOutcome/);
     },
   );
+});
+
+test("fails generation on every authoritative create-outcome drift", async (t) => {
+  const operation = (contract) => contract.paths[createOutcomePath].post;
+  const cases = [
+    {
+      name: "method",
+      mutate: (contract) => {
+        contract.paths[createOutcomePath].get = operation(contract);
+        delete contract.paths[createOutcomePath].post;
+      },
+    },
+    {
+      name: "path",
+      mutate: (contract) => {
+        contract.paths["/v1/trips/create-outcomes"] =
+          contract.paths[createOutcomePath];
+        delete contract.paths[createOutcomePath];
+      },
+    },
+    {
+      name: "operation id",
+      mutate: (contract) => {
+        operation(contract).operationId = "getCreateTripOutcome";
+      },
+    },
+    {
+      name: "security",
+      mutate: (contract) => {
+        operation(contract).security = [{ BackgroundDeviceBearer: [] }];
+      },
+    },
+    ...["X-CrewRoll-Device-Id", "Idempotency-Key"].map((header) => ({
+      name: `${header} header`,
+      mutate: (contract) => {
+        operation(contract).parameters = operation(contract).parameters.filter(
+          (parameter) => parameter.name !== header,
+        );
+      },
+    })),
+    {
+      name: "request ref",
+      mutate: (contract) => {
+        operation(contract).requestBody.content[
+          "application/json"
+        ].schema.$ref = "#/components/schemas/CreateTripBody";
+      },
+    },
+    {
+      name: "request schema",
+      mutate: (contract) => {
+        contract.components.schemas.CreateTripOutcomeBody.properties.tripId = {
+          type: "string",
+          format: "uuid",
+        };
+      },
+    },
+    {
+      name: "success status",
+      mutate: (contract) => {
+        delete operation(contract).responses["200"];
+      },
+    },
+    ...[0, 1, 2].map((branchIndex) => ({
+      name: `response union branch ${branchIndex}`,
+      mutate: (contract) => {
+        contract.components.schemas.CreateTripOutcomeResponse.anyOf.splice(
+          branchIndex,
+          1,
+        );
+      },
+    })),
+    ...problemStatuses.map((status) => ({
+      name: `${status} problem response`,
+      mutate: (contract) => {
+        delete operation(contract).responses[status];
+      },
+    })),
+  ];
+
+  for (const { mutate, name } of cases) {
+    await t.test(`rejects ${name}`, async () => {
+      await withContract(
+        async (contract) => mutate(contract),
+        async ({ inputPath, outputPath }) => {
+          await assert.rejects(
+            generateMobileApi({ inputPath, outputPath }),
+            /resolveCreateTripOutcome|create-outcome/i,
+          );
+        },
+      );
+    });
+  }
 });
 
 test("fails generation when an accepted operation drifts", async () => {

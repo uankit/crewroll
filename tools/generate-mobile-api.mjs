@@ -13,6 +13,7 @@ export const requiredOperations = [
   "createTrip",
   "getTrip",
   "registerDevice",
+  "resolveCreateTripOutcome",
   "startTrip",
 ];
 
@@ -85,6 +86,15 @@ const operationExpectations = [
     request: "RegisterDeviceBody",
     response: "DeviceResponse",
     successStatus: "201",
+  },
+  {
+    method: "post",
+    operationId: "resolveCreateTripOutcome",
+    parameters: [deviceHeader(), commandHeader()],
+    path: "/v1/trips/create-outcome",
+    request: "CreateTripOutcomeBody",
+    response: "CreateTripOutcomeResponse",
+    successStatus: "200",
   },
   {
     method: "post",
@@ -247,6 +257,59 @@ function validateResponses(operation, expected) {
   }
 }
 
+function validateCreateOutcomeSchemas(contract) {
+  const components = requireObject(contract.components, "OpenAPI components");
+  const schemas = requireObject(components.schemas, "OpenAPI schemas");
+  const body = schemas.CreateTripOutcomeBody;
+  const expectedBody = {
+    additionalProperties: false,
+    type: "object",
+    required: ["tripId"],
+    properties: { tripId: UUID_V7_SCHEMA },
+  };
+  if (!isDeepStrictEqual(body, expectedBody)) {
+    throw new Error(
+      "resolveCreateTripOutcome create-outcome request schema drifted",
+    );
+  }
+
+  const trip = requireObject(schemas.TripResponse, "TripResponse schema");
+  const expectedResponse = {
+    anyOf: [
+      {
+        additionalProperties: false,
+        type: "object",
+        required: ["outcome", "trip"],
+        properties: {
+          outcome: { const: "COMMITTED", type: "string" },
+          trip,
+        },
+      },
+      {
+        additionalProperties: false,
+        type: "object",
+        required: ["outcome"],
+        properties: {
+          outcome: { const: "TERMINAL_NOT_COMMITTED", type: "string" },
+        },
+      },
+      {
+        additionalProperties: false,
+        type: "object",
+        required: ["outcome"],
+        properties: {
+          outcome: { const: "STILL_UNKNOWN", type: "string" },
+        },
+      },
+    ],
+  };
+  if (!isDeepStrictEqual(schemas.CreateTripOutcomeResponse, expectedResponse)) {
+    throw new Error(
+      "resolveCreateTripOutcome create-outcome response schema drifted",
+    );
+  }
+}
+
 function validateOperation(contract, expected) {
   const pathItem = requireObject(
     contract.paths?.[expected.path],
@@ -329,6 +392,8 @@ function renderGeneratedTypes() {
     "ApproveJoinRequestBody",
     "CreateJoinRequestBody",
     "CreateTripBody",
+    "CreateTripOutcomeBody",
+    "CreateTripOutcomeResponse",
     "DeviceResponse",
     "MembershipResponse",
     "ProblemDetails",
@@ -379,6 +444,7 @@ export async function generateMobileApi({
   const contract = JSON.parse(await readFile(inputPath, "utf8"));
   requireObject(contract, "OpenAPI document");
   validateSecurityScheme(contract);
+  validateCreateOutcomeSchemas(contract);
 
   for (const expected of operationExpectations) {
     validateOperation(contract, expected);

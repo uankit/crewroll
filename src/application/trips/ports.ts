@@ -2,6 +2,8 @@ import type {
   ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  CreateTripOutcomeBody,
+  CreateTripOutcomeResponse,
   MembershipResponse,
   StartTripBody,
   TripResponse,
@@ -13,6 +15,11 @@ export interface TripApiPort {
     commandId: string,
     body: CreateTripBody,
   ): Promise<TripResponse>;
+  resolveCreateTripOutcome(
+    deviceId: string,
+    commandId: string,
+    body: CreateTripOutcomeBody,
+  ): Promise<CreateTripOutcomeResponse>;
   requestJoin(
     deviceId: string,
     commandId: string,
