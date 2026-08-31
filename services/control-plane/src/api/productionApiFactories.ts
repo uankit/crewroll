@@ -4,19 +4,37 @@ import { createDatabase } from "../db/database.js";
 import { createKyselyDeviceAuthorizationSnapshotReader } from "../db/devices/kyselyDeviceAuthorizationSnapshotReader.js";
 import { createKyselyDeviceUnitOfWork } from "../db/devices/kyselyDeviceUnitOfWork.js";
 import { createKyselyIdentityUnitOfWork } from "../db/identity/kyselyIdentityUnitOfWork.js";
+import { classifyTripConstraint } from "../db/trips/constraintClassifier.js";
+import { createKyselyForegroundActorSnapshotReader } from "../db/trips/kyselyForegroundActorSnapshotReader.js";
+import { createKyselyTripUnitOfWork } from "../db/trips/kyselyTripUnitOfWork.js";
 import {
   createRegisterDevice,
   createRevokeDevice,
   createUpdateDevicePushToken,
 } from "../modules/devices/index.js";
 import { createClerkWebhookService } from "../modules/identity/index.js";
+import {
+  createApproveJoinRequest,
+  createCreateTrip,
+  createGetTrip,
+  createRejectJoinRequest,
+  createRequestJoin,
+  createResolveCreateTripOutcome,
+  createResolveForegroundActor,
+  createSetTripReadiness,
+  createStartTrip,
+} from "../modules/trips/index.js";
 import { createClerkUserDirectory } from "../platform/clerk/clerkUserDirectory.js";
 import { createRemoteJoseClerkTokenVerifier } from "../platform/clerk/joseClerkTokenVerifier.js";
 import { createClerkWebhookVerifier } from "../platform/clerk/verifyClerkWebhook.js";
 import { createHmacBackgroundCredentialIssuer } from "../platform/crypto/hmacBackgroundCredentialIssuer.js";
+import { createHmacInviteCodeHasher } from "../platform/crypto/hmacInviteCodeHasher.js";
 import { createKmsPushTokenProtector } from "../platform/kms/kmsPushTokenProtector.js";
 import { createSafeLogger } from "../shared/observability/safeLogger.js";
-import type { ApiRuntimeFactories } from "./apiRuntime.js";
+import {
+  ApiConfigurationError,
+  type ApiRuntimeFactories,
+} from "./apiRuntime.js";
 
 function required<Value>(value: Value | undefined): Value {
   if (value === undefined)
@@ -30,11 +48,13 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  approveJoinRequest: createApproveJoinRequest,
   backgroundCredentials: (environment) =>
     createHmacBackgroundCredentialIssuer(
       required(environment.backgroundCredentialHmacKeyV1),
     ),
   buildApp,
+  classifyTripConstraint,
   clock: () => ({
     now: () => new Date(Math.floor(Date.now() / 1_000) * 1_000),
   }),
@@ -45,11 +65,25 @@ export const productionApiFactories: ApiRuntimeFactories = {
       secretKey: required(environment.clerkSecretKey),
     }),
   environment: () => loadEnvironment(process.env),
+  foregroundTripSnapshots: (database) =>
+    createKyselyForegroundActorSnapshotReader(
+      database as Parameters<
+        typeof createKyselyForegroundActorSnapshotReader
+      >[0],
+    ),
+  getTrip: createGetTrip,
   ids: () => ({ uuid: () => globalThis.crypto.randomUUID() }),
   identityUnitOfWork: (database) =>
     createKyselyIdentityUnitOfWork(
       database as Parameters<typeof createKyselyIdentityUnitOfWork>[0],
     ),
+  inviteCodeCryptography: (environment) => {
+    const key = environment.inviteCodeHmacKey;
+    if (key === undefined || key.trim().length === 0) {
+      throw new ApiConfigurationError("INVITE_CODE_HMAC_KEY");
+    }
+    return createHmacInviteCodeHasher(key);
+  },
   logger: createSafeLogger,
   pushTokenProtector: (environment) =>
     createKmsPushTokenProtector({
@@ -57,6 +91,10 @@ export const productionApiFactories: ApiRuntimeFactories = {
       region: required(environment.awsRegion),
     }),
   registerDevice: createRegisterDevice,
+  rejectJoinRequest: createRejectJoinRequest,
+  requestJoin: createRequestJoin,
+  resolveCreateTripOutcome: createResolveCreateTripOutcome,
+  resolveForegroundActor: createResolveForegroundActor,
   revokeDevice: createRevokeDevice,
   snapshots: (database) =>
     createKyselyDeviceAuthorizationSnapshotReader(
@@ -70,6 +108,13 @@ export const productionApiFactories: ApiRuntimeFactories = {
       clock,
       issuer: required(environment.clerkIssuer),
     }),
+  createTrip: createCreateTrip,
+  setTripReadiness: createSetTripReadiness,
+  startTrip: createStartTrip,
+  tripUnitOfWork: (database) =>
+    createKyselyTripUnitOfWork(
+      database as Parameters<typeof createKyselyTripUnitOfWork>[0],
+    ),
   unitOfWork: (database) =>
     createKyselyDeviceUnitOfWork(
       database as Parameters<typeof createKyselyDeviceUnitOfWork>[0],

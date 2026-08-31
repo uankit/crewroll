@@ -1,7 +1,12 @@
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
 import { validRegisterDeviceBody } from "@crewroll/contracts/fixtures/http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ApiConfigurationError,
   createApiRuntime,
   runApi,
   type ApiRuntimeFactories,
@@ -11,6 +16,10 @@ import {
   createDeviceTestHarness,
   fixedDeviceId,
 } from "../support/deviceFakes.js";
+import { createTestDependencies } from "../support/fakes.js";
+
+const execFileAsync = promisify(execFile);
+const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 const clerkSubject = "user_clerk_subject";
 const registrationKey = "018f0d98-76fa-7d1a-b4b4-1f742c2e3170";
@@ -34,10 +43,22 @@ const stages = [
   "snapshots",
   "unitOfWork",
   "identityUnitOfWork",
+  "inviteCodeCryptography",
+  "foregroundTripSnapshots",
+  "tripUnitOfWork",
+  "resolveForegroundActor",
   "registerDevice",
   "updateDevicePushToken",
   "revokeDevice",
   "clerkWebhookService",
+  "createTrip",
+  "resolveCreateTripOutcome",
+  "requestJoin",
+  "approveJoinRequest",
+  "rejectJoinRequest",
+  "setTripReadiness",
+  "startTrip",
+  "getTrip",
   "buildApp",
 ] as const;
 type Stage = (typeof stages)[number];
@@ -48,6 +69,7 @@ function createRuntimeHarness(
     readonly databaseDestroyFailure?: boolean;
     readonly kmsDestroyFailure?: boolean;
     readonly listenFailure?: boolean;
+    readonly inviteConfigurationFailure?: boolean;
     readonly throwAt?: Stage;
   } = {},
 ) {
@@ -65,10 +87,22 @@ function createRuntimeHarness(
   const snapshots = { slot: "snapshots" };
   const unitOfWork = { slot: "unitOfWork" };
   const identityUnitOfWork = { slot: "identityUnitOfWork" };
+  const inviteCodeCryptography = { slot: "inviteCodeCryptography" };
+  const foregroundTripSnapshots = { slot: "foregroundTripSnapshots" };
+  const tripUnitOfWork = { slot: "tripUnitOfWork" };
+  const resolveForegroundActor = { slot: "resolveForegroundActor" };
   const registerDevice = { slot: "registerDevice" };
   const updateDevicePushToken = { slot: "updateDevicePushToken" };
   const revokeDevice = { slot: "revokeDevice" };
   const webhookService = { slot: "webhookService" };
+  const createTrip = { slot: "createTrip" };
+  const resolveCreateTripOutcome = { slot: "resolveCreateTripOutcome" };
+  const requestJoin = { slot: "requestJoin" };
+  const approveJoinRequest = { slot: "approveJoinRequest" };
+  const rejectJoinRequest = { slot: "rejectJoinRequest" };
+  const setTripReadiness = { slot: "setTripReadiness" };
+  const startTrip = { slot: "startTrip" };
+  const getTrip = { slot: "getTrip" };
   const close = vi.fn(() =>
     options.appCloseFailure
       ? Promise.reject(new Error("app close canary"))
@@ -140,6 +174,29 @@ function createRuntimeHarness(
       expect(actual).toBe(database);
       return step("identityUnitOfWork", identityUnitOfWork);
     },
+    inviteCodeCryptography: (actual: unknown) => {
+      expect(actual).toBe(environment);
+      calls.push("inviteCodeCryptography");
+      if (options.inviteConfigurationFailure) {
+        throw new ApiConfigurationError("INVITE_CODE_HMAC_KEY");
+      }
+      if (options.throwAt === "inviteCodeCryptography") {
+        throw new Error("inviteCodeCryptography canary");
+      }
+      return inviteCodeCryptography;
+    },
+    foregroundTripSnapshots: (actual: unknown) => {
+      expect(actual).toBe(database);
+      return step("foregroundTripSnapshots", foregroundTripSnapshots);
+    },
+    tripUnitOfWork: (actual: unknown) => {
+      expect(actual).toBe(database);
+      return step("tripUnitOfWork", tripUnitOfWork);
+    },
+    resolveForegroundActor: (actual: unknown) => {
+      expect(actual).toBe(foregroundTripSnapshots);
+      return step("resolveForegroundActor", resolveForegroundActor);
+    },
     registerDevice: (actual: Record<string, unknown>) => {
       expect(actual).toEqual({
         backgroundCredentials,
@@ -169,6 +226,71 @@ function createRuntimeHarness(
       });
       return step("clerkWebhookService", webhookService);
     },
+    classifyTripConstraint: vi.fn(() => null),
+    createTrip: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        hasher: inviteCodeCryptography,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("createTrip", createTrip);
+    },
+    resolveCreateTripOutcome: (actual: Record<string, unknown>) => {
+      expect(actual).toEqual({ unitOfWork: tripUnitOfWork });
+      return step("resolveCreateTripOutcome", resolveCreateTripOutcome);
+    },
+    requestJoin: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        hasher: inviteCodeCryptography,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("requestJoin", requestJoin);
+    },
+    approveJoinRequest: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("approveJoinRequest", approveJoinRequest);
+    },
+    rejectJoinRequest: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("rejectJoinRequest", rejectJoinRequest);
+    },
+    setTripReadiness: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("setTripReadiness", setTripReadiness);
+    },
+    startTrip: (actual: Record<string, unknown>) => {
+      expect(typeof actual.classifyConstraint).toBe("function");
+      expect(actual).toEqual({
+        classifyConstraint: actual.classifyConstraint,
+        ids,
+        unitOfWork: tripUnitOfWork,
+      });
+      return step("startTrip", startTrip);
+    },
+    getTrip: (actual: Record<string, unknown>) => {
+      expect(actual).toEqual({ unitOfWork: tripUnitOfWork });
+      return step("getTrip", getTrip);
+    },
     buildApp: (actual: Record<string, unknown>) => {
       expect(actual).toMatchObject({
         clock,
@@ -182,6 +304,18 @@ function createRuntimeHarness(
         ids,
         identity: { webhookService },
         logger,
+        trips: {
+          approveJoinRequest,
+          createTrip,
+          getTrip,
+          rejectJoinRequest,
+          requestJoin,
+          resolveCreateTripOutcome,
+          resolveForegroundActor,
+          setTripReadiness,
+          startTrip,
+          tokenVerifier,
+        },
       });
       return step("buildApp", { close, listen });
     },
@@ -391,6 +525,49 @@ describe("API runtime", () => {
     },
   );
 
+  it("preserves a tagged key-name-only invite configuration error through failing cleanup", async () => {
+    const test = createRuntimeHarness({
+      databaseDestroyFailure: true,
+      inviteConfigurationFailure: true,
+      kmsDestroyFailure: true,
+    });
+
+    let thrown: unknown;
+    try {
+      await createApiRuntime(test.factories);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ApiConfigurationError);
+    expect(thrown).toMatchObject({
+      code: "API_CONFIGURATION_ERROR",
+      configurationKey: "INVITE_CODE_HMAC_KEY",
+      message: "INVITE_CODE_HMAC_KEY",
+      name: "ApiConfigurationError",
+    });
+    expect(String(thrown)).toBe("ApiConfigurationError: INVITE_CODE_HMAC_KEY");
+    expect(test.destroyKms).toHaveBeenCalledTimes(1);
+    expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
+    expect(test.close).toHaveBeenCalledTimes(0);
+  });
+
+  it("tags the production invite HMAC construction failure without config values", () => {
+    const environment = createTestDependencies().dependencies.environment;
+    expect(() =>
+      productionApiFactories.inviteCodeCryptography({
+        ...environment,
+        inviteCodeHmacKey: undefined,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "API_CONFIGURATION_ERROR",
+        configurationKey: "INVITE_CODE_HMAC_KEY",
+        message: "INVITE_CODE_HMAC_KEY",
+      }),
+    );
+  });
+
   it("listen failure closes every handle once", async () => {
     const test = createRuntimeHarness({ listenFailure: true });
     const runtime = await createApiRuntime(test.factories);
@@ -422,13 +599,41 @@ describe("API runtime", () => {
     expect(test.destroyDatabase).toHaveBeenCalledTimes(1);
   });
 
-  it("imports production factories and main without network", async () => {
-    const fetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockRejectedValue(new Error("provider network canary"));
-    await import("../../src/api/productionApiFactories.js");
-    await import("../../src/api/main.js");
-    expect(fetch).toHaveBeenCalledTimes(0);
-    fetch.mockRestore();
+  it("fresh-imports production factories and main without construction or network", async () => {
+    const factoriesUrl = new URL(
+      "../../src/api/productionApiFactories.ts",
+      import.meta.url,
+    ).href;
+    const mainUrl = new URL("../../src/api/main.ts", import.meta.url).href;
+    const script = `
+      import http from "node:http";
+      import https from "node:https";
+      import net from "node:net";
+      import tls from "node:tls";
+      let networkCalls = 0;
+      const forbidden = () => {
+        networkCalls += 1;
+        throw new Error("fresh import attempted network or construction");
+      };
+      globalThis.fetch = forbidden;
+      http.request = forbidden;
+      https.request = forbidden;
+      net.connect = forbidden;
+      tls.connect = forbidden;
+      await import(${JSON.stringify(factoriesUrl)});
+      await import(${JSON.stringify(mainUrl)});
+      if (networkCalls !== 0) throw new Error("fresh import made a network call");
+      process.stdout.write("fresh-import-ok");
+    `;
+    const { stderr, stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      {
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? "" },
+      },
+    );
+    expect(stdout).toBe("fresh-import-ok");
+    expect(stderr).toBe("");
   });
 });

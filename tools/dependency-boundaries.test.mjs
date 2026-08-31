@@ -1296,6 +1296,145 @@ test("Trip commands keep constant-time byte comparison behind a platform port", 
   );
 });
 
+test("API-003 route, service, adapter, crypto, and composition seams stay narrow", async (t) => {
+  const tripRoute = "src/modules/trips/tripRoutes.ts";
+  const tripService = "src/modules/trips/createTrip.ts";
+  const tripAdapter = "src/db/trips/kyselyTripUnitOfWork.ts";
+  const inviteCrypto = "src/platform/crypto/hmacInviteCodeHasher.ts";
+
+  for (const [name, source, expectedRule] of [
+    [
+      "Trip route to database",
+      'import "../../db/__boundary-target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to platform",
+      'import "../../platform/__boundary_fixture__/target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to Node crypto",
+      'import "node:crypto";\n',
+      "boundaries/dependencies",
+    ],
+    ["Trip route to Kysely", 'import "kysely";\n', "boundaries/dependencies"],
+    [
+      "Trip route to Clerk",
+      'import "@clerk/backend";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to KMS",
+      'import "@aws-sdk/client-kms";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to worker",
+      'import "../../worker/__boundary-target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to mobile workspace",
+      'import "../../../../../src/domain/__boundary_fixture__/target.js";\n',
+      "boundaries/dependencies",
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(await lint("control", source, tripRoute), expectedRule);
+    });
+  }
+
+  for (const [name, source] of [
+    ["Trip service to database", 'import "../../db/__boundary-target.js";\n'],
+    [
+      "Trip service to platform",
+      'import "../../platform/__boundary_fixture__/target.js";\n',
+    ],
+    ["Trip service to Fastify", 'import "fastify";\n'],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, tripService),
+        "boundaries/dependencies",
+      );
+    });
+  }
+
+  await t.test(
+    "Trip adapter accepts only an exact Trip port type edge",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import type { TripUnitOfWork } from "../../modules/trips/ports/tripUnitOfWork.js";\nexport type Adapter = TripUnitOfWork;\n',
+          tripAdapter,
+        ),
+      );
+      for (const source of [
+        'import { tripSuccess } from "../../modules/trips/projectTrip.js";\nvoid tripSuccess;\n',
+        'import type { DeviceUnitOfWork } from "../../modules/devices/ports/deviceUnitOfWork.js";\nexport type Other = DeviceUnitOfWork;\n',
+        'import "../../platform/__boundary_fixture__/target.js";\n',
+        'import "../../worker/__boundary-target.js";\n',
+      ]) {
+        assertForbidden(
+          await lint("control", source, tripAdapter),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "invite crypto implements only the Trip crypto port",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import type { InviteCodeCryptography } from "../../modules/trips/ports/inviteCodeHasher.js";\nexport type Adapter = InviteCodeCryptography;\n',
+          inviteCrypto,
+        ),
+      );
+      for (const source of [
+        'import "../../db/__boundary-target.js";\n',
+        'import "../kms/kmsPushTokenProtector.js";\n',
+        'import "fastify";\n',
+        'import "kysely";\n',
+      ]) {
+        assertForbidden(
+          await lint("control", source, inviteCrypto),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "only production composition reaches Trip concrete adapters",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import "../db/trips/__boundary-adapter.js";\nimport "../platform/__boundary_fixture__/target.js";\n',
+          "src/api/productionApiFactories.ts",
+        ),
+      );
+      for (const [filePath, source] of [
+        [tripRoute, 'import "../../db/trips/__boundary-adapter.js";\n'],
+        [
+          "src/api/apiRuntime.ts",
+          'import "../db/trips/__boundary-adapter.js";\n',
+        ],
+      ]) {
+        assertForbidden(
+          await lint("control", source, filePath),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+});
+
 test("Trip database adapters consume only Trip ports through type imports", async (t) => {
   const tripAdapter = "src/db/trips/__boundary-adapter.ts";
   const tripPort = "../../modules/trips/ports/__boundary-port.js";
