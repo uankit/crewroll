@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { TRIP_CREATE_MAX_DURATION_MS } from "@crewroll/contracts";
+
 import {
   TRIP_PROBLEM_STATUS,
   canonicalTripName,
@@ -91,10 +93,10 @@ describe("pure Trip Room policy", () => {
 
   it.each([
     { offset: 1, accepted: true },
-    { offset: 14 * DAY_MS, accepted: true },
+    { offset: TRIP_CREATE_MAX_DURATION_MS, accepted: true },
     { offset: 0, accepted: false },
     { offset: -1, accepted: false },
-    { offset: 14 * DAY_MS + 1, accepted: false },
+    { offset: TRIP_CREATE_MAX_DURATION_MS + 1, accepted: false },
   ])(
     "validates authoritative trip duration at offset $offset",
     ({ accepted, offset }) => {

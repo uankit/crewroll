@@ -1,3 +1,5 @@
+import { TRIP_CREATE_MAX_DURATION_MS } from "@crewroll/contracts";
+
 import type {
   CanonicalTripName,
   NormalizedInviteCode,
@@ -14,7 +16,6 @@ import type {
 } from "./types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-const MAX_TRIP_DURATION_MS = 14 * DAY_MS;
 const HARD_DELETE_DELAY_MS = 7 * DAY_MS;
 const MAX_TRIP_MEMBERS = 10;
 const INVITE_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{8}$/u;
@@ -191,7 +192,7 @@ export function validateTripWindow(
     return problem("TRIP_DURATION_INVALID");
   }
   const duration = input.endsAt.getTime() - input.authoritativeNow.getTime();
-  if (duration <= 0 || duration > MAX_TRIP_DURATION_MS) {
+  if (duration <= 0 || duration > TRIP_CREATE_MAX_DURATION_MS) {
     return problem("TRIP_DURATION_INVALID");
   }
   const endsAt = new Date(input.endsAt.getTime()) as ValidatedEndsAt;
