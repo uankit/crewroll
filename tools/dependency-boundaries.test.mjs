@@ -509,10 +509,18 @@ const dependencyForms = {
   require: (specifier) => `require(${JSON.stringify(specifier)});\n`,
 };
 
-function everyDependencyForm(specifiers) {
+const mobileDependencyForms = {
+  ...dependencyForms,
+  "type query": (specifier) =>
+    `type BoundaryDependency = import(${JSON.stringify(specifier)});\n`,
+  "import equals": (specifier) =>
+    `import BoundaryDependency = require(${JSON.stringify(specifier)});\nvoid BoundaryDependency;\n`,
+};
+
+function everyDependencyForm(specifiers, forms = dependencyForms) {
   return specifiers
     .flatMap((specifier) =>
-      Object.values(dependencyForms).map((source) => source(specifier)),
+      Object.values(forms).map((source) => source(specifier)),
     )
     .join("");
 }
@@ -574,6 +582,34 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
   const mobilePolicy = createMobileBoundaryPolicy({
     tsconfigPath: "/sentinel/mobile/tsconfig.json",
   });
+  const contractsPolicy = createContractsBoundaryPolicy({
+    tsconfigPath: "/sentinel/contracts/tsconfig.json",
+  });
+  const controlPolicy = createControlPlaneBoundaryPolicy({
+    tsconfigPath: "/sentinel/control/tsconfig.json",
+  });
+  assert.deepEqual(
+    mobilePolicy.settings["boundaries/additional-dependency-nodes"],
+    [
+      {
+        selector: "TSImportType > Literal",
+        kind: "type",
+        name: "type-query",
+      },
+      {
+        selector:
+          "TSImportEqualsDeclaration TSExternalModuleReference > Literal",
+        kind: "value",
+        name: "import-equals",
+      },
+    ],
+  );
+  for (const policy of [contractsPolicy, controlPolicy]) {
+    assert.equal(
+      policy.settings["boundaries/additional-dependency-nodes"],
+      undefined,
+    );
+  }
   assert.deepEqual(
     mobilePolicy.settings["boundaries/flag-as-external"].customSourcePatterns,
     [
@@ -583,9 +619,6 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
       "@crewroll/control-plane/**",
     ],
   );
-  const contractsPolicy = createContractsBoundaryPolicy({
-    tsconfigPath: "/sentinel/contracts/tsconfig.json",
-  });
   assert.deepEqual(contractsPolicy.settings["boundaries/ignore"], [
     "dist/**",
     "generated/**",
@@ -720,7 +753,11 @@ test("mobile bootstrap permits only its exact scoped providers", async (t) => {
   ]) {
     await t.test(`allows ${specifier} from bootstrap`, async () => {
       assertDependencyAllowed(
-        await lint("mobile", everyDependencyForm([specifier]), bootstrapPath),
+        await lint(
+          "mobile",
+          everyDependencyForm([specifier], mobileDependencyForms),
+          bootstrapPath,
+        ),
       );
     });
   }
@@ -736,8 +773,12 @@ test("mobile bootstrap permits only its exact scoped providers", async (t) => {
         "@tanstack/query-core",
       ];
       assertForbiddenInEveryDependencyForm(
-        await lint("mobile", everyDependencyForm(specifiers), bootstrapPath),
-        specifiers.length * Object.keys(dependencyForms).length,
+        await lint(
+          "mobile",
+          everyDependencyForm(specifiers, mobileDependencyForms),
+          bootstrapPath,
+        ),
+        specifiers.length * Object.keys(mobileDependencyForms).length,
       );
     },
   );
@@ -755,8 +796,12 @@ test("mobile bootstrap permits only its exact scoped providers", async (t) => {
         "@tanstack/react-query/legacy",
       ];
       assertForbiddenInEveryDependencyForm(
-        await lint("mobile", everyDependencyForm(specifiers), bootstrapPath),
-        specifiers.length * Object.keys(dependencyForms).length,
+        await lint(
+          "mobile",
+          everyDependencyForm(specifiers, mobileDependencyForms),
+          bootstrapPath,
+        ),
+        specifiers.length * Object.keys(mobileDependencyForms).length,
       );
     },
   );
@@ -789,10 +834,10 @@ test("mobile bootstrap permits only its exact scoped providers", async (t) => {
           assertForbiddenInEveryDependencyForm(
             await lint(
               "mobile",
-              everyDependencyForm(specifiers),
+              everyDependencyForm(specifiers, mobileDependencyForms),
               forbiddenPath,
             ),
-            specifiers.length * Object.keys(dependencyForms).length,
+            specifiers.length * Object.keys(mobileDependencyForms).length,
           );
         },
       );

@@ -286,7 +286,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     allowEveryDependency(nonProduction),
   ];
 
-  return commonPolicy({
+  const policy = commonPolicy({
     tsconfigPath,
     flagAsExternal: {
       outsideRootPath: true,
@@ -355,6 +355,19 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     ],
     policies,
   });
+  policy.settings["boundaries/additional-dependency-nodes"] = [
+    {
+      selector: "TSImportType > Literal",
+      kind: "type",
+      name: "type-query",
+    },
+    {
+      selector: "TSImportEqualsDeclaration TSExternalModuleReference > Literal",
+      kind: "value",
+      name: "import-equals",
+    },
+  ];
+  return policy;
 }
 
 function createContractsBoundaryPolicy({ tsconfigPath }) {
