@@ -1,11 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
-
 import type {
   CreateJoinRequestBody,
   MembershipResponse,
 } from "@crewroll/contracts";
 
-import type { InviteCodeHasher } from "./ports/inviteCodeHasher.js";
+import type { InviteCodeCryptography } from "./ports/inviteCodeHasher.js";
 import type {
   TripEnvelopeRecord,
   TripIdempotencyRecord,
@@ -35,7 +33,7 @@ const ROUTE_KEY = "trips.join.v1" as const;
 
 export interface RequestJoinDependencies {
   readonly classifyConstraint: (error: unknown) => string | null;
-  readonly hasher: InviteCodeHasher;
+  readonly hasher: InviteCodeCryptography;
   readonly ids: IdGenerator;
   readonly unitOfWork: TripUnitOfWork;
 }
@@ -58,16 +56,6 @@ function prepare(input: RequestJoinInput): TripPolicyResult<PreparedJoin> {
   return inviteCode.ok
     ? tripSuccess({ inviteCode: inviteCode.value })
     : inviteCode;
-}
-
-function bytesEqual(
-  left: Readonly<Uint8Array>,
-  right: Readonly<Uint8Array>,
-): boolean {
-  return (
-    left.byteLength === right.byteLength &&
-    timingSafeEqual(Buffer.from(left), Buffer.from(right))
-  );
 }
 
 function live(record: TripIdempotencyRecord, now: Date): boolean {
@@ -190,7 +178,7 @@ async function membershipResponse(
 function currentInviteIsValid(
   trip: TripRecord | null,
   invite: TripInviteRecord | null,
-  inviteCodeHmac: Readonly<Uint8Array>,
+  inviteCodeHmacMatches: boolean,
   candidate: Readonly<{ inviteId: string; tripId: string }>,
   now: Date,
 ): trip is TripRecord {
@@ -200,7 +188,7 @@ function currentInviteIsValid(
     invite.inviteId === candidate.inviteId &&
     invite.tripId === candidate.tripId &&
     trip.tripId === candidate.tripId &&
-    bytesEqual(invite.inviteCodeHmac, inviteCodeHmac) &&
+    inviteCodeHmacMatches &&
     trip.state === "LOBBY" &&
     invite.revokedAt === null &&
     invite.expiresAt.getTime() > now.getTime() &&
@@ -266,7 +254,7 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
               prior.kind !== "JOIN" ||
               prior.tripId !== candidate.tripId ||
               prior.actorDeviceId !== input.actor.deviceId ||
-              !bytesEqual(prior.requestSha256, requestSha256)
+              !dependencies.hasher.matches(prior.requestSha256, requestSha256)
             ) {
               return tripProblem("IDEMPOTENCY_CONFLICT");
             }
@@ -279,8 +267,17 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
               : membershipResponse(transaction, input.actor, membership);
           }
 
+          const inviteCodeHmacMatches =
+            invite !== null &&
+            dependencies.hasher.matches(invite.inviteCodeHmac, inviteCodeHmac);
           if (
-            !currentInviteIsValid(trip, invite, inviteCodeHmac, candidate, now)
+            !currentInviteIsValid(
+              trip,
+              invite,
+              inviteCodeHmacMatches,
+              candidate,
+              now,
+            )
           ) {
             return tripProblem("INVITE_INVALID");
           }

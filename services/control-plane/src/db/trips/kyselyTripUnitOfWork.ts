@@ -439,7 +439,7 @@ async function readProjection(
         when base.caller_participating_device_id <> ${actor.deviceId}::uuid
           then 'DEVICE_NOT_PARTICIPANT'
         when base.caller_device_id is null
-          then 'DEVICE_NOT_PARTICIPANT'
+          then 'INVARIANT_ERROR'
         when base.device_revoked_at is not null
           then 'DEVICE_REVOKED'
         when base.owner_membership_id is null

@@ -193,7 +193,7 @@ function fakeProjection(
   }
   const callerDevice = state.devices.get(caller.participatingDeviceId);
   if (callerDevice?.revoked === true) return { kind: "DEVICE_REVOKED" };
-  if (callerDevice === undefined) return { kind: "DEVICE_NOT_PARTICIPANT" };
+  if (callerDevice === undefined) return { kind: "INVARIANT_ERROR" };
   const owner = [...state.memberships.values()].find(
     (membership) =>
       membership.tripId === tripId &&

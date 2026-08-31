@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 const CONFIGURATION_KEY = "INVITE_CODE_HMAC_KEY";
 const NORMALIZED_INVITE_CODE = /^[0-9A-HJKMNP-TV-Z]{8}$/u;
@@ -25,6 +25,17 @@ export function createHmacInviteCodeHasher(key: string | undefined) {
         return Uint8Array.from(digest);
       } finally {
         digest?.fill(0);
+      }
+    },
+    matches(left: Readonly<Uint8Array>, right: Readonly<Uint8Array>): boolean {
+      if (left.byteLength !== 32 || right.byteLength !== 32) return false;
+      const ownedLeft = Buffer.from(left);
+      const ownedRight = Buffer.from(right);
+      try {
+        return timingSafeEqual(ownedLeft, ownedRight);
+      } finally {
+        ownedLeft.fill(0);
+        ownedRight.fill(0);
       }
     },
   });

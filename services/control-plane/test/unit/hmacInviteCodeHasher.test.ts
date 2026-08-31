@@ -48,6 +48,18 @@ describe("HMAC invite-code adapter", () => {
     expect(inspected).not.toContain(EXPECTED);
   });
 
+  it("compares only exact HMAC-sized byte strings through the crypto adapter", () => {
+    const hasher = createHmacInviteCodeHasher(KEY);
+    const first = hasher.hash(valueOf(normalizeInviteCode(CODE)));
+    const same = Uint8Array.from(first);
+    const different = Uint8Array.from(first);
+    different[0] = (different[0] ?? 0) ^ 0xff;
+
+    expect(hasher.matches(first, same)).toBe(true);
+    expect(hasher.matches(first, different)).toBe(false);
+    expect(hasher.matches(first, first.subarray(1))).toBe(false);
+  });
+
   it.each([undefined, "", "   "])(
     "fails closed for missing or empty key with only the configuration key name",
     (key) => {

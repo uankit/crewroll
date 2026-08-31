@@ -3,7 +3,7 @@ import type {
   CreateTripBody,
 } from "@crewroll/contracts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 
 import { createDatabase } from "../../services/control-plane/src/db/database.js";
 import type { Database } from "../../services/control-plane/src/db/schema/tables.js";
@@ -569,5 +569,36 @@ describe("join and projection PostgreSQL concurrency", () => {
       ready: newProjection.members[0]?.readiness.fullPhotoLibraryAccess,
       version: newProjection.version,
     }).toEqual({ ready: true, version: 2 });
+  });
+
+  it("distinguishes a wrong owned device from a missing nominated-device invariant", async () => {
+    const room = await ownedTrip(7001, "ABCD2345", createIds(800_000));
+    const otherOwnedDevice = await fixtures.device(room.owner.userId);
+    const get = services(createIds(810_000)).get;
+
+    expect(
+      problemCode(
+        await get.execute({
+          actor: { ...room.owner, deviceId: otherOwnedDevice.id },
+          tripId: room.body.tripId,
+        }),
+      ),
+    ).toBe("DEVICE_NOT_PARTICIPANT");
+
+    await context.db.transaction().execute(async (transaction) => {
+      await sql`set local session_replication_role = replica`.execute(
+        transaction,
+      );
+      await transaction
+        .deleteFrom("devices")
+        .where("id", "=", room.owner.deviceId)
+        .executeTakeFirstOrThrow();
+    });
+
+    expect(
+      problemCode(
+        await get.execute({ actor: room.owner, tripId: room.body.tripId }),
+      ),
+    ).toBe("INTERNAL_ERROR");
   });
 });

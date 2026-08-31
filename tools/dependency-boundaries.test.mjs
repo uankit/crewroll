@@ -1277,6 +1277,25 @@ test("the oracle never owns locked future control composition entrypoints", () =
   }
 });
 
+test("Trip commands keep constant-time byte comparison behind a platform port", async () => {
+  assertForbidden(
+    await lint(
+      "control",
+      'import { timingSafeEqual } from "node:crypto";\nvoid timingSafeEqual;\n',
+      "src/modules/trips/__boundary-internal.ts",
+    ),
+    "no-restricted-imports",
+  );
+
+  assertAllowed(
+    await lint(
+      "control",
+      'import { timingSafeEqual } from "node:crypto";\nvoid timingSafeEqual;\n',
+      "src/platform/__boundary_fixture__/source.ts",
+    ),
+  );
+});
+
 test("Trip database adapters consume only Trip ports through type imports", async (t) => {
   const tripAdapter = "src/db/trips/__boundary-adapter.ts";
   const tripPort = "../../modules/trips/ports/__boundary-port.js";

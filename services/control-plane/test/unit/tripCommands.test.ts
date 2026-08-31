@@ -200,7 +200,11 @@ async function setupJoin(
   test.harness.setReauthorization({ actor: MEMBER_ACTOR, kind: "ACTIVE" });
   test.harness.trace.splice(0);
   const hashedCodes: string[] = [];
+  const comparedHmacs: Array<
+    readonly [Readonly<Uint8Array>, Readonly<Uint8Array>]
+  > = [];
   let inviteHmac: Readonly<Uint8Array> = INVITE_HMAC;
+  let hmacComparisonResult: boolean | undefined;
   const generatedIds = [JOIN_MEMBERSHIP_ID, JOIN_EVENT_ID];
   const baseUnitOfWork = options.unitOfWork ?? test.harness.unitOfWork;
   const unitOfWork =
@@ -211,6 +215,12 @@ async function setupJoin(
       hash(code) {
         hashedCodes.push(code);
         return inviteHmac.slice();
+      },
+      matches(left, right) {
+        comparedHmacs.push([left, right]);
+        return (
+          hmacComparisonResult ?? Buffer.from(left).equals(Buffer.from(right))
+        );
       },
     },
     ids: {
@@ -224,11 +234,15 @@ async function setupJoin(
   });
   return {
     ...test,
+    comparedHmacs,
     get: createGetTrip({ unitOfWork }),
     hashedCodes,
     join,
     setInviteHmac(value: Readonly<Uint8Array>) {
       inviteHmac = value;
+    },
+    setHmacComparisonResult(value: boolean | undefined) {
+      hmacComparisonResult = value;
     },
   };
 }
@@ -835,6 +849,17 @@ describe("join Trip command", () => {
     expect(test.harness.trace).toEqual(["read.invite-candidate"]);
   });
 
+  it("delegates invite-HMAC equality to the injected crypto seam", async () => {
+    const test = await setupJoin();
+    test.setHmacComparisonResult(false);
+
+    expect(problemCode(await executeJoin(test))).toBe("INVITE_INVALID");
+    expect(test.comparedHmacs).toHaveLength(1);
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")),
+    ).toEqual([]);
+  });
+
   it("discloses TRIP_FULL only after the invite is otherwise valid", async () => {
     const test = await setupJoin();
     const trip = test.harness.state.trips.get(TRIP_ID);
@@ -1191,6 +1216,35 @@ describe("authorized Trip projection", () => {
         await test.get.execute({ actor: MEMBER_ACTOR, tripId: TRIP_ID }),
       ),
     ).toBe("DEVICE_REVOKED");
+  });
+
+  it("fails closed when the caller membership points at a missing nominated device", async () => {
+    const test = await setupJoin();
+    successful(await executeJoin(test));
+    const membership = test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+    if (membership === undefined) throw new Error("Missing joined membership");
+    test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+      ...membership,
+      approvedAt: NOW,
+      keyEpoch: 1,
+      state: "ACTIVE",
+    });
+    test.harness.state.envelopes.set(`${TRIP_ID}:${MEMBER_ACTOR.deviceId}`, {
+      algorithmVersion: 1,
+      createdAt: NOW,
+      keyEpoch: 1,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      senderDeviceId: ACTOR.deviceId,
+      tripId: TRIP_ID,
+      wrappedKey: new Uint8Array(148).fill(0x66),
+    });
+    test.harness.state.devices.delete(MEMBER_ACTOR.deviceId);
+
+    expect(
+      problemCode(
+        await test.get.execute({ actor: MEMBER_ACTOR, tripId: TRIP_ID }),
+      ),
+    ).toBe("INTERNAL_ERROR");
   });
 
   it("omits rejected members and fails closed on projection invariants", async () => {
