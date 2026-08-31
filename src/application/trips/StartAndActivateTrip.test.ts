@@ -2,6 +2,7 @@ import type { ProblemCode, TripResponse } from "@crewroll/contracts";
 
 import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
+import { createActivateObservedTrip } from "./ActivateObservedTrip";
 import type { TripApiPort } from "./ports";
 import { createStartAndActivateTrip } from "./StartAndActivateTrip";
 
@@ -138,16 +139,46 @@ function harness(response: TripResponse = activeResponse()) {
       return Uint8Array.from({ length: 16 }, (_, index) => index);
     }),
   };
-  const service = createStartAndActivateTrip({
-    api,
+  const activeTrip = createActivateObservedTrip({
     device: { deviceId, identity },
     native,
+  });
+  const service = createStartAndActivateTrip({
+    activeTrip,
+    api,
+    device: { deviceId, identity },
     random,
   });
   return { api, native, random, service };
 }
 
 describe("StartAndActivateTrip.start", () => {
+  it("delegates the accepted response to the injected shared activator", async () => {
+    const api = tripApi(activeResponse());
+    const sharedView = eligibleTripView({
+      status: "ACTIVE",
+      startsAt,
+      version: 4,
+    });
+    const activeTrip = {
+      activateObserved: jest.fn(async () => sharedView),
+    };
+    const dependencies = {
+      activeTrip,
+      api,
+      device: { deviceId, identity },
+      random: {
+        getBytes: jest.fn(async () =>
+          Uint8Array.from({ length: 16 }, (_, index) => index),
+        ),
+      },
+    };
+    const service = createStartAndActivateTrip(dependencies);
+
+    await expect(service.start(eligibleTripView())).resolves.toBe(sharedView);
+    expect(activeTrip.activateObserved).toHaveBeenCalledWith(activeResponse());
+  });
+
   it("starts, imports, then activates with the exact envelope-free Immediate command", async () => {
     const { api, native, service } = harness();
 

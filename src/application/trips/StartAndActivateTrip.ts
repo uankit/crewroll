@@ -7,17 +7,18 @@ import type { MemberView, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { userFacingProblems } from "../problems/userFacingProblem";
-import { createActivateObservedTrip } from "./ActivateObservedTrip";
 import { TripTransportProblem } from "./CreateImmediateTrip";
-import type { ActiveTripNativePort, TripApiPort } from "./ports";
+import type { TripApiPort } from "./ports";
 
 export type StartAndActivateTripDependencies = Readonly<{
+  activeTrip: Readonly<{
+    activateObserved(response: TripResponse): Promise<TripView>;
+  }>;
   api: TripApiPort;
   device: Readonly<{
     deviceId: string;
     identity: NativeDeviceIdentity;
   }>;
-  native: ActiveTripNativePort;
   random: RandomBytesPort;
 }>;
 
@@ -157,8 +158,7 @@ function sanitizeApiFailure(error: unknown): Error {
 export function createStartAndActivateTrip(
   dependencies: StartAndActivateTripDependencies,
 ) {
-  const { api, device, native, random } = dependencies;
-  const observed = createActivateObservedTrip({ device, native });
+  const { activeTrip, api, device, random } = dependencies;
 
   async function start(trip: TripView): Promise<TripView> {
     if (
@@ -198,7 +198,7 @@ export function createStartAndActivateTrip(
       throw internalProblem();
     }
 
-    return observed.activateObserved(response);
+    return activeTrip.activateObserved(response);
   }
 
   return Object.freeze({ start });

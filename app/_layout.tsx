@@ -6,11 +6,10 @@ import {
   Manrope_800ExtraBold,
   useFonts,
 } from "@expo-google-fonts/manrope";
-import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+
+import { AppNavigator, AppProviders } from "@/bootstrap";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -23,20 +22,10 @@ export default function RootLayout() {
     Manrope_800ExtraBold,
   });
 
-  useEffect(() => {
-    if (loaded || error) {
-      void SplashScreen.hideAsync();
-    }
-  }, [error, loaded]);
-
-  if (!loaded && !error) {
-    return null;
-  }
-
   return (
-    <SafeAreaProvider>
+    <AppProviders fontsReady={loaded || error !== null}>
       <StatusBar style="auto" />
-      <Stack screenOptions={{ headerShown: false }} />
-    </SafeAreaProvider>
+      <AppNavigator />
+    </AppProviders>
   );
 }

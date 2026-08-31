@@ -993,23 +993,39 @@ test("mobile source uses only the locked topology and public route imports", asy
   await readText("tests/support/render.tsx");
   await readText("tests/support/render.test.tsx");
 
+  await assert.rejects(readText("app/trips/create.tsx"), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readText("app/trips/join.tsx"), {
+    code: "ENOENT",
+  });
+
   const publicImports = [
-    ["app/index.tsx", /^import \{ HomeScreen \} from "@\/features\/home";$/mu],
+    ["app/index.tsx", /^import \{ Redirect \} from "expo-router";$/mu],
+    ["app/index.tsx", /^import \{ useAppSession \} from "@\/bootstrap";$/mu],
     [
-      "app/trips/create.tsx",
-      /^import \{ AppText, Screen \} from "@\/design-system";$/mu,
+      "app/(app)/index.tsx",
+      /import\s*\{[^}]*\bHomeScreen\b[^}]*\}\s*from "@\/features\/home";/u,
     ],
     [
-      "app/trips/join.tsx",
-      /^import \{ AppText, Screen \} from "@\/design-system";$/mu,
+      "app/(app)/trips/create.tsx",
+      /import\s*\{[^}]*\bCreateTripScreen\b[^}]*\}\s*from "@\/features\/trips";/u,
+    ],
+    [
+      "app/(app)/trips/join.tsx",
+      /import\s*\{[^}]*\bJoinTripScreen\b[^}]*\}\s*from "@\/features\/invitations";/u,
+    ],
+    [
+      "app/(app)/trips/[tripId].tsx",
+      /import\s*\{[^}]*\bLobbyScreen\b[^}]*\}\s*from "@\/features\/trips";/u,
     ],
     [
       "__tests__/home-screen-test.tsx",
-      /^import \{ HomeScreen \} from "@\/features\/home";$/mu,
+      /import\s*\{[^}]*\bHomeScreen\b[^}]*\}\s*from "@\/features\/home";/u,
     ],
     [
       "src/features/home/index.ts",
-      /^export \{ HomeScreen \} from "\.\/HomeScreen";$/mu,
+      /export\s*\{[^}]*\bHomeScreen\b[^}]*\}\s*from "\.\/HomeScreen";/u,
     ],
   ];
 

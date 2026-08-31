@@ -1,4 +1,4 @@
-import type { TripResponse } from "@crewroll/contracts";
+import type { ProblemCode, TripResponse } from "@crewroll/contracts";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 
 import type { TripView } from "../../domain/trips/model";
@@ -14,6 +14,21 @@ export type ActivateObservedTripDependencies = Readonly<{
   }>;
   native: ActiveTripNativePort;
 }>;
+
+export class TripActivationFailed extends CrewRollApiProblem {
+  constructor(
+    code: ProblemCode,
+    readonly trip: TripView,
+  ) {
+    super(code);
+    Object.defineProperty(this, "name", {
+      configurable: true,
+      enumerable: false,
+      value: "TripActivationFailed",
+      writable: true,
+    });
+  }
+}
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -88,12 +103,11 @@ export function createActivateObservedTrip(
       throw internalProblem();
     }
 
+    const view = safelyProject(response, device.deviceId);
     const envelope = response.tripKeyEnvelope;
     if (envelope === null) {
-      throw new CrewRollApiProblem("KEY_ENVELOPE_MISSING");
+      throw new TripActivationFailed("KEY_ENVELOPE_MISSING", view);
     }
-
-    const view = safelyProject(response, device.deviceId);
 
     try {
       await native.importTripKey(
@@ -109,7 +123,7 @@ export function createActivateObservedTrip(
         }),
       );
     } catch {
-      throw envelopeProblem();
+      throw new TripActivationFailed(envelopeProblem().code, view);
     }
 
     try {
@@ -125,7 +139,7 @@ export function createActivateObservedTrip(
         }),
       );
     } catch {
-      throw internalProblem();
+      throw new TripActivationFailed(internalProblem().code, view);
     }
 
     return view;

@@ -1,7 +1,10 @@
 import type { TripResponse } from "@crewroll/contracts";
 
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
-import { createActivateObservedTrip } from "./ActivateObservedTrip";
+import {
+  createActivateObservedTrip,
+  TripActivationFailed,
+} from "./ActivateObservedTrip";
 
 const tripId = "0191a203-227b-7011-9213-141516171819";
 const ownerMembershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
@@ -253,9 +256,18 @@ describe("ActivateObservedTrip.activateObserved", () => {
     const response = activeResponse({ tripKeyEnvelope: null });
     const { native, service } = harness(response);
 
-    await expect(service.activateObserved(response)).rejects.toEqual(
-      new CrewRollApiProblem("KEY_ENVELOPE_MISSING"),
-    );
+    const result = service.activateObserved(response);
+    await expect(result).rejects.toBeInstanceOf(TripActivationFailed);
+    await result.catch((error: unknown) => {
+      expect(error).toMatchObject({
+        code: "KEY_ENVELOPE_MISSING",
+        kind: "API_PROBLEM",
+        trip: { id: tripId, status: "ACTIVE" },
+      });
+      expect(JSON.stringify((error as TripActivationFailed).trip)).not.toMatch(
+        /wrapped|envelope|e2ee|keyEpoch|native|private/i,
+      );
+    });
     expect(native.importTripKey).not.toHaveBeenCalled();
     expect(native.activateTrip).not.toHaveBeenCalled();
   });
@@ -269,9 +281,11 @@ describe("ActivateObservedTrip.activateObserved", () => {
     const first = importFailure.service.activateObserved(
       importFailure.response,
     );
-    await expect(first).rejects.toEqual(
-      new CrewRollApiProblem("KEY_ENVELOPE_INVALID"),
-    );
+    await expect(first).rejects.toBeInstanceOf(TripActivationFailed);
+    await expect(first).rejects.toMatchObject({
+      code: "KEY_ENVELOPE_INVALID",
+      trip: { id: tripId, status: "ACTIVE" },
+    });
     expect(importFailure.native.activateTrip).not.toHaveBeenCalled();
 
     const activationFailure = harness();
@@ -282,11 +296,18 @@ describe("ActivateObservedTrip.activateObserved", () => {
     const second = activationFailure.service.activateObserved(
       activationFailure.response,
     );
-    await expect(second).rejects.toEqual(
-      new CrewRollApiProblem("INTERNAL_ERROR"),
-    );
+    await expect(second).rejects.toBeInstanceOf(TripActivationFailed);
+    await expect(second).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      trip: { id: tripId, status: "ACTIVE" },
+    });
     await second.catch((error: unknown) => {
       expect(JSON.stringify(error)).not.toMatch(/native|wrapped|private/i);
+      expect(Object.keys(error as object).sort()).toEqual([
+        "code",
+        "kind",
+        "trip",
+      ]);
     });
     expect(activationFailure.native.importTripKey).toHaveBeenCalledTimes(1);
     expect(activationFailure.native.activateTrip).toHaveBeenCalledTimes(1);

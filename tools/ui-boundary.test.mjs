@@ -7,8 +7,8 @@ const homeScreenUrl = new URL(
   import.meta.url,
 );
 const routeUrls = [
-  new URL("../app/trips/create.tsx", import.meta.url),
-  new URL("../app/trips/join.tsx", import.meta.url),
+  new URL("../app/(app)/trips/create.tsx", import.meta.url),
+  new URL("../app/(app)/trips/join.tsx", import.meta.url),
 ];
 
 test("feature screens consume semantic colors instead of raw hex values", async () => {
@@ -23,9 +23,13 @@ test("trip routes never expose architecture vocabulary to members", async () => 
   );
 
   for (const source of sources) {
+    const memberFacingSource = source.replaceAll(
+      /typeof\s+\w+\s*!==\s*["']object["']/gu,
+      "",
+    );
     assert.equal(
       /control[- ]plane|canonical|contract|object|manifest|cursor|receipt|relay|mesh|hash/i.test(
-        source,
+        memberFacingSource,
       ),
       false,
     );

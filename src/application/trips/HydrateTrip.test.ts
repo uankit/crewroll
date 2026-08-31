@@ -1,6 +1,7 @@
 import type { TripResponse } from "@crewroll/contracts";
 
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
+import { TripActivationFailed } from "./ActivateObservedTrip";
 import { TripTransportProblem } from "./CreateImmediateTrip";
 import { createHydrateTrip } from "./HydrateTrip";
 import type { TripApiPort } from "./ports";
@@ -235,6 +236,22 @@ describe("HydrateTrip.hydrate", () => {
     expect(native.importTripKey).not.toHaveBeenCalled();
     expect(view).toMatchObject({ id: tripId, status: "ACTIVE", startsAt });
     expect(JSON.stringify(view)).not.toMatch(/wrapped|envelope|e2ee|keyEpoch/i);
+  });
+
+  it("preserves the exact safe activation partial-success failure", async () => {
+    const response = tripResponse({ status: "ACTIVE", startsAt });
+    const { activeTrip, service } = harness(response);
+    const safeTrip = projectTrip(response, deviceId);
+    const failure = new TripActivationFailed("INTERNAL_ERROR", safeTrip);
+    activeTrip.activateObserved.mockRejectedValueOnce(failure);
+
+    const result = service.hydrate(tripId);
+    await expect(result).rejects.toBe(failure);
+    await result.catch((error: unknown) => {
+      expect(JSON.stringify(error)).not.toMatch(
+        /wrapped|envelope|e2ee|keyEpoch|native|private/i,
+      );
+    });
   });
 
   it("accepts 80-code-point astral trip and display names", async () => {

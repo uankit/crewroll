@@ -5,6 +5,7 @@ import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { userFacingProblems } from "../problems/userFacingProblem";
 import { isClosedTripResponse } from "./ApproveMember";
+import { TripActivationFailed } from "./ActivateObservedTrip";
 import { TripTransportProblem } from "./CreateImmediateTrip";
 import type { HydrateTripNativePort, TripApiPort } from "./ports";
 import { projectTrip } from "./projectTrip";
@@ -119,6 +120,7 @@ export function createHydrateTrip(dependencies: HydrateTripDependencies) {
       try {
         return await activeTrip.activateObserved(response);
       } catch (error) {
+        if (error instanceof TripActivationFailed) throw error;
         throw sanitizeApiFailure(error);
       }
     }
