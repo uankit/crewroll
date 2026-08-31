@@ -237,6 +237,26 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
         },
       ],
     },
+    {
+      from: bootstrap,
+      allow: [
+        {
+          to: moduleSelector("external", "@clerk/expo", {
+            internalPath: null,
+          }),
+        },
+        {
+          to: moduleSelector("external", "@clerk/expo", {
+            internalPath: "token-cache",
+          }),
+        },
+        {
+          to: moduleSelector("external", "@tanstack/react-query", {
+            internalPath: null,
+          }),
+        },
+      ],
+    },
     allowModules(bootstrap, ["*", "@crewroll/contracts"]),
     {
       from: production,

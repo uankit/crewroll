@@ -370,6 +370,15 @@ function assertAllowed(result) {
   assert.equal(result.warningCount, 0, formatMessages(result));
 }
 
+function assertDependencyAllowed(result) {
+  assertNoMasking(result);
+  assert.deepEqual(
+    result.messages.filter(({ ruleId }) => ruleId?.startsWith("boundaries/")),
+    [],
+    formatMessages(result),
+  );
+}
+
 async function lint(owner, code, filePath, eslint = eslintByOwner[owner]) {
   if (
     eslint === eslintByOwner.control &&
@@ -695,6 +704,98 @@ test("every high-risk external/core package is rejected in every dependency-node
           );
         });
       }
+    }
+  }
+});
+
+test("mobile bootstrap permits only its exact scoped providers", async (t) => {
+  const bootstrapPath = "src/bootstrap/__boundary-source.ts";
+
+  for (const specifier of [
+    "@clerk/expo",
+    "@clerk/expo/token-cache",
+    "@tanstack/react-query",
+    "expo-constants",
+    "react",
+  ]) {
+    await t.test(`allows ${specifier} from bootstrap`, async () => {
+      assertDependencyAllowed(
+        await lint("mobile", everyDependencyForm([specifier]), bootstrapPath),
+      );
+    });
+  }
+
+  await t.test(
+    "rejects neighboring and unrelated scoped packages from bootstrap",
+    async () => {
+      const specifiers = [
+        "@clerk/backend",
+        "@crewroll/control-plane",
+        "@expo/ui",
+        "@sinclair/typebox",
+        "@tanstack/query-core",
+      ];
+      assertForbiddenInEveryDependencyForm(
+        await lint("mobile", everyDependencyForm(specifiers), bootstrapPath),
+        specifiers.length * Object.keys(dependencyForms).length,
+      );
+    },
+  );
+
+  await t.test(
+    "rejects every unapproved provider subpath from bootstrap",
+    async () => {
+      const specifiers = [
+        "@clerk/expo/experimental",
+        "@clerk/expo/legacy",
+        "@clerk/expo/native",
+        "@clerk/expo/token-cache/experimental",
+        "@tanstack/react-query/core",
+        "@tanstack/react-query/experimental",
+        "@tanstack/react-query/legacy",
+      ];
+      assertForbiddenInEveryDependencyForm(
+        await lint("mobile", everyDependencyForm(specifiers), bootstrapPath),
+        specifiers.length * Object.keys(dependencyForms).length,
+      );
+    },
+  );
+
+  for (const [specifiers, forbiddenPaths] of [
+    [
+      ["@clerk/expo", "@clerk/expo/token-cache"],
+      [
+        "app/__boundary-source.tsx",
+        "src/design-system/__boundary-source.tsx",
+        "src/features/__boundary_alpha__/internal.ts",
+        "src/application/__boundary-source.ts",
+        "src/domain/__boundary-source.ts",
+      ],
+    ],
+    [
+      ["@tanstack/react-query"],
+      [
+        "app/__boundary-source.tsx",
+        "src/design-system/__boundary-source.tsx",
+        "src/application/__boundary-source.ts",
+        "src/domain/__boundary-source.ts",
+      ],
+    ],
+  ]) {
+    for (const forbiddenPath of forbiddenPaths) {
+      await t.test(
+        `rejects ${specifiers.join(" and ")} from ${forbiddenPath}`,
+        async () => {
+          assertForbiddenInEveryDependencyForm(
+            await lint(
+              "mobile",
+              everyDependencyForm(specifiers),
+              forbiddenPath,
+            ),
+            specifiers.length * Object.keys(dependencyForms).length,
+          );
+        },
+      );
     }
   }
 });
