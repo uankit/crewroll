@@ -409,6 +409,25 @@ function setPlatform(os: "android" | "ios") {
   Object.defineProperty(Platform, "OS", { configurable: true, value: os });
 }
 
+function mockLocalDateFields(
+  value: Date,
+  fields: Readonly<{
+    year: number;
+    month: number;
+    date: number;
+    hours: number;
+    minutes: number;
+    seconds: number;
+  }>,
+) {
+  jest.spyOn(value, "getFullYear").mockReturnValue(fields.year);
+  jest.spyOn(value, "getMonth").mockReturnValue(fields.month);
+  jest.spyOn(value, "getDate").mockReturnValue(fields.date);
+  jest.spyOn(value, "getHours").mockReturnValue(fields.hours);
+  jest.spyOn(value, "getMinutes").mockReturnValue(fields.minutes);
+  jest.spyOn(value, "getSeconds").mockReturnValue(fields.seconds);
+}
+
 function renderCreate(overrides: Partial<CreateTripScreenProps> = {}) {
   return render(
     <CreateTripScreen
@@ -424,6 +443,7 @@ describe("TripEndField", () => {
   const originalPlatform = Platform.OS;
 
   afterEach(() => {
+    jest.restoreAllMocks();
     Object.defineProperty(Platform, "OS", {
       configurable: true,
       value: originalPlatform,
@@ -528,6 +548,52 @@ describe("TripEndField", () => {
     expect(screen.queryByTestId("mock-native-time-picker")).toBeNull();
   });
 
+  test("keeps the intended Android calendar day in a negative UTC offset", async () => {
+    setPlatform("android");
+    const now = new Date(2026, 8, 1, 12);
+    // Sep 2 at 23:30 in UTC-07 is already Sep 3 as an instant.
+    const value = new Date("2026-09-03T06:30:45.678Z");
+    mockLocalDateFields(value, {
+      date: 2,
+      hours: 23,
+      minutes: 30,
+      month: 8,
+      seconds: 45,
+      year: 2026,
+    });
+    const onChange = jest.fn();
+    const screen = await render(
+      <TripEndField now={now} onChange={onChange} value={value} />,
+    );
+
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Change end date" }),
+    );
+    const datePicker = screen.getByTestId("mock-native-date-picker");
+    expect(datePicker.props.value).toEqual(new Date(Date.UTC(2026, 8, 2)));
+
+    // Expo Android returns Sep 5 as UTC midnight, which is Sep 4 in UTC-07.
+    const selectedUtcDay = new Date(Date.UTC(2026, 8, 5));
+    mockLocalDateFields(selectedUtcDay, {
+      date: 4,
+      hours: 17,
+      minutes: 0,
+      month: 8,
+      seconds: 0,
+      year: 2026,
+    });
+    expect(selectedUtcDay.getDate()).toBe(4);
+    await fireEvent(
+      datePicker,
+      "valueChange",
+      { nativeEvent: { timestamp: selectedUtcDay.getTime(), utcOffset: 0 } },
+      selectedUtcDay,
+    );
+    expect(onChange).toHaveBeenCalledWith(
+      new Date(2026, 8, 5, 23, 30, 45, 678),
+    );
+  });
+
   test("never mounts an Android dialog while disabled", async () => {
     setPlatform("android");
     const screen = await render(
@@ -601,6 +667,51 @@ describe("TripEndField", () => {
     screen.getByTestId("trip-end-time-picker");
     screen.getByText("End date");
     screen.getByText("End time");
+  });
+
+  test("keeps the iOS date value and local-field recombination unchanged", async () => {
+    setPlatform("ios");
+    const now = new Date(2026, 8, 1, 12);
+    // Keep the same late UTC-07 instant as the Android regression.
+    const value = new Date("2026-09-03T06:30:45.678Z");
+    mockLocalDateFields(value, {
+      date: 2,
+      hours: 23,
+      minutes: 30,
+      month: 8,
+      seconds: 45,
+      year: 2026,
+    });
+    const onChange = jest.fn();
+    const screen = await render(
+      <TripEndField now={now} onChange={onChange} value={value} />,
+    );
+    const datePicker = screen.getByTestId("mock-native-date-picker");
+
+    expect(datePicker.props.value).toBe(value);
+    const selectedLocalDate = new Date("2026-09-06T06:15:00.000Z");
+    mockLocalDateFields(selectedLocalDate, {
+      date: 5,
+      hours: 23,
+      minutes: 15,
+      month: 8,
+      seconds: 0,
+      year: 2026,
+    });
+    await fireEvent(
+      datePicker,
+      "valueChange",
+      {
+        nativeEvent: {
+          timestamp: selectedLocalDate.getTime(),
+          utcOffset: -selectedLocalDate.getTimezoneOffset(),
+        },
+      },
+      selectedLocalDate,
+    );
+    expect(onChange).toHaveBeenCalledWith(
+      new Date(2026, 8, 5, 23, 30, 45, 678),
+    );
   });
 });
 

@@ -60,6 +60,26 @@ export function combineTripEndDate(current: Date, selectedDate: Date): Date {
   );
 }
 
+function androidDatePickerValue(value: Date): Date {
+  // Expo's Android Material date picker represents calendar days at UTC midnight.
+  return new Date(
+    Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()),
+  );
+}
+
+function combineAndroidTripEndDate(current: Date, selectedUtcDate: Date): Date {
+  // Recover the selected calendar fields before restoring the user's local time.
+  return new Date(
+    selectedUtcDate.getUTCFullYear(),
+    selectedUtcDate.getUTCMonth(),
+    selectedUtcDate.getUTCDate(),
+    current.getHours(),
+    current.getMinutes(),
+    current.getSeconds(),
+    current.getMilliseconds(),
+  );
+}
+
 export function combineTripEndTime(current: Date, selectedTime: Date): Date {
   return new Date(
     current.getFullYear(),
@@ -111,13 +131,15 @@ function PickerSurface({
 }: PickerSurfaceProps) {
   const theme = useCrewRollTheme();
   const isAndroid = Platform.OS === "android";
+  const pickerValue =
+    isAndroid && mode === "date" ? androidDatePickerValue(value) : value;
   const pickerProps = {
     accentColor: theme.action,
     maximumDate: new Date(now.getTime() + TRIP_CREATE_MAX_DURATION_MS),
     minimumDate: now,
     mode,
     onValueChange,
-    value,
+    value: pickerValue,
     ...(isAndroid
       ? {
           ...(onDismiss === undefined ? {} : { onDismiss }),
@@ -159,7 +181,7 @@ function AndroidControls({
 
   function chooseDate(_event: DateTimePickerChangeEvent, selectedDate: Date) {
     setActivePicker(null);
-    onChange(combineTripEndDate(value, selectedDate));
+    onChange(combineAndroidTripEndDate(value, selectedDate));
   }
 
   function chooseTime(_event: DateTimePickerChangeEvent, selectedTime: Date) {
