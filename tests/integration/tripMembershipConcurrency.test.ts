@@ -1,6 +1,8 @@
 import type {
+  ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  SetTripReadinessBody,
 } from "@crewroll/contracts";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql, type Kysely } from "kysely";
@@ -9,13 +11,16 @@ import { createDatabase } from "../../services/control-plane/src/db/database.js"
 import type { Database } from "../../services/control-plane/src/db/schema/tables.js";
 import { classifyTripConstraint } from "../../services/control-plane/src/db/trips/constraintClassifier.js";
 import { createKyselyTripUnitOfWork } from "../../services/control-plane/src/db/trips/kyselyTripUnitOfWork.js";
+import { createApproveJoinRequest } from "../../services/control-plane/src/modules/trips/approveJoinRequest.js";
 import { createCreateTrip } from "../../services/control-plane/src/modules/trips/createTrip.js";
 import { createGetTrip } from "../../services/control-plane/src/modules/trips/getTrip.js";
 import type {
   TripTransaction,
   TripUnitOfWork,
 } from "../../services/control-plane/src/modules/trips/ports/tripUnitOfWork.js";
+import { createRejectJoinRequest } from "../../services/control-plane/src/modules/trips/rejectJoinRequest.js";
 import { createRequestJoin } from "../../services/control-plane/src/modules/trips/requestJoin.js";
+import { createSetTripReadiness } from "../../services/control-plane/src/modules/trips/setTripReadiness.js";
 import type {
   ForegroundTripActor,
   TripPolicyResult,
@@ -31,6 +36,7 @@ import {
 
 const DAY_MS = 86_400_000;
 const OWNER_ENVELOPE = Buffer.alloc(148, 0x71).toString("base64");
+const APPROVED_ENVELOPE = Buffer.alloc(148, 0x72).toString("base64");
 const HMAC_KEY = "task6-disposable-postgres-hmac-key";
 
 function deferred() {
@@ -99,6 +105,18 @@ function joinBody(
   return { deviceId: actor.deviceId, inviteCode };
 }
 
+function approveBody(): ApproveJoinRequestBody {
+  return {
+    algorithmVersion: 1,
+    keyEpoch: 1,
+    wrappedKey: APPROVED_ENVELOPE,
+  };
+}
+
+function readinessBody(fullPhotoLibraryAccess = true): SetTripReadinessBody {
+  return { fullPhotoLibraryAccess };
+}
+
 function failAfterJoinWrite(
   unitOfWork: TripUnitOfWork,
   boundary: number,
@@ -137,6 +155,91 @@ function failAfterJoinWrite(
   };
 }
 
+function failAfterTask7Write(
+  unitOfWork: TripUnitOfWork,
+  boundary: number,
+): TripUnitOfWork {
+  return {
+    ...unitOfWork,
+    run(operation) {
+      return unitOfWork.run((transaction) => {
+        let writes = 0;
+        async function write<Result>(operation: () => Promise<Result>) {
+          const result = await operation();
+          writes += 1;
+          if (writes === boundary) {
+            throw new Error(`forced real Task 7 write ${boundary}`);
+          }
+          return result;
+        }
+        const wrapped: TripTransaction = {
+          ...transaction,
+          deleteActiveTrip: (userId, id) =>
+            write(() => transaction.deleteActiveTrip(userId, id)),
+          insertEnvelope: (record) =>
+            write(() => transaction.insertEnvelope(record)),
+          insertIdempotency: (record) =>
+            write(() => transaction.insertIdempotency(record)),
+          insertInbox: (record) => write(() => transaction.insertInbox(record)),
+          insertOutbox: (record) =>
+            write(() => transaction.insertOutbox(record)),
+          updateMembership: (record) =>
+            write(() => transaction.updateMembership(record)),
+          updateTrip: (record) => write(() => transaction.updateTrip(record)),
+        };
+        return operation(wrapped);
+      });
+    },
+  };
+}
+
+function holdAfterTripLock(
+  unitOfWork: TripUnitOfWork,
+  held: ReturnType<typeof deferred>,
+  release: ReturnType<typeof deferred>,
+): TripUnitOfWork {
+  return {
+    ...unitOfWork,
+    run(operation) {
+      return unitOfWork.run((transaction) => {
+        let heldOnce = false;
+        return operation({
+          ...transaction,
+          async lockTrip(id) {
+            const trip = await transaction.lockTrip(id);
+            if (!heldOnce) {
+              heldOnce = true;
+              held.resolve();
+              await release.promise;
+            }
+            return trip;
+          },
+        });
+      });
+    },
+  };
+}
+
+function signalBeforeTripLock(
+  unitOfWork: TripUnitOfWork,
+  attempted: ReturnType<typeof deferred>,
+): TripUnitOfWork {
+  return {
+    ...unitOfWork,
+    run(operation) {
+      return unitOfWork.run((transaction) =>
+        operation({
+          ...transaction,
+          lockTrip(id) {
+            attempted.resolve();
+            return transaction.lockTrip(id);
+          },
+        }),
+      );
+    },
+  };
+}
+
 describe("join and projection PostgreSQL concurrency", () => {
   let context: PostgresTestContext;
   let database: Kysely<Database>;
@@ -169,6 +272,11 @@ describe("join and projection PostgreSQL concurrency", () => {
   ) {
     const hasher = createHmacInviteCodeHasher(HMAC_KEY);
     return {
+      approve: createApproveJoinRequest({
+        classifyConstraint: classifyTripConstraint,
+        ids,
+        unitOfWork,
+      }),
       create: createCreateTrip({
         classifyConstraint: classifyTripConstraint,
         hasher,
@@ -179,6 +287,16 @@ describe("join and projection PostgreSQL concurrency", () => {
       join: createRequestJoin({
         classifyConstraint: classifyTripConstraint,
         hasher,
+        ids,
+        unitOfWork,
+      }),
+      readiness: createSetTripReadiness({
+        classifyConstraint: classifyTripConstraint,
+        ids,
+        unitOfWork,
+      }),
+      reject: createRejectJoinRequest({
+        classifyConstraint: classifyTripConstraint,
         ids,
         unitOfWork,
       }),
@@ -212,6 +330,24 @@ describe("join and projection PostgreSQL concurrency", () => {
       }),
     );
     return { body, inviteCode, owner };
+  }
+
+  async function pendingRoom(
+    sequence: number,
+    inviteCode = "ABCD2345",
+    ids = createIds(sequence * 100),
+  ) {
+    const room = await ownedTrip(sequence, inviteCode, ids);
+    const member = await actor(sequence + 1);
+    const commands = services(ids);
+    const membership = successful(
+      await commands.join.execute({
+        actor: member,
+        body: joinBody(member, inviteCode),
+        idempotencyKey: idempotencyKey(sequence + 100_000),
+      }),
+    );
+    return { commands, ids, member, membership, room };
   }
 
   it("admits exactly nine of twenty parallel candidates and preserves all counters/events", async () => {
@@ -432,6 +568,502 @@ describe("join and projection PostgreSQL concurrency", () => {
       expect(trip).toEqual({ member_count: 1, version: 1 });
       expect(invite.uses_count).toBe(0);
       expect(membership).toBeUndefined();
+    }
+  });
+
+  it("serializes physically competing approvals to one effective transition", async () => {
+    const seed = await pendingRoom(4501, "ABCD2345", createIds(520_000));
+    const baseUnitOfWork = createKyselyTripUnitOfWork(database);
+    const held = deferred();
+    const release = deferred();
+    const attempted = deferred();
+    const first = services(
+      seed.ids,
+      holdAfterTripLock(baseUnitOfWork, held, release),
+    ).approve;
+    const second = services(
+      seed.ids,
+      signalBeforeTripLock(baseUnitOfWork, attempted),
+    ).approve;
+    const firstResult = first.execute({
+      actor: seed.room.owner,
+      body: approveBody(),
+      idempotencyKey: idempotencyKey(145_001),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    });
+    await held.promise;
+    const secondResult = second.execute({
+      actor: seed.room.owner,
+      body: approveBody(),
+      idempotencyKey: idempotencyKey(145_002),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    });
+    await attempted.promise;
+    release.resolve();
+
+    expect(successful(await firstResult).status).toBe("ACTIVE");
+    expect(problemCode(await secondResult)).toBe("CONFLICT");
+    const trip = await context.db
+      .selectFrom("trips")
+      .select(["member_count", "version"])
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const membership = await context.db
+      .selectFrom("trip_members")
+      .select(["key_epoch", "state"])
+      .where("id", "=", seed.membership.membershipId)
+      .executeTakeFirstOrThrow();
+    const envelopeCount = await context.db
+      .selectFrom("trip_key_envelopes")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("trip_id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const outboxCount = await context.db
+      .selectFrom("outbox_events")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("aggregate_id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    expect(trip).toEqual({ member_count: 2, version: 3 });
+    expect(membership).toEqual({ key_epoch: 1, state: "ACTIVE" });
+    expect(Number(envelopeCount.count)).toBe(2);
+    expect(Number(outboxCount.count)).toBe(2);
+  });
+
+  it("lets the physically first rejection win an approval race with one terminal transition", async () => {
+    const seed = await pendingRoom(4601, "ABCD2345", createIds(530_000));
+    const baseUnitOfWork = createKyselyTripUnitOfWork(database);
+    const held = deferred();
+    const release = deferred();
+    const attempted = deferred();
+    const rejection = services(
+      seed.ids,
+      holdAfterTripLock(baseUnitOfWork, held, release),
+    ).reject;
+    const approval = services(
+      seed.ids,
+      signalBeforeTripLock(baseUnitOfWork, attempted),
+    ).approve;
+    const rejectionResult = rejection.execute({
+      actor: seed.room.owner,
+      idempotencyKey: idempotencyKey(146_001),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    });
+    await held.promise;
+    const approvalResult = approval.execute({
+      actor: seed.room.owner,
+      body: approveBody(),
+      idempotencyKey: idempotencyKey(146_002),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    });
+    await attempted.promise;
+    release.resolve();
+
+    expect(successful(await rejectionResult)).toBeUndefined();
+    expect(problemCode(await approvalResult)).toBe("CONFLICT");
+    const trip = await context.db
+      .selectFrom("trips")
+      .select(["member_count", "version"])
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const membership = await context.db
+      .selectFrom("trip_members")
+      .select(["rejected_at", "state"])
+      .where("id", "=", seed.membership.membershipId)
+      .executeTakeFirstOrThrow();
+    const activeSlot = await context.db
+      .selectFrom("user_active_trips")
+      .select("trip_id")
+      .where("user_id", "=", seed.member.userId)
+      .executeTakeFirst();
+    const memberEnvelope = await context.db
+      .selectFrom("trip_key_envelopes")
+      .select("recipient_device_id")
+      .where("trip_id", "=", seed.room.body.tripId)
+      .where("recipient_device_id", "=", seed.member.deviceId)
+      .executeTakeFirst();
+    expect(trip).toEqual({ member_count: 1, version: 3 });
+    expect(membership.state).toBe("REJECTED");
+    expect(membership.rejected_at).toBeInstanceOf(Date);
+    expect(activeSlot).toBeUndefined();
+    expect(memberEnvelope).toBeUndefined();
+  });
+
+  it("increments concurrent identical readiness updates at most once", async () => {
+    const seed = await pendingRoom(4701, "ABCD2345", createIds(540_000));
+    successful(
+      await seed.commands.approve.execute({
+        actor: seed.room.owner,
+        body: approveBody(),
+        idempotencyKey: idempotencyKey(147_000),
+        membershipId: seed.membership.membershipId,
+        tripId: seed.room.body.tripId,
+      }),
+    );
+    const baseUnitOfWork = createKyselyTripUnitOfWork(database);
+    const held = deferred();
+    const release = deferred();
+    const attempted = deferred();
+    const first = services(
+      seed.ids,
+      holdAfterTripLock(baseUnitOfWork, held, release),
+    ).readiness;
+    const second = services(
+      seed.ids,
+      signalBeforeTripLock(baseUnitOfWork, attempted),
+    ).readiness;
+    const firstResult = first.execute({
+      actor: seed.room.owner,
+      body: readinessBody(),
+      idempotencyKey: idempotencyKey(147_001),
+      tripId: seed.room.body.tripId,
+    });
+    await held.promise;
+    const secondResult = second.execute({
+      actor: seed.room.owner,
+      body: readinessBody(),
+      idempotencyKey: idempotencyKey(147_002),
+      tripId: seed.room.body.tripId,
+    });
+    await attempted.promise;
+    release.resolve();
+
+    expect(successful(await firstResult).version).toBe(4);
+    expect(successful(await secondResult).version).toBe(4);
+    const trip = await context.db
+      .selectFrom("trips")
+      .select("version")
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const ownerMembership = await context.db
+      .selectFrom("trip_members")
+      .select("full_photo_library_access")
+      .where("trip_id", "=", seed.room.body.tripId)
+      .where("role", "=", "OWNER")
+      .executeTakeFirstOrThrow();
+    const readinessRecords = await context.db
+      .selectFrom("api_idempotency")
+      .select("idempotency_key")
+      .where("user_id", "=", seed.room.owner.userId)
+      .where("route_key", "=", "trips.readiness.v1")
+      .where("idempotency_key", "in", [
+        idempotencyKey(147_001),
+        idempotencyKey(147_002),
+      ])
+      .orderBy("idempotency_key")
+      .execute();
+    const outboxCount = await context.db
+      .selectFrom("outbox_events")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("aggregate_id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    expect(trip.version).toBe(4);
+    expect(ownerMembership.full_photo_library_access).toBe(true);
+    expect(readinessRecords).toEqual([
+      { idempotency_key: idempotencyKey(147_001) },
+      { idempotency_key: idempotencyKey(147_002) },
+    ]);
+    expect(Number(outboxCount.count)).toBe(3);
+  });
+
+  it("allows exact approval and readiness replays after freeze but rejects new mutations", async () => {
+    const seed = await pendingRoom(4801, "ABCD2345", createIds(550_000));
+    const approvalInput = {
+      actor: seed.room.owner,
+      body: approveBody(),
+      idempotencyKey: idempotencyKey(148_001),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    };
+    const readinessInput = {
+      actor: seed.room.owner,
+      body: readinessBody(),
+      idempotencyKey: idempotencyKey(148_002),
+      tripId: seed.room.body.tripId,
+    };
+    successful(await seed.commands.approve.execute(approvalInput));
+    successful(await seed.commands.readiness.execute(readinessInput));
+    await context.db
+      .updateTable("trips")
+      .set({ started_at: new Date(), state: "ACTIVE" })
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+
+    expect(
+      successful(await seed.commands.approve.execute(approvalInput)).status,
+    ).toBe("ACTIVE");
+    expect(
+      successful(await seed.commands.readiness.execute(readinessInput)).status,
+    ).toBe("ACTIVE");
+    expect(
+      problemCode(
+        await seed.commands.approve.execute({
+          ...approvalInput,
+          idempotencyKey: idempotencyKey(148_003),
+        }),
+      ),
+    ).toBe("MEMBERSHIP_FROZEN");
+    expect(
+      problemCode(
+        await seed.commands.readiness.execute({
+          ...readinessInput,
+          body: readinessBody(false),
+          idempotencyKey: idempotencyKey(148_004),
+        }),
+      ),
+    ).toBe("MEMBERSHIP_FROZEN");
+    expect(
+      problemCode(
+        await seed.commands.reject.execute({
+          actor: seed.room.owner,
+          idempotencyKey: idempotencyKey(148_005),
+          membershipId: seed.membership.membershipId,
+          tripId: seed.room.body.tripId,
+        }),
+      ),
+    ).toBe("MEMBERSHIP_FROZEN");
+
+    const trip = await context.db
+      .selectFrom("trips")
+      .select(["member_count", "version"])
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const outboxCount = await context.db
+      .selectFrom("outbox_events")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("aggregate_id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    expect(trip).toEqual({ member_count: 2, version: 4 });
+    expect(Number(outboxCount.count)).toBe(3);
+  });
+
+  it("allows exact rejection replay after freeze without releasing twice", async () => {
+    const seed = await pendingRoom(4901, "ABCD2345", createIds(560_000));
+    const rejectionInput = {
+      actor: seed.room.owner,
+      idempotencyKey: idempotencyKey(149_001),
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+    };
+    successful(await seed.commands.reject.execute(rejectionInput));
+    await context.db
+      .updateTable("trips")
+      .set({ started_at: new Date(), state: "ACTIVE" })
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+
+    expect(
+      successful(await seed.commands.reject.execute(rejectionInput)),
+    ).toBeUndefined();
+    expect(
+      problemCode(
+        await seed.commands.reject.execute({
+          ...rejectionInput,
+          idempotencyKey: idempotencyKey(149_002),
+        }),
+      ),
+    ).toBe("MEMBERSHIP_FROZEN");
+    const trip = await context.db
+      .selectFrom("trips")
+      .select(["member_count", "version"])
+      .where("id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    const outboxCount = await context.db
+      .selectFrom("outbox_events")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("aggregate_id", "=", seed.room.body.tripId)
+      .executeTakeFirstOrThrow();
+    expect(trip).toEqual({ member_count: 1, version: 3 });
+    expect(Number(outboxCount.count)).toBe(2);
+  });
+
+  it("rolls back every real PostgreSQL approval write boundary", async () => {
+    for (let boundary = 1; boundary <= 6; boundary += 1) {
+      await truncateIdentityTripTables(context.db);
+      const seed = await pendingRoom(
+        8000 + boundary,
+        "ABCD2345",
+        createIds(600_000 + boundary * 100),
+      );
+      const failed = services(
+        seed.ids,
+        failAfterTask7Write(createKyselyTripUnitOfWork(database), boundary),
+      ).approve;
+
+      expect(
+        problemCode(
+          await failed.execute({
+            actor: seed.room.owner,
+            body: approveBody(),
+            idempotencyKey: idempotencyKey(180_000 + boundary),
+            membershipId: seed.membership.membershipId,
+            tripId: seed.room.body.tripId,
+          }),
+        ),
+      ).toBe("INTERNAL_ERROR");
+      const trip = await context.db
+        .selectFrom("trips")
+        .select(["member_count", "version"])
+        .where("id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      const membership = await context.db
+        .selectFrom("trip_members")
+        .select(["approved_at", "key_epoch", "state"])
+        .where("id", "=", seed.membership.membershipId)
+        .executeTakeFirstOrThrow();
+      const memberEnvelope = await context.db
+        .selectFrom("trip_key_envelopes")
+        .select("recipient_device_id")
+        .where("trip_id", "=", seed.room.body.tripId)
+        .where("recipient_device_id", "=", seed.member.deviceId)
+        .executeTakeFirst();
+      const approvalRecord = await context.db
+        .selectFrom("api_idempotency")
+        .select("idempotency_key")
+        .where("user_id", "=", seed.room.owner.userId)
+        .where("route_key", "=", "trips.approve.v1")
+        .where("idempotency_key", "=", idempotencyKey(180_000 + boundary))
+        .executeTakeFirst();
+      const outboxCount = await context.db
+        .selectFrom("outbox_events")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("aggregate_id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      expect(trip).toEqual({ member_count: 2, version: 2 });
+      expect(membership).toEqual({
+        approved_at: null,
+        key_epoch: null,
+        state: "PENDING_KEY",
+      });
+      expect(memberEnvelope).toBeUndefined();
+      expect(approvalRecord).toBeUndefined();
+      expect(Number(outboxCount.count)).toBe(1);
+    }
+  });
+
+  it("rolls back every real PostgreSQL rejection write boundary", async () => {
+    for (let boundary = 1; boundary <= 6; boundary += 1) {
+      await truncateIdentityTripTables(context.db);
+      const seed = await pendingRoom(
+        8100 + boundary,
+        "ABCD2345",
+        createIds(610_000 + boundary * 100),
+      );
+      const failed = services(
+        seed.ids,
+        failAfterTask7Write(createKyselyTripUnitOfWork(database), boundary),
+      ).reject;
+
+      expect(
+        problemCode(
+          await failed.execute({
+            actor: seed.room.owner,
+            idempotencyKey: idempotencyKey(181_000 + boundary),
+            membershipId: seed.membership.membershipId,
+            tripId: seed.room.body.tripId,
+          }),
+        ),
+      ).toBe("INTERNAL_ERROR");
+      const trip = await context.db
+        .selectFrom("trips")
+        .select(["member_count", "version"])
+        .where("id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      const membership = await context.db
+        .selectFrom("trip_members")
+        .select(["rejected_at", "state"])
+        .where("id", "=", seed.membership.membershipId)
+        .executeTakeFirstOrThrow();
+      const activeSlot = await context.db
+        .selectFrom("user_active_trips")
+        .select("trip_id")
+        .where("user_id", "=", seed.member.userId)
+        .executeTakeFirst();
+      const rejectionRecord = await context.db
+        .selectFrom("api_idempotency")
+        .select("idempotency_key")
+        .where("user_id", "=", seed.room.owner.userId)
+        .where("route_key", "=", "trips.reject.v1")
+        .where("idempotency_key", "=", idempotencyKey(181_000 + boundary))
+        .executeTakeFirst();
+      const outboxCount = await context.db
+        .selectFrom("outbox_events")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("aggregate_id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      expect(trip).toEqual({ member_count: 2, version: 2 });
+      expect(membership).toEqual({
+        rejected_at: null,
+        state: "PENDING_KEY",
+      });
+      expect(activeSlot).toEqual({ trip_id: seed.room.body.tripId });
+      expect(rejectionRecord).toBeUndefined();
+      expect(Number(outboxCount.count)).toBe(1);
+    }
+  });
+
+  it("rolls back every real PostgreSQL readiness write boundary", async () => {
+    for (let boundary = 1; boundary <= 5; boundary += 1) {
+      await truncateIdentityTripTables(context.db);
+      const seed = await pendingRoom(
+        8200 + boundary,
+        "ABCD2345",
+        createIds(620_000 + boundary * 100),
+      );
+      successful(
+        await seed.commands.approve.execute({
+          actor: seed.room.owner,
+          body: approveBody(),
+          idempotencyKey: idempotencyKey(182_100 + boundary),
+          membershipId: seed.membership.membershipId,
+          tripId: seed.room.body.tripId,
+        }),
+      );
+      const failed = services(
+        seed.ids,
+        failAfterTask7Write(createKyselyTripUnitOfWork(database), boundary),
+      ).readiness;
+
+      expect(
+        problemCode(
+          await failed.execute({
+            actor: seed.room.owner,
+            body: readinessBody(),
+            idempotencyKey: idempotencyKey(182_200 + boundary),
+            tripId: seed.room.body.tripId,
+          }),
+        ),
+      ).toBe("INTERNAL_ERROR");
+      const trip = await context.db
+        .selectFrom("trips")
+        .select("version")
+        .where("id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      const ownerMembership = await context.db
+        .selectFrom("trip_members")
+        .select("full_photo_library_access")
+        .where("trip_id", "=", seed.room.body.tripId)
+        .where("role", "=", "OWNER")
+        .executeTakeFirstOrThrow();
+      const readinessRecord = await context.db
+        .selectFrom("api_idempotency")
+        .select("idempotency_key")
+        .where("user_id", "=", seed.room.owner.userId)
+        .where("route_key", "=", "trips.readiness.v1")
+        .where("idempotency_key", "=", idempotencyKey(182_200 + boundary))
+        .executeTakeFirst();
+      const outboxCount = await context.db
+        .selectFrom("outbox_events")
+        .select(({ fn }) => fn.countAll<number>().as("count"))
+        .where("aggregate_id", "=", seed.room.body.tripId)
+        .executeTakeFirstOrThrow();
+      expect(trip.version).toBe(3);
+      expect(ownerMembership.full_photo_library_access).toBe(false);
+      expect(readinessRecord).toBeUndefined();
+      expect(Number(outboxCount.count)).toBe(2);
     }
   });
 

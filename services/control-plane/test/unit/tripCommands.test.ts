@@ -1,6 +1,8 @@
 import type {
+  ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
+  SetTripReadinessBody,
 } from "@crewroll/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -8,9 +10,12 @@ import {
   createCreateTrip,
   type CreateTripDependencies,
 } from "../../src/modules/trips/createTrip.js";
+import { createApproveJoinRequest } from "../../src/modules/trips/approveJoinRequest.js";
 import { createGetTrip } from "../../src/modules/trips/getTrip.js";
+import { createRejectJoinRequest } from "../../src/modules/trips/rejectJoinRequest.js";
 import { createRequestJoin } from "../../src/modules/trips/requestJoin.js";
 import { createResolveCreateTripOutcome } from "../../src/modules/trips/resolveCreateTripOutcome.js";
+import { createSetTripReadiness } from "../../src/modules/trips/setTripReadiness.js";
 import type {
   TripIdempotencyRecord,
   TripRecord,
@@ -45,6 +50,15 @@ const SECOND_INVITE_HMAC = new Uint8Array(32).fill(0x52);
 const JOIN_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440010";
 const JOIN_MEMBERSHIP_ID = "950e8400-e29b-41d4-a716-446655440101";
 const JOIN_EVENT_ID = "950e8400-e29b-41d4-a716-446655440102";
+const APPROVE_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440020";
+const APPROVE_EVENT_ID = "950e8400-e29b-41d4-a716-446655440103";
+const APPROVED_ENVELOPE = Buffer.alloc(148, 0x72).toString("base64");
+const REJECT_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440021";
+const REJECT_EVENT_ID = "950e8400-e29b-41d4-a716-446655440104";
+const READINESS_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440022";
+const SECOND_READINESS_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440023";
+const READINESS_EVENT_ID = "950e8400-e29b-41d4-a716-446655440105";
+const SECOND_READINESS_EVENT_ID = "950e8400-e29b-41d4-a716-446655440106";
 
 function body(overrides: Partial<CreateTripBody> = {}): CreateTripBody {
   return {
@@ -254,6 +268,143 @@ async function executeJoin(
   actor = MEMBER_ACTOR,
 ) {
   return test.join.execute({ actor, body: requestBody, idempotencyKey });
+}
+
+function approveBody(
+  overrides: Partial<ApproveJoinRequestBody> = {},
+): ApproveJoinRequestBody {
+  return {
+    algorithmVersion: 1,
+    keyEpoch: 1,
+    wrappedKey: APPROVED_ENVELOPE,
+    ...overrides,
+  };
+}
+
+async function setupApprove() {
+  const test = await setupJoin();
+  successful(await executeJoin(test));
+  test.harness.setReauthorization({ actor: ACTOR, kind: "ACTIVE" });
+  test.harness.trace.splice(0);
+  const generatedIds = [APPROVE_EVENT_ID];
+  return {
+    ...test,
+    approve: createApproveJoinRequest({
+      classifyConstraint: constraintName,
+      ids: {
+        uuid() {
+          const id = generatedIds.shift();
+          if (id === undefined)
+            throw new Error("Unexpected approval ID allocation");
+          return id;
+        },
+      },
+      unitOfWork: test.harness.unitOfWork,
+    }),
+  };
+}
+
+async function executeApprove(
+  test: Awaited<ReturnType<typeof setupApprove>>,
+  requestBody = approveBody(),
+  idempotencyKey = APPROVE_IDEMPOTENCY_KEY,
+  actor = ACTOR,
+  membershipId = JOIN_MEMBERSHIP_ID,
+  tripId = TRIP_ID,
+) {
+  return test.approve.execute({
+    actor,
+    body: requestBody,
+    idempotencyKey,
+    membershipId,
+    tripId,
+  });
+}
+
+async function setupReject() {
+  const test = await setupJoin();
+  successful(await executeJoin(test));
+  test.harness.setReauthorization({ actor: ACTOR, kind: "ACTIVE" });
+  test.harness.trace.splice(0);
+  const generatedIds = [REJECT_EVENT_ID];
+  return {
+    ...test,
+    reject: createRejectJoinRequest({
+      classifyConstraint: constraintName,
+      ids: {
+        uuid() {
+          const id = generatedIds.shift();
+          if (id === undefined)
+            throw new Error("Unexpected rejection ID allocation");
+          return id;
+        },
+      },
+      unitOfWork: test.harness.unitOfWork,
+    }),
+  };
+}
+
+async function executeReject(
+  test: Awaited<ReturnType<typeof setupReject>>,
+  idempotencyKey = REJECT_IDEMPOTENCY_KEY,
+  actor = ACTOR,
+  membershipId = JOIN_MEMBERSHIP_ID,
+  tripId = TRIP_ID,
+) {
+  return test.reject.execute({
+    actor,
+    idempotencyKey,
+    membershipId,
+    tripId,
+  });
+}
+
+function readinessBody(fullPhotoLibraryAccess = true): SetTripReadinessBody {
+  return { fullPhotoLibraryAccess };
+}
+
+function readinessService(
+  test: Awaited<ReturnType<typeof setupJoin>>,
+  generatedIds = [READINESS_EVENT_ID, SECOND_READINESS_EVENT_ID],
+) {
+  return createSetTripReadiness({
+    classifyConstraint: constraintName,
+    ids: {
+      uuid() {
+        const id = generatedIds.shift();
+        if (id === undefined)
+          throw new Error("Unexpected readiness ID allocation");
+        return id;
+      },
+    },
+    unitOfWork: test.harness.unitOfWork,
+  });
+}
+
+async function setupReadiness() {
+  const test = await setupApprove();
+  successful(await executeApprove(test));
+  test.harness.setReauthorization({ actor: ACTOR, kind: "ACTIVE" });
+  test.harness.trace.splice(0);
+  return {
+    ...test,
+    readiness: readinessService(test),
+  };
+}
+
+async function executeReadiness(
+  test: Readonly<{ readiness: ReturnType<typeof readinessService> }>,
+  requestBody = readinessBody(),
+  idempotencyKey = READINESS_IDEMPOTENCY_KEY,
+  actor = ACTOR,
+  tripId = TRIP_ID,
+) {
+  return test.readiness.execute({
+    actor,
+    body: requestBody,
+    idempotencyKey,
+    tripId,
+  });
 }
 
 describe("create Trip command", () => {
@@ -1076,6 +1227,713 @@ describe("join Trip command", () => {
       });
       expect(test.harness.state.inboxes).toEqual([]);
       expect(test.harness.state.outboxes.size).toBe(0);
+      expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
+    }
+  });
+});
+
+describe("approve Trip join request", () => {
+  it("activates the pending membership before inserting its envelope and events", async () => {
+    const test = await setupApprove();
+
+    expect(successful(await executeApprove(test))).toEqual({
+      deviceId: MEMBER_ACTOR.deviceId,
+      keyEpoch: 1,
+      membershipId: JOIN_MEMBERSHIP_ID,
+      status: "ACTIVE",
+      tripId: TRIP_ID,
+      tripKeyEnvelope: {
+        algorithmVersion: 1,
+        keyEpoch: 1,
+        wrappedKey: APPROVED_ENVELOPE,
+      },
+    });
+    expect(
+      test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID),
+    ).toMatchObject({
+      approvedAt: NOW,
+      keyEpoch: 1,
+      rejectedAt: null,
+      state: "ACTIVE",
+    });
+    const storedEnvelope = test.harness.state.envelopes.get(
+      `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+    );
+    expect(storedEnvelope).toMatchObject({
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      senderDeviceId: ACTOR.deviceId,
+    });
+    if (storedEnvelope === undefined) throw new Error("Missing key envelope");
+    expect(Buffer.from(storedEnvelope.wrappedKey).toString("base64")).toBe(
+      APPROVED_ENVELOPE,
+    );
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({ version: 3 });
+    expect(
+      test.harness.state.idempotencies.get(
+        `${ACTOR.userId}:trips.approve.v1:${APPROVE_IDEMPOTENCY_KEY}`,
+      ),
+    ).toMatchObject({
+      actorDeviceId: ACTOR.deviceId,
+      expiresAt: test.harness.state.trips.get(TRIP_ID)?.hardDeleteAt,
+      kind: "APPROVE",
+      membershipId: JOIN_MEMBERSHIP_ID,
+      responseStatus: 200,
+      tripId: TRIP_ID,
+    });
+    expect(test.harness.state.inboxes.at(-1)).toMatchObject({
+      aggregateId: TRIP_ID,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      status: "LOBBY",
+      tripId: TRIP_ID,
+    });
+    expect([...test.harness.state.outboxes.values()].at(-1)).toMatchObject({
+      eventId: APPROVE_EVENT_ID,
+      recipientSequences: ["2"],
+      status: "LOBBY",
+      version: 3,
+    });
+    expect(test.harness.trace).toEqual([
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "lock.memberships",
+      `lock.devices:${ACTOR.deviceId},${MEMBER_ACTOR.deviceId}`,
+      "write.membership.update",
+      "write.envelope",
+      "write.trip.update",
+      "write.idempotency",
+      "write.inbox",
+      "write.outbox",
+      "transaction.commit",
+    ]);
+  });
+
+  it("replays the current active membership after freeze without another mutation", async () => {
+    const test = await setupApprove();
+    const first = successful(await executeApprove(test));
+    const trip = test.harness.state.trips.get(TRIP_ID);
+    if (trip === undefined) throw new Error("Missing Trip");
+    test.harness.state.trips.set(TRIP_ID, {
+      ...trip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    const writesBefore = test.harness.trace.filter((entry) =>
+      entry.startsWith("write."),
+    ).length;
+
+    expect(successful(await executeApprove(test))).toEqual(first);
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")).length,
+    ).toBe(writesBefore);
+  });
+
+  it.each([
+    ["malformed Base64", approveBody({ wrappedKey: "not-base64" })],
+    [
+      "wrong envelope version",
+      {
+        ...approveBody(),
+        algorithmVersion: 2,
+      } as unknown as ApproveJoinRequestBody,
+    ],
+    [
+      "wrong key epoch",
+      { ...approveBody(), keyEpoch: 2 } as unknown as ApproveJoinRequestBody,
+    ],
+  ])("rejects %s before opening a transaction", async (_case, requestBody) => {
+    const test = await setupApprove();
+
+    expect(problemCode(await executeApprove(test, requestBody))).toBe(
+      "KEY_ENVELOPE_INVALID",
+    );
+    expect(test.harness.trace).toEqual([]);
+  });
+
+  it("applies owner, nominated-device, target, revocation, and freeze policy before writes", async () => {
+    const member = await setupApprove();
+    const memberMembership =
+      member.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+    if (memberMembership === undefined) {
+      throw new Error("Missing joined membership");
+    }
+    member.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+      ...memberMembership,
+      approvedAt: NOW,
+      keyEpoch: 1,
+      state: "ACTIVE",
+    });
+    member.harness.state.envelopes.set(`${TRIP_ID}:${MEMBER_ACTOR.deviceId}`, {
+      algorithmVersion: 1,
+      createdAt: NOW,
+      keyEpoch: 1,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      senderDeviceId: ACTOR.deviceId,
+      tripId: TRIP_ID,
+      wrappedKey: Buffer.from(APPROVED_ENVELOPE, "base64"),
+    });
+    member.harness.setReauthorization({ actor: MEMBER_ACTOR, kind: "ACTIVE" });
+    expect(
+      problemCode(
+        await executeApprove(
+          member,
+          approveBody(),
+          APPROVE_IDEMPOTENCY_KEY,
+          MEMBER_ACTOR,
+        ),
+      ),
+    ).toBe("TRIP_OWNER_REQUIRED");
+
+    const wrongDevice = await setupApprove();
+    const alternateOwner = {
+      ...ACTOR,
+      deviceId: "650e8400-e29b-41d4-a716-446655440009",
+    };
+    wrongDevice.harness.setReauthorization({
+      actor: alternateOwner,
+      kind: "ACTIVE",
+    });
+    expect(
+      problemCode(
+        await executeApprove(
+          wrongDevice,
+          approveBody(),
+          APPROVE_IDEMPOTENCY_KEY,
+          alternateOwner,
+        ),
+      ),
+    ).toBe("DEVICE_NOT_PARTICIPANT");
+
+    const missing = await setupApprove();
+    expect(
+      problemCode(
+        await executeApprove(
+          missing,
+          approveBody(),
+          APPROVE_IDEMPOTENCY_KEY,
+          ACTOR,
+          "950e8400-e29b-41d4-a716-446655440199",
+        ),
+      ),
+    ).toBe("NOT_FOUND");
+
+    const revoked = await setupApprove();
+    const targetDevice = revoked.harness.state.devices.get(
+      MEMBER_ACTOR.deviceId,
+    );
+    if (targetDevice === undefined) throw new Error("Missing target device");
+    revoked.harness.state.devices.set(MEMBER_ACTOR.deviceId, {
+      ...targetDevice,
+      revoked: true,
+    });
+    expect(problemCode(await executeApprove(revoked))).toBe("DEVICE_REVOKED");
+
+    const frozen = await setupApprove();
+    const frozenTrip = frozen.harness.state.trips.get(TRIP_ID);
+    if (frozenTrip === undefined) throw new Error("Missing Trip");
+    frozen.harness.state.trips.set(TRIP_ID, {
+      ...frozenTrip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    expect(problemCode(await executeApprove(frozen))).toBe("MEMBERSHIP_FROZEN");
+
+    for (const test of [member, wrongDevice, missing, revoked, frozen]) {
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    }
+  });
+
+  it("rolls back every approval write boundary", async () => {
+    for (let boundary = 1; boundary <= 6; boundary += 1) {
+      const test = await setupApprove();
+      test.harness.failAfterWrite(boundary);
+
+      expect(problemCode(await executeApprove(test))).toBe("INTERNAL_ERROR");
+      expect(
+        test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID),
+      ).toMatchObject({ keyEpoch: null, state: "PENDING_KEY" });
+      expect(
+        test.harness.state.envelopes.has(`${TRIP_ID}:${MEMBER_ACTOR.deviceId}`),
+      ).toBe(false);
+      expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+        version: 2,
+      });
+      expect(test.harness.state.inboxes).toHaveLength(1);
+      expect(test.harness.state.outboxes.size).toBe(1);
+      expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
+    }
+  });
+});
+
+describe("reject Trip join request", () => {
+  it("atomically rejects the pending membership, releases its slot, and emits one event", async () => {
+    const test = await setupReject();
+
+    expect(successful(await executeReject(test))).toBeUndefined();
+    expect(
+      test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID),
+    ).toMatchObject({
+      approvedAt: null,
+      keyEpoch: null,
+      rejectedAt: NOW,
+      state: "REJECTED",
+    });
+    expect(test.harness.state.activeTrips.has(MEMBER_ACTOR.userId)).toBe(false);
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+      memberCount: 1,
+      version: 3,
+    });
+    expect(
+      test.harness.state.idempotencies.get(
+        `${ACTOR.userId}:trips.reject.v1:${REJECT_IDEMPOTENCY_KEY}`,
+      ),
+    ).toMatchObject({
+      actorDeviceId: ACTOR.deviceId,
+      expiresAt: test.harness.state.trips.get(TRIP_ID)?.hardDeleteAt,
+      kind: "REJECT",
+      membershipId: JOIN_MEMBERSHIP_ID,
+      responseStatus: 204,
+      tripId: TRIP_ID,
+    });
+    expect(test.harness.state.inboxes.at(-1)).toMatchObject({
+      aggregateId: TRIP_ID,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      status: "LOBBY",
+      tripId: TRIP_ID,
+    });
+    expect([...test.harness.state.outboxes.values()].at(-1)).toMatchObject({
+      eventId: REJECT_EVENT_ID,
+      recipientSequences: ["2"],
+      status: "LOBBY",
+      version: 3,
+    });
+    expect(test.harness.trace).toEqual([
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "lock.memberships",
+      "lock.active-trip",
+      "write.membership.update",
+      "write.active-trip.delete",
+      "write.trip.update",
+      "write.idempotency",
+      "write.inbox",
+      "write.outbox",
+      "transaction.commit",
+    ]);
+
+    test.harness.setReauthorization({ actor: MEMBER_ACTOR, kind: "ACTIVE" });
+    expect(successful(await executeJoin(test))).toMatchObject({
+      membershipId: JOIN_MEMBERSHIP_ID,
+      status: "REJECTED",
+    });
+  });
+
+  it("replays the exact rejection after freeze without a second decrement or event", async () => {
+    const test = await setupReject();
+    successful(await executeReject(test));
+    const trip = test.harness.state.trips.get(TRIP_ID);
+    if (trip === undefined) throw new Error("Missing Trip");
+    test.harness.state.trips.set(TRIP_ID, {
+      ...trip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    const writesBefore = test.harness.trace.filter((entry) =>
+      entry.startsWith("write."),
+    ).length;
+
+    expect(successful(await executeReject(test))).toBeUndefined();
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+      memberCount: 1,
+      version: 3,
+    });
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")).length,
+    ).toBe(writesBefore);
+  });
+
+  it("applies owner, nominated-device, target-state, and freeze policy before writes", async () => {
+    const member = await setupReject();
+    const memberMembership =
+      member.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+    if (memberMembership === undefined) {
+      throw new Error("Missing joined membership");
+    }
+    member.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+      ...memberMembership,
+      approvedAt: NOW,
+      keyEpoch: 1,
+      state: "ACTIVE",
+    });
+    member.harness.setReauthorization({ actor: MEMBER_ACTOR, kind: "ACTIVE" });
+    expect(
+      problemCode(
+        await executeReject(member, REJECT_IDEMPOTENCY_KEY, MEMBER_ACTOR),
+      ),
+    ).toBe("TRIP_OWNER_REQUIRED");
+
+    const wrongDevice = await setupReject();
+    const alternateOwner = {
+      ...ACTOR,
+      deviceId: "650e8400-e29b-41d4-a716-446655440009",
+    };
+    wrongDevice.harness.setReauthorization({
+      actor: alternateOwner,
+      kind: "ACTIVE",
+    });
+    expect(
+      problemCode(
+        await executeReject(
+          wrongDevice,
+          REJECT_IDEMPOTENCY_KEY,
+          alternateOwner,
+        ),
+      ),
+    ).toBe("DEVICE_NOT_PARTICIPANT");
+
+    const missing = await setupReject();
+    expect(
+      problemCode(
+        await executeReject(
+          missing,
+          REJECT_IDEMPOTENCY_KEY,
+          ACTOR,
+          "950e8400-e29b-41d4-a716-446655440199",
+        ),
+      ),
+    ).toBe("NOT_FOUND");
+
+    const active = await setupReject();
+    const activeTarget =
+      active.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+    if (activeTarget === undefined)
+      throw new Error("Missing target membership");
+    active.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+      ...activeTarget,
+      approvedAt: NOW,
+      keyEpoch: 1,
+      state: "ACTIVE",
+    });
+    expect(problemCode(await executeReject(active))).toBe("CONFLICT");
+
+    const frozen = await setupReject();
+    const frozenTrip = frozen.harness.state.trips.get(TRIP_ID);
+    if (frozenTrip === undefined) throw new Error("Missing Trip");
+    frozen.harness.state.trips.set(TRIP_ID, {
+      ...frozenTrip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    expect(problemCode(await executeReject(frozen))).toBe("MEMBERSHIP_FROZEN");
+
+    for (const test of [member, wrongDevice, missing, active, frozen]) {
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    }
+  });
+
+  it("rolls back every rejection write boundary", async () => {
+    for (let boundary = 1; boundary <= 6; boundary += 1) {
+      const test = await setupReject();
+      test.harness.failAfterWrite(boundary);
+
+      expect(problemCode(await executeReject(test))).toBe("INTERNAL_ERROR");
+      expect(
+        test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID),
+      ).toMatchObject({ rejectedAt: null, state: "PENDING_KEY" });
+      expect(test.harness.state.activeTrips.has(MEMBER_ACTOR.userId)).toBe(
+        true,
+      );
+      expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+        memberCount: 2,
+        version: 2,
+      });
+      expect(test.harness.state.inboxes).toHaveLength(1);
+      expect(test.harness.state.outboxes.size).toBe(1);
+      expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
+    }
+  });
+});
+
+describe("set Trip readiness", () => {
+  it("persists false-to-true and notifies only the other active nominated device", async () => {
+    const test = await setupReadiness();
+
+    const response = successful(await executeReadiness(test));
+    expect(response).toMatchObject({
+      id: TRIP_ID,
+      status: "LOBBY",
+      version: 4,
+    });
+    expect(
+      response.members.find((member) => member.role === "OWNER")?.readiness,
+    ).toEqual({ fullPhotoLibraryAccess: true });
+    expect(
+      response.members.find(
+        (member) => member.membershipId === JOIN_MEMBERSHIP_ID,
+      )?.readiness,
+    ).toEqual({ fullPhotoLibraryAccess: false });
+    expect(
+      [...test.harness.state.memberships.values()].find(
+        (membership) => membership.role === "OWNER",
+      ),
+    ).toMatchObject({ fullPhotoLibraryAccess: true });
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({ version: 4 });
+    expect(
+      test.harness.state.idempotencies.get(
+        `${ACTOR.userId}:trips.readiness.v1:${READINESS_IDEMPOTENCY_KEY}`,
+      ),
+    ).toMatchObject({
+      actorDeviceId: ACTOR.deviceId,
+      expiresAt: test.harness.state.trips.get(TRIP_ID)?.hardDeleteAt,
+      kind: "READINESS",
+      responseStatus: 200,
+      tripId: TRIP_ID,
+    });
+    expect(test.harness.state.inboxes.at(-1)).toMatchObject({
+      aggregateId: TRIP_ID,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      status: "LOBBY",
+      tripId: TRIP_ID,
+    });
+    expect([...test.harness.state.outboxes.values()].at(-1)).toMatchObject({
+      eventId: READINESS_EVENT_ID,
+      recipientSequences: ["3"],
+      status: "LOBBY",
+      version: 4,
+    });
+    expect(test.harness.trace).toEqual([
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "lock.memberships",
+      `lock.devices:${ACTOR.deviceId},${MEMBER_ACTOR.deviceId}`,
+      "write.membership.update",
+      "write.trip.update",
+      "write.idempotency",
+      "write.inbox",
+      "write.outbox",
+      "read.projection.transaction",
+      "transaction.commit",
+    ]);
+  });
+
+  it("persists true-to-false as a second effective versioned transition", async () => {
+    const test = await setupReadiness();
+    successful(await executeReadiness(test));
+    test.harness.trace.splice(0);
+
+    const response = successful(
+      await executeReadiness(
+        test,
+        readinessBody(false),
+        SECOND_READINESS_IDEMPOTENCY_KEY,
+      ),
+    );
+    expect(response.version).toBe(5);
+    expect(
+      response.members.find((member) => member.role === "OWNER")?.readiness,
+    ).toEqual({ fullPhotoLibraryAccess: false });
+    expect([...test.harness.state.outboxes.values()].at(-1)).toMatchObject({
+      eventId: SECOND_READINESS_EVENT_ID,
+      recipientSequences: ["4"],
+      version: 5,
+    });
+  });
+
+  it("records a same-value no-op and replays it after freeze without a version or event", async () => {
+    const seeded = await setupReadiness();
+    const test = {
+      ...seeded,
+      readiness: readinessService(seeded, []),
+    };
+    const inboxesBefore = test.harness.state.inboxes.length;
+    const outboxesBefore = test.harness.state.outboxes.size;
+
+    const first = successful(
+      await executeReadiness(test, readinessBody(false)),
+    );
+    expect(first.version).toBe(3);
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({ version: 3 });
+    expect(test.harness.state.inboxes).toHaveLength(inboxesBefore);
+    expect(test.harness.state.outboxes.size).toBe(outboxesBefore);
+    expect(test.harness.trace).toEqual([
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "lock.memberships",
+      "write.idempotency",
+      "read.projection.transaction",
+      "transaction.commit",
+    ]);
+
+    const trip = test.harness.state.trips.get(TRIP_ID);
+    if (trip === undefined) throw new Error("Missing Trip");
+    test.harness.state.trips.set(TRIP_ID, {
+      ...trip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    test.harness.trace.splice(0);
+    expect(
+      successful(await executeReadiness(test, readinessBody(false))),
+    ).toMatchObject({ status: "ACTIVE", version: 3 });
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")),
+    ).toEqual([]);
+    expect(test.harness.state.inboxes).toHaveLength(inboxesBefore);
+    expect(test.harness.state.outboxes.size).toBe(outboxesBefore);
+  });
+
+  it("rejects invalid input before opening a transaction", async () => {
+    const test = await setupReadiness();
+    test.harness.trace.splice(0);
+
+    expect(
+      problemCode(
+        await executeReadiness(test, {
+          fullPhotoLibraryAccess: "yes",
+        } as unknown as SetTripReadinessBody),
+      ),
+    ).toBe("INVALID_REQUEST");
+    expect(test.harness.trace).toEqual([]);
+  });
+
+  it("applies active-self, nominated-device, disclosure, and freeze policy before writes", async () => {
+    const pendingBase = await setupJoin();
+    successful(await executeJoin(pendingBase));
+    pendingBase.harness.setReauthorization({
+      actor: MEMBER_ACTOR,
+      kind: "ACTIVE",
+    });
+    pendingBase.harness.trace.splice(0);
+    const pending = {
+      ...pendingBase,
+      readiness: readinessService(pendingBase),
+    };
+    expect(
+      problemCode(
+        await executeReadiness(
+          pending,
+          readinessBody(),
+          READINESS_IDEMPOTENCY_KEY,
+          MEMBER_ACTOR,
+        ),
+      ),
+    ).toBe("NOT_FOUND");
+
+    const rejectedBase = await setupReject();
+    successful(await executeReject(rejectedBase));
+    rejectedBase.harness.setReauthorization({
+      actor: MEMBER_ACTOR,
+      kind: "ACTIVE",
+    });
+    rejectedBase.harness.trace.splice(0);
+    const rejected = {
+      ...rejectedBase,
+      readiness: readinessService(rejectedBase),
+    };
+    expect(
+      problemCode(
+        await executeReadiness(
+          rejected,
+          readinessBody(),
+          READINESS_IDEMPOTENCY_KEY,
+          MEMBER_ACTOR,
+        ),
+      ),
+    ).toBe("NOT_FOUND");
+
+    const wrongDeviceBase = await setupReadiness();
+    const alternateOwner = {
+      ...ACTOR,
+      deviceId: "650e8400-e29b-41d4-a716-446655440009",
+    };
+    wrongDeviceBase.harness.setReauthorization({
+      actor: alternateOwner,
+      kind: "ACTIVE",
+    });
+    const wrongDevice = wrongDeviceBase;
+    expect(
+      problemCode(
+        await executeReadiness(
+          wrongDevice,
+          readinessBody(),
+          READINESS_IDEMPOTENCY_KEY,
+          alternateOwner,
+        ),
+      ),
+    ).toBe("DEVICE_NOT_PARTICIPANT");
+
+    const unrelatedBase = await setupReadiness();
+    const unrelatedActor = {
+      clerkSubject: "unrelated",
+      deviceId: "650e8400-e29b-41d4-a716-446655440099",
+      userId: "550e8400-e29b-41d4-a716-446655440099",
+    };
+    unrelatedBase.harness.setReauthorization({
+      actor: unrelatedActor,
+      kind: "ACTIVE",
+    });
+    const unrelated = unrelatedBase;
+    expect(
+      problemCode(
+        await executeReadiness(
+          unrelated,
+          readinessBody(),
+          READINESS_IDEMPOTENCY_KEY,
+          unrelatedActor,
+        ),
+      ),
+    ).toBe("NOT_FOUND");
+
+    const frozen = await setupReadiness();
+    const frozenTrip = frozen.harness.state.trips.get(TRIP_ID);
+    if (frozenTrip === undefined) throw new Error("Missing Trip");
+    frozen.harness.state.trips.set(TRIP_ID, {
+      ...frozenTrip,
+      startedAt: NOW,
+      state: "ACTIVE",
+    });
+    expect(problemCode(await executeReadiness(frozen))).toBe(
+      "MEMBERSHIP_FROZEN",
+    );
+
+    for (const test of [pending, rejected, wrongDevice, unrelated, frozen]) {
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    }
+  });
+
+  it("rolls back every effective readiness write boundary", async () => {
+    for (let boundary = 1; boundary <= 5; boundary += 1) {
+      const test = await setupReadiness();
+      test.harness.failAfterWrite(boundary);
+
+      expect(problemCode(await executeReadiness(test))).toBe("INTERNAL_ERROR");
+      expect(
+        [...test.harness.state.memberships.values()].find(
+          (membership) => membership.role === "OWNER",
+        ),
+      ).toMatchObject({ fullPhotoLibraryAccess: false });
+      expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+        version: 3,
+      });
+      expect(test.harness.state.inboxes).toHaveLength(2);
+      expect(test.harness.state.outboxes.size).toBe(2);
       expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
     }
   });
