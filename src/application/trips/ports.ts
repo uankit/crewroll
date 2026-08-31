@@ -88,3 +88,11 @@ export interface CreateTripNativePort {
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
 }
+
+export interface ApproveMemberNativePort {
+  wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
+}
+
+export interface HydrateTripNativePort {
+  importTripKey(command: ImportTripKeyCommand): Promise<void>;
+}
