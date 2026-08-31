@@ -244,17 +244,17 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
               const trip = await transaction.lockTrip(priorCandidate.tripId);
               const authorization =
                 await transaction.reauthorizeForegroundActor(input.actor);
-              if (authorization.kind !== "ACTIVE") {
-                return {
-                  kind: "RESOLVED",
-                  result: authorizationProblem(authorization),
-                } as const;
-              }
               const now = await transaction.authoritativeNow();
               const prior =
                 await transaction.findIdempotency(idempotencyIdentity);
               if (prior === null || !live(prior, now)) {
                 return { kind: "PROCEED" } as const;
+              }
+              if (authorization.kind !== "ACTIVE") {
+                return {
+                  kind: "RESOLVED",
+                  result: authorizationProblem(authorization),
+                } as const;
               }
               if (
                 prior.kind !== "JOIN" ||

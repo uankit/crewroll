@@ -1244,11 +1244,12 @@ describe("join Trip command", () => {
       "lock.trip",
       "lock.actor.user",
       "lock.actor.device",
+      "lock.idempotency",
       "transaction.commit",
     ]);
   });
 
-  it("does not let an expired same-key record bypass missing-invite policy", async () => {
+  it("ignores expired-row authorization when the changed invite candidate is missing", async () => {
     const test = await setupJoin();
     successful(await executeJoin(test));
     const key = `${MEMBER_ACTOR.userId}:trips.join.v1:${JOIN_IDEMPOTENCY_KEY}`;
@@ -1257,6 +1258,7 @@ describe("join Trip command", () => {
     test.harness.state.idempotencies.set(key, { ...prior, expiresAt: NOW });
     test.harness.trace.splice(0);
     test.setInviteHmac(SECOND_INVITE_HMAC);
+    test.harness.setReauthorization({ kind: "DEVICE_REVOKED" });
 
     expect(problemCode(await executeJoin(test))).toBe("INVITE_INVALID");
     expect(test.harness.trace).toEqual([
@@ -1268,6 +1270,43 @@ describe("join Trip command", () => {
       "lock.idempotency",
       "transaction.commit",
       "read.invite-candidate",
+    ]);
+  });
+
+  it("falls through an expired row to reauthorize a valid changed invite candidate", async () => {
+    const test = await setupJoin();
+    successful(await executeJoin(test));
+    const key = `${MEMBER_ACTOR.userId}:trips.join.v1:${JOIN_IDEMPOTENCY_KEY}`;
+    const prior = test.harness.state.idempotencies.get(key);
+    if (prior === undefined) throw new Error("Missing seeded join command");
+    test.harness.state.idempotencies.set(key, { ...prior, expiresAt: NOW });
+    const invite = [...test.harness.state.invites.values()][0];
+    if (invite === undefined) throw new Error("Missing seeded invite");
+    test.harness.state.invites.set("950e8400-e29b-41d4-a716-446655440199", {
+      ...invite,
+      inviteCodeHmac: SECOND_INVITE_HMAC,
+      inviteId: "950e8400-e29b-41d4-a716-446655440199",
+    });
+    test.harness.trace.splice(0);
+    test.setInviteHmac(SECOND_INVITE_HMAC);
+    test.harness.setReauthorization({ kind: "DEVICE_REVOKED" });
+
+    expect(problemCode(await executeJoin(test))).toBe("DEVICE_REVOKED");
+    expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "transaction.commit",
+      "read.invite-candidate",
+      "transaction.begin",
+      "lock.trip",
+      "lock.invite",
+      "lock.actor.user",
+      "lock.actor.device",
+      "transaction.commit",
     ]);
   });
 
