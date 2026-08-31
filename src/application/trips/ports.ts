@@ -9,6 +9,7 @@ import type {
   TripResponse,
 } from "@crewroll/contracts";
 import type {
+  ActivateTripCommand,
   CreateTripKeyCommand,
   CreateTripKeyResult,
   DiscardProvisionalTripKeyCommand,
@@ -95,4 +96,8 @@ export interface ApproveMemberNativePort {
 
 export interface HydrateTripNativePort {
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
+}
+
+export interface ActiveTripNativePort extends HydrateTripNativePort {
+  activateTrip(command: ActivateTripCommand): Promise<void>;
 }

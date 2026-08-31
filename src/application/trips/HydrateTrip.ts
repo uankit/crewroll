@@ -10,6 +10,9 @@ import type { HydrateTripNativePort, TripApiPort } from "./ports";
 import { projectTrip } from "./projectTrip";
 
 export type HydrateTripDependencies = Readonly<{
+  activeTrip: Readonly<{
+    activateObserved(response: TripResponse): Promise<TripView>;
+  }>;
   api: TripApiPort;
   device: Readonly<{
     deviceId: string;
@@ -92,7 +95,7 @@ function safelyProject(response: TripResponse, deviceId: string): TripView {
 }
 
 export function createHydrateTrip(dependencies: HydrateTripDependencies) {
-  const { api, device, native } = dependencies;
+  const { activeTrip, api, device, native } = dependencies;
 
   async function hydrate(tripId: string): Promise<TripView> {
     if (!isTripId(tripId)) {
@@ -111,6 +114,13 @@ export function createHydrateTrip(dependencies: HydrateTripDependencies) {
 
     if (!isClosedTripResponse(response) || response.id !== tripId) {
       throw internalProblem();
+    }
+    if (response.status === "ACTIVE") {
+      try {
+        return await activeTrip.activateObserved(response);
+      } catch (error) {
+        throw sanitizeApiFailure(error);
+      }
     }
     const currentMembers = response.members.filter(
       (member) => member.membershipId === response.currentMembershipId,

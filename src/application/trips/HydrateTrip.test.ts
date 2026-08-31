@@ -4,6 +4,7 @@ import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { TripTransportProblem } from "./CreateImmediateTrip";
 import { createHydrateTrip } from "./HydrateTrip";
 import type { TripApiPort } from "./ports";
+import { projectTrip } from "./projectTrip";
 
 const tripId = "0191a203-227b-7011-9213-141516171819";
 const otherTripId = "0191a203-227b-7011-9213-141516171899";
@@ -17,6 +18,7 @@ const e2eePublicKey = "pSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmg=";
 const wrappedKey =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 const endsAt = "2026-09-02T12:00:00.000Z";
+const startsAt = "2026-09-01T12:00:00.000Z";
 
 const identity = {
   protocolVersion: 1,
@@ -86,13 +88,19 @@ function harness(response: TripResponse = tripResponse()) {
   const native = {
     importTripKey: jest.fn().mockResolvedValue(undefined),
   };
+  const activeTrip = {
+    activateObserved: jest.fn(async (candidate: TripResponse) =>
+      projectTrip(candidate, deviceId),
+    ),
+  };
   const service = createHydrateTrip({
+    activeTrip,
     api,
     device: { deviceId, identity },
     native,
   });
 
-  return { api, native, service };
+  return { activeTrip, api, native, service };
 }
 
 describe("HydrateTrip.hydrate", () => {
@@ -212,6 +220,21 @@ describe("HydrateTrip.hydrate", () => {
     expect(native.importTripKey.mock.calls[1]).toEqual(
       native.importTripKey.mock.calls[0],
     );
+  });
+
+  it("delegates an ACTIVE observation to the shared activation transition without exposing the raw response", async () => {
+    const response = tripResponse({ status: "ACTIVE", startsAt });
+    const { activeTrip, api, native, service } = harness(response);
+
+    const view = await service.hydrate(tripId);
+
+    expect(activeTrip.activateObserved).toHaveBeenCalledWith(response);
+    expect(api.getTrip.mock.invocationCallOrder[0]).toBeLessThan(
+      activeTrip.activateObserved.mock.invocationCallOrder[0]!,
+    );
+    expect(native.importTripKey).not.toHaveBeenCalled();
+    expect(view).toMatchObject({ id: tripId, status: "ACTIVE", startsAt });
+    expect(JSON.stringify(view)).not.toMatch(/wrapped|envelope|e2ee|keyEpoch/i);
   });
 
   it("accepts 80-code-point astral trip and display names", async () => {
@@ -372,8 +395,9 @@ describe("HydrateTrip.hydrate", () => {
   });
 
   it("rejects an invalid local identity before fetch", async () => {
-    const { api, native } = harness();
+    const { activeTrip, api, native } = harness();
     const service = createHydrateTrip({
+      activeTrip,
       api,
       device: {
         deviceId,
