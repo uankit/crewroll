@@ -611,12 +611,10 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
       },
     ],
   );
-  for (const policy of [contractsPolicy, controlPolicy]) {
-    assert.equal(
-      policy.settings["boundaries/additional-dependency-nodes"],
-      undefined,
-    );
-  }
+  assert.equal(
+    contractsPolicy.settings["boundaries/additional-dependency-nodes"],
+    undefined,
+  );
   assert.deepEqual(
     mobilePolicy.settings["boundaries/flag-as-external"].customSourcePatterns,
     [
@@ -630,17 +628,6 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
     "dist/**",
     "generated/**",
   ]);
-  assert.equal(
-    mobilePolicy.settings["boundaries/additional-dependency-nodes"],
-    undefined,
-  );
-  assert.equal(
-    contractsPolicy.settings["boundaries/additional-dependency-nodes"],
-    undefined,
-  );
-  const controlPolicy = createControlPlaneBoundaryPolicy({
-    tsconfigPath: "/sentinel/control/tsconfig.json",
-  });
   assert.deepEqual(
     controlPolicy.settings["boundaries/additional-dependency-nodes"],
     [
