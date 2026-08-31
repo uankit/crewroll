@@ -32,6 +32,8 @@ import {
   SyncQuerySchema,
   SyncResponseSchema,
   TripIdSchema,
+  TRIP_CREATE_DEFAULT_DURATION_MS,
+  TRIP_CREATE_MAX_DURATION_MS,
   TripResponseSchema,
   TripStatusSchema,
   UpdatePushTokenBodySchema,
@@ -317,6 +319,17 @@ describe("device registration", () => {
 });
 
 describe("trip and invite contracts", () => {
+  it("publishes one bounded shared create-window policy", () => {
+    expect(TRIP_CREATE_DEFAULT_DURATION_MS).toBe(24 * 60 * 60 * 1_000);
+    expect(TRIP_CREATE_MAX_DURATION_MS).toBe(14 * 24 * 60 * 60 * 1_000);
+    expect(Number.isSafeInteger(TRIP_CREATE_DEFAULT_DURATION_MS)).toBe(true);
+    expect(Number.isSafeInteger(TRIP_CREATE_MAX_DURATION_MS)).toBe(true);
+    expect(TRIP_CREATE_DEFAULT_DURATION_MS).toBeGreaterThan(0);
+    expect(TRIP_CREATE_DEFAULT_DURATION_MS).toBeLessThanOrEqual(
+      TRIP_CREATE_MAX_DURATION_MS,
+    );
+  });
+
   it("requires a client-generated lowercase UUIDv7 trip id", () => {
     expect(Value.Check(TripIdSchema, TRIP_ID)).toBe(true);
     expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(

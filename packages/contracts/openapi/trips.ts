@@ -12,6 +12,11 @@ import {
 import { MembershipStatusSchema, TripStatusSchema } from "./enums.js";
 import { DeviceIdSchema, MembershipIdSchema, TripIdSchema } from "./ids.js";
 
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1_000;
+
+export const TRIP_CREATE_DEFAULT_DURATION_MS = DAY_IN_MILLISECONDS;
+export const TRIP_CREATE_MAX_DURATION_MS = 14 * DAY_IN_MILLISECONDS;
+
 export const ImmediateReleaseSchema = ClosedObject({
   mode: Type.Literal("IMMEDIATE"),
 });
