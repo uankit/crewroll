@@ -626,6 +626,65 @@ describe("Kysely Trip transaction repository", () => {
     );
   });
 
+  it("scopes an owner-device revocation to the owner caller", async () => {
+    const fixtures = createIdentityTripFixtures(context.db);
+    const owner = await fixtures.user({
+      clerk_subject: "user_revoked_owner_projection",
+      display_name: "Owner",
+    });
+    const peer = await fixtures.user({
+      clerk_subject: "user_peer_of_revoked_owner",
+      display_name: "Peer",
+    });
+    const ownerDevice = await fixtures.device(owner.id, {
+      e2ee_public_key: new Uint8Array(32).fill(0x71),
+    });
+    const peerDevice = await fixtures.device(peer.id, {
+      e2ee_public_key: new Uint8Array(32).fill(0x72),
+    });
+    const trip = await fixtures.trip(owner.id, { member_count: 2 });
+    await fixtures.member(trip.id, owner.id, ownerDevice.id, { role: "OWNER" });
+    const peerMember = await fixtures.member(trip.id, peer.id, peerDevice.id);
+    await fixtures.envelope(trip.id, ownerDevice.id, ownerDevice.id, {
+      wrapped_key: new Uint8Array(148).fill(0x73),
+    });
+    await fixtures.envelope(trip.id, peerDevice.id, ownerDevice.id, {
+      wrapped_key: new Uint8Array(148).fill(0x74),
+    });
+    await context.db
+      .updateTable("devices")
+      .set({ revoked_at: NOW, updated_at: NOW })
+      .where("id", "=", ownerDevice.id)
+      .executeTakeFirstOrThrow();
+
+    const unitOfWork = createKyselyTripUnitOfWork(context.db);
+    const ownerActor: ForegroundTripActor = {
+      clerkSubject: owner.clerk_subject,
+      deviceId: ownerDevice.id,
+      userId: owner.id,
+    };
+    const peerActor: ForegroundTripActor = {
+      clerkSubject: peer.clerk_subject,
+      deviceId: peerDevice.id,
+      userId: peer.id,
+    };
+
+    const peerProjection = projectionOf(
+      await unitOfWork.readProjection(peerActor, trip.id),
+    );
+    expect(peerProjection.ownerDeviceId).toBe(ownerDevice.id);
+    expect(
+      Buffer.from(peerProjection.tripKeyEnvelope?.wrappedKey ?? []),
+    ).toEqual(Buffer.alloc(148, 0x74));
+    expect(
+      peerProjection.members.map((member) => member.nominatedDevice?.deviceId),
+    ).toEqual([undefined, peerDevice.id]);
+    expect(peerProjection.currentMembershipId).toBe(peerMember.id);
+    await expect(
+      unitOfWork.readProjection(ownerActor, trip.id),
+    ).resolves.toEqual({ kind: "DEVICE_REVOKED" });
+  });
+
   it("uses one statement and returns a coherent old-or-new projection across a writer barrier", async () => {
     const fixtures = createIdentityTripFixtures(context.db);
     const owner = await fixtures.user({ clerk_subject: "user_barrier_owner" });

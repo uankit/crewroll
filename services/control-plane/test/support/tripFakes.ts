@@ -210,9 +210,9 @@ function fakeProjection(
   );
   if (
     owner === undefined ||
-    ownerDevice === undefined ||
-    ownerDevice.revoked ||
-    selfEnvelope === undefined
+    selfEnvelope === undefined ||
+    (caller.role === "OWNER" &&
+      (ownerDevice === undefined || ownerDevice.revoked))
   ) {
     return { kind: "INVARIANT_ERROR" };
   }

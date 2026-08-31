@@ -2485,6 +2485,35 @@ describe("authorized Trip projection", () => {
     );
   });
 
+  it("scopes an owner-device revocation to the owner caller", async () => {
+    const test = await setupApprove();
+    successful(await executeApprove(test));
+    const ownerDevice = test.harness.state.devices.get(ACTOR.deviceId);
+    if (ownerDevice === undefined) throw new Error("Missing owner device");
+    test.harness.state.devices.set(ACTOR.deviceId, {
+      ...ownerDevice,
+      revoked: true,
+    });
+
+    const peerProjection = successful(
+      await test.get.execute({ actor: MEMBER_ACTOR, tripId: TRIP_ID }),
+    );
+    expect(peerProjection.ownerDeviceId).toBe(ACTOR.deviceId);
+    expect(peerProjection.tripKeyEnvelope?.wrappedKey).toBe(APPROVED_ENVELOPE);
+    expect(
+      peerProjection.members.find((member) => member.role === "OWNER")
+        ?.nominatedDevice,
+    ).toBeNull();
+    expect(
+      peerProjection.members.find(
+        (member) => member.membershipId === JOIN_MEMBERSHIP_ID,
+      )?.nominatedDevice,
+    ).toMatchObject({ deviceId: MEMBER_ACTOR.deviceId });
+    expect(
+      problemCode(await test.get.execute({ actor: ACTOR, tripId: TRIP_ID })),
+    ).toBe("DEVICE_REVOKED");
+  });
+
   it("maps unrelated, wrong-device, and revoked nominated-device reads safely", async () => {
     const test = await setupJoin();
     successful(await executeJoin(test));

@@ -444,9 +444,14 @@ async function readProjection(
         when base.device_revoked_at is not null
           then 'DEVICE_REVOKED'
         when base.owner_membership_id is null
-          or base.valid_owner_device_id is null
-          or base.owner_device_revoked_at is not null
           or base.self_envelope_wrapped_key is null
+          or (
+            base.caller_role = 'OWNER'
+            and (
+              base.valid_owner_device_id is null
+              or base.owner_device_revoked_at is not null
+            )
+          )
           then 'INVARIANT_ERROR'
         when base.caller_role = 'OWNER'
           and count(*) filter (
