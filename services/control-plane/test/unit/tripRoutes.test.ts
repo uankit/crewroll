@@ -319,6 +319,19 @@ describe("Trip routes", () => {
     expect(harness.resolveActor).toHaveBeenCalledTimes(8);
   });
 
+  it("does not expose an implicit HEAD route for Trip polling", async () => {
+    const { harness, instance } = app();
+
+    const response = await instance.inject({
+      headers: queryHeaders(),
+      method: "HEAD",
+      url: `/v1/trips/${tripId}`,
+    });
+
+    expect(harness.execute.get).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(404);
+  });
+
   it.each([
     { outcome: "TERMINAL_NOT_COMMITTED" as const },
     { outcome: "STILL_UNKNOWN" as const },

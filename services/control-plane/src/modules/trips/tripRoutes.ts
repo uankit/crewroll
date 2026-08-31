@@ -323,6 +323,7 @@ export function tripRoutes(
   app.get<{ Params: { tripId: string } }>(
     "/v1/trips/:tripId",
     {
+      exposeHeadRoute: false,
       preHandler: resolveActor,
       preValidation: authenticate,
       schema: {
