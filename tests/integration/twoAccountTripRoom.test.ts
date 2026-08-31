@@ -57,6 +57,7 @@ import type {
   TripTransaction,
   TripUnitOfWork,
 } from "../../services/control-plane/src/modules/trips/ports/tripUnitOfWork.js";
+import { createHmacInviteCodeHasher } from "../../services/control-plane/src/platform/crypto/hmacInviteCodeHasher.js";
 import {
   createClerkJwtKey,
   signClerkJwt,
@@ -74,6 +75,7 @@ installCrewRollFormats(FormatRegistry);
 
 const AUTHORIZED_PARTY = "http://native.crewroll.test";
 const BACKGROUND_HMAC_KEY = Buffer.alloc(32, 0xa5).toString("base64");
+const INVITE_HMAC_KEY = "task10-real-invite-code-hmac-key";
 const OWNER_ENVELOPE = Buffer.alloc(148, 0x41).toString("base64");
 const MEMBER_ENVELOPE = Buffer.alloc(148, 0x42).toString("base64");
 const THIRD_ENVELOPE = Buffer.alloc(148, 0x43).toString("base64");
@@ -696,7 +698,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
       CLERK_WEBHOOK_SECRET: "whsec_task10_local_only",
       DATABASE_URL: connectionString,
       HOST: "127.0.0.1",
-      INVITE_CODE_HMAC_KEY: "task10-real-invite-code-hmac-key",
+      INVITE_CODE_HMAC_KEY: INVITE_HMAC_KEY,
       LOG_LEVEL: "silent",
       NODE_ENV: "test",
       PORT: "3000",
@@ -931,6 +933,73 @@ describe.sequential("two-account Trip room public-route journey", () => {
       accounts.invitee.subject,
       accounts.owner.subject,
     ]);
+  });
+
+  it("returns public idempotency conflict for a changed code with no invite candidate", async () => {
+    const runtime = await startRuntime();
+    const accounts = await registerTwoAccounts(runtime);
+    const owner = actorOn(runtime, accounts.owner);
+    const invitee = actorOn(runtime, accounts.invitee);
+    const body = tripBody(
+      tripId(3),
+      accounts.owner.device.deviceId,
+      "ABCD2345",
+      "Join fingerprint conflict",
+    );
+    await createTrip(owner, body, commandId(20));
+    const joinKey = commandId(21);
+    await requestJoin(
+      invitee,
+      {
+        deviceId: accounts.invitee.device.deviceId,
+        inviteCode: body.inviteCode,
+      },
+      joinKey,
+    );
+    const durableBefore = {
+      activeTrips: await countRows(context.db, "user_active_trips"),
+      idempotency: await countRows(context.db, "api_idempotency"),
+      inbox: await countRows(context.db, "inbox_events"),
+      invites: await countRows(context.db, "trip_invites"),
+      memberships: await countRows(context.db, "trip_members"),
+      outbox: await countRows(context.db, "outbox_events"),
+    };
+    expect(durableBefore.invites).toBe(1);
+    const changedInviteCode = "WXYZ6789";
+    const changedInviteHmac =
+      createHmacInviteCodeHasher(INVITE_HMAC_KEY).hash(changedInviteCode);
+    expect(
+      await context.db
+        .selectFrom("trip_invites")
+        .select("id")
+        .where("invite_code_hmac", "=", Buffer.from(changedInviteHmac))
+        .executeTakeFirst(),
+    ).toBeUndefined();
+
+    const problem = await tripProblem({
+      actor: invitee,
+      body: {
+        deviceId: accounts.invitee.device.deviceId,
+        inviteCode: changedInviteCode,
+      },
+      bodySchema: CreateJoinRequestBodySchema,
+      code: "IDEMPOTENCY_CONFLICT",
+      idempotencyKey: joinKey,
+      method: "POST",
+      status: 409,
+      url: "/v1/trips/join-requests",
+    });
+
+    expect(JSON.stringify(problem)).not.toContain(body.inviteCode);
+    expect(JSON.stringify(problem)).not.toContain(changedInviteCode);
+    expect({
+      activeTrips: await countRows(context.db, "user_active_trips"),
+      idempotency: await countRows(context.db, "api_idempotency"),
+      inbox: await countRows(context.db, "inbox_events"),
+      invites: await countRows(context.db, "trip_invites"),
+      memberships: await countRows(context.db, "trip_members"),
+      outbox: await countRows(context.db, "outbox_events"),
+    }).toEqual(durableBefore);
   });
 
   it("completes create, join, approve, readiness, Start, and frozen replays over public routes", async () => {

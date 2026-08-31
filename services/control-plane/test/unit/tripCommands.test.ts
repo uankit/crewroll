@@ -948,6 +948,7 @@ describe("join Trip command", () => {
       }),
     ]);
     expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
       "read.invite-candidate",
       "transaction.begin",
       "lock.trip",
@@ -977,6 +978,7 @@ describe("join Trip command", () => {
 
       expect(problemCode(await executeJoin(test))).toBe(kind);
       expect(test.harness.trace).toEqual([
+        "read.idempotency-trip-candidate",
         "read.invite-candidate",
         "transaction.begin",
         "lock.trip",
@@ -1059,7 +1061,10 @@ describe("join Trip command", () => {
     test.setInviteHmac(SECOND_INVITE_HMAC);
 
     expect(problemCode(await executeJoin(test))).toBe("INVITE_INVALID");
-    expect(test.harness.trace).toEqual(["read.invite-candidate"]);
+    expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
+      "read.invite-candidate",
+    ]);
   });
 
   it("delegates invite-HMAC equality to the injected crypto seam", async () => {
@@ -1205,6 +1210,65 @@ describe("join Trip command", () => {
         ),
       ),
     ).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("resolves a live same-key fingerprint conflict before missing-invite policy", async () => {
+    const test = await setupJoin();
+    successful(await executeJoin(test));
+    test.harness.trace.splice(0);
+    test.setInviteHmac(SECOND_INVITE_HMAC);
+
+    expect(problemCode(await executeJoin(test))).toBe("IDEMPOTENCY_CONFLICT");
+    expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "transaction.commit",
+    ]);
+  });
+
+  it("reauthorizes before resolving a live same-key fingerprint conflict", async () => {
+    const test = await setupJoin();
+    successful(await executeJoin(test));
+    test.harness.trace.splice(0);
+    test.setInviteHmac(SECOND_INVITE_HMAC);
+    test.harness.setReauthorization({ kind: "DEVICE_REVOKED" });
+
+    expect(problemCode(await executeJoin(test))).toBe("DEVICE_REVOKED");
+    expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "transaction.commit",
+    ]);
+  });
+
+  it("does not let an expired same-key record bypass missing-invite policy", async () => {
+    const test = await setupJoin();
+    successful(await executeJoin(test));
+    const key = `${MEMBER_ACTOR.userId}:trips.join.v1:${JOIN_IDEMPOTENCY_KEY}`;
+    const prior = test.harness.state.idempotencies.get(key);
+    if (prior === undefined) throw new Error("Missing seeded join command");
+    test.harness.state.idempotencies.set(key, { ...prior, expiresAt: NOW });
+    test.harness.trace.splice(0);
+    test.setInviteHmac(SECOND_INVITE_HMAC);
+
+    expect(problemCode(await executeJoin(test))).toBe("INVITE_INVALID");
+    expect(test.harness.trace).toEqual([
+      "read.idempotency-trip-candidate",
+      "transaction.begin",
+      "lock.trip",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "transaction.commit",
+      "read.invite-candidate",
+    ]);
   });
 
   it("returns CONFLICT for a new command against an existing membership", async () => {

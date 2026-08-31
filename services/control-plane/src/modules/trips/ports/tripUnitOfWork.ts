@@ -261,6 +261,13 @@ type CallbackResult<Result> =
   true extends CallbackContainsTransaction<Result> ? never : Result;
 
 export interface TripUnitOfWork {
+  findIdempotencyTripCandidate(
+    input: Readonly<{
+      idempotencyKey: string;
+      routeKey: TripRouteKey;
+      userId: string;
+    }>,
+  ): Promise<Readonly<{ tripId: string }> | null>;
   findInviteCandidate(
     inviteCodeHmac: Readonly<Uint8Array>,
   ): Promise<Readonly<{ inviteId: string; tripId: string }> | null>;

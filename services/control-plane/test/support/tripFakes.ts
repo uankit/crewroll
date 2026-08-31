@@ -496,6 +496,13 @@ export function createTripTestHarness() {
   }
 
   const unitOfWork: TripUnitOfWork = {
+    findIdempotencyTripCandidate(input) {
+      trace.push("read.idempotency-trip-candidate");
+      const record = state.idempotencies.get(idempotencyKey(input));
+      return Promise.resolve(
+        record === undefined ? null : { tripId: record.tripId },
+      );
+    },
     findInviteCandidate(inviteCodeHmac) {
       trace.push("read.invite-candidate");
       const invite = [...state.invites.values()].find((candidate) =>

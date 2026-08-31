@@ -223,6 +223,79 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
         return tripProblem("INVALID_REQUEST");
       }
 
+      const idempotencyIdentity = {
+        idempotencyKey: input.idempotencyKey,
+        routeKey: ROUTE_KEY,
+        userId: input.actor.userId,
+      } as const;
+      let priorCandidate: Readonly<{ tripId: string }> | null;
+      try {
+        priorCandidate =
+          await dependencies.unitOfWork.findIdempotencyTripCandidate(
+            idempotencyIdentity,
+          );
+      } catch {
+        return tripProblem("INTERNAL_ERROR");
+      }
+      if (priorCandidate !== null) {
+        try {
+          const resolution = await dependencies.unitOfWork.run(
+            async (transaction) => {
+              const trip = await transaction.lockTrip(priorCandidate.tripId);
+              const authorization =
+                await transaction.reauthorizeForegroundActor(input.actor);
+              if (authorization.kind !== "ACTIVE") {
+                return {
+                  kind: "RESOLVED",
+                  result: authorizationProblem(authorization),
+                } as const;
+              }
+              const now = await transaction.authoritativeNow();
+              const prior =
+                await transaction.findIdempotency(idempotencyIdentity);
+              if (prior === null || !live(prior, now)) {
+                return { kind: "PROCEED" } as const;
+              }
+              if (
+                prior.kind !== "JOIN" ||
+                prior.tripId !== priorCandidate.tripId ||
+                prior.actorDeviceId !== input.actor.deviceId ||
+                !dependencies.hasher.matches(prior.requestSha256, requestSha256)
+              ) {
+                return {
+                  kind: "RESOLVED",
+                  result: tripProblem("IDEMPOTENCY_CONFLICT"),
+                } as const;
+              }
+              if (trip === null) {
+                return {
+                  kind: "RESOLVED",
+                  result: tripProblem("INTERNAL_ERROR"),
+                } as const;
+              }
+              const membership = await transaction.lockMembership(
+                prior.tripId,
+                prior.membershipId,
+              );
+              return {
+                kind: "RESOLVED",
+                result:
+                  membership === null
+                    ? tripProblem("INTERNAL_ERROR")
+                    : await membershipResponse(
+                        transaction,
+                        input.actor,
+                        membership,
+                      ),
+              } as const;
+            },
+          );
+          if (resolution.kind === "RESOLVED") return resolution.result;
+        } catch {
+          return tripProblem("INTERNAL_ERROR");
+        }
+      }
+
       let candidate: Readonly<{ inviteId: string; tripId: string }> | null;
       try {
         candidate =
@@ -243,11 +316,7 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
             return authorizationProblem(authorization);
           }
           const now = await transaction.authoritativeNow();
-          const prior = await transaction.findIdempotency({
-            idempotencyKey: input.idempotencyKey,
-            routeKey: ROUTE_KEY,
-            userId: input.actor.userId,
-          });
+          const prior = await transaction.findIdempotency(idempotencyIdentity);
 
           if (prior !== null && live(prior, now)) {
             if (

@@ -166,6 +166,20 @@ function plainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function mapIdempotencyTripCandidate(
+  reference: unknown,
+): Readonly<{ tripId: string }> {
+  if (
+    !plainObject(reference) ||
+    typeof reference.kind !== "string" ||
+    typeof reference.tripId !== "string" ||
+    typeof reference.actorDeviceId !== "string"
+  ) {
+    throw new Error("Invalid Trip idempotency reference");
+  }
+  return { tripId: reference.tripId };
+}
+
 function mapIdempotency(row: {
   expires_at: Date;
   idempotency_key: string;
@@ -1067,6 +1081,18 @@ export function createKyselyTripUnitOfWork(
   database: Kysely<Database>,
 ): TripUnitOfWork {
   return {
+    async findIdempotencyTripCandidate(input) {
+      const row = await database
+        .selectFrom("api_idempotency")
+        .select("response_body")
+        .where("user_id", "=", input.userId)
+        .where("route_key", "=", input.routeKey)
+        .where("idempotency_key", "=", input.idempotencyKey)
+        .executeTakeFirst();
+      return row === undefined
+        ? null
+        : mapIdempotencyTripCandidate(row.response_body);
+    },
     async findInviteCandidate(inviteCodeHmac) {
       const row = await database
         .selectFrom("trip_invites")
