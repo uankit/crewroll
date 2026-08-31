@@ -476,16 +476,54 @@ test("complete topology reports bounded, repository-relative migrations", async 
   assert.deepEqual(result.findings, []);
 });
 
-test("complete topology admits only the bounded API identity repositories", async (t) => {
+test("complete topology admits only the exact bounded API repositories", async (t) => {
   const rootPath = await fixture(t);
   await makeComplete(rootPath);
   await mkdir(path.join(rootPath, "services/control-plane/src/db/devices"));
   await mkdir(path.join(rootPath, "services/control-plane/src/db/identity"));
+  await mkdir(path.join(rootPath, "services/control-plane/src/db/trips"));
 
   const result = await classifyMigrationContract({ rootPath });
 
   assert.equal(result.state, "complete");
   assert.deepEqual(result.findings, []);
+});
+
+test("nearby Trip repository spellings never widen the DB root", async (t) => {
+  const cases = [
+    [
+      "sibling directory",
+      "services/control-plane/src/db/trips-copy",
+      "directory",
+    ],
+    [
+      "nested directory",
+      "services/control-plane/src/db/repositories/trips",
+      "directory",
+    ],
+    ["near-name directory", "services/control-plane/src/db/trip", "directory"],
+    ["near-name file", "services/control-plane/src/db/trips.ts", "file"],
+  ];
+
+  for (const [name, relativePath, kind] of cases) {
+    await t.test(name, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      await makeComplete(rootPath);
+      if (kind === "directory") {
+        await mkdir(path.join(rootPath, relativePath), { recursive: true });
+      } else {
+        await writeText(rootPath, relativePath);
+      }
+
+      const result = await classifyMigrationContract({ rootPath });
+
+      assertPartial(result);
+      assertFinding(result, {
+        code: "MIGRATION_TOPOLOGY",
+        path: "services/control-plane/src/db",
+      });
+    });
+  }
 });
 
 test("adapter failures are internal and never leak raw exceptions", async (t) => {

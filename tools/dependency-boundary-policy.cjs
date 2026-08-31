@@ -58,6 +58,7 @@ function allowEveryDependency(from) {
 }
 
 function commonPolicy({
+  additionalDependencyNodes,
   elements,
   files,
   flagAsExternal = { outsideRootPath: true },
@@ -68,6 +69,11 @@ function commonPolicy({
 }) {
   return {
     settings: {
+      ...(additionalDependencyNodes
+        ? {
+            "boundaries/additional-dependency-nodes": additionalDependencyNodes,
+          }
+        : {}),
       "boundaries/elements": elements,
       "boundaries/elements-single-match": true,
       "boundaries/files": files,
@@ -462,11 +468,29 @@ function createContractsBoundaryPolicy({ tsconfigPath }) {
 }
 
 function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
+  const additionalDependencyNodes = [
+    {
+      selector: "TSImportType > Literal",
+      kind: "type",
+      name: "type-query",
+    },
+    {
+      selector: "TSImportEqualsDeclaration TSExternalModuleReference > Literal",
+      kind: "value",
+      name: "import-equals",
+    },
+  ];
   const api = element("api");
   const worker = element("worker");
   const app = element("app");
   const module = element("module");
   const db = element("db");
+  const tripDb = element("db", { fileInternalPath: "trips/**/*.ts" });
+  const tripModule = element("module", { captured: { module: "trips" } });
+  const tripPorts = element("module", {
+    captured: { module: "trips" },
+    fileInternalPath: "ports/**/*.ts",
+  });
   const platform = element("platform");
   const config = element("config");
   const shared = element("shared");
@@ -556,6 +580,23 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       config,
       shared,
     ]),
+    {
+      from: db,
+      disallow: [{ to: tripModule }],
+    },
+    {
+      from: tripDb,
+      disallow: [{ to: module }],
+    },
+    {
+      from: tripDb,
+      allow: [
+        {
+          dependency: { kind: "type", nodeKind: "import" },
+          to: tripPorts,
+        },
+      ],
+    },
     allowElements(platform, [
       element("platform", {
         captured: { adapter: "{{from.element.captured.adapter}}" },
@@ -655,6 +696,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   ];
 
   return commonPolicy({
+    additionalDependencyNodes,
     tsconfigPath,
     elements: [
       {

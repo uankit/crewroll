@@ -68,6 +68,8 @@ export function createTestDependencies({
       : { DEBUG_CORS_ORIGINS: debugCorsOrigins }),
   });
   const readiness = new FakeReadinessProbe(readinessFailure);
+  const unexpectedTripRoute = (): Promise<never> =>
+    Promise.reject(new Error("Unexpected Trip route"));
   const dependencies: AppDependencies = {
     clock: { now: () => new Date("2026-08-29T12:00:00.000Z") },
     devices: {
@@ -93,6 +95,18 @@ export function createTestDependencies({
     ids: { uuid: () => fixedRequestId },
     logger: createSafeLogger(environment, destination),
     readiness,
+    trips: {
+      approveJoinRequest: { execute: unexpectedTripRoute },
+      createTrip: { execute: unexpectedTripRoute },
+      getTrip: { execute: unexpectedTripRoute },
+      rejectJoinRequest: { execute: unexpectedTripRoute },
+      requestJoin: { execute: unexpectedTripRoute },
+      resolveCreateTripOutcome: { execute: unexpectedTripRoute },
+      resolveForegroundActor: unexpectedTripRoute,
+      setTripReadiness: { execute: unexpectedTripRoute },
+      startTrip: { execute: unexpectedTripRoute },
+      tokenVerifier: { verify: unexpectedTripRoute },
+    },
   };
 
   return {

@@ -188,8 +188,15 @@ const fixtureFiles = {
       'export { target } from "./internal";\n',
     "src/modules/__boundary_beta__/internal.ts":
       "export const target = true;\n",
+    "src/modules/trips/__boundary-internal.ts": "export const target = true;\n",
+    "src/modules/trips/ports/__boundary-port.ts":
+      "export interface Port { readonly ready: boolean }\n",
+    "src/modules/devices/ports/__boundary-port.ts":
+      "export interface Port { readonly ready: boolean }\n",
     "src/db/__boundary-adapter.ts": "export {};\n",
     "src/db/__boundary-target.ts": "export const target = true;\n",
+    "src/db/trips/__boundary-adapter.ts": "export {};\n",
+    "src/db/devices/__boundary-adapter.ts": "export {};\n",
     "src/platform/__boundary_fixture__/source.ts": "export {};\n",
     "src/platform/__boundary_fixture__/target.ts":
       "export const target = true;\n",
@@ -623,6 +630,33 @@ test("policy builders are pure, plugin-free, current-v7 settings/rules", () => {
     "dist/**",
     "generated/**",
   ]);
+  assert.equal(
+    mobilePolicy.settings["boundaries/additional-dependency-nodes"],
+    undefined,
+  );
+  assert.equal(
+    contractsPolicy.settings["boundaries/additional-dependency-nodes"],
+    undefined,
+  );
+  const controlPolicy = createControlPlaneBoundaryPolicy({
+    tsconfigPath: "/sentinel/control/tsconfig.json",
+  });
+  assert.deepEqual(
+    controlPolicy.settings["boundaries/additional-dependency-nodes"],
+    [
+      {
+        selector: "TSImportType > Literal",
+        kind: "type",
+        name: "type-query",
+      },
+      {
+        selector:
+          "TSImportEqualsDeclaration TSExternalModuleReference > Literal",
+        kind: "value",
+        name: "import-equals",
+      },
+    ],
+  );
 });
 
 test("effective configs independently wire the owning ESLint/plugin/resolver", async () => {
@@ -1435,6 +1469,269 @@ test("the oracle never owns locked future control composition entrypoints", () =
       false,
       `${relativePath} must remain available for its planned implementation`,
     );
+  }
+});
+
+test("Trip commands keep constant-time byte comparison behind a platform port", async () => {
+  assertForbidden(
+    await lint(
+      "control",
+      'import { timingSafeEqual } from "node:crypto";\nvoid timingSafeEqual;\n',
+      "src/modules/trips/__boundary-internal.ts",
+    ),
+    "no-restricted-imports",
+  );
+
+  assertAllowed(
+    await lint(
+      "control",
+      'import { timingSafeEqual } from "node:crypto";\nvoid timingSafeEqual;\n',
+      "src/platform/__boundary_fixture__/source.ts",
+    ),
+  );
+});
+
+test("API-003 route, service, adapter, crypto, and composition seams stay narrow", async (t) => {
+  const tripRoute = "src/modules/trips/tripRoutes.ts";
+  const tripService = "src/modules/trips/createTrip.ts";
+  const tripAdapter = "src/db/trips/kyselyTripUnitOfWork.ts";
+  const inviteCrypto = "src/platform/crypto/hmacInviteCodeHasher.ts";
+
+  for (const [name, source, expectedRule] of [
+    [
+      "Trip route to database",
+      'import "../../db/__boundary-target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to platform",
+      'import "../../platform/__boundary_fixture__/target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to Node crypto",
+      'import "node:crypto";\n',
+      "boundaries/dependencies",
+    ],
+    ["Trip route to Kysely", 'import "kysely";\n', "boundaries/dependencies"],
+    [
+      "Trip route to Clerk",
+      'import "@clerk/backend";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to KMS",
+      'import "@aws-sdk/client-kms";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to worker",
+      'import "../../worker/__boundary-target.js";\n',
+      "boundaries/dependencies",
+    ],
+    [
+      "Trip route to mobile workspace",
+      'import "../../../../../src/domain/__boundary_fixture__/target.js";\n',
+      "boundaries/dependencies",
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(await lint("control", source, tripRoute), expectedRule);
+    });
+  }
+
+  for (const [name, source] of [
+    ["Trip service to database", 'import "../../db/__boundary-target.js";\n'],
+    [
+      "Trip service to platform",
+      'import "../../platform/__boundary_fixture__/target.js";\n',
+    ],
+    ["Trip service to Fastify", 'import "fastify";\n'],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, tripService),
+        "boundaries/dependencies",
+      );
+    });
+  }
+
+  await t.test(
+    "Trip adapter accepts only an exact Trip port type edge",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import type { TripUnitOfWork } from "../../modules/trips/ports/tripUnitOfWork.js";\nexport type Adapter = TripUnitOfWork;\n',
+          tripAdapter,
+        ),
+      );
+      for (const source of [
+        'import { tripSuccess } from "../../modules/trips/projectTrip.js";\nvoid tripSuccess;\n',
+        'import type { DeviceUnitOfWork } from "../../modules/devices/ports/deviceUnitOfWork.js";\nexport type Other = DeviceUnitOfWork;\n',
+        'import "../../platform/__boundary_fixture__/target.js";\n',
+        'import "../../worker/__boundary-target.js";\n',
+      ]) {
+        assertForbidden(
+          await lint("control", source, tripAdapter),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "invite crypto implements only the Trip crypto port",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import type { InviteCodeCryptography } from "../../modules/trips/ports/inviteCodeHasher.js";\nexport type Adapter = InviteCodeCryptography;\n',
+          inviteCrypto,
+        ),
+      );
+      for (const source of [
+        'import "../../db/__boundary-target.js";\n',
+        'import "../kms/kmsPushTokenProtector.js";\n',
+        'import "fastify";\n',
+        'import "kysely";\n',
+      ]) {
+        assertForbidden(
+          await lint("control", source, inviteCrypto),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "only production composition reaches Trip concrete adapters",
+    async () => {
+      assertAllowed(
+        await lint(
+          "control",
+          'import "../db/trips/__boundary-adapter.js";\nimport "../platform/__boundary_fixture__/target.js";\n',
+          "src/api/productionApiFactories.ts",
+        ),
+      );
+      for (const [filePath, source] of [
+        [tripRoute, 'import "../../db/trips/__boundary-adapter.js";\n'],
+        [
+          "src/api/apiRuntime.ts",
+          'import "../db/trips/__boundary-adapter.js";\n',
+        ],
+      ]) {
+        assertForbidden(
+          await lint("control", source, filePath),
+          "boundaries/dependencies",
+        );
+      }
+    },
+  );
+});
+
+test("Trip database adapters consume only Trip ports through type imports", async (t) => {
+  const tripAdapter = "src/db/trips/__boundary-adapter.ts";
+  const tripPort = "../../modules/trips/ports/__boundary-port.js";
+
+  await t.test("exact Trip type import is allowed", async () => {
+    assertAllowed(
+      await lint(
+        "control",
+        `import type { Port } from ${JSON.stringify(tripPort)};\nexport type AdapterPort = Port;\n`,
+        tripAdapter,
+      ),
+    );
+  });
+
+  await t.test(
+    "every Trip port value dependency form is rejected",
+    async () => {
+      assertForbiddenInEveryDependencyForm(
+        await lint("control", everyDependencyForm([tripPort]), tripAdapter),
+        Object.keys(dependencyForms).length,
+      );
+    },
+  );
+
+  for (const [name, source, filePath] of [
+    [
+      "type re-export",
+      `export type { Port } from ${JSON.stringify(tripPort)};\n`,
+      tripAdapter,
+    ],
+    [
+      "other database adapter to Trip port",
+      `import type { Port } from ${JSON.stringify(tripPort)};\nexport type AdapterPort = Port;\n`,
+      "src/db/devices/__boundary-adapter.ts",
+    ],
+    [
+      "Trip adapter to another module port",
+      'import type { Port } from "../../modules/devices/ports/__boundary-port.js";\nexport type AdapterPort = Port;\n',
+      tripAdapter,
+    ],
+    [
+      "Trip adapter to Trip internal",
+      'import type { target } from "../../modules/trips/__boundary-internal.js";\n',
+      tripAdapter,
+    ],
+    [
+      "reverse Trip port to database adapter",
+      'import type {} from "../../../db/trips/__boundary-adapter.js";\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "Trip port to Kysely",
+      'import type { Kysely } from "kysely";\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, filePath),
+        "boundaries/dependencies",
+      );
+    });
+  }
+
+  for (const [name, source, filePath] of [
+    [
+      "type query from Trip adapter to Trip internal",
+      'export type InternalTarget = import("../../modules/trips/__boundary-internal.js").target;\n',
+      tripAdapter,
+    ],
+    [
+      "type query from Trip adapter to another module port",
+      'export type OtherPort = import("../../modules/devices/ports/__boundary-port.js").Port;\n',
+      tripAdapter,
+    ],
+    [
+      "reverse type query from Trip port to database adapter",
+      'export type DatabaseAdapter = import("../../../db/trips/__boundary-adapter.js");\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "type query from Trip port to Kysely",
+      'export type TripDatabase = import("kysely").Kysely<never>;\n',
+      "src/modules/trips/ports/__boundary-port.ts",
+    ],
+    [
+      "typeof import from Trip adapter to exact Trip port",
+      `export type RuntimeTripPort = typeof import(${JSON.stringify(tripPort)});\n`,
+      tripAdapter,
+    ],
+    [
+      "import-equals runtime from Trip adapter to exact Trip port",
+      `import TripPort = require(${JSON.stringify(tripPort)});\nvoid TripPort;\n`,
+      tripAdapter,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      assertForbidden(
+        await lint("control", source, filePath),
+        "boundaries/dependencies",
+      );
+    });
   }
 });
 

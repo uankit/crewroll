@@ -1,13 +1,21 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+import type { Server as HttpServer } from "node:http";
+import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createServer } from "node:net";
+import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  createClerkJwtKey,
+  signClerkJwt,
+} from "../../services/control-plane/test/support/clerkJwt.js";
+import { createIdentityTripFixtures } from "./support/fixtures.js";
+import {
   resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
+  truncateIdentityTripTables,
 } from "./support/postgres.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -15,6 +23,7 @@ const secretCanary = "bootstrap-secret-canary-8e90ad";
 
 interface BootstrapDatabase {
   readonly connectionUri: string;
+  seedForegroundActor(clerkSubject: string): Promise<string>;
   stop(): Promise<void>;
 }
 
@@ -27,14 +36,69 @@ async function startBootstrapDatabase(): Promise<BootstrapDatabase> {
     await context.stop();
     throw new Error("CrewRoll bootstrap database URI unavailable");
   }
+  await truncateIdentityTripTables(context.db);
+  const fixtures = createIdentityTripFixtures(context.db);
   return {
     connectionUri,
+    async seedForegroundActor(clerkSubject) {
+      const user = await fixtures.user({ clerk_subject: clerkSubject });
+      const device = await fixtures.device(user.id);
+      return device.id;
+    },
     stop: () => context.stop(),
   };
 }
 
+interface LocalClerk {
+  readonly issuer: string;
+  readonly requests: () => number;
+  sign(clerkSubject: string): Promise<string>;
+  stop(): Promise<void>;
+}
+
+async function startLocalClerk(): Promise<LocalClerk> {
+  const key = await createClerkJwtKey("bootstrap-local-key");
+  let requests = 0;
+  const server: HttpServer = createHttpServer((request, response) => {
+    requests += 1;
+    if (request.url !== "/.well-known/jwks.json") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "cache-control": "public, max-age=600",
+      "content-type": "application/json",
+    });
+    response.end(JSON.stringify({ keys: [key.publicJwk] }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  const issuer = `http://127.0.0.1:${address.port}`;
+  return {
+    issuer,
+    requests: () => requests,
+    sign: (clerkSubject) =>
+      signClerkJwt({
+        claims: { sub: clerkSubject },
+        issuer,
+        key,
+        nowSeconds: Math.floor(Date.now() / 1_000),
+      }),
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      }),
+  };
+}
+
 async function allocateLoopbackPort(): Promise<number> {
-  const server = createServer();
+  const server = createNetServer();
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve());
@@ -99,19 +163,27 @@ async function waitForReady(
 }
 
 describe.sequential("API bootstrap", () => {
+  let clerk: LocalClerk;
   let postgres: BootstrapDatabase;
 
   beforeAll(async () => {
-    postgres = await startBootstrapDatabase();
+    [clerk, postgres] = await Promise.all([
+      startLocalClerk(),
+      startBootstrapDatabase(),
+    ]);
   });
 
   afterAll(async () => {
-    await postgres?.stop();
+    await Promise.all([clerk?.stop(), postgres?.stop()]);
   });
 
-  it("serves physical health checks and exits cleanly on SIGTERM", async () => {
+  it("serves physical Trip auth through local Clerk and PostgreSQL, then exits cleanly", async () => {
     const port = await allocateLoopbackPort();
     const baseUrl = `http://127.0.0.1:${port}`;
+    const clerkSubject = "user_bootstrap_trip_route";
+    const deviceId = await postgres.seedForegroundActor(clerkSubject);
+    const token = await clerk.sign(clerkSubject);
+    const missingTripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3199";
     let stdout = "";
     let stderr = "";
     const child = spawn(
@@ -125,11 +197,12 @@ describe.sequential("API bootstrap", () => {
             "base64",
           ),
           CLERK_AUTHORIZED_PARTIES_JSON: "[]",
-          CLERK_ISSUER: "https://clerk.bootstrap.invalid",
+          CLERK_ISSUER: clerk.issuer,
           CLERK_SECRET_KEY: secretCanary,
           CLERK_WEBHOOK_SECRET: "whsec_bootstrap_test",
           DATABASE_URL: postgres.connectionUri,
           HOST: "127.0.0.1",
+          INVITE_CODE_HMAC_KEY: "bootstrap-invite-hmac-key",
           LOG_LEVEL: "trace",
           KMS_PUSH_TOKEN_KEY_ID: "bootstrap-test-key",
           NODE_ENV: "test",
@@ -152,7 +225,13 @@ describe.sequential("API bootstrap", () => {
         headers: { "X-Request-Id": secretCanary },
       });
       const documentation = await fetch(`${baseUrl}/documentation/`);
-      const productRoute = await fetch(`${baseUrl}/v1/trips`);
+      const missingBearer = await fetch(`${baseUrl}/v1/trips/${missingTripId}`);
+      const productRoute = await fetch(`${baseUrl}/v1/trips/${missingTripId}`, {
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-crewroll-device-id": deviceId.toUpperCase(),
+        },
+      });
 
       expect(await ready.json()).toEqual({ status: "ready" });
       expect(live.status).toBe(200);
@@ -163,7 +242,17 @@ describe.sequential("API bootstrap", () => {
       expect(live.headers.get("x-request-id")).not.toBe(secretCanary);
       expect(live.headers.get("x-content-type-options")).toBe("nosniff");
       expect(documentation.status).toBe(200);
+      expect(missingBearer.status).toBe(401);
+      expect(await missingBearer.json()).toMatchObject({
+        code: "AUTH_REQUIRED",
+        status: 401,
+      });
       expect(productRoute.status).toBe(404);
+      expect(await productRoute.json()).toMatchObject({
+        code: "NOT_FOUND",
+        status: 404,
+      });
+      expect(clerk.requests()).toBe(1);
 
       expect(child.kill("SIGTERM")).toBe(true);
       await expect(waitForExit(child, 10_000)).resolves.toEqual({

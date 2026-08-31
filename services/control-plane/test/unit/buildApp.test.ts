@@ -344,6 +344,45 @@ describe("buildApp", () => {
     expect(openapi).not.toContain("/health/ready");
   });
 
+  it("publishes exactly the eight registered Trip operations and success statuses", async () => {
+    const fixture = createTestDependencies();
+    const app = track(buildApp(fixture.dependencies));
+    await app.ready();
+    const openapi = app.swagger() as unknown as {
+      paths: Record<
+        string,
+        Record<string, { responses: Record<string, unknown> }>
+      >;
+    };
+    const expected = [
+      ["/v1/trips", "post", "201"],
+      ["/v1/trips/create-outcome", "post", "200"],
+      ["/v1/trips/join-requests", "post", "201"],
+      [
+        "/v1/trips/{tripId}/join-requests/{membershipId}/approval",
+        "put",
+        "200",
+      ],
+      ["/v1/trips/{tripId}/join-requests/{membershipId}", "delete", "204"],
+      ["/v1/trips/{tripId}/readiness", "put", "200"],
+      ["/v1/trips/{tripId}/start", "post", "200"],
+      ["/v1/trips/{tripId}", "get", "200"],
+    ] as const;
+
+    expect(
+      Object.keys(openapi.paths)
+        .filter((path) => path.startsWith("/v1/trips"))
+        .sort(),
+    ).toEqual([...new Set(expected.map(([path]) => path))].sort());
+    for (const [path, method, success] of expected) {
+      expect(openapi.paths[path]?.[method]?.responses).toHaveProperty(success);
+    }
+    const serialized = JSON.stringify(openapi.paths);
+    expect(serialized).not.toContain("/end");
+    expect(serialized).not.toContain("reconciliation");
+    expect(serialized).not.toContain("/media");
+  });
+
   it("does not register documentation or CORS in production", async () => {
     const fixture = createTestDependencies({ nodeEnvironment: "production" });
     const app = track(buildApp(fixture.dependencies));

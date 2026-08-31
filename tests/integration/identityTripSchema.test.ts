@@ -1110,10 +1110,14 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
     ).toThrow("explicit disposable-loopback opt-in");
 
     for (const connectionString of [
-      "postgresql://uankit@localhost:55432/postgres",
+      "postgresql://uankit@localhost:55433/postgres",
       "postgresql://uankit@127.0.0.1:5432/postgres",
-      "postgresql://uankit@127.0.0.1:55432/user_database",
-      "postgresql://uankit@127.0.0.1:55432/postgres?sslmode=disable",
+      "postgresql://uankit@127.0.0.1:55434/postgres",
+      "postgresql://uankit@127.0.0.1:55433/user_database",
+      "postgresql://uankit@127.0.0.1:55433/postgres?",
+      "postgresql://uankit@127.0.0.1:55433/postgres?sslmode=disable",
+      "postgresql://uankit@127.0.0.1:55433/postgres#",
+      "postgresql://uankit@127.0.0.1:55433/postgres#fragment",
     ]) {
       expect(() =>
         resolveExplicitExternalPostgresUrl({
@@ -1123,13 +1127,19 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
       ).toThrow("approved disposable loopback cluster");
     }
 
-    expect(
-      resolveExplicitExternalPostgresUrl({
-        CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
-        CREWROLL_TEST_EXTERNAL_POSTGRES_URL:
-          "postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green",
-      }),
-    ).toBe("postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green");
+    for (const connectionString of [
+      "postgresql://uankit@127.0.0.1:55432/postgres",
+      "postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green",
+      "postgresql://uankit@127.0.0.1:55433/postgres",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_task4_green",
+    ]) {
+      expect(
+        resolveExplicitExternalPostgresUrl({
+          CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
+          CREWROLL_TEST_EXTERNAL_POSTGRES_URL: connectionString,
+        }),
+      ).toBe(connectionString);
+    }
   });
 
   it("cleans test resources when database construction fails", async () => {

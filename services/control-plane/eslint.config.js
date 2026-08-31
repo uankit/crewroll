@@ -31,6 +31,24 @@ export default tseslint.config(
     },
   },
   {
+    files: ["src/modules/trips/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              importNames: ["timingSafeEqual"],
+              message:
+                "Trip commands must use the reviewed crypto port/platform adapter seam.",
+              name: "node:crypto",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: [
       "src/api/**/*.ts",
       "src/modules/**/{route,routes}/**/*.ts",

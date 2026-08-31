@@ -17,6 +17,21 @@ import type {
   ClerkWebhookVerifier,
   IdentityUnitOfWork,
 } from "../modules/identity/index.js";
+import type {
+  ApproveJoinRequestDependencies,
+  CreateTripDependencies,
+  ForegroundActorSnapshotReader,
+  GetTripDependencies,
+  InviteCodeCryptography,
+  RejectJoinRequestDependencies,
+  RequestJoinDependencies,
+  ResolveCreateTripOutcomeDependencies,
+  ResolveForegroundActor,
+  SetTripReadinessDependencies,
+  StartTripDependencies,
+  TripRouteDependencies,
+  TripUnitOfWork,
+} from "../modules/trips/index.js";
 
 type Environment = AppDependencies["environment"];
 type Logger = AppDependencies["logger"];
@@ -41,9 +56,26 @@ interface KmsPushTokenProtectorHandle {
   readonly protector: PushTokenProtector;
 }
 
+type ApiConfigurationKey = "INVITE_CODE_HMAC_KEY";
+
+export class ApiConfigurationError extends Error {
+  readonly code = "API_CONFIGURATION_ERROR" as const;
+  readonly configurationKey: ApiConfigurationKey;
+
+  constructor(configurationKey: ApiConfigurationKey) {
+    super(configurationKey);
+    this.name = "ApiConfigurationError";
+    this.configurationKey = configurationKey;
+  }
+}
+
 export interface ApiRuntimeFactories {
+  approveJoinRequest(
+    dependencies: ApproveJoinRequestDependencies,
+  ): TripRouteDependencies["approveJoinRequest"];
   backgroundCredentials(environment: Environment): BackgroundCredentialIssuer;
   buildApp(dependencies: AppDependencies): RuntimeApp;
+  classifyTripConstraint(error: unknown): string | null;
   clock(): Clock;
   clerkWebhookService(
     dependencies: ClerkWebhookServiceDependencies,
@@ -51,18 +83,43 @@ export interface ApiRuntimeFactories {
   database(environment: Environment): DatabaseHandle;
   directory(environment: Environment): ClerkUserDirectory;
   environment(): Environment;
+  foregroundTripSnapshots(database: unknown): ForegroundActorSnapshotReader;
+  getTrip(dependencies: GetTripDependencies): TripRouteDependencies["getTrip"];
   ids(): IdGenerator;
   identityUnitOfWork(database: unknown): IdentityUnitOfWork;
+  inviteCodeCryptography(environment: Environment): InviteCodeCryptography;
   logger(environment: Environment): Logger;
   pushTokenProtector(environment: Environment): KmsPushTokenProtectorHandle;
   registerDevice(
     dependencies: RegisterDeviceDependencies,
   ): DeviceRouteDependencies["registerDevice"];
+  rejectJoinRequest(
+    dependencies: RejectJoinRequestDependencies,
+  ): TripRouteDependencies["rejectJoinRequest"];
+  requestJoin(
+    dependencies: RequestJoinDependencies,
+  ): TripRouteDependencies["requestJoin"];
+  resolveCreateTripOutcome(
+    dependencies: ResolveCreateTripOutcomeDependencies,
+  ): TripRouteDependencies["resolveCreateTripOutcome"];
+  resolveForegroundActor(
+    snapshots: ForegroundActorSnapshotReader,
+  ): ResolveForegroundActor;
   revokeDevice(
     dependencies: RevokeDeviceDependencies,
   ): DeviceRouteDependencies["revokeDevice"];
   snapshots(database: unknown): DeviceAuthorizationSnapshotReader;
+  setTripReadiness(
+    dependencies: SetTripReadinessDependencies,
+  ): TripRouteDependencies["setTripReadiness"];
+  startTrip(
+    dependencies: StartTripDependencies,
+  ): TripRouteDependencies["startTrip"];
   tokenVerifier(environment: Environment, clock: Clock): ClerkTokenVerifier;
+  createTrip(
+    dependencies: CreateTripDependencies,
+  ): TripRouteDependencies["createTrip"];
+  tripUnitOfWork(database: unknown): TripUnitOfWork;
   unitOfWork(database: unknown): DeviceUnitOfWork;
   updateDevicePushToken(
     dependencies: UpdateDevicePushTokenDependencies,
@@ -119,6 +176,15 @@ export async function createApiRuntime(
     const identityUnitOfWork = factories.identityUnitOfWork(
       databaseHandle.database,
     );
+    const inviteCodeCryptography =
+      factories.inviteCodeCryptography(environment);
+    const foregroundTripSnapshots = factories.foregroundTripSnapshots(
+      databaseHandle.database,
+    );
+    const tripUnitOfWork = factories.tripUnitOfWork(databaseHandle.database);
+    const resolveForegroundActor = factories.resolveForegroundActor(
+      foregroundTripSnapshots,
+    );
     const registerDevice = factories.registerDevice({
       backgroundCredentials,
       clock,
@@ -145,6 +211,34 @@ export async function createApiRuntime(
       unitOfWork: identityUnitOfWork,
       verifier: webhookVerifier,
     });
+    const tripServiceDependencies = {
+      classifyConstraint: (error: unknown) =>
+        factories.classifyTripConstraint(error),
+      ids,
+      unitOfWork: tripUnitOfWork,
+    };
+    const createTrip = factories.createTrip({
+      ...tripServiceDependencies,
+      hasher: inviteCodeCryptography,
+    });
+    const resolveCreateTripOutcome = factories.resolveCreateTripOutcome({
+      unitOfWork: tripUnitOfWork,
+    });
+    const requestJoin = factories.requestJoin({
+      ...tripServiceDependencies,
+      hasher: inviteCodeCryptography,
+    });
+    const approveJoinRequest = factories.approveJoinRequest(
+      tripServiceDependencies,
+    );
+    const rejectJoinRequest = factories.rejectJoinRequest(
+      tripServiceDependencies,
+    );
+    const setTripReadiness = factories.setTripReadiness(
+      tripServiceDependencies,
+    );
+    const startTrip = factories.startTrip(tripServiceDependencies);
+    const getTrip = factories.getTrip({ unitOfWork: tripUnitOfWork });
     app = factories.buildApp({
       clock,
       devices: {
@@ -170,6 +264,18 @@ export async function createApiRuntime(
             .selectNoFrom((builder) => builder.lit(1))
             .executeTakeFirstOrThrow();
         },
+      },
+      trips: {
+        approveJoinRequest,
+        createTrip,
+        getTrip,
+        rejectJoinRequest,
+        requestJoin,
+        resolveCreateTripOutcome,
+        resolveForegroundActor,
+        setTripReadiness,
+        startTrip,
+        tokenVerifier,
       },
     });
 
@@ -203,7 +309,7 @@ export async function createApiRuntime(
         return listenPromise;
       },
     };
-  } catch {
+  } catch (error) {
     await attemptAll([
       ...(app === undefined ? [] : [() => app!.close()]),
       ...(kmsHandle === undefined ? [] : [() => kmsHandle!.destroy()]),
@@ -211,7 +317,8 @@ export async function createApiRuntime(
         ? []
         : [() => databaseHandle!.destroy()]),
     ]);
-    throw new Error("CrewRoll API construction failed");
+    if (error instanceof ApiConfigurationError) throw error;
+    throw new Error("CrewRoll API construction failed", { cause: error });
   }
 }
 
