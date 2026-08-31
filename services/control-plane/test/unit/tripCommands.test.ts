@@ -3,6 +3,7 @@ import type {
   CreateJoinRequestBody,
   CreateTripBody,
   SetTripReadinessBody,
+  StartTripBody,
 } from "@crewroll/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -16,6 +17,7 @@ import { createRejectJoinRequest } from "../../src/modules/trips/rejectJoinReque
 import { createRequestJoin } from "../../src/modules/trips/requestJoin.js";
 import { createResolveCreateTripOutcome } from "../../src/modules/trips/resolveCreateTripOutcome.js";
 import { createSetTripReadiness } from "../../src/modules/trips/setTripReadiness.js";
+import { createStartTrip } from "../../src/modules/trips/startTrip.js";
 import type {
   TripIdempotencyRecord,
   TripRecord,
@@ -59,6 +61,9 @@ const READINESS_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440022";
 const SECOND_READINESS_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440023";
 const READINESS_EVENT_ID = "950e8400-e29b-41d4-a716-446655440105";
 const SECOND_READINESS_EVENT_ID = "950e8400-e29b-41d4-a716-446655440106";
+const START_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440024";
+const SECOND_START_IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440025";
+const START_EVENT_ID = "950e8400-e29b-41d4-a716-446655440107";
 
 function body(overrides: Partial<CreateTripBody> = {}): CreateTripBody {
   return {
@@ -400,6 +405,63 @@ async function executeReadiness(
   tripId = TRIP_ID,
 ) {
   return test.readiness.execute({
+    actor,
+    body: requestBody,
+    idempotencyKey,
+    tripId,
+  });
+}
+
+function startBody(expectedVersion = 5): StartTripBody {
+  return { expectedVersion };
+}
+
+async function setupStart() {
+  const test = await setupReadiness();
+  test.harness.setReauthorization({ actor: MEMBER_ACTOR, kind: "ACTIVE" });
+  successful(
+    await executeReadiness(
+      test,
+      readinessBody(),
+      READINESS_IDEMPOTENCY_KEY,
+      MEMBER_ACTOR,
+    ),
+  );
+  test.harness.setReauthorization({ actor: ACTOR, kind: "ACTIVE" });
+  successful(
+    await executeReadiness(
+      test,
+      readinessBody(),
+      SECOND_READINESS_IDEMPOTENCY_KEY,
+    ),
+  );
+  test.harness.trace.splice(0);
+  const generatedIds = [START_EVENT_ID];
+  return {
+    ...test,
+    start: createStartTrip({
+      classifyConstraint: constraintName,
+      ids: {
+        uuid() {
+          const id = generatedIds.shift();
+          if (id === undefined)
+            throw new Error("Unexpected Start ID allocation");
+          return id;
+        },
+      },
+      unitOfWork: test.harness.unitOfWork,
+    }),
+  };
+}
+
+async function executeStart(
+  test: Awaited<ReturnType<typeof setupStart>>,
+  requestBody = startBody(),
+  idempotencyKey = START_IDEMPOTENCY_KEY,
+  actor = ACTOR,
+  tripId = TRIP_ID,
+) {
+  return test.start.execute({
     actor,
     body: requestBody,
     idempotencyKey,
@@ -1934,6 +1996,411 @@ describe("set Trip readiness", () => {
       });
       expect(test.harness.state.inboxes).toHaveLength(2);
       expect(test.harness.state.outboxes.size).toBe(2);
+      expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
+    }
+  });
+});
+
+describe("start Trip command", () => {
+  it("starts one fully ready lobby atomically and notifies only the other nominated device", async () => {
+    const test = await setupStart();
+    const inboxesBefore = test.harness.state.inboxes.length;
+    const outboxesBefore = test.harness.state.outboxes.size;
+
+    const response = successful(await executeStart(test));
+
+    expect(response).toMatchObject({
+      id: TRIP_ID,
+      startsAt: NOW.toISOString(),
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect(response.tripKeyEnvelope?.wrappedKey).toBe(OWNER_ENVELOPE);
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+      startedAt: NOW,
+      state: "ACTIVE",
+      updatedAt: NOW,
+      version: 6,
+    });
+    expect([...test.harness.state.invites.values()]).toHaveLength(1);
+    expect([...test.harness.state.invites.values()][0]).toMatchObject({
+      revokedAt: NOW,
+      tripId: TRIP_ID,
+      updatedAt: NOW,
+    });
+    expect(
+      test.harness.state.idempotencies.get(
+        `${ACTOR.userId}:trips.start.v1:${START_IDEMPOTENCY_KEY}`,
+      ),
+    ).toMatchObject({
+      actorDeviceId: ACTOR.deviceId,
+      expiresAt: test.harness.state.trips.get(TRIP_ID)?.hardDeleteAt,
+      kind: "START",
+      responseStatus: 200,
+      tripId: TRIP_ID,
+    });
+    expect(test.harness.state.inboxes).toHaveLength(inboxesBefore + 1);
+    expect(test.harness.state.inboxes.at(-1)).toMatchObject({
+      aggregateId: TRIP_ID,
+      recipientDeviceId: MEMBER_ACTOR.deviceId,
+      status: "ACTIVE",
+      tripId: TRIP_ID,
+    });
+    expect(test.harness.state.outboxes.size).toBe(outboxesBefore + 1);
+    expect([...test.harness.state.outboxes.values()].at(-1)).toMatchObject({
+      eventId: START_EVENT_ID,
+      recipientSequences: [String(inboxesBefore + 1)],
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect(test.harness.trace).toEqual([
+      "read.invite-candidate.trip",
+      "transaction.begin",
+      "lock.trip",
+      "lock.invite",
+      "lock.actor.user",
+      "lock.actor.device",
+      "lock.idempotency",
+      "lock.memberships",
+      `lock.devices:${ACTOR.deviceId},${MEMBER_ACTOR.deviceId}`,
+      "write.trip.update",
+      "write.invite.update",
+      "write.idempotency",
+      "write.inbox",
+      "write.outbox",
+      "read.projection.transaction",
+      "transaction.commit",
+    ]);
+  });
+
+  it.each([
+    {
+      code: "TRIP_OWNER_REQUIRED",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const trip = test.harness.state.trips.get(TRIP_ID);
+        if (trip === undefined) throw new Error("Missing Trip");
+        test.harness.state.trips.set(TRIP_ID, { ...trip, state: "ACTIVE" });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        test.harness.setReauthorization({
+          actor: MEMBER_ACTOR,
+          kind: "ACTIVE",
+        });
+        return { actor: MEMBER_ACTOR, body: startBody(4) };
+      },
+      name: "non-owner before all later state, version, key, and readiness failures",
+    },
+    {
+      code: "DEVICE_NOT_PARTICIPANT",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const actor = {
+          ...ACTOR,
+          deviceId: "650e8400-e29b-41d4-a716-446655440009",
+        };
+        const trip = test.harness.state.trips.get(TRIP_ID);
+        if (trip === undefined) throw new Error("Missing Trip");
+        test.harness.state.trips.set(TRIP_ID, { ...trip, state: "ACTIVE" });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        test.harness.setReauthorization({ actor, kind: "ACTIVE" });
+        return { actor, body: startBody(4) };
+      },
+      name: "wrong nominated owner device before later failures",
+    },
+    {
+      code: "TRIP_STATE_CONFLICT",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const trip = test.harness.state.trips.get(TRIP_ID);
+        if (trip === undefined) throw new Error("Missing Trip");
+        test.harness.state.trips.set(TRIP_ID, { ...trip, state: "ACTIVE" });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        return { actor: ACTOR, body: startBody(4) };
+      },
+      name: "non-lobby state before stale version and later failures",
+    },
+    {
+      code: "VERSION_CONFLICT",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const membership =
+          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+        if (membership === undefined) throw new Error("Missing member");
+        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+          ...membership,
+          approvedAt: null,
+          fullPhotoLibraryAccess: false,
+          keyEpoch: null,
+          state: "PENDING_KEY",
+        });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        return { actor: ACTOR, body: startBody(4) };
+      },
+      name: "stale version before pending and later failures",
+    },
+    {
+      code: "PENDING_JOIN_REQUESTS",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const membership =
+          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+        const device = test.harness.state.devices.get(MEMBER_ACTOR.deviceId);
+        if (membership === undefined || device === undefined) {
+          throw new Error("Missing member fixture");
+        }
+        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+          ...membership,
+          approvedAt: null,
+          fullPhotoLibraryAccess: false,
+          keyEpoch: null,
+          state: "PENDING_KEY",
+        });
+        test.harness.state.devices.set(MEMBER_ACTOR.deviceId, {
+          ...device,
+          revoked: true,
+        });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        return { actor: ACTOR, body: startBody() };
+      },
+      name: "pending membership before key, device, and readiness failures",
+    },
+    {
+      code: "KEY_ENVELOPE_MISSING",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const membership =
+          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+        const device = test.harness.state.devices.get(MEMBER_ACTOR.deviceId);
+        if (membership === undefined || device === undefined) {
+          throw new Error("Missing member fixture");
+        }
+        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+          ...membership,
+          fullPhotoLibraryAccess: false,
+        });
+        test.harness.state.devices.set(MEMBER_ACTOR.deviceId, {
+          ...device,
+          revoked: true,
+        });
+        test.harness.state.envelopes.delete(
+          `${TRIP_ID}:${MEMBER_ACTOR.deviceId}`,
+        );
+        return { actor: ACTOR, body: startBody() };
+      },
+      name: "missing key envelope before device and readiness failures",
+    },
+    {
+      code: "DEVICE_REVOKED",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const membership =
+          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+        const device = test.harness.state.devices.get(MEMBER_ACTOR.deviceId);
+        if (membership === undefined || device === undefined) {
+          throw new Error("Missing member fixture");
+        }
+        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+          ...membership,
+          fullPhotoLibraryAccess: false,
+        });
+        test.harness.state.devices.set(MEMBER_ACTOR.deviceId, {
+          ...device,
+          revoked: true,
+        });
+        return { actor: ACTOR, body: startBody() };
+      },
+      name: "revoked nominated device before readiness failure",
+    },
+    {
+      code: "PHOTO_LIBRARY_ACCESS_REQUIRED",
+      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
+        const membership =
+          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+        if (membership === undefined) throw new Error("Missing member");
+        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+          ...membership,
+          fullPhotoLibraryAccess: false,
+        });
+        return { actor: ACTOR, body: startBody() };
+      },
+      name: "false readiness",
+    },
+  ])("applies eligibility precedence: $name", async ({ code, configure }) => {
+    const test = await setupStart();
+    const input = configure(test);
+
+    expect(
+      problemCode(
+        await executeStart(
+          test,
+          input.body,
+          START_IDEMPOTENCY_KEY,
+          input.actor,
+        ),
+      ),
+    ).toBe(code);
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")),
+    ).toEqual([]);
+    expect(test.harness.state.trips.get(TRIP_ID)).not.toMatchObject({
+      startedAt: NOW,
+    });
+  });
+
+  it.each([
+    ["DEVICE_REVOKED", { kind: "DEVICE_REVOKED" } as const, 409],
+    ["DEVICE_NOT_OWNED", { kind: "DEVICE_NOT_OWNED" } as const, 403],
+  ])(
+    "maps foreground %s before domain evaluation",
+    async (code, snapshot, status) => {
+      const test = await setupStart();
+      test.harness.setReauthorization(snapshot);
+
+      const result = await executeStart(test);
+
+      expect(problemCode(result)).toBe(code);
+      if (result.ok) throw new Error("Expected authorization problem");
+      expect(result.problem.status).toBe(status);
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    },
+  );
+
+  it("fails closed before a transaction when the invite candidate is absent or duplicated", async () => {
+    const missing = await setupStart();
+    missing.harness.state.invites.clear();
+    expect(problemCode(await executeStart(missing))).toBe("NOT_FOUND");
+    expect(missing.harness.trace).toEqual(["read.invite-candidate.trip"]);
+
+    const duplicate = await setupStart();
+    const original = [...duplicate.harness.state.invites.values()][0];
+    if (original === undefined) throw new Error("Missing invite");
+    duplicate.harness.state.invites.set(
+      "950e8400-e29b-41d4-a716-446655440099",
+      {
+        ...original,
+        inviteId: "950e8400-e29b-41d4-a716-446655440099",
+      },
+    );
+    expect(problemCode(await executeStart(duplicate))).toBe("INTERNAL_ERROR");
+    expect(duplicate.harness.trace).toEqual(["read.invite-candidate.trip"]);
+  });
+
+  it("revalidates the locked invite binding before actor and domain reads", async () => {
+    const test = await setupStart();
+    const unitOfWork: TripUnitOfWork = {
+      ...test.harness.unitOfWork,
+      findInviteCandidateForTrip() {
+        return Promise.resolve({
+          candidate: {
+            inviteId: [...test.harness.state.invites.keys()][0] ?? "missing",
+            tripId: OTHER_TRIP_ID,
+          },
+          kind: "FOUND" as const,
+        });
+      },
+    };
+    const start = createStartTrip({
+      classifyConstraint: constraintName,
+      ids: { uuid: () => START_EVENT_ID },
+      unitOfWork,
+    });
+
+    expect(
+      problemCode(
+        await start.execute({
+          actor: ACTOR,
+          body: startBody(),
+          idempotencyKey: START_IDEMPOTENCY_KEY,
+          tripId: TRIP_ID,
+        }),
+      ),
+    ).toBe("INTERNAL_ERROR");
+    expect(test.harness.trace).toEqual([
+      "transaction.begin",
+      "lock.trip",
+      "lock.invite",
+      "transaction.commit",
+    ]);
+  });
+
+  it("allows only exact same-key replay after Start and rejects changed or distinct commands", async () => {
+    const test = await setupStart();
+    successful(await executeStart(test));
+    const inboxes = test.harness.state.inboxes.length;
+    const outboxes = test.harness.state.outboxes.size;
+
+    test.harness.trace.splice(0);
+    expect(successful(await executeStart(test))).toMatchObject({
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")),
+    ).toEqual([]);
+
+    test.harness.trace.splice(0);
+    expect(problemCode(await executeStart(test, startBody(6)))).toBe(
+      "IDEMPOTENCY_CONFLICT",
+    );
+    expect(
+      problemCode(
+        await executeStart(test, startBody(5), SECOND_START_IDEMPOTENCY_KEY),
+      ),
+    ).toBe("TRIP_STATE_CONFLICT");
+    expect(test.harness.state.inboxes).toHaveLength(inboxes);
+    expect(test.harness.state.outboxes.size).toBe(outboxes);
+  });
+
+  it("rejects invalid input before invite lookup or transaction work", async () => {
+    const test = await setupStart();
+
+    expect(problemCode(await executeStart(test, startBody(0)))).toBe(
+      "INVALID_REQUEST",
+    );
+    expect(
+      problemCode(
+        await executeStart(
+          test,
+          startBody(),
+          START_IDEMPOTENCY_KEY,
+          ACTOR,
+          "not-a-trip-id",
+        ),
+      ),
+    ).toBe("INVALID_REQUEST");
+    expect(test.harness.trace).toEqual([]);
+  });
+
+  it("rolls back the trip, invite, idempotency, and events at every Start write boundary", async () => {
+    for (let boundary = 1; boundary <= 5; boundary += 1) {
+      const test = await setupStart();
+      const inboxes = test.harness.state.inboxes.length;
+      const outboxes = test.harness.state.outboxes.size;
+      const invite = [...test.harness.state.invites.values()][0];
+      if (invite === undefined) throw new Error("Missing invite");
+      test.harness.failAfterWrite(boundary);
+
+      expect(problemCode(await executeStart(test))).toBe("INTERNAL_ERROR");
+      expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+        startedAt: null,
+        state: "LOBBY",
+        version: 5,
+      });
+      expect(test.harness.state.invites.get(invite.inviteId)).toMatchObject({
+        revokedAt: null,
+      });
+      expect(
+        test.harness.state.idempotencies.has(
+          `${ACTOR.userId}:trips.start.v1:${START_IDEMPOTENCY_KEY}`,
+        ),
+      ).toBe(false);
+      expect(test.harness.state.inboxes).toHaveLength(inboxes);
+      expect(test.harness.state.outboxes.size).toBe(outboxes);
       expect(test.harness.trace.at(-1)).toBe("transaction.rollback");
     }
   });

@@ -6,6 +6,7 @@ import type {
   TripDeviceRecord,
   TripEnvelopeRecord,
   TripIdempotencyRecord,
+  TripInviteCandidateForTripRead,
   TripInviteRecord,
   TripMembershipRecord,
   TripProjection,
@@ -1070,6 +1071,25 @@ export function createKyselyTripUnitOfWork(
       return row === undefined
         ? null
         : { inviteId: row.id, tripId: row.trip_id };
+    },
+    async findInviteCandidateForTrip(
+      tripId,
+    ): Promise<TripInviteCandidateForTripRead> {
+      const rows = await database
+        .selectFrom("trip_invites")
+        .select(["id", "trip_id"])
+        .where("trip_id", "=", tripId)
+        .orderBy("id")
+        .limit(2)
+        .execute();
+      if (rows.length === 0) return { kind: "NOT_FOUND" };
+      if (rows.length !== 1) return { kind: "INVARIANT_ERROR" };
+      const row = rows[0];
+      if (row === undefined) return { kind: "INVARIANT_ERROR" };
+      return {
+        candidate: { inviteId: row.id, tripId: row.trip_id },
+        kind: "FOUND",
+      };
     },
     readProjection(actor, tripId) {
       return readProjection(database, actor, tripId);

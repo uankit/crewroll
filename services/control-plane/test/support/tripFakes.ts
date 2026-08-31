@@ -5,6 +5,7 @@ import type {
   TripDeviceRecord,
   TripEnvelopeRecord,
   TripIdempotencyRecord,
+  TripInviteCandidateForTripRead,
   TripInviteRecord,
   TripMembershipRecord,
   TripProjectionRead,
@@ -505,6 +506,32 @@ export function createTripTestHarness() {
           ? null
           : { inviteId: invite.inviteId, tripId: invite.tripId },
       );
+    },
+    findInviteCandidateForTrip(
+      tripId,
+    ): Promise<TripInviteCandidateForTripRead> {
+      trace.push("read.invite-candidate.trip");
+      const candidates = [...state.invites.values()]
+        .filter((invite) => invite.tripId === tripId)
+        .sort((left, right) => left.inviteId.localeCompare(right.inviteId))
+        .slice(0, 2);
+      if (candidates.length === 0) {
+        return Promise.resolve({ kind: "NOT_FOUND" });
+      }
+      if (candidates.length !== 1) {
+        return Promise.resolve({ kind: "INVARIANT_ERROR" });
+      }
+      const candidate = candidates[0];
+      if (candidate === undefined) {
+        return Promise.resolve({ kind: "INVARIANT_ERROR" });
+      }
+      return Promise.resolve({
+        candidate: {
+          inviteId: candidate.inviteId,
+          tripId: candidate.tripId,
+        },
+        kind: "FOUND",
+      });
     },
     readProjection(actor, tripId) {
       trace.push("read.projection.plain");

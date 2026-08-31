@@ -61,6 +61,14 @@ export interface TripInviteRecord {
   readonly usesCount: number;
 }
 
+export type TripInviteCandidateForTripRead =
+  | Readonly<{
+      candidate: Readonly<{ inviteId: string; tripId: string }>;
+      kind: "FOUND";
+    }>
+  | Readonly<{ kind: "INVARIANT_ERROR" }>
+  | Readonly<{ kind: "NOT_FOUND" }>;
+
 export type TripMembershipState = "ACTIVE" | "PENDING_KEY" | "REJECTED";
 export type TripMembershipRole = "MEMBER" | "OWNER";
 
@@ -256,6 +264,9 @@ export interface TripUnitOfWork {
   findInviteCandidate(
     inviteCodeHmac: Readonly<Uint8Array>,
   ): Promise<Readonly<{ inviteId: string; tripId: string }> | null>;
+  findInviteCandidateForTrip(
+    tripId: string,
+  ): Promise<TripInviteCandidateForTripRead>;
   readProjection(
     actor: ForegroundTripActor,
     tripId: string,
