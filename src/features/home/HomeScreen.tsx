@@ -3,20 +3,207 @@ import { StyleSheet, View } from "react-native";
 import {
   AppText,
   Button,
+  InlineBanner,
   Screen,
+  Skeleton,
   spacing,
+  Stack,
   StatusBadge,
   Surface,
+  TripSummaryCard,
   useCrewRollTheme,
 } from "../../design-system";
 
-type HomeScreenProps = {
+export type HomeScreenState =
+  | Readonly<{ kind: "no-trip" }>
+  | Readonly<{ kind: "loading" }>
+  | Readonly<{
+      kind: "trip";
+      tripStatus: "ACTIVE" | "LOBBY";
+      name: string;
+      endsLabel: string;
+      memberSummary: string;
+      onOpenTrip: () => void;
+    }>
+  | Readonly<{
+      kind: "failed";
+      onRetry: () => void;
+      retrying?: boolean;
+    }>
+  | Readonly<{
+      kind: "unknown-create" | "unknown-join";
+      onRecover: () => void;
+      recovering?: boolean;
+    }>;
+
+export type HomeScreenProps = Readonly<{
   onCreateTrip: () => void;
   onJoinTrip: () => void;
-};
+  state?: HomeScreenState;
+}>;
 
-export function HomeScreen({ onCreateTrip, onJoinTrip }: HomeScreenProps) {
+function LoadingTrip() {
+  return (
+    <Surface
+      accessibilityLabel="Loading your CrewRoll trip"
+      accessibilityRole="summary"
+      accessibilityState={{ busy: true }}
+      accessible
+      style={styles.statusCard}
+    >
+      <Stack
+        accessibilityElementsHidden
+        gap="sm"
+        importantForAccessibility="no-hide-descendants"
+      >
+        <Skeleton width="half" />
+        <Skeleton />
+        <Skeleton width="half" />
+      </Stack>
+    </Surface>
+  );
+}
+
+function SafeFailure({
+  onRetry,
+  retrying = false,
+}: Extract<HomeScreenState, { kind: "failed" }>) {
+  return (
+    <Stack gap="sm" style={styles.statusCard}>
+      <InlineBanner
+        body="Check your connection and try again. Your trip has not been changed."
+        icon="!"
+        title="CrewRoll could not load your trip"
+        tone="warning"
+      />
+      <Button
+        accessibilityHint="Attempts to load your trip again."
+        label="Try again"
+        loading={retrying}
+        onPress={onRetry}
+      />
+    </Stack>
+  );
+}
+
+function UnknownRecovery(
+  state: Extract<HomeScreenState, { kind: "unknown-create" | "unknown-join" }>,
+) {
+  const isCreate = state.kind === "unknown-create";
+
+  return (
+    <Stack gap="sm" style={styles.statusCard}>
+      <InlineBanner
+        body={
+          isCreate
+            ? "CrewRoll is checking whether your trip was created. Keep this phone connected and check again."
+            : "CrewRoll is checking whether your join request was received. Keep this phone connected and check again."
+        }
+        icon="…"
+        title={
+          isCreate ? "Checking your new trip" : "Checking your join request"
+        }
+        tone="info"
+      />
+      <Button
+        accessibilityHint="Safely checks the original request without creating another one."
+        label="Check again"
+        loading={state.recovering ?? false}
+        onPress={state.onRecover}
+      />
+    </Stack>
+  );
+}
+
+function HomeTrip({
+  endsLabel,
+  memberSummary,
+  name,
+  onOpenTrip,
+  tripStatus,
+}: Extract<HomeScreenState, { kind: "trip" }>) {
+  const active = tripStatus === "ACTIVE";
+
+  return (
+    <TripSummaryCard
+      action={{
+        accessibilityHint: "Opens this trip.",
+        label: "Open trip",
+        onPress: onOpenTrip,
+      }}
+      details={[
+        { label: "Ends", value: endsLabel },
+        { label: "Members", value: memberSummary },
+      ]}
+      name={name}
+      status={{
+        icon: active ? "✓" : "…",
+        label: active ? "Active" : "Lobby",
+        tone: active ? "success" : "info",
+      }}
+      style={styles.statusCard}
+    />
+  );
+}
+
+function NoTripActions({
+  onCreateTrip,
+  onJoinTrip,
+}: Pick<HomeScreenProps, "onCreateTrip" | "onJoinTrip">) {
+  return (
+    <>
+      <Surface style={styles.statusCard}>
+        <StatusBadge icon="○" label="Ready" />
+        <View style={styles.statusCopy}>
+          <AppText variant="title2">No active trip</AppText>
+          <AppText tone="secondary">
+            Create a roll or join your friends. Once the trip starts, CrewRoll
+            watches for new photos automatically.
+          </AppText>
+        </View>
+      </Surface>
+
+      <View style={styles.actions}>
+        <Button
+          accessibilityHint="Opens trip creation."
+          label="Create a trip"
+          onPress={onCreateTrip}
+        />
+        <Button
+          accessibilityHint="Opens invite code entry."
+          label="Join a trip"
+          onPress={onJoinTrip}
+          variant="secondary"
+        />
+      </View>
+    </>
+  );
+}
+
+export function HomeScreen({
+  onCreateTrip,
+  onJoinTrip,
+  state = { kind: "no-trip" },
+}: HomeScreenProps) {
   const colors = useCrewRollTheme();
+
+  const tripContent = (() => {
+    switch (state.kind) {
+      case "no-trip":
+        return (
+          <NoTripActions onCreateTrip={onCreateTrip} onJoinTrip={onJoinTrip} />
+        );
+      case "loading":
+        return <LoadingTrip />;
+      case "trip":
+        return <HomeTrip {...state} />;
+      case "failed":
+        return <SafeFailure {...state} />;
+      case "unknown-create":
+      case "unknown-join":
+        return <UnknownRecovery {...state} />;
+    }
+  })();
 
   return (
     <Screen testID="home-screen">
@@ -33,21 +220,7 @@ export function HomeScreen({ onCreateTrip, onJoinTrip }: HomeScreenProps) {
         </AppText>
       </View>
 
-      <Surface style={styles.statusCard}>
-        <StatusBadge label="Ready" />
-        <View style={styles.statusCopy}>
-          <AppText variant="title2">No active trip</AppText>
-          <AppText tone="secondary">
-            Create a roll or join your friends. Once the trip starts, CrewRoll
-            watches for new photos automatically.
-          </AppText>
-        </View>
-      </Surface>
-
-      <View style={styles.actions}>
-        <Button label="Create a trip" onPress={onCreateTrip} />
-        <Button label="Join a trip" onPress={onJoinTrip} variant="secondary" />
-      </View>
+      {tripContent}
 
       <Surface muted style={styles.privacyCard}>
         <AppText variant="bodyStrong" style={{ color: colors.info }}>
