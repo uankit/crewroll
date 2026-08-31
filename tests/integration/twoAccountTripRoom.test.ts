@@ -491,6 +491,16 @@ function failAfterCreateIdempotencyInsert(
   };
 }
 
+function failAfterCommittedRun(unitOfWork: TripUnitOfWork): TripUnitOfWork {
+  return {
+    ...unitOfWork,
+    async run(operation) {
+      await unitOfWork.run(operation);
+      throw new Error("controlled post-commit response cut");
+    },
+  };
+}
+
 function holdAfterTripLock(
   unitOfWork: TripUnitOfWork,
   held: Deferred,
@@ -612,6 +622,59 @@ async function countRows(
     select count(*)::text as count from ${sql.table(table)}
   `.execute(database);
   return Number(result.rows[0]?.count ?? "0");
+}
+
+async function raceLedger(
+  database: Kysely<Database>,
+  tripId: string,
+  idempotencyKeys: readonly string[],
+) {
+  const [idempotency, inbox, memberships, outbox] = await Promise.all([
+    database
+      .selectFrom("api_idempotency")
+      .select([
+        "idempotency_key",
+        "response_body",
+        "response_status",
+        "route_key",
+      ])
+      .where("idempotency_key", "in", idempotencyKeys)
+      .orderBy("idempotency_key")
+      .execute(),
+    database
+      .selectFrom("inbox_events")
+      .select([
+        "aggregate_id",
+        "event_type",
+        "payload",
+        "recipient_device_id",
+        "sequence",
+        "trip_id",
+      ])
+      .where("trip_id", "=", tripId)
+      .orderBy("sequence")
+      .execute(),
+    database
+      .selectFrom("trip_members")
+      .select([
+        "full_photo_library_access",
+        "id",
+        "key_epoch",
+        "participating_device_id",
+        "role",
+        "state",
+      ])
+      .where("trip_id", "=", tripId)
+      .orderBy("role", "desc")
+      .execute(),
+    database
+      .selectFrom("outbox_events")
+      .select(["aggregate_id", "dedupe_key", "event_type", "payload"])
+      .where("aggregate_id", "=", tripId)
+      .orderBy("dedupe_key")
+      .execute(),
+  ]);
+  return { idempotency, inbox, memberships, outbox };
 }
 
 describe.sequential("two-account Trip room public-route journey", () => {
@@ -820,7 +883,9 @@ describe.sequential("two-account Trip room public-route journey", () => {
     expect(await countRows(context.db, "trips")).toBe(0);
     await recoveredRuntime.close();
 
-    const committedRuntime = await startRuntime();
+    const committedRuntime = await startRuntime({
+      decorateTripUnitOfWork: failAfterCommittedRun,
+    });
     const committedOwner = actorOn(committedRuntime, accounts.owner);
     const committedTrip = tripBody(
       tripId(2),
@@ -829,9 +894,18 @@ describe.sequential("two-account Trip room public-route journey", () => {
       "Committed cut",
     );
     const committedKey = commandId(11);
-    // The transport validates the response, then deliberately drops it before
-    // any application state consumes it.
-    await createTrip(committedOwner, committedTrip, committedKey);
+    // The real transaction commits, but the route loses the result before a
+    // usable success response can reach the caller.
+    await tripProblem({
+      actor: committedOwner,
+      body: committedTrip,
+      bodySchema: CreateTripBodySchema,
+      code: "INTERNAL_ERROR",
+      idempotencyKey: committedKey,
+      method: "POST",
+      status: 500,
+      url: "/v1/trips",
+    });
     await committedRuntime.close();
 
     const restartedRuntime = await startRuntime();
@@ -1041,6 +1115,28 @@ describe.sequential("two-account Trip room public-route journey", () => {
       getTrip(owner, id),
       getTrip(invitee, id),
     ]);
+    expect.soft(ownerActive).toMatchObject({
+      currentMembershipId: created.currentMembershipId,
+      keyEpoch: 1,
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect.soft(inviteeActive).toMatchObject({
+      currentMembershipId: pending.membershipId,
+      keyEpoch: 1,
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect(ownerActive.tripKeyEnvelope).toEqual({
+      algorithmVersion: 1,
+      keyEpoch: 1,
+      wrappedKey: OWNER_ENVELOPE,
+    });
+    expect(inviteeActive.tripKeyEnvelope).toEqual({
+      algorithmVersion: 1,
+      keyEpoch: 1,
+      wrappedKey: MEMBER_ENVELOPE,
+    });
     expect(ownerActive.startsAt).toBe(started.startsAt);
     expect(inviteeActive.startsAt).toBe(started.startsAt);
     expect(ownerActive.members).toHaveLength(2);
@@ -1058,6 +1154,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
           member.nominatedDevice?.e2eeKeyVersion === 1,
       ),
     ).toBe(true);
+    expect(JSON.stringify(ownerActive)).not.toContain(MEMBER_ENVELOPE);
     expect(inviteeActive.members).toHaveLength(2);
     expect(inviteeActive.tripKeyEnvelope).toEqual(approved.tripKeyEnvelope);
     expect(
@@ -1485,6 +1582,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
     ): Promise<{
       readonly accounts: Awaited<ReturnType<typeof registerTwoAccounts>>;
       readonly body: CreateTripBody;
+      readonly ownerMembershipId: string;
     }> {
       const setup = await startRuntime();
       const accounts = await registerTwoAccounts(setup);
@@ -1504,7 +1602,11 @@ describe.sequential("two-account Trip room public-route journey", () => {
       );
       expect(ready.version).toBe(2);
       await setup.close();
-      return { accounts, body };
+      return {
+        accounts,
+        body,
+        ownerMembershipId: ready.currentMembershipId,
+      };
     }
 
     const joinFirst = await prepareOwnerRoom(40, "WXYZ2345");
@@ -1566,9 +1668,102 @@ describe.sequential("two-account Trip room public-route journey", () => {
       version: 3,
     });
     expect(joinFirstInvite).toEqual({ revoked_at: null, uses_count: 1 });
-    expect(await countRows(context.db, "trip_members")).toBe(2);
-    expect(await countRows(context.db, "inbox_events")).toBe(1);
-    expect(await countRows(context.db, "outbox_events")).toBe(2);
+    expect
+      .soft(
+        await raceLedger(context.db, joinFirst.body.tripId, [
+          commandId(400),
+          commandId(401),
+          commandId(402),
+          commandId(403),
+        ]),
+      )
+      .toEqual({
+        idempotency: [
+          {
+            idempotency_key: commandId(400),
+            response_body: {
+              actorDeviceId: joinFirst.accounts.owner.device.deviceId,
+              kind: "CREATE_COMMITTED",
+              tripId: joinFirst.body.tripId,
+            },
+            response_status: 201,
+            route_key: "trips.create.v1",
+          },
+          {
+            idempotency_key: commandId(401),
+            response_body: {
+              actorDeviceId: joinFirst.accounts.owner.device.deviceId,
+              kind: "READINESS",
+              tripId: joinFirst.body.tripId,
+            },
+            response_status: 200,
+            route_key: "trips.readiness.v1",
+          },
+          {
+            idempotency_key: commandId(402),
+            response_body: {
+              actorDeviceId: joinFirst.accounts.invitee.device.deviceId,
+              kind: "JOIN",
+              membershipId: joined.membershipId,
+              tripId: joinFirst.body.tripId,
+            },
+            response_status: 201,
+            route_key: "trips.join.v1",
+          },
+        ],
+        inbox: [
+          {
+            aggregate_id: joinFirst.body.tripId,
+            event_type: "TRIP_CHANGED",
+            payload: { status: "LOBBY" },
+            recipient_device_id: joinFirst.accounts.owner.device.deviceId,
+            sequence: "1",
+            trip_id: joinFirst.body.tripId,
+          },
+        ],
+        memberships: [
+          {
+            full_photo_library_access: true,
+            id: joinFirst.ownerMembershipId,
+            key_epoch: 1,
+            participating_device_id: joinFirst.accounts.owner.device.deviceId,
+            role: "OWNER",
+            state: "ACTIVE",
+          },
+          {
+            full_photo_library_access: false,
+            id: joined.membershipId,
+            key_epoch: null,
+            participating_device_id: joinFirst.accounts.invitee.device.deviceId,
+            role: "MEMBER",
+            state: "PENDING_KEY",
+          },
+        ],
+        outbox: [
+          {
+            aggregate_id: joinFirst.body.tripId,
+            dedupe_key: `trip.changed:${joinFirst.body.tripId}:v2`,
+            event_type: "trip.changed",
+            payload: {
+              recipientSequences: [],
+              status: "LOBBY",
+              tripId: joinFirst.body.tripId,
+              version: 2,
+            },
+          },
+          {
+            aggregate_id: joinFirst.body.tripId,
+            dedupe_key: `trip.changed:${joinFirst.body.tripId}:v3`,
+            event_type: "trip.changed",
+            payload: {
+              recipientSequences: ["1"],
+              status: "LOBBY",
+              tripId: joinFirst.body.tripId,
+              version: 3,
+            },
+          },
+        ],
+      });
 
     await closeAllRuntimes();
     await truncateIdentityTripTables(context.db);
@@ -1635,9 +1830,84 @@ describe.sequential("two-account Trip room public-route journey", () => {
     expect(startFirstTrip.started_at).toBeInstanceOf(Date);
     expect(startFirstInvite.uses_count).toBe(0);
     expect(startFirstInvite.revoked_at).toBeInstanceOf(Date);
-    expect(await countRows(context.db, "trip_members")).toBe(1);
-    expect(await countRows(context.db, "inbox_events")).toBe(0);
-    expect(await countRows(context.db, "outbox_events")).toBe(2);
+    expect
+      .soft(
+        await raceLedger(context.db, startFirst.body.tripId, [
+          commandId(410),
+          commandId(411),
+          commandId(412),
+          commandId(413),
+        ]),
+      )
+      .toEqual({
+        idempotency: [
+          {
+            idempotency_key: commandId(410),
+            response_body: {
+              actorDeviceId: startFirst.accounts.owner.device.deviceId,
+              kind: "CREATE_COMMITTED",
+              tripId: startFirst.body.tripId,
+            },
+            response_status: 201,
+            route_key: "trips.create.v1",
+          },
+          {
+            idempotency_key: commandId(411),
+            response_body: {
+              actorDeviceId: startFirst.accounts.owner.device.deviceId,
+              kind: "READINESS",
+              tripId: startFirst.body.tripId,
+            },
+            response_status: 200,
+            route_key: "trips.readiness.v1",
+          },
+          {
+            idempotency_key: commandId(412),
+            response_body: {
+              actorDeviceId: startFirst.accounts.owner.device.deviceId,
+              kind: "START",
+              tripId: startFirst.body.tripId,
+            },
+            response_status: 200,
+            route_key: "trips.start.v1",
+          },
+        ],
+        inbox: [],
+        memberships: [
+          {
+            full_photo_library_access: true,
+            id: startFirst.ownerMembershipId,
+            key_epoch: 1,
+            participating_device_id: startFirst.accounts.owner.device.deviceId,
+            role: "OWNER",
+            state: "ACTIVE",
+          },
+        ],
+        outbox: [
+          {
+            aggregate_id: startFirst.body.tripId,
+            dedupe_key: `trip.changed:${startFirst.body.tripId}:v2`,
+            event_type: "trip.changed",
+            payload: {
+              recipientSequences: [],
+              status: "LOBBY",
+              tripId: startFirst.body.tripId,
+              version: 2,
+            },
+          },
+          {
+            aggregate_id: startFirst.body.tripId,
+            dedupe_key: `trip.changed:${startFirst.body.tripId}:v3`,
+            event_type: "trip.changed",
+            payload: {
+              recipientSequences: [],
+              status: "ACTIVE",
+              tripId: startFirst.body.tripId,
+              version: 3,
+            },
+          },
+        ],
+      });
     expect(kmsCalls).toEqual({ fingerprint: 0, protect: 0 });
   });
 });
