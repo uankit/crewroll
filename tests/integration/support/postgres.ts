@@ -1,14 +1,12 @@
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { sql, type Kysely } from "kysely";
+import { Client } from "pg";
 
 import { createDatabase } from "../../../services/control-plane/src/db/database.js";
 import { migrateToLatest } from "../../../services/control-plane/src/db/migrate.js";
 import type { Database } from "../../../services/control-plane/src/db/schema/tables.js";
 
-const POSTGRES_IMAGE =
-  "postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73";
 const EXTERNAL_POSTGRES_OPT_IN = "DISPOSABLE_LOOPBACK_ONLY";
+const PROCESS_LOCK_KEY = 1_123_955_636;
 
 const OWNED_TABLES = [
   "clerk_webhook_events",
@@ -32,24 +30,89 @@ const OWNED_TABLES = [
 ] as const;
 
 export interface PostgresTestContext {
-  readonly container?: StartedPostgreSqlContainer;
+  readonly connectionString: string;
   readonly db: Kysely<Database>;
-  readonly runtime: "external-loopback" | "testcontainers";
   stop(): Promise<void>;
 }
 
 export interface StartMigratedPostgresOptions {
   readonly databaseFactory?: typeof createDatabase;
-  readonly onContainerStarted?: (container: StartedPostgreSqlContainer) => void;
+}
+
+interface ProcessLock {
+  readonly client: Client;
+  references: number;
+}
+
+let processLockPromise: Promise<ProcessLock> | undefined;
+
+async function createProcessLock(
+  connectionString: string,
+): Promise<ProcessLock> {
+  const client = new Client({
+    application_name: "crewroll-integration-process-lock",
+    connectionString,
+  });
+  await client.connect();
+
+  try {
+    const result = await client.query<{ acquired: boolean }>(
+      "select pg_try_advisory_lock($1) as acquired",
+      [PROCESS_LOCK_KEY],
+    );
+    if (result.rows[0]?.acquired !== true) {
+      throw new Error(
+        "Another CrewRoll integration process owns the dedicated PostgreSQL database",
+      );
+    }
+    return { client, references: 0 };
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
+}
+
+async function acquireProcessLock(
+  connectionString: string,
+): Promise<() => Promise<void>> {
+  processLockPromise ??= createProcessLock(connectionString);
+
+  let processLock: ProcessLock;
+  try {
+    processLock = await processLockPromise;
+  } catch (error) {
+    processLockPromise = undefined;
+    throw error;
+  }
+  processLock.references += 1;
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    processLock.references -= 1;
+    if (processLock.references !== 0) return;
+
+    try {
+      await processLock.client.query("select pg_advisory_unlock($1)", [
+        PROCESS_LOCK_KEY,
+      ]);
+    } finally {
+      try {
+        await processLock.client.end();
+      } finally {
+        processLockPromise = undefined;
+      }
+    }
+  };
 }
 
 export function resolveExplicitExternalPostgresUrl(
   environment: Readonly<Record<string, string | undefined>> = process.env,
-): string | null {
+): string {
   const connectionString = environment.CREWROLL_TEST_EXTERNAL_POSTGRES_URL;
   const optIn = environment.CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN;
 
-  if (connectionString === undefined && optIn === undefined) return null;
   if (connectionString === undefined || optIn !== EXTERNAL_POSTGRES_OPT_IN) {
     throw new Error(
       "External CrewRoll PostgreSQL requires an explicit disposable-loopback opt-in",
@@ -62,8 +125,10 @@ export function resolveExplicitExternalPostgresUrl(
     connectionString.includes("#") ||
     parsed.protocol !== "postgresql:" ||
     parsed.hostname !== "127.0.0.1" ||
-    !["55432", "55433"].includes(parsed.port) ||
-    !["/postgres", "/crewroll_test_task4_green"].includes(parsed.pathname) ||
+    parsed.port !== "55433" ||
+    parsed.pathname !== "/crewroll_test_pg17" ||
+    parsed.username !== "uankit" ||
+    parsed.password !== "" ||
     parsed.search !== "" ||
     parsed.hash !== ""
   ) {
@@ -75,69 +140,56 @@ export function resolveExplicitExternalPostgresUrl(
   return connectionString;
 }
 
-export function usesExplicitExternalPostgres(): boolean {
-  return resolveExplicitExternalPostgresUrl() !== null;
+export function assertPostgres17Version(
+  versionNumber: string | undefined,
+): void {
+  const numericVersion = Number(versionNumber);
+
+  if (
+    versionNumber === undefined ||
+    !/^\d+$/.test(versionNumber) ||
+    !Number.isSafeInteger(numericVersion) ||
+    Math.floor(numericVersion / 10_000) !== 17
+  ) {
+    throw new Error("PostgreSQL 17 is required for CrewRoll integration tests");
+  }
+}
+
+export async function assertPostgres17(db: Kysely<Database>): Promise<void> {
+  const result = await sql<{ server_version_num: string }>`
+    show server_version_num
+  `.execute(db);
+  assertPostgres17Version(result.rows[0]?.server_version_num);
 }
 
 export async function startMigratedPostgres({
   databaseFactory = createDatabase,
-  onContainerStarted,
 }: StartMigratedPostgresOptions = {}): Promise<PostgresTestContext> {
-  const externalConnectionString = resolveExplicitExternalPostgresUrl();
-  if (externalConnectionString !== null) {
-    const externalDb = databaseFactory(externalConnectionString);
-
-    try {
-      await migrateToLatest(externalDb);
-    } catch (error) {
-      await externalDb.destroy();
-      throw error;
-    }
-
-    return {
-      db: externalDb,
-      runtime: "external-loopback",
-      async stop() {
-        await externalDb.destroy();
-      },
-    };
-  }
-
-  const container = await new PostgreSqlContainer(POSTGRES_IMAGE)
-    .withDatabase("crewroll_test")
-    .withUsername("crewroll")
-    .withPassword("crewroll_test_only")
-    .start();
-  let db: Kysely<Database>;
+  const connectionString = resolveExplicitExternalPostgresUrl();
+  const db = databaseFactory(connectionString);
+  let releaseProcessLock: (() => Promise<void>) | undefined;
 
   try {
-    onContainerStarted?.(container);
-    db = databaseFactory(container.getConnectionUri());
-  } catch (error) {
-    await container.stop();
-    throw error;
-  }
-
-  try {
+    releaseProcessLock = await acquireProcessLock(connectionString);
+    await assertPostgres17(db);
     await migrateToLatest(db);
   } catch (error) {
     try {
-      await db?.destroy();
+      await db.destroy();
     } finally {
-      await container.stop();
+      await releaseProcessLock?.();
     }
     throw error;
   }
 
   return {
-    container,
+    connectionString,
     db,
-    runtime: "testcontainers",
     async stop() {
       try {
         await db.destroy();
       } finally {
-        await container.stop();
+        await releaseProcessLock?.();
       }
     },
   };

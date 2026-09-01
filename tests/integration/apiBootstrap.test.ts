@@ -13,7 +13,6 @@ import {
 } from "../../services/control-plane/test/support/clerkJwt.js";
 import { createIdentityTripFixtures } from "./support/fixtures.js";
 import {
-  resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
 } from "./support/postgres.js";
@@ -29,17 +28,10 @@ interface BootstrapDatabase {
 
 async function startBootstrapDatabase(): Promise<BootstrapDatabase> {
   const context = await startMigratedPostgres();
-  const connectionUri =
-    context.container?.getConnectionUri() ??
-    resolveExplicitExternalPostgresUrl();
-  if (connectionUri === null) {
-    await context.stop();
-    throw new Error("CrewRoll bootstrap database URI unavailable");
-  }
   await truncateIdentityTripTables(context.db);
   const fixtures = createIdentityTripFixtures(context.db);
   return {
-    connectionUri,
+    connectionUri: context.connectionString,
     async seedForegroundActor(clerkSubject) {
       const user = await fixtures.user({ clerk_subject: clerkSubject });
       const device = await fixtures.device(user.id);

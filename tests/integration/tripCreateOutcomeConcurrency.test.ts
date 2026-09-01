@@ -17,7 +17,6 @@ import { createHmacInviteCodeHasher } from "../../services/control-plane/src/pla
 import { createIdentityTripFixtures } from "./support/fixtures.js";
 import type { PostgresTestContext } from "./support/postgres.js";
 import {
-  resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
 } from "./support/postgres.js";
@@ -183,14 +182,8 @@ describe("create/outcome PostgreSQL overtaking", () => {
 
   beforeAll(async () => {
     context = await startMigratedPostgres();
-    const connectionString =
-      resolveExplicitExternalPostgresUrl() ??
-      context.container?.getConnectionUri();
-    if (connectionString === undefined) {
-      throw new Error("Missing disposable PostgreSQL connection URI");
-    }
-    databaseA = createDatabase(connectionString);
-    databaseB = createDatabase(connectionString);
+    databaseA = createDatabase(context.connectionString);
+    databaseB = createDatabase(context.connectionString);
   });
 
   beforeEach(async () => {

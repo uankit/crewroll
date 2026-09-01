@@ -1,5 +1,4 @@
 import { sql, type Kysely } from "kysely";
-import { getContainerRuntimeClient } from "testcontainers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { migrateToLatest } from "../../services/control-plane/src/db/migrate.js";
@@ -10,11 +9,12 @@ import {
 } from "./support/fixtures.js";
 import { migrateDown } from "./support/migrations.js";
 import {
+  assertPostgres17,
+  assertPostgres17Version,
   resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
   type PostgresTestContext,
-  usesExplicitExternalPostgres,
 } from "./support/postgres.js";
 
 const FIXED_NOW = new Date("2026-08-29T08:00:00.000Z");
@@ -1095,12 +1095,33 @@ describe.sequential("identity and trip schema", () => {
 });
 
 describe.sequential("PostgreSQL test-support lifecycle", () => {
-  it("fails closed unless the disposable loopback cluster is explicitly approved", () => {
-    expect(resolveExplicitExternalPostgresUrl({})).toBeNull();
+  it("rejects every server major except PostgreSQL 17", async () => {
+    expect(() => assertPostgres17Version("170006")).not.toThrow();
+    expect(() => assertPostgres17Version("160010")).toThrow(
+      "PostgreSQL 17 is required",
+    );
+    expect(() => assertPostgres17Version(undefined)).toThrow(
+      "PostgreSQL 17 is required",
+    );
+
+    const context = await startMigratedPostgres();
+    try {
+      await expect(assertPostgres17(context.db)).resolves.toBeUndefined();
+    } finally {
+      await context.stop();
+    }
+  });
+
+  it("accepts only the explicitly approved dedicated loopback database", () => {
+    const approved = "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17";
+
+    expect(() => resolveExplicitExternalPostgresUrl({})).toThrow(
+      "explicit disposable-loopback opt-in",
+    );
     expect(() =>
       resolveExplicitExternalPostgresUrl({
         CREWROLL_TEST_EXTERNAL_POSTGRES_URL:
-          "postgresql://uankit@127.0.0.1:55432/postgres",
+          "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17",
       }),
     ).toThrow("explicit disposable-loopback opt-in");
     expect(() =>
@@ -1110,14 +1131,18 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
     ).toThrow("explicit disposable-loopback opt-in");
 
     for (const connectionString of [
-      "postgresql://uankit@localhost:55433/postgres",
-      "postgresql://uankit@127.0.0.1:5432/postgres",
-      "postgresql://uankit@127.0.0.1:55434/postgres",
+      "postgres://uankit@127.0.0.1:55433/crewroll_test_pg17",
+      "postgresql://uankit@localhost:55433/crewroll_test_pg17",
+      "postgresql://uankit@127.0.0.1:5432/crewroll_test_pg17",
+      "postgresql://uankit@127.0.0.1:55432/crewroll_test_pg17",
+      "postgresql://uankit@127.0.0.1:55434/crewroll_test_pg17",
+      "postgresql://uankit@127.0.0.1:55433/postgres",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_task4_green",
       "postgresql://uankit@127.0.0.1:55433/user_database",
-      "postgresql://uankit@127.0.0.1:55433/postgres?",
-      "postgresql://uankit@127.0.0.1:55433/postgres?sslmode=disable",
-      "postgresql://uankit@127.0.0.1:55433/postgres#",
-      "postgresql://uankit@127.0.0.1:55433/postgres#fragment",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17?",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17?sslmode=disable",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17#",
+      "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17#fragment",
     ]) {
       expect(() =>
         resolveExplicitExternalPostgresUrl({
@@ -1127,67 +1152,28 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
       ).toThrow("approved disposable loopback cluster");
     }
 
-    for (const connectionString of [
-      "postgresql://uankit@127.0.0.1:55432/postgres",
-      "postgresql://uankit@127.0.0.1:55432/crewroll_test_task4_green",
-      "postgresql://uankit@127.0.0.1:55433/postgres",
-      "postgresql://uankit@127.0.0.1:55433/crewroll_test_task4_green",
-    ]) {
-      expect(
-        resolveExplicitExternalPostgresUrl({
-          CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
-          CREWROLL_TEST_EXTERNAL_POSTGRES_URL: connectionString,
-        }),
-      ).toBe(connectionString);
-    }
+    expect(
+      resolveExplicitExternalPostgresUrl({
+        CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: "DISPOSABLE_LOOPBACK_ONLY",
+        CREWROLL_TEST_EXTERNAL_POSTGRES_URL: approved,
+      }),
+    ).toBe(approved);
   });
 
-  it("cleans test resources when database construction fails", async () => {
+  it("propagates direct database construction failures", async () => {
     const failure = new Error("database construction failed for test");
-
-    if (usesExplicitExternalPostgres()) {
-      let observedError: unknown;
-
-      try {
-        await startMigratedPostgres({
-          databaseFactory() {
-            throw failure;
-          },
-        });
-      } catch (error) {
-        observedError = error;
-      }
-
-      expect(observedError).toBe(failure);
-      return;
-    }
-
-    let containerId: string | undefined;
-    let unexpectedContext: PostgresTestContext | undefined;
     let observedError: unknown;
 
     try {
-      unexpectedContext = await startMigratedPostgres({
+      await startMigratedPostgres({
         databaseFactory() {
           throw failure;
-        },
-        onContainerStarted(container) {
-          containerId = container.getId();
         },
       });
     } catch (error) {
       observedError = error;
-    } finally {
-      await unexpectedContext?.stop();
     }
 
     expect(observedError).toBe(failure);
-    expect(containerId).toEqual(expect.any(String));
-
-    const runtime = await getContainerRuntimeClient();
-    const runningContainers = await runtime.container.list();
-    expect(runningContainers.some(({ Id: id }) => id === containerId)).toBe(
-      false,
-    );
   });
 });

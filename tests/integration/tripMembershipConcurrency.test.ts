@@ -31,7 +31,6 @@ import { createHmacInviteCodeHasher } from "../../services/control-plane/src/pla
 import { createIdentityTripFixtures } from "./support/fixtures.js";
 import type { PostgresTestContext } from "./support/postgres.js";
 import {
-  resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
 } from "./support/postgres.js";
@@ -287,13 +286,7 @@ describe("join and projection PostgreSQL concurrency", () => {
 
   beforeAll(async () => {
     context = await startMigratedPostgres();
-    const connectionString =
-      resolveExplicitExternalPostgresUrl() ??
-      context.container?.getConnectionUri();
-    if (connectionString === undefined) {
-      throw new Error("Missing disposable PostgreSQL connection URI");
-    }
-    database = createDatabase(connectionString);
+    database = createDatabase(context.connectionString);
   });
 
   beforeEach(async () => {

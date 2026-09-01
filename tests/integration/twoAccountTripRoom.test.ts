@@ -66,7 +66,6 @@ import {
 import { createIdentityTripFixtures } from "./support/fixtures.js";
 import type { PostgresTestContext } from "./support/postgres.js";
 import {
-  resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
 } from "./support/postgres.js";
@@ -816,13 +815,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
   beforeAll(async () => {
     clerk = await startLocalClerkJwks();
     context = await startMigratedPostgres();
-    const resolved =
-      resolveExplicitExternalPostgresUrl() ??
-      context.container?.getConnectionUri();
-    if (resolved === undefined) {
-      throw new Error("Task 10 disposable PostgreSQL URI unavailable");
-    }
-    connectionString = resolved;
+    connectionString = context.connectionString;
   });
 
   beforeEach(async () => {
