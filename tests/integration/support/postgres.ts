@@ -6,6 +6,8 @@ import { migrateToLatest } from "../../../services/control-plane/src/db/migrate.
 import type { Database } from "../../../services/control-plane/src/db/schema/tables.js";
 
 const EXTERNAL_POSTGRES_OPT_IN = "DISPOSABLE_LOOPBACK_ONLY";
+const EXTERNAL_POSTGRES_URL =
+  "postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17";
 const PROCESS_LOCK_KEY = 1_123_955_636;
 
 const OWNED_TABLES = [
@@ -39,16 +41,27 @@ export interface StartMigratedPostgresOptions {
   readonly databaseFactory?: typeof createDatabase;
 }
 
+export interface ProcessLockConnection {
+  close(): Promise<void>;
+  unlock(): Promise<void>;
+}
+
+export type ProcessLockConnectionFactory = (
+  connectionString: string,
+) => Promise<ProcessLockConnection>;
+
+export interface ProcessLockCoordinator {
+  acquire(connectionString: string): Promise<() => Promise<void>>;
+}
+
 interface ProcessLock {
-  readonly client: Client;
+  readonly connection: ProcessLockConnection;
   references: number;
 }
 
-let processLockPromise: Promise<ProcessLock> | undefined;
-
-async function createProcessLock(
+async function createProcessLockConnection(
   connectionString: string,
-): Promise<ProcessLock> {
+): Promise<ProcessLockConnection> {
   const client = new Client({
     application_name: "crewroll-integration-process-lock",
     connectionString,
@@ -65,47 +78,77 @@ async function createProcessLock(
         "Another CrewRoll integration process owns the dedicated PostgreSQL database",
       );
     }
-    return { client, references: 0 };
   } catch (error) {
     await client.end();
     throw error;
   }
-}
 
-async function acquireProcessLock(
-  connectionString: string,
-): Promise<() => Promise<void>> {
-  processLockPromise ??= createProcessLock(connectionString);
-
-  let processLock: ProcessLock;
-  try {
-    processLock = await processLockPromise;
-  } catch (error) {
-    processLockPromise = undefined;
-    throw error;
-  }
-  processLock.references += 1;
-
-  let released = false;
-  return async () => {
-    if (released) return;
-    released = true;
-    processLock.references -= 1;
-    if (processLock.references !== 0) return;
-
-    try {
-      await processLock.client.query("select pg_advisory_unlock($1)", [
-        PROCESS_LOCK_KEY,
-      ]);
-    } finally {
-      try {
-        await processLock.client.end();
-      } finally {
-        processLockPromise = undefined;
-      }
-    }
+  return {
+    close: () => client.end(),
+    async unlock() {
+      await client.query("select pg_advisory_unlock($1)", [PROCESS_LOCK_KEY]);
+    },
   };
 }
+
+export function createProcessLockCoordinator(
+  createConnection: ProcessLockConnectionFactory,
+): ProcessLockCoordinator {
+  let processLock: ProcessLock | undefined;
+  let transition: Promise<void> = Promise.resolve();
+
+  function serialize<Result>(
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    const result = transition.then(operation, operation);
+    transition = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  return {
+    acquire(connectionString) {
+      return serialize(async () => {
+        if (processLock === undefined) {
+          processLock = {
+            connection: await createConnection(connectionString),
+            references: 0,
+          };
+        }
+
+        const acquiredLock = processLock;
+        acquiredLock.references += 1;
+        let released = false;
+
+        return async () => {
+          if (released) return;
+          released = true;
+
+          await serialize(async () => {
+            acquiredLock.references -= 1;
+            if (acquiredLock.references !== 0) return;
+
+            try {
+              await acquiredLock.connection.unlock();
+            } finally {
+              try {
+                await acquiredLock.connection.close();
+              } finally {
+                if (processLock === acquiredLock) processLock = undefined;
+              }
+            }
+          });
+        };
+      });
+    },
+  };
+}
+
+const processLockCoordinator = createProcessLockCoordinator(
+  createProcessLockConnection,
+);
 
 export function resolveExplicitExternalPostgresUrl(
   environment: Readonly<Record<string, string | undefined>> = process.env,
@@ -119,19 +162,7 @@ export function resolveExplicitExternalPostgresUrl(
     );
   }
 
-  const parsed = new URL(connectionString);
-  if (
-    connectionString.includes("?") ||
-    connectionString.includes("#") ||
-    parsed.protocol !== "postgresql:" ||
-    parsed.hostname !== "127.0.0.1" ||
-    parsed.port !== "55433" ||
-    parsed.pathname !== "/crewroll_test_pg17" ||
-    parsed.username !== "uankit" ||
-    parsed.password !== "" ||
-    parsed.search !== "" ||
-    parsed.hash !== ""
-  ) {
+  if (connectionString !== EXTERNAL_POSTGRES_URL) {
     throw new Error(
       "External CrewRoll PostgreSQL must be the approved disposable loopback cluster",
     );
@@ -170,7 +201,7 @@ export async function startMigratedPostgres({
   let releaseProcessLock: (() => Promise<void>) | undefined;
 
   try {
-    releaseProcessLock = await acquireProcessLock(connectionString);
+    releaseProcessLock = await processLockCoordinator.acquire(connectionString);
     await assertPostgres17(db);
     await migrateToLatest(db);
   } catch (error) {

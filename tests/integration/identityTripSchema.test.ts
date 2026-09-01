@@ -11,14 +11,29 @@ import { migrateDown } from "./support/migrations.js";
 import {
   assertPostgres17,
   assertPostgres17Version,
+  createProcessLockCoordinator,
   resolveExplicitExternalPostgresUrl,
   startMigratedPostgres,
   truncateIdentityTripTables,
+  type ProcessLockConnection,
   type PostgresTestContext,
 } from "./support/postgres.js";
 
 const FIXED_NOW = new Date("2026-08-29T08:00:00.000Z");
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+interface Deferred {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 async function expectPostgresError(
   operation: Promise<unknown>,
@@ -1131,6 +1146,13 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
     ).toThrow("explicit disposable-loopback opt-in");
 
     for (const connectionString of [
+      ` ${approved}`,
+      `${approved} `,
+      `\t${approved}`,
+      `${approved}\n`,
+      "POSTGRESQL://uankit@127.0.0.1:55433/crewroll_test_pg17",
+      "postgresql://uankit:@127.0.0.1:55433/crewroll_test_pg17",
+      "postgresql://uankit@127.0.0.1:055433/crewroll_test_pg17",
       "postgres://uankit@127.0.0.1:55433/crewroll_test_pg17",
       "postgresql://uankit@localhost:55433/crewroll_test_pg17",
       "postgresql://uankit@127.0.0.1:5432/crewroll_test_pg17",
@@ -1158,6 +1180,128 @@ describe.sequential("PostgreSQL test-support lifecycle", () => {
         CREWROLL_TEST_EXTERNAL_POSTGRES_URL: approved,
       }),
     ).toBe(approved);
+  });
+
+  it("finishes the last release before opening a replacement process lock", async () => {
+    const releaseEntered = deferred();
+    const allowRelease = deferred();
+    const events: string[] = [];
+    let connections = 0;
+    const coordinator = createProcessLockCoordinator(async () => {
+      connections += 1;
+      const connectionId = connections;
+      events.push(`open:${connectionId}`);
+      return {
+        async close() {
+          events.push(`close:${connectionId}`);
+        },
+        async unlock() {
+          events.push(`unlock:${connectionId}`);
+          if (connectionId === 1) {
+            releaseEntered.resolve();
+            await allowRelease.promise;
+          }
+        },
+      } satisfies ProcessLockConnection;
+    });
+
+    const releaseFirst = await coordinator.acquire("approved");
+    const stoppingFirst = releaseFirst();
+    await releaseEntered.promise;
+
+    let secondAcquired = false;
+    const acquiringSecond = coordinator.acquire("approved").then((release) => {
+      secondAcquired = true;
+      return release;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(secondAcquired).toBe(false);
+    expect(connections).toBe(1);
+
+    allowRelease.resolve();
+    await stoppingFirst;
+    const releaseSecond = await acquiringSecond;
+
+    expect(events).toEqual(["open:1", "unlock:1", "close:1", "open:2"]);
+    await releaseSecond();
+    expect(events).toEqual([
+      "open:1",
+      "unlock:1",
+      "close:1",
+      "open:2",
+      "unlock:2",
+      "close:2",
+    ]);
+  });
+
+  it("keeps one process lock until every in-process reference releases", async () => {
+    const events: string[] = [];
+    const coordinator = createProcessLockCoordinator(() => {
+      events.push("open");
+      return Promise.resolve({
+        close() {
+          events.push("close");
+          return Promise.resolve();
+        },
+        unlock() {
+          events.push("unlock");
+          return Promise.resolve();
+        },
+      });
+    });
+
+    const releaseFirst = await coordinator.acquire("approved");
+    const releaseSecond = await coordinator.acquire("approved");
+    expect(events).toEqual(["open"]);
+
+    await releaseFirst();
+    expect(events).toEqual(["open"]);
+
+    await releaseSecond();
+    await releaseSecond();
+    expect(events).toEqual(["open", "unlock", "close"]);
+  });
+
+  it("recovers lock state after acquisition and cleanup failures", async () => {
+    const acquireFailure = new Error("forced lock acquisition failure");
+    const releaseFailure = new Error("forced lock release failure");
+    const events: string[] = [];
+    let connections = 0;
+    const coordinator = createProcessLockCoordinator(async () => {
+      connections += 1;
+      const connectionId = connections;
+      events.push(`open:${connectionId}`);
+      if (connectionId === 1) throw acquireFailure;
+
+      return {
+        async close() {
+          events.push(`close:${connectionId}`);
+        },
+        async unlock() {
+          events.push(`unlock:${connectionId}`);
+          if (connectionId === 2) throw releaseFailure;
+        },
+      } satisfies ProcessLockConnection;
+    });
+
+    await expect(coordinator.acquire("approved")).rejects.toBe(acquireFailure);
+
+    const releaseSecond = await coordinator.acquire("approved");
+    await expect(releaseSecond()).rejects.toBe(releaseFailure);
+
+    const releaseThird = await coordinator.acquire("approved");
+    await expect(releaseThird()).resolves.toBeUndefined();
+    expect(events).toEqual([
+      "open:1",
+      "open:2",
+      "unlock:2",
+      "close:2",
+      "open:3",
+      "unlock:3",
+      "close:3",
+    ]);
   });
 
   it("propagates direct database construction failures", async () => {
