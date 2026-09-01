@@ -2,436 +2,395 @@
 
 **Date:** 2026-09-01
 
-**Status:** Proposed for implementation after user review
+**Status:** Approved for implementation after the explicit zero-container decision
 
-## 1. Objective
+## 1. Outcome
 
-Create a durable staging foundation for CrewRoll and use it to complete the
-physical trip-room checkpoint. The environment must exercise the accepted Expo
-57 mobile application against the real Node.js control plane, real PostgreSQL
-17, the existing Clerk development instance, and AWS KMS. A local tunnel is not
-acceptance evidence.
+CrewRoll needs one durable, production-shaped staging control plane today so one physical iPhone and one physical Android phone can complete the real create, join, approval, full-photo readiness, Start, ACTIVE, restart recovery, and sign-out-erasure journey.
 
-The public mobile origin will be:
+The accepted deployment is the existing Node 22/Fastify API on AWS Elastic Beanstalk's managed Node.js 22 Amazon Linux 2023 platform, backed by private RDS PostgreSQL 17. The release artifact is an immutable API-only source ZIP stored as a versioned KMS-encrypted S3 object. Cloudflare remains authoritative DNS and publishes only `api.staging.crewroll.app` after health and migration gates pass.
 
-```text
-https://api.staging.crewroll.app
-```
+This design uses no Docker daemon, Dockerfile, Compose file, OCI image, registry, ECS, ECR, Fargate, or Testcontainers in repository code, local testing, CI, packaging, Terraform, or deployment. AWS may internally implement a managed service with infrastructure that is opaque to us; that does not change the zero-container repository and deployment contract.
 
-The staging foundation is accepted only after real iOS and Android development
-builds complete sign-in, device provisioning, trip creation, invite joining,
-approval, readiness, Start, restart recovery, and authorization-failure tests.
-This is a production-shaped prerequisite, not the first shippable product
-milestone. `WOW-001` remains the first product milestone and additionally
-requires bidirectional encrypted photo transfer, exact library saves, receipts,
-S3 purge, failure recovery, and full traces to pass three consecutive times on
-release-signed preview builds.
+This is a staging trip-room checkpoint, not production readiness and not `WOW-001`. The encrypted photo-transfer milestone remains next.
 
-## 2. Verified account and isolation boundary
+## 2. Fixed scope and account boundary
 
-The authenticated AWS account is the standalone account named
-`personalprojects`. It is not the Vecta account and is not a member of AWS
-Organizations. Mumbai (`ap-south-1`) and Stockholm (`eu-north-1`) currently
-contain no ECS clusters, ECR repositories, RDS instances, load balancers,
-Secrets Manager application secrets, customer-managed KMS aliases, or active
-CloudFormation stacks. One unrelated S3 bucket exists and is outside CrewRoll
-scope.
+- Region is `ap-south-1` only.
+- The account ID is verified out of band before every live phase.
+- Authentication must be for the AWS account associated with `uankitu@gmail.com`; any VectaTech or other account identity blocks work.
+- Every supported resource is tagged `Project=CrewRoll`, `Environment=staging`, and `ManagedBy=Terraform`, with names prefixed `crewroll-staging-`.
+- CrewRoll receives a dedicated VPC. Default VPCs and unrelated buckets/resources remain untouched.
+- Cloudflare may create only ACM validation records and the DNS-only API CNAME. Apex, `www`, `go`, relay, site, email routing, MX, SPF, and DKIM are out of scope.
+- The existing Clerk Development application and EAS project `fe1de141-5c42-4250-9c1f-f7313845dc8e` are reused. No second project/application is created.
+- No production environment/account is created.
 
-CrewRoll staging will therefore use the existing account but remain isolated by
-all of the following controls:
-
-- Region is fixed to `ap-south-1`.
-- Terraform refuses to plan or apply unless the caller account ID matches an
-  out-of-band `allowed_account_id` value.
-- Every managed resource carries `Project=CrewRoll`, `Environment=staging`,
-  and `ManagedBy=Terraform` tags where AWS supports tagging.
-- CrewRoll receives a new VPC. The default VPCs and all existing resources are
-  untouched.
-- Resource names use the `crewroll-staging-` prefix.
-- This account receives no production CrewRoll deployment. Production remains
-  a separately reviewed future account and Terraform state.
-
-## 3. Options considered
-
-### Chosen: AWS control plane with Cloudflare DNS
-
-Cloudflare remains authoritative for `crewroll.app`. A DNS-only CNAME and ACM
-validation records point `api.staging.crewroll.app` to an AWS Application Load
-Balancer. AWS runs the accepted Node 22/Fastify process on ECS Fargate, private
-PostgreSQL 17 on RDS, KMS, Secrets Manager, ECR, CloudWatch, and WAF.
-
-This matches the accepted CrewRoll blueprint and keeps PostgreSQL, KMS, and the
-future encrypted S3 media plane in one provider.
-
-### Rejected for the milestone: Cloudflare Tunnel
-
-A tunnel would leave the Mac and local PostgreSQL as production dependencies.
-It remains useful only for bounded debugging.
-
-### Rejected for the milestone: Workers or Cloudflare Containers
-
-Direct Workers requires a lifecycle adapter, Hyperdrive, and runtime
-compatibility work. Cloudflare Containers can run the process but still needs
-external PostgreSQL and AWS KMS, splitting one control plane across providers.
-Neither improves this staging foundation enough to justify the additional
-seams.
-
-## 4. Runtime topology
+## 3. Chosen topology
 
 ```text
-Expo 57 development builds
-          |
-          | HTTPS https://api.staging.crewroll.app
-          v
-Cloudflare authoritative DNS (DNS-only CNAME)
-          |
-          v
-ACM TLS certificate -> AWS WAF -> public ALB (two public subnets)
-                                      |
-                                      v
-                          ECS Fargate API service
-                         two tasks, no public IPs
-                           two private app subnets
-                              |             |
-                              |             +-> NAT -> Clerk JWKS/API
-                              |                    and external providers
-                              v
-                    private RDS PostgreSQL 17
-                     private database subnets
+Physical Expo 57 iOS/Android development or preview build
+                            |
+                            | HTTPS api.staging.crewroll.app
+                            v
+                Cloudflare DNS-only CNAME
+                            |
+                            v
+        ACM TLS -> AWS WAF -> public managed ALB
+                            |
+                            v
+       Elastic Beanstalk load-balanced environment
+          Node.js 22 on Amazon Linux 2023
+        min/desired 2, max 4 private instances
+               |                         |
+               |                         +-> NAT -> Clerk/external APIs
+               v
+          private RDS PostgreSQL 17
+         isolated private DB subnets
 
-ECS task role -> runtime KMS operations
-              -> scoped staging S3 media operations
-ECS execution role -> ECR image and CloudWatch logs
-                   -> exact Secrets Manager values and their decrypt keys
-One-off migration task -> RDS before API rollout
+Versioned/KMS S3 artifact -> immutable Beanstalk application version
+Secrets Manager -> Beanstalk application environment secrets
+SSM -> closed, allowlisted diagnostics only
+CloudWatch -> health, application, WAF, RDS and cost evidence
 ```
 
-Only the ALB accepts Internet traffic. ECS tasks and RDS have no public IPs.
-RDS port 5432 accepts traffic only from the API and migration security groups.
+Only the ALB accepts Internet traffic. Application instances and RDS have no public IP. Port 5432 accepts traffic only from the exact Beanstalk instance security group.
 
-## 5. Terraform structure
+## 4. Why Elastic Beanstalk
 
-Terraform owns every AWS workload resource and its IAM policy. The initial
-implementation uses these bounded units:
+Elastic Beanstalk supplies a managed Node 22 deployment path without requiring us to build or operate container artifacts. It gives the milestone a load-balanced multi-instance service, immutable application versions, deployment health/rollback, Auto Scaling, instance profiles, SSM-managed hosts, and normal Node process semantics while retaining external private RDS.
+
+The live platform is not guessed. At each service plan/apply, an account/region-bound resolver lists and describes supported AWS platforms, then returns the actual ARN for branch `Node.js 22 running on 64bit Amazon Linux 2023`. The current reviewed platform is branch version `6.11.7` with Node `22.23.2`, status `Ready`, and owner `AWSElasticBeanstalk`. If AWS advances, withdraws, retires, or changes that platform, planning fails until the version/runtime change receives review. Terraform never accepts a caller-invented platform ARN.
+
+Rejected approaches for this checkpoint:
+
+- A local tunnel would make the Mac and local database runtime dependencies.
+- A serverless/runtime port would introduce lifecycle and database compatibility seams today.
+- Container tooling and container orchestrators are explicitly rejected by the user's zero-container decision.
+- A managed external application database such as Supabase is unnecessary here because the selected AWS topology already has private RDS; it may be reconsidered in a separate architecture change, not mixed into this foundation.
+
+## 5. Immutable API-only release artifact
+
+A clean reviewed Git commit produces a deterministic ZIP with this exact logical boundary:
+
+```text
+Procfile
+package.json
+npm-shrinkwrap.json
+.npmrc
+service/src/**/*.js
+vendor/crewroll-contracts/package.json
+vendor/crewroll-contracts/dist/**/*.js
+certs/global-bundle.pem
+.platform/hooks/prebuild/10-install-rds-ca.sh
+.platform/hooks/predeploy/10-verify-tls-migrate.sh
+```
+
+`Procfile` is exactly:
+
+```text
+web: node service/src/api/main.js
+```
+
+The runtime package contains only production dependencies and binds `@crewroll/contracts` to the included compiled local package. A shrinkwrap pins every transitive dependency. The closed `.npmrc` contains only `ignore-scripts=true`, `omit=dev`, `fund=false`, and `audit=false`. Elastic Beanstalk performs a shrinkwrap-backed `npm install` and must honor those settings; pre-upload verification separately uses `npm ci --omit=dev --ignore-scripts`. Arbitrary lifecycle scripts are not executed. Import-graph policy removes/rejects currently unused `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`, `@js-temporal/polyfill`, `@opentelemetry/sdk-node`, `firebase-admin`, and `pg-boss` unless a reviewed accepted API path becomes reachable. The ZIP excludes TypeScript declarations (`.d.ts`), mobile/native source, tests, source maps, development dependencies, workspaces, secrets, `.env*`, Git data, Terraform files/state/plans, caches, logs, and coverage.
+
+The builder normalizes file order, timestamps, ownership, and modes. Two builds from the same clean commit must produce the same SHA-256. The artifact object key is:
+
+```text
+applications/<git-sha>/crewroll-control-plane-<zip-sha256>.zip
+```
+
+The private artifact bucket is versioned and KMS-encrypted with S3 Bucket Keys disabled so KMS policy can bind each exact object ARN. Beanstalk's application-version API names an S3 bucket/key, not a version parameter, so the deployment gate reads the approved object version and the current object head immediately before registration and requires identical version ID, checksums, and reviewed metadata. The deploy role has exact-object S3/KMS read both for that verification and because `CreateApplicationVersion` requires the caller to read a custom bucket. The Beanstalk EC2 instance-profile role separately has exact-object `GetObject`/`kms:Decrypt` to retrieve the application; the Beanstalk service role has neither. The content-addressed key and hashes are embedded in the unique application-version label. Evidence binds Git SHA, ZIP SHA, runtime manifest SHA, shrinkwrap SHA, S3 object version ID, and label. The runbook never overwrites an object and never reuses a label for different bytes.
+
+Two other deterministic artifacts remain isolated from the API and from each other:
+
+- `bootstrap/<git-sha>/crewroll-db-bootstrap-<sha>.zip` contains only the database/Secrets Manager bootstrap command and no test runner.
+- `acceptance/<git-sha>/crewroll-rds-acceptance-<sha>.zip` contains only migrations/integration tests and no master-secret/bootstrap code.
+
+Each has a separate manifest, shrinkwrap, S3 version, private instance profile, launch template/Auto Scaling group, and SSM document. Neither is a Beanstalk application version.
+
+## 6. Node, CA, database, and migration contract
+
+The prebuild hook verifies Node `22.23.2`, verifies the pinned public Amazon RDS CA bundle checksum, and installs it root-owned mode `0444` at:
+
+```text
+/etc/crewroll/rds-global-bundle.pem
+```
+
+Every production database process requires a PostgreSQL URL containing exactly:
+
+```text
+uselibpqcompat=true
+sslmode=verify-full
+sslrootcert=/etc/crewroll/rds-global-bundle.pem
+```
+
+The API, migration, TLS verifier, and migration verifier share one fail-closed parser. Missing, duplicate, downgraded, encoded, or conflicting parameters fail startup/deployment.
+
+Elastic Beanstalk runs predeploy on every new immutable-deployment instance. Each hook runs TLS verification first, then the compiled migrator, then five-contiguous-migration verification (`001` through `005`) before the new application version becomes eligible for traffic. The current Kysely PostgreSQL migrator uses an advisory-lock wait fixed at one hour; tests preserve that honest bound. Migrations are transactional, already-applied exact names/timestamps are idempotent, and the session lock releases in `finally`. Concurrent hooks serialize safely; the design never assumes a leader or single invocation. Current Kysely history has no checksum column, so the milestone does not claim database-side checksums; immutable artifact hashes and the source migration-manifest gate protect reviewed bytes. API startup never migrates or repairs the schema. A failed predeploy hook fails that application deployment while the previous immutable version remains the rollback target.
+
+Production API/diagnostic pools have finite `connectionTimeoutMillis=10000`, `idleTimeoutMillis=30000`, and `max=10`. Migration processes use one connection and always destroy it.
+
+TLS acceptance proves:
+
+- a real database connection has `pg_stat_ssl.ssl=true`;
+- the CA chain is accepted;
+- a negative probe opens TCP to the same parsed RDS endpoint but changes only the TLS hostname/SNI;
+- only `ERR_TLS_CERT_ALTNAME_INVALID` passes the negative probe;
+- DNS failure, refusal, timeout, authentication failure, or query failure cannot impersonate hostname verification;
+- the negative path runs no SQL query and logs no endpoint, URL, username, certificate, raw error, or secret.
+
+## 7. Direct PostgreSQL testing
+
+Local integration uses a directly running PostgreSQL 17 server only at:
+
+```text
+postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17
+```
+
+The destructive test reset is allowed only when these exact variables are present:
+
+```text
+CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN=DISPOSABLE_LOOPBACK_ONLY
+CREWROLL_TEST_EXTERNAL_POSTGRES_URL=postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17
+```
+
+The harness verifies loopback host, exact port/database/user, PostgreSQL major version 17, and explicit opt-in before it resets the dedicated test database. It rejects staging/remote hosts, another database, another port, or a fallback. It never installs, starts, or discovers infrastructure implicitly.
+
+Credential-free CI has a separate direct-database lane. It installs PostgreSQL 17 from the signed official PGDG packages on the ephemeral runner, binds the dedicated cluster to port 55433, creates only role `uankit` and database `crewroll_test_pg17`, verifies `server_version_num`, exports the same two approved variables, runs the full integration suite, then drops the exact database/role and stops the cluster in an always-run cleanup step. It uses no service container and proves nothing remains listening on the dedicated port.
+
+Managed-RDS proof uses two mutually exclusive, private, no-public-IP Auto Scaling groups with desired 0 when idle and exactly 1 when activated. Each launch template requires IMDSv2 tokens with hop limit 1, an encrypted delete-on-termination root volume, and no SSH key. Each activation creates a hard one-hour deadline enforced by an independent scheduled scale-to-zero watchdog; the normal always-run stop path is additional protection, not the only termination mechanism. The bootstrap/admin runner has no tests; it alone reads the RDS-managed master secret. Initial `bootstrap-app-db` creates or repairs the application role to the complete contract `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 60 VALID UNTIL 'infinity'`, removes all role memberships in either direction, verifies every catalog attribute plus password-validity state and its owned database/privileges, and only then promotes the app URL. Later `acceptance-prepare <nonce>` creates the exact database `crewroll_acceptance_<nonce>` plus an ephemeral owner with the same closed privilege contract, `CONNECTION LIMIT 20`, and password validity exactly two hours from preparation; it removes/verifies no memberships, grants no app-database CONNECT, and writes that unprivileged URL as the sole current acceptance-run secret. The bootstrap runner returns to desired 0 before tests.
+
+The acceptance runner reads only the current unprivileged nonce URL and its test artifact. Its process/IMDS cannot obtain the RDS master, app URL, another secret, or any CREATEDB/CREATEROLE credential. Its wrapper requests the secret only with explicit `VersionStage=AWSCURRENT`; IAM denies an omitted stage, any `VersionId`, `AWSPREVIOUS`, and an unlabeled retired version. Test-only `acceptance-run <nonce>` validates URL/database/owner identity and runs migrations/full suite without create/drop authority. The runner returns to desired 0 even after failure or operator interruption through the deadline watchdog. The no-test bootstrap runner then returns for `acceptance-clean <nonce>`, terminates sessions, drops exact database/owner, verifies absence, retires the current URL stage, and returns to desired 0. Completion requires no acceptance database/role/current URL and no runner instance. This test never claims the staging application database was an integration fixture.
+
+## 8. Network and data resources
+
+- VPC `10.42.0.0/16` across two availability zones.
+- Public subnets `10.42.0.0/24` and `10.42.1.0/24` for the managed ALB.
+- Private application subnets `10.42.10.0/24` and `10.42.11.0/24` for Beanstalk instances.
+- Private database subnets `10.42.20.0/24` and `10.42.21.0/24` with no Internet route.
+- One NAT gateway for cost-bounded staging and one S3 gateway endpoint.
+- RDS PostgreSQL 17 on `db.t4g.small`, single-AZ, encrypted, deletion-protected, seven-day backups, final snapshot, 20 GiB gp3 expandable only through 100 GiB, `manage_master_user_password=true`, and parameter `rds.force_ssl=1`.
+- Single-AZ is a staging cost boundary, not a production precedent.
+- The guarded media bucket is private, has no CORS/Object Lock/versioning, aborts incomplete multipart uploads after one day, and expires objects after 22 days. Current API permissions contain no media-object action.
+- State, audit, artifact, access-log, and media buckets have public blocking, ownership controls, encryption, retention/lifecycle policy, `force_destroy=false`, and explicit deletion guards.
+
+## 9. Elastic Beanstalk runtime policy
+
+- Load-balanced environment on the live-discovered Node.js 22 AL2023 platform.
+- Private instances in two application subnets; no public instance IP.
+- Auto Scaling minimum/desired 2 and maximum 4.
+- Immutable deployment policy and enhanced health.
+- ALB health path `/health/ready`; environment must be `Ready/Green` with two healthy targets before DNS publication.
+- Previous immutable application versions and source-object versions remain available for rollback.
+- External RDS is never coupled to the Beanstalk environment lifecycle.
+- The service role and EC2 instance profile are separate and have no access keys.
+- SSM is enabled for allowlisted diagnostics only; interactive shell, arbitrary command, port forwarding, and broad parameter access are forbidden.
+- No background worker is invented until the repository has an accepted worker entrypoint.
+
+The instance profile reads exactly seven runtime secrets:
+
+```text
+DATABASE_URL
+BACKGROUND_CREDENTIAL_HMAC_KEY_V1
+INVITE_CODE_HMAC_KEY
+CLERK_SECRET_KEY
+CLERK_WEBHOOK_SECRET
+CLERK_ISSUER
+CLERK_AUTHORIZED_PARTIES_JSON
+```
+
+They are delivered only through `aws:elasticbeanstalk:application:environmentsecrets`. Plain environment contains only Node mode, host, port, log level, AWS region, and the exact runtime KMS key ID. APNs, Firebase, media bucket, debug CORS, endpoints, URLs, and secret values are absent.
+
+`CLERK_AUTHORIZED_PARTIES_JSON` is canonical `[]` when the safe development inspector observes an ordinary Expo token with absent `azp`; if `azp` is present, it is the canonical array containing the exact observed HTTPS origin. Absent claim follows the accepted absent branch. Present claim must match the configured list and therefore fails against `[]`. Issuer is never guessed as an authorized party.
+
+Terraform creates secret metadata and permissions, never external secret values. RDS manages its master secret. The no-test bootstrap runner alone uses it to create/promote the app URL and prepare/clean nonce-scoped acceptance databases/URL stages; it returns to desired 0 before and after tests. The test-bearing acceptance runner sees only one current unprivileged nonce URL and returns to desired 0 after the test run. API roles see neither private-runner secret. The deployment role can add external provider/HMAC secret versions but cannot read them. Provider secrets are entered via no-echo stdin only after the exact destination is shown and fresh action-time confirmation is received.
+
+## 10. Edge, logging, and observability
+
+- ACM issues `api.staging.crewroll.app` in Mumbai.
+- Port 80 redirects unconditionally to 443.
+- Port 443 uses `ELBSecurityPolicy-TLS13-1-2-2021-06` and the ACM certificate.
+- WAF uses AWS managed Common, Known Bad Inputs, and IP Reputation groups plus an IP rate limit of 2,000 `/v1/` requests per five minutes.
+- Sampled requests are disabled at every WAF level.
+- WAF logging redacts authorization, cookie, and all Svix signature headers.
+- Controlled canaries prove WAF and application logs contain no JWT, invite, background bearer, push token, database URL, secret, raw provider error, or redacted header value.
+- Application logs retain 30 days; ALB/WAF logs retain 90 days.
+- ALB access logs use S3 SSE-S3 (`AES256`) because ALB delivery does not support a customer-managed key for that destination. Its bucket policy grants only the current ALB log-delivery service principal to the exact account/prefix and denies insecure transport.
+- WAF and application CloudWatch logs use separate customer-managed KMS keys.
+- Health/capacity/deployment, ALB targets/latency/5xx, NAT, RDS CPU/storage/connections/free space, WAF, root activity, anomaly, and budget alarms are enabled.
+
+## 11. Terraform and state structure
 
 ```text
 infra/terraform/
   bootstrap/
-    state.tf                 # encrypted versioned state bucket and lockfile policy
-    deploy-role.tf           # temporary-credential Terraform deployment role
-  modules/control-plane/
-    network.tf               # VPC, subnets, route tables, NAT, endpoints
-    security.tf              # security groups, WAF, ACM inputs
-    database.tf              # PostgreSQL 17 and subnet/parameter groups
-    storage.tf               # staging media and access-log buckets
-    identity.tf              # KMS keys, task roles, execution/migration roles
-    secrets.tf               # secret containers and ECS references, never values
-    compute.tf               # ECR, task definitions, ALB, ECS service
-    observability.tf         # logs, alarms, SNS, dashboard
+    backend.tf
+    main.tf
     variables.tf
     outputs.tf
     versions.tf
-    control-plane.tftest.hcl
-  environments/staging/
-    backend.tf
-    foundation.tf            # network, RDS, ECR, keys, secret containers, edge
-    runtime.tf               # task definitions, migration, API service and DNS
+    tests/bootstrap.tftest.hcl
+  modules/control-plane/
+    network.tf
+    database.tf
+    storage.tf
+    identity.tf
+    secrets.tf
+    elastic-beanstalk.tf
+    ephemeral-runners.tf
+    edge.tf
+    observability.tf
+    ssm.tf
     variables.tf
     outputs.tf
+    versions.tf
+    tests/data-foundation.tftest.hcl
+    tests/runtime-edge.tftest.hcl
+  environments/staging/
+    backend.tf
+    providers.tf
+    main.tf
+    variables.tf
+    outputs.tf
+    versions.tf
+    infracost-usage.yml
+    tests/staging.tftest.hcl
 ```
 
-Remote state uses a dedicated S3 bucket with block-public-access, versioning,
-SSE-KMS, and `use_lockfile = true`. DynamoDB locking is not added because S3
-lockfiles are the current supported mechanism and DynamoDB locking is
-deprecated. Terraform state is confidential and never committed.
+Remote state uses a dedicated versioned S3 bucket, SSE-KMS, block public access, and `use_lockfile=true`. Backend configuration contains no nested assume role because the selected final profile already supplies the deploy-role session. The migration uses `terraform init -migrate-state`, preserves a mode-0600 checksum backup, compares lineage/serial/non-secret address inventory, and deletes local source state only after equality and a zero-drift remote plan.
 
-The Cloudflare provider owns only the ACM-validation records and the exact
-`api.staging.crewroll.app` DNS record. Its scoped token is supplied through the
-provider's environment variable and never stored in Terraform state or source.
-The existing apex, email, site, and relay records are outside this state.
+Workload phases are:
 
-## 6. Staging resource policy
+1. `foundation`: network, RDS, KMS, guarded buckets, secret metadata, logs/alarms, ACM and validation DNS. No application version/environment/API CNAME.
+2. `bootstrap-runner-start/stop`: scale only the no-test admin group 0→1→0 for app bootstrap or acceptance prepare/cleanup.
+3. `acceptance-runner-start/stop`: scale only the unprivileged test group 0→1→0; it is mutually exclusive with bootstrap.
+4. `service`: exact API S3 object evidence and live-discovered platform create the immutable application version and environment. DNS remains false.
+5. `publish-dns`: creates exactly one DNS-only API CNAME after health gates.
+6. `rollout`: adds a new immutable application version and updates only the exact environment.
+7. `withdraw-dns`: removes only the API CNAME.
+8. `drift`: expects no changes with explicit current deployment variables and both runner groups desired 0.
 
-### Network
+Every apply uses a saved reviewed plan. Immediately before apply, the operator displays its SHA-256 and add/change/destroy counts. `-auto-approve`, unsaved plans, ambient profiles, default phase values, and provider secrets in variables are forbidden.
 
-- Dedicated `10.42.0.0/16` VPC in two availability zones.
-- Two public ALB subnets, two private application subnets, and two private
-  database subnets.
-- One NAT gateway for staging. Production will require a separate availability
-  design.
-- S3 gateway endpoint; interface endpoints are added only where they reduce a
-  required NAT dependency without blocking external Clerk calls.
+## 12. IAM and account bootstrap
 
-### Compute
+The durable chain is:
 
-- One immutable ECR repository with vulnerability scanning and lifecycle
-  cleanup of untagged images.
-- A multi-stage image pinned to Node.js 22.13.x.
-- Two Fargate API tasks spread across both application subnets. Each staging
-  task starts at 0.5 vCPU and 1 GiB memory; service autoscaling is bounded from
-  two through four tasks and targets 60% CPU while ALB latency/request alarms
-  provide a second scaling and investigation signal.
-- Each task starts the compiled `services/control-plane` API with
-  `HOST=0.0.0.0` and `PORT=3000`.
-- ALB health checks use `/health/ready`; deployment circuit breaker and rollback
-  are enabled.
-- The same image defines a separate one-off migration task. Migrations never run
-  during API startup.
-- No background worker service is invented before the repository contains an
-  accepted worker entrypoint.
+```text
+crewroll-operator-login
+  -> crewroll-operator-process
+  -> MFA crewroll-staging-role
+  -> crewroll-staging-deploy
+```
 
-### PostgreSQL
+Terraform/provider/backend consume only the final profile. The operator has console login, required password reset, MFA, no access key, exact attachment of AWS-managed `SignInLocalDevelopmentAccess`, and separate permission only to assume the first one-hour CrewRoll role. AWS CLI >=2.32 obtains the first profile through `aws login`; a `credential_process` exports only process-format temporary credentials into the MFA operator-role profile, which is the source of the final one-hour deploy-role profile. No config or credentials file contains an access-key pair. Root is not routine deployment authentication.
 
-- RDS PostgreSQL 17 on `db.t4g.small`, encrypted, private,
-  deletion-protected, and single-AZ for staging.
-- Automated backups and point-in-time recovery are retained for seven days.
-- A final snapshot is required before an intentional destroy.
-- Storage starts at 20 GiB gp3 and may autoscale only through 100 GiB.
-- The parameter group sets `rds.force_ssl=1`. Both the migration and API
-  processes use `sslmode=verify-full` with the pinned current Amazon RDS CA
-  bundle; hostname and certificate verification are exercised before rollout.
-- Database credentials live in Secrets Manager. They are not committed,
-  printed, or placed in Terraform variable files.
+The deployment policy is an explicit action/resource/condition matrix for state, bootstrap refresh, network, RDS, Beanstalk, platform discovery, S3 artifacts, exact role passing, ALB reads/WAF association, ACM, logs/alarms, KMS, secret metadata/version writes, allowlisted SSM, and bounded workload IAM. It requires Mumbai and exact request/resource tags wherever AWS supports them. It omits data/database/bucket/key deletion, IAM users/access keys, secret reads, interactive SSM, arbitrary commands, broad role passing, and mutations outside CrewRoll boundaries.
 
-Single-AZ staging is an explicit cost boundary, not a production precedent.
-Production remains Multi-AZ in a separate account.
+The final policy is parsed by tests, validated by IAM Access Analyzer, and simulated for representative allowed/denied calls before workload apply. Any destructive exception requires a separately reviewed temporary policy plus fresh action-time confirmation.
 
-### KMS, secrets, and storage
+Root key last-used inspection is read-only. Exact deactivation and deletion each require a fresh confirmation naming the key ID, performed from verified root/bootstrap proof, never through the deploy role. The account also gets CloudTrail root alerts, Access Analyzer, anomaly controls, and budget alerts at 50%, 80%, 100%, and 100% forecast of USD 200.
 
-- Separate customer-managed KMS keys protect Terraform state and encrypted push
-  token data. Rotation is enabled; destructive key scheduling uses the maximum
-  practical waiting period.
-- Secret containers hold `DATABASE_URL`, Clerk server credentials, the Clerk
-  issuer and authorized-party JSON, both HMAC keys, APNs values, and the Firebase
-  service account JSON. Terraform creates metadata and permissions but never
-  embeds secret values in source.
-- Because ECS resolves secret-backed environment values before the container
-  starts, only the ECS execution and migration execution roles receive exact
-  `secretsmanager:GetSecretValue` and required decrypt permissions. The API task
-  role receives no Secrets Manager read permission and retains only runtime KMS
-  and S3 permissions used by application code.
-- The staging media bucket blocks all public access, uses default encryption,
-  has versioning and Object Lock disabled, aborts incomplete multipart uploads
-  after one day, and expires objects after 22 days. It has no browser CORS rule.
-- The API task role receives only the currently required object and KMS actions.
+## 13. Cost gate
 
-### Edge and DNS
+Before the first foundation apply, Terraform creates a complete non-applied `service` cost-envelope plan with DNS false and locked placeholder coordinates for all three artifacts. Plan policy rejects any apply, delete/replace, early DNS, missing paid resource, invented platform, or mutable artifact.
 
-- ACM issues the certificate for `api.staging.crewroll.app` in Mumbai.
-- Terraform's narrowly scoped Cloudflare provider creates only the ACM
-  validation records and a DNS-only CNAME to the ALB hostname.
-- Port 80 performs an unconditional redirect to 443. Port 443 uses
-  `ELBSecurityPolicy-TLS13-1-2-2021-06` and the ACM certificate; plaintext
-  forwarding is impossible.
-- WAF blocks the AWS managed Common, Known Bad Inputs, and IP Reputation rule
-  groups and an IP rate rule of 2,000 `/v1/` requests per five-minute window.
-  Application-level authenticated command limits remain authoritative.
-- WAF sampled requests are disabled. Its encrypted logging configuration
-  redacts `authorization`, `cookie`, `svix-id`, `svix-timestamp`, and
-  `svix-signature` headers before delivery; tests inject canaries into every
-  field and prove neither WAF nor application logs retain them.
-- Existing apex, `www`, `go`, relay, email-routing, MX, SPF, and DKIM records are
-  not modified during staging creation.
+Pinned Infracost `0.10.45` consumes one committed conservative usage file covering one NAT, two managed API instances, conservative hours for both mutually exclusive runners, ALB, WAF, RDS/storage/backups, S3 storage/requests, CloudWatch ingestion/storage/scans, Secrets Manager calls, and transfer. Missing/unresolved resources, zeroed assumptions used to suppress cost, non-USD output, or monthly total at/above USD 200 blocks foundation. Budget alerts monitor; they are not a hard cap.
 
-### Cost and retention bounds
+## 14. Deployment flow
 
-- RDS, ECS, storage, and autoscaling cannot exceed the bounds above without a
-  reviewed Terraform change.
-- CloudWatch application logs retain 30 days, ALB/WAF access logs retain 90
-  days, and incomplete or expired storage follows the explicit lifecycle rules.
-- Before apply, an Infracost estimate (including one NAT gateway, ALB, WAF,
-  two continuously running API tasks, RDS, logs, and storage) must remain below
-  the USD 200 monthly alert threshold. Any higher estimate stops the apply.
-- The budget alerts at 50%, 80%, 100%, and 100% forecast are monitoring, not a
-  spending cap; anomaly detection and service alarms provide earlier signals.
+1. Verify clean reviewed source, lockfiles, no-container policy, deterministic archive, and exact Expo 57/native gates.
+2. Run the full direct local PostgreSQL 17 suite at the exact loopback URL with explicit opt-in.
+3. Verify Terraform/tests/policies and the complete pre-foundation cost envelope.
+4. Bootstrap state, non-root operator/deploy role, audit/analyzer/budget; migrate state and prove non-root operation.
+5. Apply foundation only and verify private RDS, guarded storage/KMS, ACM validation, logging, alarms, and no runtime/DNS.
+6. Observe ordinary Clerk `azp` safely and populate the six operator-provided runtime secret versions; provider-secret transfers require action-time confirmation.
+7. Build all three deterministic ZIPs twice, upload once to separate content-addressed S3 keys, and record object versions.
+8. Scale the no-test bootstrap runner to one, create/promote the app database URL, then scale it to zero after an exact saved-plan/destructive confirmation. Require all seven API secrets current.
+9. Discover and validate the current supported Node.js 22 AL2023 platform ARN; never invent it.
+10. Apply service with DNS false. Prebuild installs the CA; every-instance predeploy verifies TLS, migrates under the one-hour Kysely lock, then verifies five migrations.
+11. Wait for Ready/Green and two healthy targets; run allowlisted API TLS/migration diagnostics.
+12. For managed-RDS integration: bootstrap prepare nonce and stop; unprivileged acceptance test and stop even on failure; bootstrap cleanup nonce and stop. Every stop has exact saved-plan/destructive confirmation. Require both groups desired 0 and no database/role/current URL.
+13. Probe the final hostname against ALB before DNS; then publish exactly one DNS-only CNAME and recheck public behavior.
+14. Reuse the existing Clerk/EAS projects, register/replay the Clerk webhook, and set only the public API origin and publishable key in EAS development/preview.
+15. Run physical development and preview journeys, including accepted-response loss/restart and native session erasure.
+16. Re-run drift with exact profile/variables, remove only exact temporary artifacts, log out operator, and prove fresh MFA after the one-hour role session expires.
 
-## 7. Account security bootstrap
+## 15. Physical acceptance
 
-The account currently has root MFA enabled, but also reports one root access
-key, no non-root human identity, and no budget. No workload is deployed until
-these gates are closed:
+The mandatory gate uses one physical iPhone and one physical Android phone. Two phones are a cross-platform minimum, not a room limit: the API enforces at most ten trip members including the owner, and an optional 3–10-phone fan-out may be added without delaying today's pair.
 
-1. Authenticate the local CLI using `aws login --profile crewroll-staging`,
-   which provides temporary console-backed credentials. Do not overwrite the
-   existing default/Vecta profile.
-2. Create one non-root `crewroll-operator` IAM console identity with its own MFA,
-   no access keys, and permission only to view the account and assume the named
-   Terraform deployment role. Require a password reset at first sign-in. This
-   is the durable human credential source until the account later adopts an
-   organization-wide workforce identity provider.
-3. Trust the deployment role only from that exact operator principal with MFA
-   present and a one-hour maximum session. Use the operator's console session
-   with `aws login --profile crewroll-staging`, then assume the deployment role;
-   root is no longer part of routine CLI or deployment authentication.
-4. Create separate ECS execution, API task, and migration roles with explicit
-   policies. There are no application access keys.
-5. Add an account budget using the account's existing primary email, with
-   actual-spend alerts at 50%, 80%, and 100%, and a forecast alert at 100%.
-   The initial monthly alert threshold is USD 200; a budget is an alert, not a
-   hard spending cap.
-6. Inspect the root access key's last-used metadata. After its use is ruled out
-   and the user confirms the exact destructive action, deactivate and then
-   delete it.
-7. Create a CloudTrail-backed alert for future root API/console activity and an
-   IAM Access Analyzer for unintended external sharing.
+Development accounts A/B prove:
 
-Root access is used only for the one-time bootstrap and root-only cleanup.
+- ordinary Clerk session and real device registration;
+- CREATE accepted-response loss across the built-in identical retry, force quit, and outcome reconciliation without a third create;
+- JOIN accepted-response loss, force quit, and exact replay;
+- Expo 57 full-photo permission mapping and readiness journal recovery;
+- START accepted-response loss while the peer reaches ACTIVE;
+- Elastic Beanstalk `restart-app-server` plus RDS reboot before retained START recovery;
+- auth revocation and explicit sign-out erase only the selected native session while preserving identity/trip keys;
+- offline relaunch cannot resume a background bearer.
 
-## 8. Build and deployment flow
+Fresh preview accounts C/D repeat the ordinary full journey. Expo Router still discovers the acceptance route file, but in preview/production it immediately redirects, obtains no token, dynamically imports/allocates/reads no development control, and cannot arm a cut. Optional extra phones join sequentially; an eleventh member fails `TRIP_FULL`.
 
-1. Verify the integrated CrewRoll source and lockfile hashes.
-2. Run repository unit, boundary, type, lint, formatting, migration, and
-   PostgreSQL integration gates.
-3. Run Terraform format, validate, tests, policy checks, and an account/region
-   fail-closed plan plus the bounded monthly cost estimate.
-4. Apply only the state bucket, operator/deployment identity, audit, budget, and
-   access-analysis bootstrap; verify non-root role assumption before continuing.
-5. Re-authenticate as the non-root operator/deployment role. Apply the
-   foundation phase: VPC, security groups, KMS, RDS, ECR, secret containers,
-   logs, WAF, ALB, ACM request, and Terraform-owned Cloudflare validation
-   records. Wait for ACM validation before creating an HTTPS listener.
-6. Build the control-plane image from the reviewed commit, scan it, push a
-   content-addressed ECR tag, and plan runtime resources against that exact
-   digest.
-7. Register the intended Clerk development `user.deleted` webhook endpoint at
-   `https://api.staging.crewroll.app/webhooks/clerk` before it is reachable, then
-   store the endpoint's signing secret. Populate all remaining secret versions
-   through Secrets Manager without printing values. Any browser action that
-   transmits a provider secret requires action-time user confirmation.
-8. Apply only immutable runtime task definitions; do not create the ECS API
-   service or an autoscaling target yet. Run the one-off migration task and
-   verify all five migrations.
-9. Only after migration success, create the ECS service at desired/minimum count
-   two and register autoscaling. Wait for both targets and `/health/ready` to
-   become healthy, then create the Terraform-owned DNS-only API CNAME. Failed
-   health checks prevent DNS publication and trigger ECS rollback.
-10. Ask Clerk to redeliver the signed `user.deleted` test event and verify
-    signature handling, idempotent replay, and invalid-signature rejection.
-11. Put both `EXPO_PUBLIC_API_URL=https://api.staging.crewroll.app` and the
-    existing Clerk development publishable key into the EAS development and
-    preview environments. Neither value is copied into source.
-12. Verify ALB, ECS, RDS TLS, KMS, logs, alarms, WAF, Clerk, and public health
-    behavior before building the physical-device previews.
+Evidence includes only safe hashes, build IDs, versions, request/command IDs, timestamps, platforms, statuses, and pass/fail. It excludes emails, tokens, invite codes, device fingerprints, database values, secrets, and sensitive screenshots.
 
-No resource is created manually in the console when Terraform can own it.
+## 16. Rollback and failure behavior
 
-## 9. Error handling and rollback
+- Failed predeploy checks prevent the new application version from serving.
+- Failed environment health returns to the previous immutable application version or leaves the new environment unpublished.
+- Rollback selects a prior immutable S3-version-backed application version; it never overwrites an object or label.
+- Traffic withdrawal removes only the API CNAME and retains application versions, artifact versions, ACM validation, RDS, state, logs, and keys.
+- A failed migration is repaired only by a separately reviewed forward migration.
+- RDS deletion protection/final snapshots, bucket/key/state guards, and absence of destructive standing permissions remain mandatory.
+- SSM acceptance cleanup fails the checkpoint if its disposable database remains.
 
-- Terraform applies are serialized by the S3 lockfile and rejected in the wrong
-  account or region.
-- ECS deployment circuit breaker rolls back failed health checks to the prior
-  task definition; first deployment failure leaves the service unpublished.
-- A failed migration prevents API rollout; API startup never attempts repair.
-- RDS deletion protection and final snapshots prevent accidental data loss.
-- KMS keys, state, logs, and database resources use explicit deletion guards.
-- Secret values are rotated by adding a new secret version and recycling tasks;
-  old task definitions remain immutable.
-- Cloudflare API DNS is created only after both ALB targets are healthy. DNS
-  rollback removes only that new record without deleting AWS data.
+## 17. Acceptance gates
 
-## 10. Acceptance gates
+Infrastructure:
 
-### Infrastructure
+- exact account/region and zero unrelated drift;
+- private RDS and instances, public ALB only;
+- live-discovered reviewed platform, immutable artifact/version evidence;
+- min/desired 2 and max 4, Ready/Green, two healthy targets;
+- WAF/TLS/log redaction, alarms, cost below USD 200;
+- no container tooling/artifacts/resources in active repository/deployment paths.
 
-- Terraform tests prove private RDS, non-public ECS tasks, exact security-group
-  edges, encrypted state, deletion protection, backups, two API tasks, WAF,
-  least-privilege role separation, logging, alarms, and budget configuration.
-- The plan contains only `Project=CrewRoll` staging resources in the verified
-  account and touches neither the default VPC nor existing S3 buckets.
-- RDS is unreachable from the public Internet.
-- A real API connection proves `rds.force_ssl=1`, CA verification, and hostname
-  verification; plaintext or unverifiable database sessions fail.
-- HTTP redirects to HTTPS, the HTTPS listener negotiates only the chosen modern
-  TLS policy, and WAF managed/rate rules block their controlled probes.
-- A clean rebuild from remote state produces no drift.
+API/persistence:
 
-### API and persistence
+- public live/ready health;
+- real verify-full RDS TLS and same-endpoint hostname rejection;
+- exactly five migrations before service readiness;
+- direct local PostgreSQL 17 and disposable managed-RDS acceptance suites pass;
+- Clerk webhook valid/duplicate/invalid behavior;
+- app-server restart and RDS recycle preserve idempotent trip recovery.
 
-- `/health/live` and `/health/ready` succeed over the public HTTPS hostname.
-- PostgreSQL migrations are contiguous and migration task logs are clean.
-- The full pinned PostgreSQL integration suite passes against an isolated
-  acceptance database before staging data is created.
-- ECS task replacement and RDS connection recycling preserve idempotent trip
-  behavior.
-- Logs contain no JWTs, invite codes, background bearers, push tokens, keys,
-  database URLs, or raw provider errors.
-- WAF and application log canaries prove that authorization, cookie, and Svix
-  headers are redacted and that request sampling cannot create a second copy.
-- The Clerk `user.deleted` webhook verifies signatures, handles duplicate
-  delivery idempotently, and rejects invalid signatures without logging bodies
-  or secrets.
+Mobile/privacy:
 
-### Physical trip-room checkpoint
+- development and preview iOS/Android pair journeys pass;
+- full photo permission is required before Ready;
+- accepted-response recovery replays exact commands only;
+- foreground work stops when backgrounded/ACTIVE;
+- native share failures are contained;
+- revocation/sign-out erases selected native session and offline relaunch remains signed out.
 
-- Physical iOS and Android Expo 57 development builds use the existing Clerk
-  development application and ordinary `getToken()` session JWTs.
-- Both EAS development and preview environments contain exactly the staging API
-  origin and the existing Clerk development publishable key.
-- Physical tokens prove the issuer and exact `azp`/authorized-party behavior:
-  the expected party succeeds and an unlisted party fails without token logging.
-- Each platform registers a real device through `POST /v1/devices` without a JWT
-  template, audience mutation, or token logging.
-- Two distinct accounts complete create, join, approval, readiness, Start, and
-  ACTIVE hydration through the deployed API.
-- Response-loss and app-restart recovery preserve exactly-once outcomes.
-- Revoked/wrong devices, expired invites, idempotency conflicts, and auth
-  invalidation remain fail-closed with privacy-safe UI.
-- Foreground polling stops when backgrounded or ACTIVE.
-- Native share/link failures are contained.
-- The milestone is not called production-ready until native background bearer
-  erasure on sign-out/account invalidation is implemented and physically
-  verified.
+## 18. Explicit exclusions
 
-### First shippable product milestone (`WOW-001`)
+- No production environment/account.
+- No alternative runtime/database migration hidden inside this milestone.
+- No background worker until an accepted entrypoint exists.
+- No media-transfer feature beyond the guarded empty staging bucket.
+- No provider secret in source, Terraform state/plan, output, logs, evidence, or chat.
+- No unrelated AWS/Cloudflare deletion or mutation.
+- No claim that this checkpoint completes `WOW-001`.
 
-This staging checkpoint does not close `WOW-001`. Work continues through the
-accepted media API, native photo engines, worker, telemetry, and staging worker
-deployment. The first shippable milestone is accepted only when one physical
-iPhone and one physical Android phone complete the full ten-step bidirectional
-encrypted photo/save/receipt/purge sequence from `docs/TECHNICAL_TASKS.md` three
-consecutive times on release-signed preview builds. Health checks, an ACTIVE
-trip, simulators, mocks, or isolated API tests cannot substitute for that gate.
+## 19. Authoritative references
 
-## 11. Legacy Cloudflare cleanup
-
-Legacy cleanup is deliberately sequenced after the new staging milestone is
-green because it does not block `api.staging.crewroll.app`.
-
-- Preserve the `crewroll.app` zone, nameservers, support email routing, and all
-  MX/SPF/DKIM records.
-- Archive the deployed `crewroll-relay` source/configuration and record the
-  Durable Object inventory before deletion.
-- Deleting `RelayRoom` and `SourceGate` state is permanent and requires a fresh
-  action-time user confirmation.
-- Replace the stale apex/`www`/`go` site before deleting `crewroll-site` so the
-  public domain does not go dark.
-- All Bhasha resources remain out of scope.
-
-## 12. Explicit exclusions
-
-- No production AWS environment or account is created in this milestone.
-- No Cloudflare Worker or Container port is attempted.
-- No worker process is invented before an accepted worker entrypoint exists;
-  after that entrypoint is reviewed, a follow-up staging change adds the worker
-  before `WOW-001` can run.
-- No media-transfer feature beyond the private staging bucket is added by this
-  foundation change. The accepted `WOW-001` backlog remains the immediate
-  product continuation, not a waived requirement.
-- No provider secret is committed, printed, copied into chat, or placed in a
-  Terraform plan file.
-- No existing unrelated AWS or Cloudflare resource is modified or deleted.
-
-## 13. Authoritative references
-
-- Existing CrewRoll blueprint:
-  `docs/superpowers/specs/2026-08-28-crewroll-greenfield-blueprint-design.md`
-- Existing control-plane plan:
-  `docs/superpowers/plans/2026-08-28-crewroll-control-plane.md`
-- Product milestone backlog:
-  `docs/TECHNICAL_TASKS.md` (`WOW-001`)
-- AWS root-user guidance:
-  <https://docs.aws.amazon.com/IAM/latest/UserGuide/root-user-best-practices.html>
-- AWS CLI temporary console authentication:
-  <https://docs.aws.amazon.com/signin/latest/userguide/command-line-sign-in.html>
-- Terraform S3 backend and lockfile:
-  <https://developer.hashicorp.com/terraform/language/backend/s3>
+- Existing CrewRoll blueprint: `docs/superpowers/specs/2026-08-28-crewroll-greenfield-blueprint-design.md`
+- Existing control-plane plan: `docs/superpowers/plans/2026-08-28-crewroll-control-plane.md`
+- Product milestone backlog: `docs/TECHNICAL_TASKS.md` (`WOW-001`)
+- Elastic Beanstalk Node platform: <https://docs.aws.amazon.com/elasticbeanstalk/latest/platforms/platforms-supported.html>
+- Elastic Beanstalk platform hooks: <https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/platforms-linux-extend.hooks.html>
+- Elastic Beanstalk environment secrets: <https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/AWSHowTo.secrets.html>
+- Terraform S3 backend and lockfile: <https://developer.hashicorp.com/terraform/language/backend/s3>
+- Amazon RDS PostgreSQL SSL: <https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html>
