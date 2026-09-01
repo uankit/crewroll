@@ -19,6 +19,10 @@ export {
 } from "./AppSessionProvider";
 export { queryClient } from "./queryClient";
 export {
+  useDevelopmentAcceptance,
+  type DevelopmentAcceptanceControl,
+} from "./DevelopmentAcceptance";
+export {
   normalizeInviteCode,
   sessionUiStore,
   usePendingInviteCode,

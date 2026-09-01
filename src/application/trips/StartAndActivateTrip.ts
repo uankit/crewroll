@@ -7,19 +7,30 @@ import type { MemberView, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { userFacingProblems } from "../problems/userFacingProblem";
+import { isClosedTripResponse } from "./ApproveMember";
 import { TripTransportProblem } from "./CreateImmediateTrip";
-import type { TripApiPort } from "./ports";
+import type {
+  AcceptedTripMutationResponsePort,
+  TripApiPort,
+  TripMutationJournalPort,
+  TripMutationJournalRecord,
+  TripRecoveryScope,
+} from "./ports";
+import { projectTrip } from "./projectTrip";
 
 export type StartAndActivateTripDependencies = Readonly<{
   activeTrip: Readonly<{
     activateObserved(response: TripResponse): Promise<TripView>;
   }>;
+  afterAccepted: AcceptedTripMutationResponsePort;
   api: TripApiPort;
   device: Readonly<{
     deviceId: string;
     identity: NativeDeviceIdentity;
   }>;
+  journal: TripMutationJournalPort;
   random: RandomBytesPort;
+  scope: TripRecoveryScope;
 }>;
 
 const UUID_PATTERN =
@@ -155,10 +166,99 @@ function sanitizeApiFailure(error: unknown): Error {
   return internalProblem();
 }
 
+const startTerminalCodes = new Set<ProblemCode>([
+  "AUTH_REQUIRED",
+  "AUTH_INVALID",
+  "DEVICE_NOT_OWNED",
+  "DEVICE_REVOKED",
+  "DEVICE_NOT_PARTICIPANT",
+  "IDEMPOTENCY_CONFLICT",
+  "INVALID_REQUEST",
+  "RATE_LIMITED",
+  "NOT_FOUND",
+  "TRIP_OWNER_REQUIRED",
+  "TRIP_STATE_CONFLICT",
+  "VERSION_CONFLICT",
+  "PENDING_JOIN_REQUESTS",
+  "KEY_ENVELOPE_MISSING",
+  "PHOTO_LIBRARY_ACCESS_REQUIRED",
+]);
+
 export function createStartAndActivateTrip(
   dependencies: StartAndActivateTripDependencies,
 ) {
-  const { activeTrip, api, device, random } = dependencies;
+  const { activeTrip, afterAccepted, api, device, journal, random, scope } =
+    dependencies;
+
+  function validateAccepted(
+    response: TripResponse,
+    record: Extract<TripMutationJournalRecord, { kind: "START" }>,
+  ): TripView {
+    if (
+      !isClosedTripResponse(response) ||
+      response.id !== record.tripId ||
+      response.status !== "ACTIVE" ||
+      response.startsAt === null ||
+      response.version !== record.body.expectedVersion + 1 ||
+      response.ownerDeviceId !== device.deviceId
+    ) {
+      throw internalProblem();
+    }
+    const current = response.members.filter(
+      (member) => member.membershipId === response.currentMembershipId,
+    );
+    if (
+      current.length !== 1 ||
+      current[0]?.status !== "ACTIVE" ||
+      current[0].nominatedDevice?.deviceId !== device.deviceId
+    ) {
+      throw internalProblem();
+    }
+    try {
+      return projectTrip(response, device.deviceId);
+    } catch {
+      throw internalProblem();
+    }
+  }
+
+  async function execute(
+    record: Extract<TripMutationJournalRecord, { kind: "START" }>,
+  ): Promise<TripView> {
+    let response: TripResponse;
+    try {
+      response = await api.startTrip(
+        device.deviceId,
+        record.commandId,
+        record.tripId,
+        record.body,
+      );
+    } catch (error) {
+      const code = apiProblemCode(error);
+      if (code !== null && startTerminalCodes.has(code)) {
+        try {
+          await journal.clear(scope, record.commandId);
+        } catch {
+          throw internalProblem();
+        }
+      }
+      throw sanitizeApiFailure(error);
+    }
+    validateAccepted(response, record);
+    try {
+      await afterAccepted.afterAccepted({
+        kind: "START",
+        commandId: record.commandId,
+      });
+    } catch (error) {
+      throw sanitizeApiFailure(error);
+    }
+    try {
+      await journal.clear(scope, record.commandId);
+    } catch {
+      throw internalProblem();
+    }
+    return activeTrip.activateObserved(response);
+  }
 
   async function start(trip: TripView): Promise<TripView> {
     if (
@@ -171,35 +271,32 @@ export function createStartAndActivateTrip(
     if (blocked !== null) throw blocked;
     if (trip.ownerDeviceId !== device.deviceId) throw internalProblem();
 
-    let commandId: string;
+    let record: Extract<TripMutationJournalRecord, { kind: "START" }>;
     try {
-      commandId = await createUuidV4(random);
-    } catch {
-      throw internalProblem();
-    }
-
-    let response: TripResponse;
-    try {
-      response = await api.startTrip(device.deviceId, commandId, trip.id, {
-        expectedVersion: trip.version,
+      record = Object.freeze({
+        version: 1,
+        kind: "START",
+        tripId: trip.id,
+        commandId: await createUuidV4(random),
+        body: Object.freeze({ expectedVersion: trip.version }),
       });
-    } catch (error) {
-      throw sanitizeApiFailure(error);
-    }
-    try {
-      if (
-        response.id !== trip.id ||
-        response.currentMembershipId !== trip.currentMembershipId ||
-        response.ownerDeviceId !== trip.ownerDeviceId
-      ) {
-        throw internalProblem();
-      }
+      await journal.save(scope, record);
     } catch {
       throw internalProblem();
     }
-
-    return activeTrip.activateObserved(response);
+    return execute(record);
   }
 
-  return Object.freeze({ start });
+  async function replayPendingMutation(): Promise<TripView | null> {
+    let record: TripMutationJournalRecord | null;
+    try {
+      record = await journal.load(scope);
+    } catch {
+      throw internalProblem();
+    }
+    if (record === null || record.kind !== "START") return null;
+    return execute(record);
+  }
+
+  return Object.freeze({ replayPendingMutation, start });
 }

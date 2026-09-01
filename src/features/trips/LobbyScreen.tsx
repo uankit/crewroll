@@ -31,6 +31,12 @@ export type LobbyActivationState =
       retrying?: boolean;
     }>;
 
+export type LobbyPhotoPermissionState =
+  | Readonly<{ kind: "CHECKING" }>
+  | Readonly<{ kind: "FULL" }>
+  | Readonly<{ kind: "REQUESTABLE" }>
+  | Readonly<{ kind: "SETTINGS_REQUIRED" }>;
+
 export type LobbyScreenProps = Readonly<{
   trip: TripView;
   endsLabel: string;
@@ -40,6 +46,9 @@ export type LobbyScreenProps = Readonly<{
   onStart?: () => void;
   starting?: boolean;
   activation?: LobbyActivationState;
+  photoPermission: LobbyPhotoPermissionState;
+  onRequestPhotoAccess?: () => void;
+  onOpenPhotoSettings?: () => void;
 }>;
 
 function tripStatus(trip: TripView): FeedbackStatus {
@@ -196,7 +205,10 @@ export function LobbyScreen({
   endsLabel,
   invite,
   onApproveMember,
+  onOpenPhotoSettings,
+  onRequestPhotoAccess,
   onStart,
+  photoPermission,
   starting = false,
   trip,
 }: LobbyScreenProps) {
@@ -206,7 +218,10 @@ export function LobbyScreen({
       member.isCurrentMember,
   );
   const isOwner = currentMember?.role === "OWNER";
-  const mutationActive = approvingMembershipId !== undefined || starting;
+  const mutationActive =
+    approvingMembershipId !== undefined ||
+    starting ||
+    photoPermission.kind === "CHECKING";
   const blocker =
     isOwner && trip.status === "LOBBY" ? startBlockerFor(trip) : null;
 
@@ -262,6 +277,32 @@ export function LobbyScreen({
           />
         ) : null}
 
+        {trip.status === "LOBBY" && currentMember?.status === "ACTIVE" ? (
+          <Stack gap="sm">
+            {photoPermission.kind === "CHECKING" ? (
+              <InlineBanner
+                body="CrewRoll is checking this phone's photo access."
+                icon="…"
+                title="Checking photo access"
+                tone="info"
+              />
+            ) : null}
+            {photoPermission.kind === "REQUESTABLE" ? (
+              <Button
+                label="Allow full photo access"
+                onPress={onRequestPhotoAccess ?? (() => undefined)}
+              />
+            ) : null}
+            {photoPermission.kind === "SETTINGS_REQUIRED" ? (
+              <Button
+                label="Open photo settings"
+                onPress={onOpenPhotoSettings ?? (() => undefined)}
+                variant="secondary"
+              />
+            ) : null}
+          </Stack>
+        ) : null}
+
         <Stack gap="sm">
           <AppText accessibilityRole="header" variant="title2">
             Trip crew
@@ -303,7 +344,7 @@ export function LobbyScreen({
 
         {isOwner && trip.status === "LOBBY" ? (
           <Stack gap="sm">
-            {blocker === null ? (
+            {blocker === null && photoPermission.kind === "FULL" ? (
               <InlineBanner
                 body="Everyone is approved and has full photo access."
                 icon="✓"
@@ -312,7 +353,11 @@ export function LobbyScreen({
               />
             ) : (
               <BlockingCallout
-                body={startBlockerCopy(blocker)}
+                body={
+                  blocker === null
+                    ? "Full photo access is still being checked on this phone."
+                    : startBlockerCopy(blocker)
+                }
                 icon="!"
                 title="Trip cannot start yet"
                 tone="warning"
@@ -320,12 +365,17 @@ export function LobbyScreen({
             )}
             <Button
               accessibilityHint={
-                blocker === null
+                blocker === null && photoPermission.kind === "FULL"
                   ? "Starts this Immediate trip for every approved member."
-                  : startBlockerCopy(blocker)
+                  : blocker === null
+                    ? "Full photo access is still being checked on this phone."
+                    : startBlockerCopy(blocker)
               }
               disabled={
-                blocker !== null || onStart === undefined || mutationActive
+                blocker !== null ||
+                photoPermission.kind !== "FULL" ||
+                onStart === undefined ||
+                mutationActive
               }
               label="Start trip"
               loading={starting}

@@ -18,13 +18,25 @@ import { createApproveMember } from "../application/trips/ApproveMember";
 import { createCreateImmediateTrip } from "../application/trips/CreateImmediateTrip";
 import { createHydrateTrip } from "../application/trips/HydrateTrip";
 import { createJoinTrip } from "../application/trips/JoinTrip";
-import type { TripRecoveryScope } from "../application/trips/ports";
+import {
+  noAcceptedTripMutationResponse,
+  type AcceptedTripMutationResponsePort,
+  type TripRecoveryScope,
+} from "../application/trips/ports";
+import { createSetTripReadiness } from "../application/trips/SetTripReadiness";
 import { createStartAndActivateTrip } from "../application/trips/StartAndActivateTrip";
 import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvider";
 import { ClerkSessionTokenSource } from "../infrastructure/auth/clerkSessionToken";
+import { ExpoPhotoLibraryPermission } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ExpoRandomBytesPort } from "../infrastructure/random/expoRandomBytes";
 import { createExpoTripRecoveryStore } from "../infrastructure/storage/tripRecoveryStore";
+import { createExpoTripMutationJournal } from "../infrastructure/storage/tripMutationJournal";
+import {
+  DevelopmentTripMutationResponseCut,
+  createExpoResponseCutArmStore,
+} from "../dev/TripMutationResponseCut";
+import { inspectClerkToken } from "../dev/SafeClerkClaimInspector";
 import { readPublicEnv, type PublicEnv } from "./config/env";
 import { AppErrorBoundary } from "./AppErrorBoundary";
 import {
@@ -34,6 +46,7 @@ import {
 } from "./AppSessionProvider";
 import { createMobileDependencies } from "./mobileDependencies";
 import { queryClient } from "./queryClient";
+import { DevelopmentAcceptanceProvider } from "./DevelopmentAcceptance";
 
 function publicEnv(): PublicEnv {
   return readPublicEnv({
@@ -55,6 +68,13 @@ function createProductionComposition(
   });
   const random = new ExpoRandomBytesPort();
   const recoveryStore = createExpoTripRecoveryStore();
+  const mutationJournal = createExpoTripMutationJournal();
+  const photoPermission = new ExpoPhotoLibraryPermission();
+  const developmentCut = __DEV__
+    ? new DevelopmentTripMutationResponseCut(createExpoResponseCutArmStore())
+    : null;
+  const acceptedResponse: AcceptedTripMutationResponsePort =
+    developmentCut ?? noAcceptedTripMutationResponse;
   const provisionCurrentDevice = createProvisionCurrentDevice({
     native: crewRollTransfer,
     random,
@@ -76,6 +96,7 @@ function createProductionComposition(
         native: crewRollTransfer,
       });
       const createTrip = createCreateImmediateTrip({
+        afterAccepted: acceptedResponse,
         api: mobileDependencies.tripApi,
         clock: { now: () => Date.now() },
         device,
@@ -85,6 +106,7 @@ function createProductionComposition(
         scope,
       });
       const joinTrip = createJoinTrip({
+        afterAccepted: acceptedResponse,
         api: mobileDependencies.tripApi,
         deviceId: device.deviceId,
         random,
@@ -105,9 +127,20 @@ function createProductionComposition(
       });
       const startTrip = createStartAndActivateTrip({
         activeTrip,
+        afterAccepted: acceptedResponse,
         api: mobileDependencies.tripApi,
         device,
+        journal: mutationJournal,
         random,
+        scope,
+      });
+      const readiness = createSetTripReadiness({
+        afterAccepted: acceptedResponse,
+        api: mobileDependencies.tripApi,
+        deviceId: device.deviceId,
+        journal: mutationJournal,
+        random,
+        scope,
       });
 
       return Object.freeze({
@@ -124,12 +157,32 @@ function createProductionComposition(
         replayUnknownJoin: joinTrip.replayUnknownJoin,
         requestJoin: joinTrip.request,
         hydrateTrip: hydrateTrip.hydrate,
+        async openPhotoSettings() {
+          await photoPermission.openSettings();
+        },
+        async replayPendingMutation() {
+          const record = await mutationJournal.load(scope);
+          if (record === null) return null;
+          return record.kind === "SET_READINESS"
+            ? readiness.replayPendingMutation()
+            : startTrip.replayPendingMutation();
+        },
+        async setPhotoReadiness(tripId: string, requestPermission: boolean) {
+          const permission = requestPermission
+            ? await photoPermission.request()
+            : await photoPermission.read();
+          const trip = await readiness.publish(
+            tripId,
+            permission.fullPhotoLibraryAccess,
+          );
+          return Object.freeze({ permission, trip });
+        },
         startTrip: startTrip.start,
       });
     },
   });
 
-  return Object.freeze({ runtime });
+  return Object.freeze({ developmentCut, runtime });
 }
 
 function ProductionSessionBridge({
@@ -160,6 +213,19 @@ function ProductionSessionBridge({
   const onAuthInvalid = useCallback(async () => {
     await signOut();
   }, [signOut]);
+  const acceptance =
+    __DEV__ && composition.developmentCut !== null
+      ? Object.freeze({
+          arm: composition.developmentCut.arm.bind(composition.developmentCut),
+          clear: composition.developmentCut.clear.bind(
+            composition.developmentCut,
+          ),
+          async inspectClaims() {
+            const token = await auth.getToken();
+            return token === null ? null : inspectClerkToken(token);
+          },
+        })
+      : null;
 
   useEffect(() => {
     if (fontsReady && auth.isLoaded) {
@@ -168,20 +234,22 @@ function ProductionSessionBridge({
   }, [auth.isLoaded, fontsReady]);
 
   return (
-    <AppSessionProvider
-      auth={authSnapshot}
-      fontsReady={fontsReady}
-      onAuthInvalid={onAuthInvalid}
-      provisionInput={{
-        apiBaseUrl: env.apiUrl,
-        appVersion: Constants.expoConfig?.version,
-        platform: Platform.OS,
-      }}
-      queryClient={queryClient}
-      runtime={composition.runtime}
-    >
-      {children}
-    </AppSessionProvider>
+    <DevelopmentAcceptanceProvider value={acceptance}>
+      <AppSessionProvider
+        auth={authSnapshot}
+        fontsReady={fontsReady}
+        onAuthInvalid={onAuthInvalid}
+        provisionInput={{
+          apiBaseUrl: env.apiUrl,
+          appVersion: Constants.expoConfig?.version,
+          platform: Platform.OS,
+        }}
+        queryClient={queryClient}
+        runtime={composition.runtime}
+      >
+        {children}
+      </AppSessionProvider>
+    </DevelopmentAcceptanceProvider>
   );
 }
 

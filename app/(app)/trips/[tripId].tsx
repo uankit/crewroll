@@ -1,5 +1,6 @@
 import { Redirect, useIsFocused, useLocalSearchParams } from "expo-router";
-import { useState } from "react";
+import { AppState } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAppSession, useTripProjection } from "@/bootstrap";
 import { Button, LiveStatus, Screen, Stack } from "@/design-system";
@@ -21,12 +22,34 @@ function endsLabel(endsAt: string): string {
 function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const focused = useIsFocused();
   const session = useAppSession();
+  const actions = session.actions;
   const projection = useTripProjection(tripId, { pollLobby: focused });
   const [approvingMembershipId, setApprovingMembershipId] = useState<
     string | undefined
   >(undefined);
   const [starting, setStarting] = useState(false);
   const [retryingActivation, setRetryingActivation] = useState(false);
+  const reconcilingReadiness = useRef(new Set<string>());
+
+  const reconcilePhotoReadiness = useCallback(() => {
+    if (reconcilingReadiness.current.has(tripId) || actions === null) return;
+    reconcilingReadiness.current.add(tripId);
+    void actions
+      .publishPhotoReadiness(tripId, false)
+      .catch(() => undefined)
+      .finally(() => {
+        reconcilingReadiness.current.delete(tripId);
+      });
+  }, [actions, tripId]);
+
+  useEffect(() => {
+    if (!focused || session.snapshot.phase !== "READY_LOBBY") return;
+    reconcilePhotoReadiness();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") reconcilePhotoReadiness();
+    });
+    return () => subscription.remove();
+  }, [focused, reconcilePhotoReadiness, session.snapshot.phase]);
 
   if (projection.failed) {
     return (
@@ -54,7 +77,6 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     );
   }
   const trip = projection.trip;
-  const actions = session.actions;
   let activation: LobbyActivationState | undefined;
   if (trip.status === "ACTIVE") {
     if (retryingActivation) {
@@ -123,6 +145,15 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           setStarting(false);
         }
       }}
+      onOpenPhotoSettings={() => {
+        void actions?.openPhotoSettings().catch(() => undefined);
+      }}
+      onRequestPhotoAccess={() => {
+        void actions
+          ?.publishPhotoReadiness(trip.id, true)
+          .catch(() => undefined);
+      }}
+      photoPermission={session.photoPermission}
       starting={starting}
       trip={trip}
     />

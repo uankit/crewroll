@@ -8,6 +8,7 @@ export {
   LobbyScreen,
   type LobbyActivationState,
   type LobbyInvite,
+  type LobbyPhotoPermissionState,
   type LobbyScreenProps,
 } from "./LobbyScreen";
 export {

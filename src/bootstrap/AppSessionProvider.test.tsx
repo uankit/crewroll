@@ -20,6 +20,7 @@ import type {
 import type { TripView } from "../domain/trips/model";
 import {
   AppSessionProvider,
+  permissionForVisibleTrip,
   resolveLaunchPhase,
   useAppSession,
   useTripProjection,
@@ -122,6 +123,16 @@ function createRuntime(options: RuntimeOptions = {}) {
   const calls: string[] = [];
   const scoped: ScopedTripSession = {
     approveMember: jest.fn(async () => lobby),
+    openPhotoSettings: jest.fn(async () => undefined),
+    replayPendingMutation: jest.fn(async () => null),
+    setPhotoReadiness: jest.fn(async () => ({
+      permission: {
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: true,
+      },
+      trip: lobby,
+    })),
     createTrip: options.create ?? jest.fn(async () => lobby),
     reconcileUnknownCreate:
       options.reconcileCreate ??
@@ -226,6 +237,28 @@ function Harness({
 }
 
 describe("resolveLaunchPhase", () => {
+  it("blocks a new lobby from inheriting another trip's FULL permission", () => {
+    const full = {
+      kind: "FULL" as const,
+      fullPhotoLibraryAccess: true as const,
+      canAskAgain: false,
+    };
+    const otherTripId = `${tripId.slice(0, -1)}2`;
+    expect(
+      permissionForVisibleTrip(
+        { phase: "READY_LOBBY", deviceId, tripId: otherTripId },
+        tripId,
+        full,
+      ),
+    ).toEqual({ kind: "CHECKING" });
+    expect(
+      permissionForVisibleTrip(
+        { phase: "READY_LOBBY", deviceId, tripId },
+        tripId,
+        full,
+      ),
+    ).toBe(full);
+  });
   it.each([
     [{ fontsReady: false }, "LOADING_FONTS_OR_CLERK"],
     [{ clerkLoaded: false }, "LOADING_FONTS_OR_CLERK"],

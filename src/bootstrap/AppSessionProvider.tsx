@@ -21,6 +21,7 @@ import type {
   TripRecoveryScope,
 } from "../application/trips/ports";
 import type { TripView } from "../domain/trips/model";
+import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
 import {
   clearForegroundQueryState,
   clearForegroundSessionState,
@@ -107,6 +108,17 @@ export type ScopedTripSession = Readonly<{
   hydrateTrip(tripId: string): Promise<TripView>;
   requestJoin(inviteCode: string): Promise<JoinTripResult>;
   approveMember(tripId: string, membershipId: string): Promise<TripView>;
+  setPhotoReadiness(
+    tripId: string,
+    requestPermission: boolean,
+  ): Promise<
+    Readonly<{
+      permission: PhotoLibraryPermissionState;
+      trip: TripView;
+    }>
+  >;
+  replayPendingMutation(): Promise<TripView | null>;
+  openPhotoSettings(): Promise<void>;
   startTrip(trip: TripView): Promise<TripView>;
 }>;
 
@@ -140,6 +152,11 @@ export type TripSessionActions = Readonly<{
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
   join(inviteCode: string): Promise<JoinMutationResult>;
   approve(tripId: string, membershipId: string): Promise<TripMutationResult>;
+  publishPhotoReadiness(
+    tripId: string,
+    requestPermission: boolean,
+  ): Promise<TripMutationResult>;
+  openPhotoSettings(): Promise<void>;
   start(tripId: string): Promise<TripMutationResult>;
   retryActivation(tripId: string): Promise<TripMutationResult>;
 }>;
@@ -153,6 +170,7 @@ type AppSessionContextValue = Readonly<{
   snapshot: AppSessionSnapshot;
   ownerInviteCode: string | null;
   activationFailureTripId: string | null;
+  photoPermission: PhotoLibraryPermissionState | Readonly<{ kind: "CHECKING" }>;
   actions: TripSessionActions | null;
   retry(): void;
   confirmPendingInvite(): Promise<void>;
@@ -161,6 +179,17 @@ type AppSessionContextValue = Readonly<{
   loadTripProjection(tripId: string): Promise<TripView>;
   queryScope: QueryScope | null;
 }>;
+
+export function permissionForVisibleTrip(
+  snapshot: AppSessionSnapshot,
+  permissionTripId: string | null,
+  permission: PhotoLibraryPermissionState | Readonly<{ kind: "CHECKING" }>,
+): PhotoLibraryPermissionState | Readonly<{ kind: "CHECKING" }> {
+  return snapshot.phase === "READY_LOBBY" &&
+    snapshot.tripId === permissionTripId
+    ? permission
+    : { kind: "CHECKING" };
+}
 
 const AppSessionContext = createContext<AppSessionContextValue | undefined>(
   undefined,
@@ -292,6 +321,12 @@ export function AppSessionProvider({
   const [activationFailureTripId, setActivationFailureTripId] = useState<
     string | null
   >(null);
+  const [photoPermission, setPhotoPermission] = useState<
+    PhotoLibraryPermissionState | Readonly<{ kind: "CHECKING" }>
+  >({ kind: "CHECKING" });
+  const [photoPermissionTripId, setPhotoPermissionTripId] = useState<
+    string | null
+  >(null);
   const [publicSessionKey, setPublicSessionKey] = useState<string | null>(null);
   const [publishedQueryScope, setPublishedQueryScope] =
     useState<QueryScope | null>(null);
@@ -319,6 +354,8 @@ export function AppSessionProvider({
     setPublishedQueryScope(null);
     setOwnerInvite(null);
     setActivationFailureTripId(null);
+    setPhotoPermission({ kind: "CHECKING" });
+    setPhotoPermissionTripId(null);
     setSnapshot({ phase: "SIGNED_OUT" });
     try {
       await onAuthInvalid?.();
@@ -494,8 +531,44 @@ export function AppSessionProvider({
     [binding, observeOperation],
   );
 
+  const publishPhotoReadiness = useCallback(
+    async (
+      tripId: string,
+      requestPermission: boolean,
+    ): Promise<TripMutationResult> => {
+      const current = binding();
+      setPhotoPermission({ kind: "CHECKING" });
+      setPhotoPermissionTripId(null);
+      const result = await current.services.setPhotoReadiness(
+        tripId,
+        requestPermission,
+      );
+      if (current.generation !== runGeneration.current) {
+        throw unavailableSession();
+      }
+      const observed = await observeOperation(
+        Promise.resolve(result.trip),
+        current.generation,
+      );
+      if (current.generation !== runGeneration.current) {
+        throw unavailableSession();
+      }
+      setPhotoPermission(result.permission);
+      setPhotoPermissionTripId(tripId);
+      return observed.result;
+    },
+    [binding, observeOperation],
+  );
+
+  const openPhotoSettings = useCallback(async (): Promise<void> => {
+    const current = binding();
+    await current.services.openPhotoSettings();
+  }, [binding]);
+
   const startTrip = useCallback(
     async (tripId: string): Promise<TripMutationResult> => {
+      if (photoPermission.kind !== "FULL" || photoPermissionTripId !== tripId)
+        throw unavailableSession();
       const current = binding();
       const cached = queryClient.getQueryData<TripView>(
         tripQueryKey(
@@ -513,7 +586,13 @@ export function AppSessionProvider({
       );
       return observed.result;
     },
-    [binding, observeOperation, queryClient],
+    [
+      binding,
+      observeOperation,
+      photoPermission.kind,
+      photoPermissionTripId,
+      queryClient,
+    ],
   );
 
   const retryActivation = useCallback(
@@ -533,10 +612,20 @@ export function AppSessionProvider({
       approve: approveMember,
       create: createTrip,
       join: joinTrip,
+      openPhotoSettings,
+      publishPhotoReadiness,
       retryActivation,
       start: startTrip,
     }),
-    [approveMember, createTrip, joinTrip, retryActivation, startTrip],
+    [
+      approveMember,
+      createTrip,
+      joinTrip,
+      openPhotoSettings,
+      publishPhotoReadiness,
+      retryActivation,
+      startTrip,
+    ],
   );
 
   const authUserId = auth.isLoaded && auth.isSignedIn ? auth.userId : null;
@@ -611,6 +700,8 @@ export function AppSessionProvider({
         setPublishedQueryScope(null);
         setOwnerInvite(null);
         setActivationFailureTripId(null);
+        setPhotoPermission({ kind: "CHECKING" });
+        setPhotoPermissionTripId(null);
 
         let attempt = provisioned.current;
         if (attempt?.key !== sessionKey) {
@@ -667,6 +758,17 @@ export function AppSessionProvider({
         scopedSession.current = services;
 
         try {
+          const pendingMutation = await services.replayPendingMutation();
+          if (!isCurrent()) return;
+          if (pendingMutation !== null) {
+            await observeOperation(
+              Promise.resolve(pendingMutation),
+              generation,
+              recovery,
+            );
+            return;
+          }
+
           if (activeTripId !== null) {
             await observeOperation(
               services.hydrateTrip(activeTripId),
@@ -831,6 +933,11 @@ export function AppSessionProvider({
       loadTripProjection,
       ownerInviteCode: visibleOwnerInviteCode,
       openOwnerInvite,
+      photoPermission: permissionForVisibleTrip(
+        resolvedSnapshot,
+        photoPermissionTripId,
+        photoPermission,
+      ),
       queryScope: ready ? publishedQueryScope : null,
       retry,
       snapshot: resolvedSnapshot,
@@ -842,6 +949,8 @@ export function AppSessionProvider({
       confirmPendingInvite,
       loadTripProjection,
       openOwnerInvite,
+      photoPermission,
+      photoPermissionTripId,
       publishedQueryScope,
       ready,
       resolvedSnapshot,

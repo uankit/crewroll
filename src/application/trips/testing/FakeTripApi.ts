@@ -6,6 +6,7 @@ import type {
   CreateTripOutcomeResponse,
   MembershipResponse,
   ProblemCode,
+  SetTripReadinessBody,
   StartTripBody,
   TripResponse,
 } from "@crewroll/contracts";
@@ -242,5 +243,14 @@ export class FakeTripApi implements TripApiPort {
   async getTrip(_deviceId: string, _tripId: string): Promise<TripResponse> {
     this.callLog.push({ operation: "getTrip" });
     return resultFrom(this.getTripSteps.next());
+  }
+
+  async setTripReadiness(
+    _deviceId: string,
+    _commandId: string,
+    _tripId: string,
+    _body: SetTripReadinessBody,
+  ): Promise<TripResponse> {
+    throw new Error("setTripReadiness is not scripted by FakeTripApi");
   }
 }

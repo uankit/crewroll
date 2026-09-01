@@ -133,6 +133,7 @@ function renderLobby(overrides: Partial<LobbyScreenProps> = {}) {
   return render(
     <LobbyScreen
       endsLabel="2 September, 5:30 pm"
+      photoPermission={{ kind: "FULL" }}
       trip={ownerTrip()}
       {...overrides}
     />,
@@ -360,6 +361,7 @@ describe("LobbyScreen", () => {
             endsLabel="Wednesday, 2 September 2026 at 5:30 pm India Standard Time"
             invite={invite()}
             onStart={jest.fn()}
+            photoPermission={{ kind: "FULL" }}
             trip={eligibleOwnerTrip({
               name: "A very long family and friends weekend by the sea",
             })}

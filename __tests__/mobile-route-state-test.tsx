@@ -91,6 +91,8 @@ const mockActions = {
   approve: jest.fn(),
   create: jest.fn(),
   join: jest.fn(),
+  openPhotoSettings: jest.fn(async () => undefined),
+  publishPhotoReadiness: jest.fn(async () => ownerTrip()),
   retryActivation: jest.fn(),
   start: jest.fn(),
 };
@@ -112,6 +114,11 @@ let mockCurrentSession = {
   confirmPendingInvite: mockConfirmPendingInvite,
   openOwnerInvite: mockOpenOwnerInvite,
   ownerInviteCode: null as string | null,
+  photoPermission: {
+    kind: "FULL" as const,
+    fullPhotoLibraryAccess: true as const,
+    canAskAgain: true,
+  },
   retry: mockRetry,
   shareOwnerInvite: mockShareOwnerInvite,
   snapshot: { phase: "READY_NO_TRIP", deviceId } as AppSessionSnapshot,
@@ -219,6 +226,11 @@ describe("Expo Router mobile journey", () => {
       confirmPendingInvite: mockConfirmPendingInvite,
       openOwnerInvite: mockOpenOwnerInvite,
       ownerInviteCode: null,
+      photoPermission: {
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: true,
+      },
       retry: mockRetry,
       shareOwnerInvite: mockShareOwnerInvite,
       snapshot: { phase: "READY_NO_TRIP", deviceId },

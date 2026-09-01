@@ -88,6 +88,7 @@ function harness() {
     createTrip: jest.fn(),
     getTrip: jest.fn(),
     requestJoin: jest.fn().mockResolvedValue(response),
+    setTripReadiness: jest.fn(),
     resolveCreateTripOutcome: jest.fn(),
     startTrip: jest.fn(),
   };
@@ -102,7 +103,11 @@ function harness() {
     load: jest.fn().mockResolvedValue(unknownJoinRecord),
     save: jest.fn().mockResolvedValue(undefined),
   };
+  const afterAccepted = {
+    afterAccepted: jest.fn().mockResolvedValue(undefined),
+  };
   const service = createJoinTrip({
+    afterAccepted,
     api,
     deviceId,
     random,
@@ -110,10 +115,23 @@ function harness() {
     scope,
   });
 
-  return { api, random, recoveryStore, response, service };
+  return { afterAccepted, api, random, recoveryStore, response, service };
 }
 
 describe("JoinTrip.request", () => {
+  it("cuts an accepted response before confirming recovery", async () => {
+    const { afterAccepted, recoveryStore, service } = harness();
+    afterAccepted.afterAccepted.mockRejectedValue(new TripTransportProblem());
+    await expect(service.request(inviteCode)).rejects.toMatchObject({
+      kind: "TRANSPORT_UNAVAILABLE",
+    });
+    expect(afterAccepted.afterAccepted).toHaveBeenCalledWith({
+      kind: "JOIN",
+      commandId,
+    });
+    expect(recoveryStore.save).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes, stores the exact command before fetch, confirms, and returns only safe fields", async () => {
     const { api, recoveryStore, service } = harness();
 

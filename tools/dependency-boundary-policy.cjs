@@ -114,6 +114,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   const application = element("application");
   const domain = element("domain");
   const infrastructure = element("infrastructure");
+  const development = element("development");
   const nativeInfrastructure = element("infrastructure", {
     captured: { adapter: "native" },
   });
@@ -136,6 +137,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     "expo-splash-screen",
     "expo-status-bar",
     "react",
+    "react-native",
     "react-native-safe-area-context",
   ];
   const uiPackages = [
@@ -205,6 +207,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
       domain,
       infrastructure,
       nativeBridge,
+      development,
     ]),
     allowElements(design, [design]),
     allowElements(feature, [
@@ -226,6 +229,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
       nativeBridge,
     ]),
     allowElements(nativeBridge, [nativeBridge]),
+    allowElements(development, [development, application]),
     allowModules(route, routeFrameworkPackages),
     allowModules(design, uiPackages),
     allowModules(feature, featurePackages),
@@ -233,6 +237,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     allowModules(infrastructure, infrastructurePackages),
     allowModules(nativeInfrastructure, ["@sinclair/typebox"]),
     allowModules(nativeBridge, ["expo"]),
+    allowModules(development, ["expo-secure-store"]),
     {
       from: nativeBridge,
       allow: [
@@ -321,6 +326,7 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
       { type: "design", pattern: "src/design-system", partialMatch: false },
       { type: "application", pattern: "src/application", partialMatch: false },
       { type: "domain", pattern: "src/domain", partialMatch: false },
+      { type: "development", pattern: "src/dev", partialMatch: false },
       {
         type: "infrastructure",
         pattern: "src/infrastructure",

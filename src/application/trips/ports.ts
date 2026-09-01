@@ -5,6 +5,7 @@ import type {
   CreateTripOutcomeBody,
   CreateTripOutcomeResponse,
   MembershipResponse,
+  SetTripReadinessBody,
   StartTripBody,
   TripResponse,
 } from "@crewroll/contracts";
@@ -47,6 +48,12 @@ export interface TripApiPort {
     tripId: string,
     body: StartTripBody,
   ): Promise<TripResponse>;
+  setTripReadiness(
+    deviceId: string,
+    commandId: string,
+    tripId: string,
+    body: SetTripReadinessBody,
+  ): Promise<TripResponse>;
   getTrip(deviceId: string, tripId: string): Promise<TripResponse>;
 }
 
@@ -80,6 +87,48 @@ export interface TripRecoveryPort {
   load(scope: TripRecoveryScope): Promise<TripRecoveryRecord | null>;
   clear(scope: TripRecoveryScope): Promise<void>;
 }
+
+export type TripMutationJournalRecord =
+  | Readonly<{
+      version: 1;
+      kind: "SET_READINESS";
+      tripId: string;
+      commandId: string;
+      body: SetTripReadinessBody;
+    }>
+  | Readonly<{
+      version: 1;
+      kind: "START";
+      tripId: string;
+      commandId: string;
+      body: StartTripBody;
+    }>;
+
+export interface TripMutationJournalPort {
+  save(
+    scope: TripRecoveryScope,
+    record: TripMutationJournalRecord,
+  ): Promise<void>;
+  load(scope: TripRecoveryScope): Promise<TripMutationJournalRecord | null>;
+  clear(scope: TripRecoveryScope, commandId: string): Promise<void>;
+}
+
+export type AcceptedTripMutationKind =
+  "CREATE" | "JOIN" | "SET_READINESS" | "START";
+
+export interface AcceptedTripMutationResponsePort {
+  afterAccepted(
+    input: Readonly<{
+      kind: AcceptedTripMutationKind;
+      commandId: string;
+    }>,
+  ): Promise<void>;
+}
+
+export const noAcceptedTripMutationResponse: AcceptedTripMutationResponsePort =
+  Object.freeze({
+    async afterAccepted(): Promise<void> {},
+  });
 
 export interface CreateTripNativePort {
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;

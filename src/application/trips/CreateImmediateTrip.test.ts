@@ -161,6 +161,7 @@ function harness() {
     createTrip: jest.fn().mockResolvedValue(response),
     getTrip: jest.fn(),
     requestJoin: jest.fn(),
+    setTripReadiness: jest.fn(),
     resolveCreateTripOutcome: jest
       .fn()
       .mockResolvedValue({ outcome: "STILL_UNKNOWN" }),
@@ -182,7 +183,11 @@ function harness() {
     load: jest.fn().mockResolvedValue(unknownCreateRecord),
     save: jest.fn().mockResolvedValue(undefined),
   };
+  const afterAccepted = {
+    afterAccepted: jest.fn().mockResolvedValue(undefined),
+  };
   const service = createCreateImmediateTrip({
+    afterAccepted,
     api,
     clock: { now: () => clockMilliseconds },
     device: { deviceId, identity },
@@ -192,10 +197,32 @@ function harness() {
     scope,
   });
 
-  return { api, native, random, recoveryStore, response, service };
+  return {
+    afterAccepted,
+    api,
+    native,
+    random,
+    recoveryStore,
+    response,
+    service,
+  };
 }
 
 describe("CreateImmediateTrip.create", () => {
+  it("cuts both accepted retry responses before confirmation or native import", async () => {
+    const { afterAccepted, api, native, recoveryStore, service } = harness();
+    afterAccepted.afterAccepted.mockRejectedValue(new TripTransportProblem());
+
+    await expect(
+      service.create({ name: "Ladakh", endsAt }),
+    ).rejects.toMatchObject({ kind: "TRANSPORT_UNAVAILABLE" });
+    expect(api.createTrip).toHaveBeenCalledTimes(2);
+    expect(api.createTrip.mock.calls[0]).toEqual(api.createTrip.mock.calls[1]);
+    expect(afterAccepted.afterAccepted).toHaveBeenCalledTimes(2);
+    expect(recoveryStore.save).toHaveBeenCalledTimes(1);
+    expect(native.importTripKey).not.toHaveBeenCalled();
+  });
+
   it("creates, self-wraps, posts, confirms, imports, and returns only the safe view", async () => {
     const { api, native, random, recoveryStore, service } = harness();
 

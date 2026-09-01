@@ -21,6 +21,7 @@ import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { projectTrip } from "./projectTrip";
 import type {
+  AcceptedTripMutationResponsePort,
   CreateTripNativePort,
   TripApiPort,
   TripRecoveryPort,
@@ -86,6 +87,7 @@ export type CreateImmediateTripInput = Readonly<{
 }>;
 
 export type CreateImmediateTripDependencies = Readonly<{
+  afterAccepted: AcceptedTripMutationResponsePort;
   api: TripApiPort;
   clock: ClockPort;
   device: Readonly<{
@@ -555,8 +557,16 @@ function unreachableOutcome(_outcome: never): never {
 export function createCreateImmediateTrip(
   dependencies: CreateImmediateTripDependencies,
 ) {
-  const { api, clock, device, native, random, recoveryStore, scope } =
-    dependencies;
+  const {
+    afterAccepted,
+    api,
+    clock,
+    device,
+    native,
+    random,
+    recoveryStore,
+    scope,
+  } = dependencies;
 
   async function cleanLocalAttempt(tripId: string): Promise<void> {
     try {
@@ -592,6 +602,17 @@ export function createCreateImmediateTrip(
       throw envelopeProblem();
     }
     return prepared.view;
+  }
+
+  async function acceptedCreateAttempt(
+    commandId: string,
+    body: CreateTripBody,
+    expectedTripId: string,
+  ): Promise<TripResponse> {
+    const response = await api.createTrip(device.deviceId, commandId, body);
+    prepareTrip(response, expectedTripId, device);
+    await afterAccepted.afterAccepted({ kind: "CREATE", commandId });
+    return response;
   }
 
   async function create(input: CreateImmediateTripInput): Promise<TripView> {
@@ -683,13 +704,13 @@ export function createCreateImmediateTrip(
 
     let response: TripResponse;
     try {
-      response = await api.createTrip(device.deviceId, commandId, body);
+      response = await acceptedCreateAttempt(commandId, body, tripId);
     } catch (firstError) {
       if (!isTransportProblem(firstError)) {
         throw sanitizeApiFailure(firstError);
       }
       try {
-        response = await api.createTrip(device.deviceId, commandId, body);
+        response = await acceptedCreateAttempt(commandId, body, tripId);
       } catch (secondError) {
         throw sanitizeApiFailure(secondError);
       }

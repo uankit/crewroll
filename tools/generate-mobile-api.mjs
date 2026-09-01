@@ -15,6 +15,7 @@ export const requiredOperations = [
   "getTrip",
   "registerDevice",
   "resolveCreateTripOutcome",
+  "setTripReadiness",
   "startTrip",
 ];
 
@@ -108,6 +109,15 @@ const operationExpectations = [
     path: "/v1/trips/create-outcome",
     request: "CreateTripOutcomeBody",
     response: "CreateTripOutcomeResponse",
+    successStatus: "200",
+  },
+  {
+    method: "put",
+    operationId: "setTripReadiness",
+    parameters: [deviceHeader(), commandHeader(), tripPath()],
+    path: "/v1/trips/{tripId}/readiness",
+    request: "SetTripReadinessBody",
+    response: "TripResponse",
     successStatus: "200",
   },
   {
@@ -444,6 +454,7 @@ function renderGeneratedTypes() {
     "MembershipResponse",
     "ProblemDetails",
     "RegisterDeviceBody",
+    "SetTripReadinessBody",
     "StartTripBody",
     "TripResponse",
   ];

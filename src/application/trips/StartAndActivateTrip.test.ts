@@ -123,6 +123,7 @@ function tripApi(response: TripResponse): jest.Mocked<TripApiPort> {
     getTrip: jest.fn(),
     requestJoin: jest.fn(),
     resolveCreateTripOutcome: jest.fn(),
+    setTripReadiness: jest.fn(),
     startTrip: jest.fn().mockResolvedValue(response),
   };
 }
@@ -139,20 +140,53 @@ function harness(response: TripResponse = activeResponse()) {
       return Uint8Array.from({ length: 16 }, (_, index) => index);
     }),
   };
+  const journal = {
+    save: jest.fn().mockResolvedValue(undefined),
+    load: jest.fn().mockResolvedValue(null),
+    clear: jest.fn().mockResolvedValue(undefined),
+  };
+  const afterAccepted = {
+    afterAccepted: jest.fn().mockResolvedValue(undefined),
+  };
   const activeTrip = createActivateObservedTrip({
     device: { deviceId, identity },
     native,
   });
   const service = createStartAndActivateTrip({
     activeTrip,
+    afterAccepted,
     api,
     device: { deviceId, identity },
+    journal,
     random,
+    scope: { clerkSubject: "user_crewroll", deviceId },
   });
-  return { api, native, random, service };
+  return { afterAccepted, api, journal, native, random, service };
 }
 
 describe("StartAndActivateTrip.start", () => {
+  it("persists the exact Start command and clears after the accepted cut but before activation", async () => {
+    const { afterAccepted, journal, native, service } = harness();
+    await service.start(eligibleTripView());
+    expect(journal.save).toHaveBeenCalledWith(
+      { clerkSubject: "user_crewroll", deviceId },
+      {
+        version: 1,
+        kind: "START",
+        tripId,
+        commandId,
+        body: { expectedVersion: 3 },
+      },
+    );
+    expect(afterAccepted.afterAccepted).toHaveBeenCalledWith({
+      kind: "START",
+      commandId,
+    });
+    expect(journal.clear.mock.invocationCallOrder[0]).toBeLessThan(
+      native.activateTrip.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("delegates the accepted response to the injected shared activator", async () => {
     const api = tripApi(activeResponse());
     const sharedView = eligibleTripView({
@@ -165,13 +199,20 @@ describe("StartAndActivateTrip.start", () => {
     };
     const dependencies = {
       activeTrip,
+      afterAccepted: { afterAccepted: jest.fn(async () => undefined) },
       api,
       device: { deviceId, identity },
+      journal: {
+        save: jest.fn(async () => undefined),
+        load: jest.fn(async () => null),
+        clear: jest.fn(async () => undefined),
+      },
       random: {
         getBytes: jest.fn(async () =>
           Uint8Array.from({ length: 16 }, (_, index) => index),
         ),
       },
+      scope: { clerkSubject: "user_crewroll", deviceId },
     };
     const service = createStartAndActivateTrip(dependencies);
 

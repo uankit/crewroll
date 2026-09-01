@@ -4,6 +4,7 @@ import type {
   CreateTripBody,
   ProblemDetails,
   RegisterDeviceBody,
+  SetTripReadinessBody,
   StartTripBody,
 } from "@crewroll/contracts";
 import {
@@ -325,6 +326,23 @@ class OpenApiCrewRollApi implements CrewRollApi {
   ): Promise<GeneratedResponse<"startTrip">> {
     return this.request<GeneratedResponse<"startTrip">>(() =>
       this.client.POST("/v1/trips/{tripId}/start", {
+        body,
+        params: {
+          header: commandHeaders(deviceId, commandId),
+          path: { tripId },
+        },
+      }),
+    );
+  }
+
+  async setTripReadiness(
+    deviceId: string,
+    commandId: string,
+    tripId: string,
+    body: SetTripReadinessBody,
+  ): Promise<GeneratedResponse<"setTripReadiness">> {
+    return this.request<GeneratedResponse<"setTripReadiness">>(() =>
+      this.client.PUT("/v1/trips/{tripId}/readiness", {
         body,
         params: {
           header: commandHeaders(deviceId, commandId),

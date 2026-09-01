@@ -46,6 +46,7 @@ test("generates the exact bounded current mobile operations deterministically", 
         "getTrip",
         "registerDevice",
         "resolveCreateTripOutcome",
+        "setTripReadiness",
         "startTrip",
       ]);
 
@@ -62,6 +63,8 @@ test("generates the exact bounded current mobile operations deterministically", 
       assert.match(first, /export type MobilePaths =/);
       assert.match(first, /"\/v1\/trips\/create-outcome"/);
       assert.match(first, /resolveCreateTripOutcome/);
+      assert.match(first, /setTripReadiness/);
+      assert.match(first, /"\/v1\/trips\/\{tripId\}\/readiness"/);
     },
   );
 });

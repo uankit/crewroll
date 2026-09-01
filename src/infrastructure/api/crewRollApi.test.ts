@@ -5,6 +5,7 @@ import type {
   CreateTripOutcomeResponse,
   ProblemCode,
   StartTripBody,
+  SetTripReadinessBody,
   TripResponse,
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
@@ -46,6 +47,9 @@ const approvalBody = {
   wrappedKey: "opaque-wrapped-key",
 } as ApproveJoinRequestBody;
 const startBody = { expectedVersion: 3 } as StartTripBody;
+const readinessBody = {
+  fullPhotoLibraryAccess: true,
+} as SetTripReadinessBody;
 const membershipId = "5a95305d-c558-4c79-b78c-a075be7bff85";
 const requestId = "5a95305d-c558-4c79-b78c-a075be7bff86";
 const createOutcomeBody = { tripId } as const;
@@ -128,6 +132,23 @@ function apiWith(
 }
 
 describe("CrewRoll API boundary", () => {
+  it("uses the exact authoritative readiness request contract", async () => {
+    const fetchMock = jest.fn(async () => response(tripResponse, 200));
+    const api = apiWith(fetchMock);
+
+    await api.setTripReadiness(deviceId, commandId, tripId, readinessBody);
+
+    const request = requestFrom(fetchMock.mock.calls[0]);
+    expect(request.method).toBe("PUT");
+    expect(request.url).toBe(
+      `https://api.crewroll.app/v1/trips/${tripId}/readiness`,
+    );
+    expect(request.headers.get("Authorization")).toBe("Bearer clerk-session");
+    expect(request.headers.get("X-CrewRoll-Device-Id")).toBe(deviceId);
+    expect(request.headers.get("Idempotency-Key")).toBe(commandId);
+    await expect(request.json()).resolves.toEqual(readinessBody);
+  });
+
   it("re-exports the application-owned API problem class", () => {
     expect(CrewRollApiProblem).toBe(ApplicationCrewRollApiProblem);
   });

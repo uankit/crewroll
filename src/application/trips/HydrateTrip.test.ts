@@ -83,6 +83,7 @@ function harness(response: TripResponse = tripResponse()) {
     createTrip: jest.fn(),
     getTrip: jest.fn().mockResolvedValue(response),
     requestJoin: jest.fn(),
+    setTripReadiness: jest.fn(),
     resolveCreateTripOutcome: jest.fn(),
     startTrip: jest.fn(),
   };

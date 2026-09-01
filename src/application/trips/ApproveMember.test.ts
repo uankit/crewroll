@@ -114,6 +114,7 @@ function harness() {
     createTrip: jest.fn(),
     getTrip: jest.fn(),
     requestJoin: jest.fn(),
+    setTripReadiness: jest.fn(),
     resolveCreateTripOutcome: jest.fn(),
     startTrip: jest.fn(),
   };

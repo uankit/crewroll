@@ -6,6 +6,7 @@ import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { userFacingProblems } from "../problems/userFacingProblem";
 import { TripTransportProblem } from "./CreateImmediateTrip";
 import type {
+  AcceptedTripMutationResponsePort,
   TripApiPort,
   TripRecoveryPort,
   TripRecoveryRecord,
@@ -21,6 +22,7 @@ export type JoinTripResult =
   | Readonly<{ status: "REJECTED" }>;
 
 export type JoinTripDependencies = Readonly<{
+  afterAccepted: AcceptedTripMutationResponsePort;
   api: TripApiPort;
   deviceId: string;
   random: RandomBytesPort;
@@ -166,14 +168,24 @@ function passesValidation<T>(
 }
 
 export function createJoinTrip(dependencies: JoinTripDependencies) {
-  const { api, deviceId, random, recoveryStore, scope } = dependencies;
+  const { afterAccepted, api, deviceId, random, recoveryStore, scope } =
+    dependencies;
 
-  async function finish(response: MembershipResponse): Promise<JoinTripResult> {
+  async function finish(
+    response: MembershipResponse,
+    commandId: string,
+  ): Promise<JoinTripResult> {
     if (
       !passesValidation(response, isMembershipResponse) ||
       response.deviceId !== deviceId
     ) {
       throw internalProblem();
+    }
+
+    try {
+      await afterAccepted.afterAccepted({ kind: "JOIN", commandId });
+    } catch (error) {
+      throw sanitizeApiFailure(error);
     }
 
     if (response.status === "REJECTED") {
@@ -214,7 +226,7 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
     } catch (error) {
       throw sanitizeApiFailure(error);
     }
-    return finish(response);
+    return finish(response, record.commandId);
   }
 
   async function request(inviteCodeInput: string): Promise<JoinTripResult> {
