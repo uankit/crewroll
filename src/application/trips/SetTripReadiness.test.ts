@@ -1,6 +1,11 @@
-import type { TripResponse } from "@crewroll/contracts";
+import {
+  ProblemCodeSchema,
+  type ProblemCode,
+  type TripResponse,
+} from "@crewroll/contracts";
 
 import type { TripView } from "../../domain/trips/model";
+import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import type {
   AcceptedTripMutationResponsePort,
   TripApiPort,
@@ -77,6 +82,44 @@ function harness() {
 }
 
 describe("SetTripReadiness", () => {
+  it("exhaustively applies canonical server disposition to publish and replay", async () => {
+    const terminal = new Set<ProblemCode>([
+      "AUTH_REQUIRED",
+      "AUTH_INVALID",
+      "DEVICE_NOT_OWNED",
+      "DEVICE_REVOKED",
+      "DEVICE_NOT_PARTICIPANT",
+      "IDEMPOTENCY_CONFLICT",
+      "INVALID_REQUEST",
+      "RATE_LIMITED",
+      "MEMBERSHIP_FROZEN",
+      "NOT_FOUND",
+      "CONFLICT",
+    ]);
+    const codes = ProblemCodeSchema.anyOf.map((candidate) => candidate.const);
+    for (const code of codes) {
+      for (const replay of [false, true]) {
+        const { api, journal, service } = harness();
+        if (replay) {
+          journal.load.mockResolvedValue({
+            version: 1,
+            kind: "SET_READINESS",
+            tripId,
+            commandId,
+            body: { fullPhotoLibraryAccess: true },
+          });
+        }
+        api.setTripReadiness.mockRejectedValueOnce(
+          new CrewRollApiProblem(code, { status: 409 }),
+        );
+        const result = replay
+          ? service.replayPendingMutation()
+          : service.publish(tripId, true);
+        await expect(result).rejects.toMatchObject({ code });
+        expect(journal.clear).toHaveBeenCalledTimes(terminal.has(code) ? 1 : 0);
+      }
+    }
+  });
   it("saves before mutation, validates before cut, then compare-clears", async () => {
     const { afterAccepted, api, events, journal, service } = harness();
     const view = await service.publish(tripId, true);
@@ -133,5 +176,71 @@ describe("SetTripReadiness", () => {
     });
     expect(afterAccepted.afterAccepted).not.toHaveBeenCalled();
     expect(journal.clear).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["local auth absence", new CrewRollApiProblem("AUTH_REQUIRED"), false],
+    [
+      "terminal server auth",
+      new CrewRollApiProblem("AUTH_REQUIRED", { status: 401 }),
+      true,
+    ],
+    [
+      "malformed server 5xx",
+      new CrewRollApiProblem("AUTH_REQUIRED", { status: 500 }),
+      false,
+    ],
+  ] as const)(
+    "handles %s without unsafe journal deletion",
+    async (_label, error, clears) => {
+      const { api, journal, service } = harness();
+      api.setTripReadiness.mockRejectedValueOnce(error);
+      await expect(service.publish(tripId, true)).rejects.toMatchObject({
+        code: error.code,
+      });
+      expect(journal.clear).toHaveBeenCalledTimes(clears ? 1 : 0);
+    },
+  );
+
+  it("retains the journal for spoofed structural server provenance", async () => {
+    const { api, journal, service } = harness();
+    api.setTripReadiness.mockRejectedValueOnce({
+      kind: "API_PROBLEM",
+      code: "AUTH_REQUIRED",
+      serverStatus: 401,
+    });
+    await expect(service.publish(tripId, true)).rejects.toMatchObject({
+      code: "AUTH_REQUIRED",
+    });
+    expect(journal.clear).not.toHaveBeenCalled();
+  });
+
+  it("retains replay for an unknown problem code and malformed success", async () => {
+    for (const failure of [
+      new CrewRollApiProblem("FUTURE_PROBLEM" as ProblemCode, { status: 409 }),
+      null,
+    ]) {
+      const { afterAccepted, api, journal, service } = harness();
+      journal.load.mockResolvedValue({
+        version: 1,
+        kind: "SET_READINESS",
+        tripId,
+        commandId,
+        body: { fullPhotoLibraryAccess: true },
+      });
+      if (failure === null) {
+        api.setTripReadiness.mockResolvedValueOnce({
+          ...response(),
+          malformed: true,
+        } as TripResponse);
+      } else {
+        api.setTripReadiness.mockRejectedValueOnce(failure);
+      }
+      await expect(service.replayPendingMutation()).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+      });
+      expect(journal.clear).not.toHaveBeenCalled();
+      expect(afterAccepted.afterAccepted).not.toHaveBeenCalled();
+    }
   });
 });

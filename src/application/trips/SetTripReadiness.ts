@@ -51,6 +51,21 @@ function apiCode(error: unknown): ProblemCode | null {
     : null;
 }
 
+function isTerminalServerProblem(
+  error: unknown,
+  codes: Set<ProblemCode>,
+): boolean {
+  const code = apiCode(error);
+  if (
+    code === null ||
+    !codes.has(code) ||
+    !(error instanceof CrewRollApiProblem)
+  )
+    return false;
+  const status = error.serverStatus;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
+
 function sanitized(error: unknown): Error {
   const code = apiCode(error);
   if (code !== null) return new CrewRollApiProblem(code);
@@ -111,8 +126,7 @@ export function createSetTripReadiness(
         record.body,
       );
     } catch (error) {
-      const code = apiCode(error);
-      if (code !== null && readinessTerminalCodes.has(code)) {
+      if (isTerminalServerProblem(error, readinessTerminalCodes)) {
         try {
           await journal.clear(scope, record.commandId);
         } catch {

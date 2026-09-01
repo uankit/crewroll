@@ -164,6 +164,72 @@ describe("CrewRoll API boundary", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("marks only an exact closed server problem with HTTP provenance", async () => {
+    const api = apiWith(jest.fn(async () => problemResponse("NOT_FOUND", 404)));
+    try {
+      await api.getTrip(deviceId, tripId);
+      throw new Error("expected problem");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CrewRollApiProblem);
+      expect((error as CrewRollApiProblem).serverStatus).toBe(404);
+    }
+  });
+
+  it("accepts the control-plane mapper's about:blank ProblemDetails URI", async () => {
+    const api = apiWith(
+      jest.fn(async () =>
+        response(
+          {
+            code: "AUTH_REQUIRED",
+            detail: "Authentication is required",
+            instance: "/v1/trips/current",
+            requestId,
+            status: 401,
+            title: "Unauthorized",
+            type: "about:blank",
+          },
+          401,
+          "application/problem+json",
+        ),
+      ),
+    );
+    try {
+      await api.getTrip(deviceId, tripId);
+      throw new Error("expected problem");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "AUTH_REQUIRED" });
+      expect((error as CrewRollApiProblem).serverStatus).toBe(401);
+    }
+  });
+
+  it.each([
+    ["code-only", { code: "NOT_FOUND" }, 404],
+    [
+      "body status mismatch",
+      {
+        code: "NOT_FOUND",
+        detail: "private",
+        instance: "/v1/trips/x",
+        requestId,
+        status: 404,
+        title: "Not found",
+        type: "https://crewroll.app/problems/not-found",
+      },
+      500,
+    ],
+  ])("fails closed for malformed %s problems", async (_label, body, status) => {
+    const api = apiWith(
+      jest.fn(async () => response(body, status, "application/problem+json")),
+    );
+    try {
+      await api.getTrip(deviceId, tripId);
+      throw new Error("expected problem");
+    } catch (error) {
+      expect(error).toEqual(new CrewRollApiProblem("INTERNAL_ERROR"));
+      expect((error as CrewRollApiProblem).serverStatus).toBe(status);
+    }
+  });
+
   it("uses the exact authoritative create-outcome request contract", async () => {
     const fetchMock = jest.fn(async () =>
       response({ outcome: "STILL_UNKNOWN" }, 200),
@@ -416,11 +482,7 @@ describe("CrewRoll API boundary", () => {
 
   it("never returns RFC 9457 detail to callers", async () => {
     const fetchMock = jest.fn(async () =>
-      response(
-        { code: "INVITE_INVALID", detail: "invite hash row 91 did not match" },
-        400,
-        "application/problem+json",
-      ),
+      problemResponse("INVITE_INVALID", 400),
     );
     const api = apiWith(fetchMock);
 
@@ -481,9 +543,7 @@ describe("CrewRoll API boundary", () => {
     );
 
     for (const code of codes) {
-      const fetchMock = jest.fn(async () =>
-        response({ code }, 400, "application/problem+json"),
-      );
+      const fetchMock = jest.fn(async () => problemResponse(code, 400));
       const api = apiWith(fetchMock);
       await expect(api.getTrip(deviceId, tripId)).rejects.toEqual(
         new CrewRollApiProblem(code),

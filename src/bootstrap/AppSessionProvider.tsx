@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -152,6 +153,7 @@ export type TripSessionActions = Readonly<{
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
   join(inviteCode: string): Promise<JoinMutationResult>;
   approve(tripId: string, membershipId: string): Promise<TripMutationResult>;
+  invalidatePhotoReadiness(): void;
   publishPhotoReadiness(
     tripId: string,
     requestPermission: boolean,
@@ -327,11 +329,14 @@ export function AppSessionProvider({
   const [photoPermissionTripId, setPhotoPermissionTripId] = useState<
     string | null
   >(null);
+  const photoPermissionTripIdRef = useRef<string | null>(null);
   const [publicSessionKey, setPublicSessionKey] = useState<string | null>(null);
   const [publishedQueryScope, setPublishedQueryScope] =
     useState<QueryScope | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const runGeneration = useRef(0);
+  const readinessGeneration = useRef(0);
+  const publicOperationScope = useRef("");
   const previousSessionKey = useRef<string | null>(null);
   const previousAccountId = useRef<string | null>(null);
   const queryScope = useRef<QueryScope | null>(null);
@@ -356,6 +361,7 @@ export function AppSessionProvider({
     setActivationFailureTripId(null);
     setPhotoPermission({ kind: "CHECKING" });
     setPhotoPermissionTripId(null);
+    photoPermissionTripIdRef.current = null;
     setSnapshot({ phase: "SIGNED_OUT" });
     try {
       await onAuthInvalid?.();
@@ -537,28 +543,48 @@ export function AppSessionProvider({
       requestPermission: boolean,
     ): Promise<TripMutationResult> => {
       const current = binding();
+      const expectedPublicOperationScope = publicOperationScope.current;
+      const expectedReadinessGeneration = ++readinessGeneration.current;
       setPhotoPermission({ kind: "CHECKING" });
       setPhotoPermissionTripId(null);
-      const result = await current.services.setPhotoReadiness(
-        tripId,
-        requestPermission,
-      );
-      if (current.generation !== runGeneration.current) {
-        throw unavailableSession();
-      }
+      photoPermissionTripIdRef.current = null;
+      let resolvedPermission: PhotoLibraryPermissionState | null = null;
       const observed = await observeOperation(
-        Promise.resolve(result.trip),
+        current.services
+          .setPhotoReadiness(tripId, requestPermission)
+          .then((result) => {
+            if (
+              expectedReadinessGeneration !== readinessGeneration.current ||
+              expectedPublicOperationScope !== publicOperationScope.current
+            ) {
+              throw unavailableSession();
+            }
+            resolvedPermission = result.permission;
+            return result.trip;
+          }),
         current.generation,
       );
       if (current.generation !== runGeneration.current) {
         throw unavailableSession();
       }
-      setPhotoPermission(result.permission);
+      const acceptedPermission =
+        resolvedPermission as PhotoLibraryPermissionState | null;
+      if (acceptedPermission === null) throw unavailableSession();
+      setPhotoPermission(acceptedPermission);
       setPhotoPermissionTripId(tripId);
+      photoPermissionTripIdRef.current =
+        acceptedPermission.kind === "FULL" ? tripId : null;
       return observed.result;
     },
     [binding, observeOperation],
   );
+
+  const invalidatePhotoReadiness = useCallback(() => {
+    ++readinessGeneration.current;
+    photoPermissionTripIdRef.current = null;
+    setPhotoPermission({ kind: "CHECKING" });
+    setPhotoPermissionTripId(null);
+  }, []);
 
   const openPhotoSettings = useCallback(async (): Promise<void> => {
     const current = binding();
@@ -567,7 +593,11 @@ export function AppSessionProvider({
 
   const startTrip = useCallback(
     async (tripId: string): Promise<TripMutationResult> => {
-      if (photoPermission.kind !== "FULL" || photoPermissionTripId !== tripId)
+      if (
+        photoPermission.kind !== "FULL" ||
+        photoPermissionTripId !== tripId ||
+        photoPermissionTripIdRef.current !== tripId
+      )
         throw unavailableSession();
       const current = binding();
       const cached = queryClient.getQueryData<TripView>(
@@ -611,6 +641,7 @@ export function AppSessionProvider({
     () => ({
       approve: approveMember,
       create: createTrip,
+      invalidatePhotoReadiness,
       join: joinTrip,
       openPhotoSettings,
       publishPhotoReadiness,
@@ -620,6 +651,7 @@ export function AppSessionProvider({
     [
       approveMember,
       createTrip,
+      invalidatePhotoReadiness,
       joinTrip,
       openPhotoSettings,
       publishPhotoReadiness,
@@ -635,6 +667,18 @@ export function AppSessionProvider({
     authUserId === null || authSessionId === null
       ? null
       : JSON.stringify([authUserId, authSessionId]);
+  const renderedPublicOperationScope = JSON.stringify([
+    authBindingKey,
+    fontsReady,
+    retryGeneration,
+  ]);
+  useLayoutEffect(() => {
+    if (publicOperationScope.current === renderedPublicOperationScope) return;
+    publicOperationScope.current = renderedPublicOperationScope;
+    ++runGeneration.current;
+    ++readinessGeneration.current;
+    photoPermissionTripIdRef.current = null;
+  }, [renderedPublicOperationScope]);
 
   useEffect(() => {
     const generation = ++runGeneration.current;
@@ -702,6 +746,7 @@ export function AppSessionProvider({
         setActivationFailureTripId(null);
         setPhotoPermission({ kind: "CHECKING" });
         setPhotoPermissionTripId(null);
+        photoPermissionTripIdRef.current = null;
 
         let attempt = provisioned.current;
         if (attempt?.key !== sessionKey) {
@@ -758,7 +803,14 @@ export function AppSessionProvider({
         scopedSession.current = services;
 
         try {
-          const pendingMutation = await services.replayPendingMutation();
+          let pendingMutation: TripView | null;
+          try {
+            pendingMutation = await services.replayPendingMutation();
+          } catch (error) {
+            if (!(error instanceof TripActivationFailed)) throw error;
+            await observeOperation(Promise.reject(error), generation, recovery);
+            return;
+          }
           if (!isCurrent()) return;
           if (pendingMutation !== null) {
             await observeOperation(

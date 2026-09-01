@@ -90,6 +90,7 @@ function pendingMemberTrip(): TripView {
 const mockActions = {
   approve: jest.fn(),
   create: jest.fn(),
+  invalidatePhotoReadiness: jest.fn(),
   join: jest.fn(),
   openPhotoSettings: jest.fn(async () => undefined),
   publishPhotoReadiness: jest.fn(async () => ownerTrip()),

@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { ESLint } from "eslint";
+import ts from "typescript";
 import { createVitest } from "vitest/node";
 
 const root = new URL("../", import.meta.url);
@@ -1031,6 +1032,97 @@ test("mobile source uses only the locked topology and public route imports", asy
 
   for (const [path, expectedImport] of publicImports) {
     assert.match(await readText(path), expectedImport, path);
+  }
+});
+
+test("development acceptance stays out of static production and feature graphs", async () => {
+  const appProviders = await readText("src/bootstrap/AppProviders.tsx");
+  const acceptanceRoute = await readText("app/dev/staging-acceptance.tsx");
+  const acceptanceControl = await readText(
+    "src/bootstrap/DevelopmentAcceptance.tsx",
+  );
+  assert.doesNotMatch(appProviders, /(?:import|export)[^;]*["']\.\.\/dev\//u);
+  assert.doesNotMatch(
+    acceptanceRoute,
+    /^import[^;]*(?:DevelopmentAcceptance|src\/dev)/mu,
+  );
+  assert.match(
+    acceptanceRoute,
+    /import\("@\/bootstrap\/DevelopmentAcceptanceSurface"\)/u,
+  );
+  assert.match(
+    acceptanceControl,
+    /import\("\.\.\/dev\/TripMutationResponseCut"\)/u,
+  );
+  assert.match(
+    acceptanceControl,
+    /import\("\.\.\/dev\/SafeClerkClaimInspector"\)/u,
+  );
+
+  async function sourceFiles(relativeDirectory) {
+    const directory = new URL(`${relativeDirectory}/`, root);
+    const entries = await readdir(directory, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries) {
+      const relative = `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) files.push(...(await sourceFiles(relative)));
+      else if (/\.(?:ts|tsx)$/u.test(entry.name)) files.push(relative);
+    }
+    return files;
+  }
+
+  function staticModuleSpecifiers(source, fileName = "source.ts") {
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      fileName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    return sourceFile.statements.flatMap((statement) => {
+      if (
+        (ts.isImportDeclaration(statement) ||
+          ts.isExportDeclaration(statement)) &&
+        statement.moduleSpecifier !== undefined &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        return [statement.moduleSpecifier.text];
+      }
+      return [];
+    });
+  }
+  assert.deepEqual(staticModuleSpecifiers('import "../dev/side-effect";'), [
+    "../dev/side-effect",
+  ]);
+  assert.deepEqual(
+    staticModuleSpecifiers(
+      'import DefaultThing, { named } from "../dev/combined";',
+    ),
+    ["../dev/combined"],
+  );
+  assert.deepEqual(
+    staticModuleSpecifiers('void import("../dev/dynamic");'),
+    [],
+  );
+
+  for (const file of [
+    ...(await sourceFiles("src/features")),
+    ...(await sourceFiles("src/domain")),
+  ]) {
+    assert.doesNotMatch(
+      await readText(file),
+      /(?:DevelopmentAcceptance|src\/dev|\.\.\/dev\/)/u,
+      file,
+    );
+  }
+  for (const file of await sourceFiles("src/bootstrap")) {
+    assert.equal(
+      staticModuleSpecifiers(await readText(file), file).some((specifier) =>
+        /(?:^|\/)dev\//u.test(specifier),
+      ),
+      false,
+      file,
+    );
   }
 });
 

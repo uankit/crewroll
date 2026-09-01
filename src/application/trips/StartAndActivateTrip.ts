@@ -153,6 +153,19 @@ function apiProblemCode(error: unknown): ProblemCode | null {
   }
 }
 
+function isTerminalServerProblem(error: unknown): boolean {
+  const code = apiProblemCode(error);
+  if (
+    code === null ||
+    !startTerminalCodes.has(code) ||
+    !(error instanceof CrewRollApiProblem)
+  ) {
+    return false;
+  }
+  const status = error.serverStatus;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
+
 function sanitizeApiFailure(error: unknown): Error {
   const code = apiProblemCode(error);
   if (code !== null) return new CrewRollApiProblem(code);
@@ -233,8 +246,7 @@ export function createStartAndActivateTrip(
         record.body,
       );
     } catch (error) {
-      const code = apiProblemCode(error);
-      if (code !== null && startTerminalCodes.has(code)) {
+      if (isTerminalServerProblem(error)) {
         try {
           await journal.clear(scope, record.commandId);
         } catch {

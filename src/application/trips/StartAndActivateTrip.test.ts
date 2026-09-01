@@ -1,4 +1,8 @@
-import type { ProblemCode, TripResponse } from "@crewroll/contracts";
+import {
+  ProblemCodeSchema,
+  type ProblemCode,
+  type TripResponse,
+} from "@crewroll/contracts";
 
 import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
@@ -165,6 +169,48 @@ function harness(response: TripResponse = activeResponse()) {
 }
 
 describe("StartAndActivateTrip.start", () => {
+  it("exhaustively applies canonical server disposition to Start and replay", async () => {
+    const terminal = new Set<ProblemCode>([
+      "AUTH_REQUIRED",
+      "AUTH_INVALID",
+      "DEVICE_NOT_OWNED",
+      "DEVICE_REVOKED",
+      "DEVICE_NOT_PARTICIPANT",
+      "IDEMPOTENCY_CONFLICT",
+      "INVALID_REQUEST",
+      "RATE_LIMITED",
+      "NOT_FOUND",
+      "TRIP_OWNER_REQUIRED",
+      "TRIP_STATE_CONFLICT",
+      "VERSION_CONFLICT",
+      "PENDING_JOIN_REQUESTS",
+      "KEY_ENVELOPE_MISSING",
+      "PHOTO_LIBRARY_ACCESS_REQUIRED",
+    ]);
+    const codes = ProblemCodeSchema.anyOf.map((candidate) => candidate.const);
+    for (const code of codes) {
+      for (const replay of [false, true]) {
+        const { api, journal, service } = harness();
+        if (replay) {
+          journal.load.mockResolvedValue({
+            version: 1,
+            kind: "START",
+            tripId,
+            commandId,
+            body: { expectedVersion: eligibleTripView().version },
+          });
+        }
+        api.startTrip.mockRejectedValueOnce(
+          new CrewRollApiProblem(code, { status: 409 }),
+        );
+        const result = replay
+          ? service.replayPendingMutation()
+          : service.start(eligibleTripView());
+        await expect(result).rejects.toMatchObject({ code });
+        expect(journal.clear).toHaveBeenCalledTimes(terminal.has(code) ? 1 : 0);
+      }
+    }
+  });
   it("persists the exact Start command and clears after the accepted cut but before activation", async () => {
     const { afterAccepted, journal, native, service } = harness();
     await service.start(eligibleTripView());
@@ -438,5 +484,72 @@ describe("StartAndActivateTrip.start", () => {
     );
     expect(malformed.native.importTripKey).not.toHaveBeenCalled();
     expect(malformed.native.activateTrip).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["local auth absence", new CrewRollApiProblem("AUTH_REQUIRED"), false],
+    [
+      "terminal server conflict",
+      new CrewRollApiProblem("VERSION_CONFLICT", { status: 409 }),
+      true,
+    ],
+    [
+      "terminal-looking 5xx",
+      new CrewRollApiProblem("VERSION_CONFLICT", { status: 500 }),
+      false,
+    ],
+  ] as const)(
+    "handles %s without unsafe journal deletion",
+    async (_label, error, clears) => {
+      const { api, journal, service } = harness();
+      api.startTrip.mockRejectedValueOnce(error);
+      await expect(service.start(eligibleTripView())).rejects.toMatchObject({
+        code: error.code,
+      });
+      expect(journal.clear).toHaveBeenCalledTimes(clears ? 1 : 0);
+    },
+  );
+
+  it("retains the journal for spoofed structural server provenance", async () => {
+    const { api, journal, service } = harness();
+    api.startTrip.mockRejectedValueOnce({
+      kind: "API_PROBLEM",
+      code: "VERSION_CONFLICT",
+      serverStatus: 409,
+    });
+    await expect(service.start(eligibleTripView())).rejects.toMatchObject({
+      code: "VERSION_CONFLICT",
+    });
+    expect(journal.clear).not.toHaveBeenCalled();
+  });
+
+  it("retains replay for an unknown problem code and malformed success", async () => {
+    for (const failure of [
+      new CrewRollApiProblem("FUTURE_PROBLEM" as ProblemCode, { status: 409 }),
+      null,
+    ]) {
+      const { afterAccepted, api, journal, native, service } = harness();
+      journal.load.mockResolvedValue({
+        version: 1,
+        kind: "START",
+        tripId,
+        commandId,
+        body: { expectedVersion: eligibleTripView().version },
+      });
+      if (failure === null) {
+        api.startTrip.mockResolvedValueOnce({
+          ...activeResponse(),
+          malformed: true,
+        } as TripResponse);
+      } else {
+        api.startTrip.mockRejectedValueOnce(failure);
+      }
+      await expect(service.replayPendingMutation()).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+      });
+      expect(journal.clear).not.toHaveBeenCalled();
+      expect(afterAccepted.afterAccepted).not.toHaveBeenCalled();
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    }
   });
 });

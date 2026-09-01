@@ -13,6 +13,7 @@ import {
 import { CrewRollApiProblem } from "../application/problems/crewRollApiProblem";
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
 import type { JoinTripResult } from "../application/trips/JoinTrip";
+import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
 import type {
   TripRecoveryRecord,
   TripRecoveryScope,
@@ -27,8 +28,10 @@ import {
   type AppSessionAuthSnapshot,
   type AppSessionRuntime,
   type ScopedTripSession,
+  type TripMutationResult,
 } from "./AppSessionProvider";
 import { sessionUiStore } from "./state/sessionUiStore";
+import { usePhotoReadinessEntryBoundary } from "./photoReadinessReconciler";
 
 const userId = "user_one";
 const sessionId = "session_one";
@@ -117,6 +120,8 @@ type RuntimeOptions = Readonly<{
   requestJoin?: (inviteCode: string) => Promise<JoinTripResult>;
   provision?: () => Promise<ProvisionedDevice>;
   create?: () => Promise<TripView>;
+  replayPendingMutation?: () => Promise<TripView | null>;
+  setPhotoReadiness?: ScopedTripSession["setPhotoReadiness"];
 }>;
 
 function createRuntime(options: RuntimeOptions = {}) {
@@ -124,15 +129,18 @@ function createRuntime(options: RuntimeOptions = {}) {
   const scoped: ScopedTripSession = {
     approveMember: jest.fn(async () => lobby),
     openPhotoSettings: jest.fn(async () => undefined),
-    replayPendingMutation: jest.fn(async () => null),
-    setPhotoReadiness: jest.fn(async () => ({
-      permission: {
-        kind: "FULL" as const,
-        fullPhotoLibraryAccess: true as const,
-        canAskAgain: true,
-      },
-      trip: lobby,
-    })),
+    replayPendingMutation:
+      options.replayPendingMutation ?? jest.fn(async () => null),
+    setPhotoReadiness:
+      options.setPhotoReadiness ??
+      jest.fn(async () => ({
+        permission: {
+          kind: "FULL" as const,
+          fullPhotoLibraryAccess: true as const,
+          canAskAgain: true,
+        },
+        trip: lobby,
+      })),
     createTrip: options.create ?? jest.fn(async () => lobby),
     reconcileUnknownCreate:
       options.reconcileCreate ??
@@ -1095,5 +1103,343 @@ describe("AppSessionProvider", () => {
 
     openURL.mockRestore();
     share.mockRestore();
+  });
+
+  it("routes readiness AUTH_INVALID through shared sign-out teardown", async () => {
+    const onAuthInvalid = jest.fn(async () => undefined);
+    const { runtime } = createRuntime({
+      recovery: {
+        state: "CONFIRMED",
+        tripId,
+        membershipId,
+        ownerInviteCode: "ABCD2345",
+      },
+      setPhotoReadiness: jest.fn(async () => {
+        throw new CrewRollApiProblem("AUTH_INVALID");
+      }),
+    });
+    function ReadinessProbe() {
+      const session = useAppSession();
+      return (
+        <Text
+          testID="readiness-probe"
+          onPress={() =>
+            void session.actions
+              ?.publishPhotoReadiness(tripId, false)
+              .catch(() => undefined)
+          }
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} onAuthInvalid={onAuthInvalid} runtime={runtime}>
+        <ReadinessProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("readiness-probe").props.onPress(),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("SIGNED_OUT")).toBeOnTheScreen(),
+    );
+    expect(onAuthInvalid).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks immediate Start in the same tick as foreground invalidation", async () => {
+    const { runtime, scoped } = createRuntime({
+      recovery: {
+        state: "CONFIRMED",
+        tripId,
+        membershipId,
+        ownerInviteCode: "ABCD2345",
+      },
+    });
+    let immediateStartFailure: unknown;
+    function ImmediateStartProbe() {
+      const session = useAppSession();
+      return (
+        <Text
+          testID="immediate-start-probe"
+          onPress={async () => {
+            if (session.actions === null) return;
+            await session.actions.publishPhotoReadiness(tripId, false);
+            session.actions.invalidatePhotoReadiness();
+            try {
+              await session.actions.start(tripId);
+            } catch (error) {
+              immediateStartFailure = error;
+            }
+          }}
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <ImmediateStartProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("immediate-start-probe").props.onPress(),
+    );
+    expect(immediateStartFailure).toEqual(
+      new Error("TRIP_SESSION_UNAVAILABLE"),
+    );
+    expect(scoped.startTrip).not.toHaveBeenCalled();
+  });
+
+  it("discards a late previous-trip readiness result without a Query write", async () => {
+    let resolveReadiness!: (
+      value: Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>,
+    ) => void;
+    const lateReadiness = new Promise<
+      Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>
+    >((resolve) => {
+      resolveReadiness = resolve;
+    });
+    const queryClient = createQueryClient();
+    const { runtime } = createRuntime({
+      recovery: {
+        state: "CONFIRMED",
+        tripId,
+        membershipId,
+        ownerInviteCode: "ABCD2345",
+      },
+      setPhotoReadiness: jest.fn(async () => lateReadiness),
+    });
+    let pending: Promise<TripMutationResult> | null = null;
+    function CaptureActions({
+      visibleTripId,
+    }: Readonly<{ visibleTripId: string }>) {
+      const session = useAppSession();
+      usePhotoReadinessEntryBoundary(
+        session.actions,
+        true,
+        visibleTripId,
+        session.snapshot.phase === "READY_LOBBY",
+      );
+      return (
+        <Text
+          testID="late-readiness-probe"
+          onPress={() => {
+            if (session.actions === null) return;
+            pending = session.actions.publishPhotoReadiness(tripId, false);
+          }}
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    const rendered = await render(
+      <Harness auth={signedIn} queryClient={queryClient} runtime={runtime}>
+        <CaptureActions visibleTripId={tripId} />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("late-readiness-probe").props.onPress(),
+    );
+    if (pending === null) throw new Error("readiness did not start");
+    await rendered.rerender(
+      <Harness auth={signedIn} queryClient={queryClient} runtime={runtime}>
+        <CaptureActions visibleTripId={`${tripId.slice(0, -1)}2`} />
+      </Harness>,
+    );
+    resolveReadiness({
+      permission: {
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: false,
+      },
+      trip: { ...lobby, name: "STALE-TRIP-A", version: 99 },
+    });
+    await expect(pending).rejects.toEqual(
+      new Error("TRIP_SESSION_UNAVAILABLE"),
+    );
+    expect(
+      JSON.stringify(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.data),
+      ),
+    ).not.toContain("STALE-TRIP-A");
+  });
+
+  it("discards late readiness across an auth session transition", async () => {
+    let resolveReadiness!: (
+      value: Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>,
+    ) => void;
+    const lateReadiness = new Promise<
+      Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>
+    >((resolve) => {
+      resolveReadiness = resolve;
+    });
+    const queryClient = createQueryClient();
+    const { runtime } = createRuntime({
+      recovery: { state: "CONFIRMED", tripId, membershipId },
+      setPhotoReadiness: jest.fn(async () => lateReadiness),
+    });
+    let pending: Promise<TripMutationResult> | null = null;
+    function Probe() {
+      const session = useAppSession();
+      return (
+        <Text
+          testID="session-transition-readiness"
+          onPress={() => {
+            if (session.actions !== null) {
+              pending = session.actions.publishPhotoReadiness(tripId, false);
+            }
+          }}
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    const rendered = await render(
+      <Harness auth={signedIn} queryClient={queryClient} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("session-transition-readiness").props.onPress(),
+    );
+    if (pending === null) throw new Error("readiness did not start");
+    await rendered.rerender(
+      <Harness
+        auth={{ ...signedIn, sessionId: "session_crewroll_2" }}
+        queryClient={queryClient}
+        runtime={runtime}
+      >
+        <Probe />
+      </Harness>,
+    );
+    resolveReadiness({
+      permission: {
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: false,
+      },
+      trip: { ...lobby, name: "STALE-OLD-SESSION", version: 101 },
+    });
+    await expect(pending).rejects.toEqual(
+      new Error("TRIP_SESSION_UNAVAILABLE"),
+    );
+    expect(
+      JSON.stringify(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.data),
+      ),
+    ).not.toContain("STALE-OLD-SESSION");
+  });
+
+  it("discards late readiness across retry and device reprovision", async () => {
+    let resolveReadiness!: (
+      value: Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>,
+    ) => void;
+    const lateReadiness = new Promise<
+      Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>
+    >((resolve) => {
+      resolveReadiness = resolve;
+    });
+    const queryClient = createQueryClient();
+    const { runtime } = createRuntime({
+      recovery: { state: "CONFIRMED", tripId, membershipId },
+      setPhotoReadiness: jest.fn(async () => lateReadiness),
+    });
+    let pending: Promise<TripMutationResult> | null = null;
+    function RetryProbe() {
+      const session = useAppSession();
+      return (
+        <Text
+          testID="retry-transition-readiness"
+          onPress={() => {
+            if (session.actions === null) return;
+            pending = session.actions.publishPhotoReadiness(tripId, false);
+            session.retry();
+          }}
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} queryClient={queryClient} runtime={runtime}>
+        <RetryProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("retry-transition-readiness").props.onPress(),
+    );
+    if (pending === null) throw new Error("readiness did not start");
+    resolveReadiness({
+      permission: {
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: false,
+      },
+      trip: { ...lobby, name: "STALE-OLD-DEVICE", version: 102 },
+    });
+    await expect(pending).rejects.toEqual(
+      new Error("TRIP_SESSION_UNAVAILABLE"),
+    );
+    expect(
+      JSON.stringify(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.data),
+      ),
+    ).not.toContain("STALE-OLD-DEVICE");
+  });
+
+  it("publishes replayed Start activation failure as safe ACTIVE retry state", async () => {
+    const active = {
+      ...lobby,
+      status: "ACTIVE" as const,
+      startsAt: "2030-01-01T00:00:00.000Z",
+    };
+    const failure = new TripActivationFailed("KEY_ENVELOPE_INVALID", active);
+    const { runtime, scoped } = createRuntime({
+      replayPendingMutation: jest.fn(async () => {
+        throw failure;
+      }),
+    });
+    function ActivationProbe() {
+      const session = useAppSession();
+      return (
+        <Text testID="activation-probe">
+          {session.snapshot.phase}:{session.activationFailureTripId ?? "none"}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <ActivationProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(`READY_ACTIVE:${tripId}`)).toBeOnTheScreen(),
+    );
+    expect(scoped.startTrip).not.toHaveBeenCalled();
   });
 });

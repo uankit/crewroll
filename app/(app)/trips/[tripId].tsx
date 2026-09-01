@@ -2,7 +2,13 @@ import { Redirect, useIsFocused, useLocalSearchParams } from "expo-router";
 import { AppState } from "react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useAppSession, useTripProjection } from "@/bootstrap";
+import {
+  useAppSession,
+  useTripProjection,
+  createPhotoReadinessReconciler,
+  permissionForLobbyEntry,
+  usePhotoReadinessEntryBoundary,
+} from "@/bootstrap";
 import { Button, LiveStatus, Screen, Stack } from "@/design-system";
 import { LobbyScreen, type LobbyActivationState } from "@/features/trips";
 
@@ -29,27 +35,47 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   >(undefined);
   const [starting, setStarting] = useState(false);
   const [retryingActivation, setRetryingActivation] = useState(false);
-  const reconcilingReadiness = useRef(new Set<string>());
+  const readinessReconciler = useRef(createPhotoReadinessReconciler());
+  const [observedEntry, setObservedEntry] = useState({
+    focused: false,
+    tripId,
+  });
+  const [entryReconciled, setEntryReconciled] = useState(false);
+  usePhotoReadinessEntryBoundary(
+    actions,
+    focused,
+    tripId,
+    session.snapshot.phase === "READY_LOBBY",
+  );
 
   const reconcilePhotoReadiness = useCallback(() => {
-    if (reconcilingReadiness.current.has(tripId) || actions === null) return;
-    reconcilingReadiness.current.add(tripId);
-    void actions
-      .publishPhotoReadiness(tripId, false)
-      .catch(() => undefined)
-      .finally(() => {
-        reconcilingReadiness.current.delete(tripId);
-      });
+    if (actions === null) return Promise.resolve();
+    return readinessReconciler.current.reconcile(actions, tripId);
   }, [actions, tripId]);
 
   useEffect(() => {
-    if (!focused || session.snapshot.phase !== "READY_LOBBY") return;
-    reconcilePhotoReadiness();
+    let cancelled = false;
+    void Promise.resolve().then(async () => {
+      if (cancelled) return;
+      setObservedEntry({ focused, tripId });
+      setEntryReconciled(false);
+      if (!focused || session.snapshot.phase !== "READY_LOBBY") return;
+      await reconcilePhotoReadiness();
+      if (!cancelled) setEntryReconciled(true);
+    });
+    if (!focused || session.snapshot.phase !== "READY_LOBBY") {
+      return () => {
+        cancelled = true;
+      };
+    }
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") reconcilePhotoReadiness();
     });
-    return () => subscription.remove();
-  }, [focused, reconcilePhotoReadiness, session.snapshot.phase]);
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, [focused, reconcilePhotoReadiness, session.snapshot.phase, tripId]);
 
   if (projection.failed) {
     return (
@@ -153,7 +179,11 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           ?.publishPhotoReadiness(trip.id, true)
           .catch(() => undefined);
       }}
-      photoPermission={session.photoPermission}
+      photoPermission={permissionForLobbyEntry(
+        focused && observedEntry.focused && observedEntry.tripId === tripId,
+        entryReconciled,
+        session.photoPermission,
+      )}
       starting={starting}
       trip={trip}
     />

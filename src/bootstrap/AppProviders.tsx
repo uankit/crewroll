@@ -32,11 +32,6 @@ import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ExpoRandomBytesPort } from "../infrastructure/random/expoRandomBytes";
 import { createExpoTripRecoveryStore } from "../infrastructure/storage/tripRecoveryStore";
 import { createExpoTripMutationJournal } from "../infrastructure/storage/tripMutationJournal";
-import {
-  DevelopmentTripMutationResponseCut,
-  createExpoResponseCutArmStore,
-} from "../dev/TripMutationResponseCut";
-import { inspectClerkToken } from "../dev/SafeClerkClaimInspector";
 import { readPublicEnv, type PublicEnv } from "./config/env";
 import { AppErrorBoundary } from "./AppErrorBoundary";
 import {
@@ -46,7 +41,11 @@ import {
 } from "./AppSessionProvider";
 import { createMobileDependencies } from "./mobileDependencies";
 import { queryClient } from "./queryClient";
-import { DevelopmentAcceptanceProvider } from "./DevelopmentAcceptance";
+import {
+  createDevelopmentAcceptanceControl,
+  composeDevelopmentAcceptance,
+  DevelopmentAcceptanceProvider,
+} from "./DevelopmentAcceptance";
 
 function publicEnv(): PublicEnv {
   return readPublicEnv({
@@ -70,9 +69,9 @@ function createProductionComposition(
   const recoveryStore = createExpoTripRecoveryStore();
   const mutationJournal = createExpoTripMutationJournal();
   const photoPermission = new ExpoPhotoLibraryPermission();
-  const developmentCut = __DEV__
-    ? new DevelopmentTripMutationResponseCut(createExpoResponseCutArmStore())
-    : null;
+  const developmentCut = composeDevelopmentAcceptance(__DEV__, () =>
+    createDevelopmentAcceptanceControl(getToken),
+  );
   const acceptedResponse: AcceptedTripMutationResponsePort =
     developmentCut ?? noAcceptedTripMutationResponse;
   const provisionCurrentDevice = createProvisionCurrentDevice({
@@ -220,10 +219,12 @@ function ProductionSessionBridge({
           clear: composition.developmentCut.clear.bind(
             composition.developmentCut,
           ),
-          async inspectClaims() {
-            const token = await auth.getToken();
-            return token === null ? null : inspectClerkToken(token);
-          },
+          inspectClaims: composition.developmentCut.inspectClaims.bind(
+            composition.developmentCut,
+          ),
+          afterAccepted: composition.developmentCut.afterAccepted.bind(
+            composition.developmentCut,
+          ),
         })
       : null;
 

@@ -49,8 +49,12 @@ type GeneratedRequest<Operation extends MobileOperationId> =
     : never;
 
 type ApiResult<Response> =
-  | Readonly<{ data: Response; error?: never }>
-  | Readonly<{ data?: never; error: ProblemDetails }>;
+  | Readonly<{ data: Response; error?: never; response: globalThis.Response }>
+  | Readonly<{
+      data?: never;
+      error: ProblemDetails;
+      response: globalThis.Response;
+    }>;
 
 type MobileClient = Client<MobilePaths>;
 
@@ -85,12 +89,44 @@ function isProblemCode(
   return typeof value === "string" && Object.hasOwn(userFacingProblems, value);
 }
 
-function problemFrom(error: unknown): CrewRollApiProblem {
-  if (typeof error === "object" && error !== null && "code" in error) {
-    const code = (error as { code?: unknown }).code;
-    if (isProblemCode(code)) return new CrewRollApiProblem(code);
+function problemFrom(error: unknown, httpStatus: number): CrewRollApiProblem {
+  if (typeof error === "object" && error !== null && !Array.isArray(error)) {
+    const record = error as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    const expected = [
+      "code",
+      "detail",
+      "instance",
+      "requestId",
+      "status",
+      "title",
+      "type",
+    ].sort();
+    if (
+      keys.length === expected.length &&
+      keys.every((key, index) => key === expected[index]) &&
+      isProblemCode(record.code) &&
+      Number.isInteger(record.status) &&
+      record.status === httpStatus &&
+      typeof record.type === "string" &&
+      /^[A-Za-z][A-Za-z0-9+.-]*:\S+$/.test(record.type) &&
+      typeof record.title === "string" &&
+      record.title.length >= 1 &&
+      record.title.length <= 160 &&
+      typeof record.detail === "string" &&
+      record.detail.length >= 1 &&
+      record.detail.length <= 2048 &&
+      typeof record.instance === "string" &&
+      /^(?:https?:\/\/|\/)\S+$/.test(record.instance) &&
+      typeof record.requestId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        record.requestId,
+      )
+    ) {
+      return new CrewRollApiProblem(record.code, { status: httpStatus });
+    }
   }
-  return new CrewRollApiProblem("INTERNAL_ERROR");
+  return new CrewRollApiProblem("INTERNAL_ERROR", { status: httpStatus });
 }
 
 function malformedCreateOutcome(): never {
@@ -372,7 +408,7 @@ class OpenApiCrewRollApi implements CrewRollApi {
     try {
       const result = await operation();
       if (result.data !== undefined) return result.data as Response;
-      throw problemFrom(result.error);
+      throw problemFrom(result.error, result.response.status);
     } catch (error) {
       if (
         error instanceof CrewRollApiProblem ||
