@@ -15,6 +15,10 @@ import {
   InviteResponseSchema,
   MembershipResponseSchema,
   ProblemDetailsSchema,
+  PublishPreviewBodySchema,
+  PublishPreviewResponseSchema,
+  PreviewDownloadResponseSchema,
+  PreviewFeedResponseSchema,
   ReconciliationQuerySchema,
   ReconciliationResponseSchema,
   RegisterDeviceBodySchema,
@@ -133,6 +137,10 @@ function componentSchemas(): Record<string, unknown> {
     UploadSessionResponse: UploadSessionResponseSchema,
     CommitAssetBody: CommitAssetBodySchema,
     CommitAssetResponse: CommitAssetResponseSchema,
+    PublishPreviewBody: PublishPreviewBodySchema,
+    PublishPreviewResponse: PublishPreviewResponseSchema,
+    PreviewDownloadResponse: PreviewDownloadResponseSchema,
+    PreviewFeedResponse: PreviewFeedResponseSchema,
     SyncResponse: SyncResponseSchema,
     CreateDownloadSessionBody: CreateDownloadSessionBodySchema,
     DownloadSessionResponse: DownloadSessionResponseSchema,
@@ -296,6 +304,33 @@ export function createOpenApiDocument(): OpenApiDocument {
           [...commandHeaders, pathId("assetId")],
           { "200": response("CommitAssetResponse") },
           "CommitAssetBody",
+        ),
+      },
+      "/v1/assets/{assetId}/preview": {
+        post: operation(
+          "publishPreview",
+          [...commandHeaders, pathId("assetId")],
+          { "200": response("PublishPreviewResponse") },
+          "PublishPreviewBody",
+        ),
+        get: operation("getPreview", [...queryHeaders, pathId("assetId")], {
+          "200": response("PreviewDownloadResponse"),
+        }),
+      },
+      "/v1/trips/{tripId}/previews": {
+        get: operation(
+          "getPreviewFeed",
+          [
+            ...queryHeaders,
+            tripPathId,
+            {
+              name: "after",
+              in: "query",
+              required: false,
+              schema: { type: "string", pattern: "^(?:0|[1-9]\\d{0,18})$" },
+            },
+          ],
+          { "200": response("PreviewFeedResponse") },
         ),
       },
       "/v1/sync": {

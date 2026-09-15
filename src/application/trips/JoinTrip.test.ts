@@ -132,7 +132,7 @@ describe("JoinTrip.request", () => {
     expect(recoveryStore.save).toHaveBeenCalledTimes(1);
   });
 
-  it("normalizes, stores the exact command before fetch, confirms, and returns only safe fields", async () => {
+  it("retains the exact pending command for approval checks and returns only safe fields", async () => {
     const { api, recoveryStore, service } = harness();
 
     const result = await service.request("  abcd2345\n");
@@ -151,16 +151,9 @@ describe("JoinTrip.request", () => {
       inviteCode,
       deviceId,
     });
-    expect(recoveryStore.save).toHaveBeenNthCalledWith(2, scope, {
-      state: "CONFIRMED",
-      tripId,
-      membershipId,
-    });
+    expect(recoveryStore.save).toHaveBeenCalledTimes(1);
     expect(recoveryStore.save.mock.invocationCallOrder[0]).toBeLessThan(
       api.requestJoin.mock.invocationCallOrder[0]!,
-    );
-    expect(api.requestJoin.mock.invocationCallOrder[0]).toBeLessThan(
-      recoveryStore.save.mock.invocationCallOrder[1]!,
     );
     expect(recoveryStore.clear).not.toHaveBeenCalled();
     expect(api.getTrip).not.toHaveBeenCalled();
@@ -353,7 +346,7 @@ describe("JoinTrip.request", () => {
 });
 
 describe("JoinTrip.replayUnknownJoin", () => {
-  it("replays the exact durable command without new randomness and confirms it", async () => {
+  it("replays the exact durable command and retains it while approval is pending", async () => {
     const { api, random, recoveryStore, service } = harness();
 
     await expect(service.replayUnknownJoin()).resolves.toEqual({
@@ -367,12 +360,7 @@ describe("JoinTrip.replayUnknownJoin", () => {
       inviteCode,
       deviceId,
     });
-    expect(recoveryStore.save).toHaveBeenCalledTimes(1);
-    expect(recoveryStore.save).toHaveBeenCalledWith(scope, {
-      state: "CONFIRMED",
-      tripId,
-      membershipId,
-    });
+    expect(recoveryStore.save).not.toHaveBeenCalled();
     expect(random.getBytes).not.toHaveBeenCalled();
     expect(recoveryStore.clear).not.toHaveBeenCalled();
     expect(api.getTrip).not.toHaveBeenCalled();

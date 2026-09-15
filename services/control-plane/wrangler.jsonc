@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "crewroll-api",
+  "main": "worker/index.ts",
+  "account_id": "8cdc605c7487d2a65f3c5f6e53f17bf8",
+  "compatibility_date": "2026-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+  // Keep repeated SQL round trips near the dedicated Supabase origin.
+  "placement": { "region": "aws:ap-northeast-2" },
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "PUBLIC_API_ORIGIN": "https://crewroll-api.uankitu.workers.dev" },
+  "hyperdrive": [
+    { "binding": "DATABASE", "id": "d3f9413b86474696bac3e5f0220925e5" },
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "alias": { "pino": "../../node_modules/pino/pino.js" },
+  "r2_buckets": [
+    { "binding": "CIPHERTEXT", "bucket_name": "crewroll-ciphertext" },
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "invocation_logs": false, "head_sampling_rate": 1 },
+  },
+  "limits": { "cpu_ms": 30000 },
+  "secrets": {
+    "required": [
+      "CLERK_SECRET_KEY",
+      "CLERK_WEBHOOK_SECRET",
+      "BACKGROUND_CREDENTIAL_HMAC_KEY_V1",
+      "INVITE_CODE_HMAC_KEY",
+      "MEDIA_SIGNING_KEY_V1",
+      "PUSH_TOKEN_ENCRYPTION_KEY_V1",
+    ],
+  },
+}

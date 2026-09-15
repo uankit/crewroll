@@ -3,7 +3,13 @@ import { Pool } from "pg";
 
 import type { Database } from "./schema/tables.js";
 
-export function createDatabase(connectionString: string): Kysely<Database> {
+export function createDatabase(
+  connectionString: string,
+  options: Readonly<{
+    maxConnections?: number;
+    connectionTimeoutMillis?: number;
+  }> = {},
+): Kysely<Database> {
   if (connectionString.length === 0) {
     throw new Error("A PostgreSQL connection string is required");
   }
@@ -13,7 +19,8 @@ export function createDatabase(connectionString: string): Kysely<Database> {
       pool: new Pool({
         application_name: "crewroll-control-plane",
         connectionString,
-        max: 10,
+        max: options.maxConnections ?? 10,
+        connectionTimeoutMillis: options.connectionTimeoutMillis ?? 0,
       }),
     }),
   });

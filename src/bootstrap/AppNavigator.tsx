@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 
-import { useCrewRollTheme } from "../design-system";
+import { LiveStatus, Screen, useCrewRollTheme } from "../design-system";
 import { ClerkAuthSurface } from "../infrastructure/auth/ClerkAuthSurface";
 import { useAppSession } from "./AppSessionProvider";
 
@@ -36,5 +36,17 @@ export function AppNavigator() {
 }
 
 export function AppSignInSurface() {
-  return <ClerkAuthSurface />;
+  return (
+    <ClerkAuthSurface
+      loading={
+        <Screen scroll={false}>
+          <LiveStatus
+            icon="…"
+            label="Loading secure sign-in"
+            message="CrewRoll is connecting to your account."
+          />
+        </Screen>
+      }
+    />
+  );
 }

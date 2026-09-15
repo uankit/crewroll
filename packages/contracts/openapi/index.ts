@@ -7,6 +7,7 @@ export * from "./errors.js";
 export * from "./events.js";
 export * from "./ids.js";
 export * from "./problems.js";
+export * from "./previews.js";
 export * from "./sync.js";
 export * from "./trips.js";
 
@@ -41,6 +42,13 @@ import {
 } from "./events.js";
 import { ProblemDetailsSchema } from "./problems.js";
 import {
+  PublishPreviewBodySchema,
+  PublishPreviewResponseSchema,
+  PreviewDownloadResponseSchema,
+  PreviewFeedQuerySchema,
+  PreviewFeedResponseSchema,
+} from "./previews.js";
+import {
   ReconciliationAssetSchema,
   ReconciliationMemberSchema,
   ReconciliationQuerySchema,
@@ -68,6 +76,11 @@ import {
 } from "./trips.js";
 
 export const publicObjectSchemas = {
+  PublishPreviewBodySchema,
+  PublishPreviewResponseSchema,
+  PreviewDownloadResponseSchema,
+  PreviewFeedQuerySchema,
+  PreviewFeedResponseSchema,
   DeviceRegistrationHeadersSchema,
   MobileCommandHeadersSchema,
   MobileQueryHeadersSchema,

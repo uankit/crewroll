@@ -31,7 +31,7 @@ export type HomeScreenState =
       retrying?: boolean;
     }>
   | Readonly<{
-      kind: "unknown-create" | "unknown-join";
+      kind: "unknown-create" | "unknown-join" | "pending-approval";
       onRecover: () => void;
       recovering?: boolean;
     }>;
@@ -87,21 +87,31 @@ function SafeFailure({
 }
 
 function UnknownRecovery(
-  state: Extract<HomeScreenState, { kind: "unknown-create" | "unknown-join" }>,
+  state: Extract<
+    HomeScreenState,
+    { kind: "unknown-create" | "unknown-join" | "pending-approval" }
+  >,
 ) {
   const isCreate = state.kind === "unknown-create";
+  const isPending = state.kind === "pending-approval";
 
   return (
     <Stack gap="sm" style={styles.statusCard}>
       <InlineBanner
         body={
-          isCreate
-            ? "CrewRoll is checking whether your trip was created. Keep this phone connected and check again."
-            : "CrewRoll is checking whether your join request was received. Keep this phone connected and check again."
+          isPending
+            ? "Your request is in. Ask the owner to approve this phone. This screen updates automatically while CrewRoll is open."
+            : isCreate
+              ? "CrewRoll is checking whether your trip was created. Keep this phone connected and check again."
+              : "CrewRoll is checking whether your join request was received. Keep this phone connected and check again."
         }
         icon="…"
         title={
-          isCreate ? "Checking your new trip" : "Checking your join request"
+          isPending
+            ? "Waiting for the owner"
+            : isCreate
+              ? "Checking your new trip"
+              : "Checking your join request"
         }
         tone="info"
       />
@@ -201,6 +211,7 @@ export function HomeScreen({
         return <SafeFailure {...state} />;
       case "unknown-create":
       case "unknown-join":
+      case "pending-approval":
         return <UnknownRecovery {...state} />;
     }
   })();

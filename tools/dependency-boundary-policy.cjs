@@ -235,6 +235,14 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     allowModules(feature, featurePackages),
     allowModules(application, ["@crewroll/contracts", "zod"]),
     allowModules(infrastructure, infrastructurePackages),
+    // Android requires an additional runtime grant for byte-exact originals.
+    allowModules(
+      element("infrastructure", {
+        captured: { adapter: "media" },
+        fileInternalPath: "expoPhotoLibraryPermission.ts",
+      }),
+      ["react-native"],
+    ),
     allowModules(nativeInfrastructure, ["@sinclair/typebox"]),
     allowModules(nativeBridge, ["expo"]),
     allowModules(development, ["expo-secure-store"]),
@@ -638,6 +646,11 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       "node:http2",
       "pino",
     ]),
+    allowModules(
+      element("platform", { captured: { adapter: "localMedia" } }),
+      ["node:fs", "node:fs/promises", "node:path"],
+      "core",
+    ),
     allowModules(config, ["@crewroll/contracts", "node:*", "zod"]),
     {
       from: route,

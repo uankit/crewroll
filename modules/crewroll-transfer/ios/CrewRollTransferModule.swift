@@ -1,19 +1,10 @@
 import ExpoModulesCore
-
-private let pendingScopeCode = "ERR_CREWROLL_TRANSFER_SCOPE_PENDING"
-private let pendingScopeDescription =
-  "This native transfer operation is outside the identity and key vertical."
-
-private func pendingScopeException() -> Exception {
-  Exception(
-    name: "CrewRollTransferScopePending",
-    description: pendingScopeDescription,
-    code: pendingScopeCode
-  )
-}
+import CoreFoundation
 
 public final class CrewRollTransferModule: Module {
   private var productionLifecycle: NativeKeyLifecycle?
+  private var photoEngine: ApplePhotoTransferEngine?
+  private let transferCommands = NativeTransferCommandFence()
 
   public func definition() -> ModuleDefinition {
     Name("CrewRollTransfer")
@@ -23,8 +14,12 @@ public final class CrewRollTransferModule: Module {
     }
     OnAppEntersForeground {
       self.runLifecycleCleanup()
+      if let engine = self.photoEngine { Task { await engine.wake() } }
     }
     OnDestroy {
+      _ = self.transferCommands.advance()
+      if let engine = self.photoEngine { Task { await engine.stop() } }
+      self.photoEngine = nil
       self.productionLifecycle?.cancelScheduledCleanup()
       self.productionLifecycle = nil
     }
@@ -61,6 +56,22 @@ public final class CrewRollTransferModule: Module {
           apiBaseURL: try Self.string(command, "apiBaseUrl")
         )
         promise.resolve(nil)
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
+    AsyncFunction("clearDeviceSession") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion"])
+        let lifecycle = try self.lifecycle()
+        let engine = try self.engine()
+        let epoch = self.transferCommands.advance()
+        Task {
+          await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+          do {
+            guard self.transferCommands.matches(epoch) else { throw NativeKeyError.invalidCommand }
+            try lifecycle.clearDeviceSession()
+            promise.resolve(nil)
+          } catch { promise.reject(Self.bridgeException(error)) }
+        }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("createTripKey") { (command: [String: Any], promise: Promise) in
@@ -133,7 +144,12 @@ public final class CrewRollTransferModule: Module {
         try NativeCommandDecoder.require(command, for: .activateTrip)
         let lifecycle = try self.lifecycle()
         try lifecycle.activateTrip(try NativeCommandDecoder.activation(command))
-        promise.resolve(nil)
+        let engine = try self.engine()
+        let epoch = self.transferCommands.advance()
+        Task {
+          await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
+          promise.resolve(nil)
+        }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("deactivateTrip") { (command: [String: Any], promise: Promise) in
@@ -141,29 +157,86 @@ public final class CrewRollTransferModule: Module {
         try NativeCommandDecoder.require(command, for: .deactivateTrip)
         let lifecycle = try self.lifecycle()
         try lifecycle.deactivateTrip(tripID: try Self.string(command, "tripId"))
-        promise.resolve(nil)
+        let epoch = self.transferCommands.advance()
+        if let engine = self.photoEngine {
+          Task {
+            await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+            promise.resolve(nil)
+          }
+        } else { promise.resolve(nil) }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
-    AsyncFunction("setTransferPolicy") { (_: [String: Any], promise: Promise) in
-      promise.reject(pendingScopeException())
+    AsyncFunction("setTransferPolicy") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion", "paused", "cellularAllowed"])
+        guard let pausedValue = command["paused"] as? NSNumber, CFGetTypeID(pausedValue) == CFBooleanGetTypeID(),
+              let cellularValue = command["cellularAllowed"] as? NSNumber, CFGetTypeID(cellularValue) == CFBooleanGetTypeID() else { throw NativeKeyError.invalidCommand }
+        let engine = try self.engine()
+        let epoch = self.transferCommands.advance()
+        Task {
+          await engine.setPolicy(paused: pausedValue.boolValue, cellularAllowed: cellularValue.boolValue, ifCurrent: { self.transferCommands.matches(epoch) })
+          promise.resolve(nil)
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
     }
-    AsyncFunction("reconcileNow") { (_: [String: Any], promise: Promise) in
-      promise.reject(pendingScopeException())
+    AsyncFunction("reconcileNow") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion"])
+        let engine = try self.engine()
+        Task { await engine.wake(); promise.resolve(nil) }
+      } catch { promise.reject(Self.bridgeException(error)) }
     }
-    AsyncFunction("retry") { (_: [String: Any], promise: Promise) in
-      promise.reject(pendingScopeException())
+    AsyncFunction("retry") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion", "workId"])
+        let workID = try Self.string(command, "workId")
+        guard UUID(uuidString: workID) != nil else { throw NativeKeyError.invalidCommand }
+        let engine = try self.engine()
+        Task {
+          do { try await engine.retry(workID: workID.lowercased()); promise.resolve(nil) }
+          catch { promise.reject(Self.bridgeException(error)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
     }
-    AsyncFunction("getSnapshot") { () -> [String: Any] in
-      Self.inactiveSnapshot()
+    AsyncFunction("getSnapshot") { (promise: Promise) in
+      do {
+        let engine = try self.engine()
+        Task {
+          do { promise.resolve(try await engine.snapshot()) }
+          catch { promise.reject(Self.bridgeException(error)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
     }
-    AsyncFunction("listAssets") { (_: [String: Any]) -> [String: Any] in
-      [
-        "protocolVersion": 1,
-        "revision": 0,
-        "items": [[String: Any]](),
-        "nextCursor": NSNull()
-      ]
+    AsyncFunction("listAssets") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion", "cursor", "limit"])
+        let limit = try Self.integer(command, "limit")
+        let cursor = command["cursor"] as? String
+        guard cursor != nil || command["cursor"] is NSNull else { throw NativeKeyError.invalidCommand }
+        let engine = try self.engine()
+        Task {
+          do { promise.resolve(try await engine.listAssets(limit: limit, cursor: cursor)) }
+          catch { promise.reject(Self.bridgeException(error)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
     }
+  }
+
+  private func engine() throws -> ApplePhotoTransferEngine {
+    if let photoEngine { return photoEngine }
+    let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let value = ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { [weak self] in
+      try self?.lifecycle().mediaContext()
+    }, invalidated: { [weak self] revision in
+      self?.sendEvent("engineInvalidated", ["protocolVersion": 1, "type": "ENGINE_INVALIDATED", "revision": revision])
+    })
+    photoEngine = value
+    return value
+  }
+
+  private static func require(_ command: [String: Any], keys: Set<String>) throws {
+    guard Set(command.keys) == keys else { throw NativeKeyError.invalidCommand }
+    try NativeCommandDecoder.requireProtocol(command)
   }
 
   private func lifecycle() throws -> NativeKeyLifecycle {
@@ -210,19 +283,4 @@ public final class CrewRollTransferModule: Module {
     }
   }
 
-  private static func inactiveSnapshot() -> [String: Any] {
-    [
-      "protocolVersion": 1,
-      "revision": 0,
-      "activeTripId": NSNull(),
-      "paused": false,
-      "counts": [
-        "discovered": 0,
-        "previewReady": 0,
-        "originalsSaved": 0,
-        "blocked": 0
-      ],
-      "blockers": [String]()
-    ]
-  }
 }

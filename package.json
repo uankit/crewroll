@@ -1,6 +1,6 @@
 {
   "name": "crewroll",
-  "version": "0.2.0",
+  "version": "1.0.1",
   "private": true,
   "description": "CrewRoll automatically delivers encrypted trip photos to every member's system photo library.",
   "main": "expo-router/entry",

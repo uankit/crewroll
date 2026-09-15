@@ -2,7 +2,7 @@
   "expo": {
     "name": "CrewRoll",
     "slug": "AirMesh",
-    "version": "0.2.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "platforms": ["ios", "android"],
     "icon": "./assets/brand/app-icon.png",
@@ -10,7 +10,10 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/brand/app-icon.png",
-      "bundleIdentifier": "com.uankit53.airmesh",
+      "bundleIdentifier": "app.crewroll.mobile",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      },
       "supportsTablet": false
     },
     "android": {
@@ -46,7 +49,7 @@
           "photosPermission": "CrewRoll automatically finds new eligible photos added during an active trip so it can share them privately with your group.",
           "savePhotosPermission": "CrewRoll saves verified exact originals from your active trip to your photo library.",
           "granularPermissions": ["photo"],
-          "isAccessMediaLocationEnabled": false
+          "isAccessMediaLocationEnabled": true
         }
       ],
       [

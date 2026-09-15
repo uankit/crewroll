@@ -2,13 +2,7 @@ import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
 import { QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
-import * as SplashScreen from "expo-splash-screen";
-import {
-  type PropsWithChildren,
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
+import { type PropsWithChildren, useCallback, useState } from "react";
 import { Platform } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -40,6 +34,7 @@ import {
   type AppSessionRuntime,
 } from "./AppSessionProvider";
 import { createMobileDependencies } from "./mobileDependencies";
+import { createNativeSessionFence } from "./nativeSessionFence";
 import { queryClient } from "./queryClient";
 import {
   createDevelopmentAcceptanceControl,
@@ -74,14 +69,34 @@ function createProductionComposition(
   );
   const acceptedResponse: AcceptedTripMutationResponsePort =
     developmentCut ?? noAcceptedTripMutationResponse;
-  const provisionCurrentDevice = createProvisionCurrentDevice({
-    native: crewRollTransfer,
-    random,
-    registration: mobileDependencies.deviceRegistration,
-  });
+  const nativeSessions = createNativeSessionFence(crewRollTransfer);
+  let provisionGeneration = -1;
+  let provisionCurrentDevice: ReturnType<typeof createProvisionCurrentDevice>;
 
   const runtime: AppSessionRuntime = Object.freeze({
-    provisionCurrentDevice,
+    async pauseTransfers() {
+      nativeSessions.invalidate();
+      const generation = nativeSessions.generation;
+      await crewRollTransfer.setTransferPolicy({
+        protocolVersion: 1,
+        paused: true,
+        cellularAllowed: false,
+      });
+      if (generation === nativeSessions.generation) {
+        await crewRollTransfer.clearDeviceSession({ protocolVersion: 1 });
+      }
+    },
+    provisionCurrentDevice(input) {
+      if (provisionGeneration !== nativeSessions.generation) {
+        provisionGeneration = nativeSessions.generation;
+        provisionCurrentDevice = createProvisionCurrentDevice({
+          native: nativeSessions.capture(),
+          random,
+          registration: mobileDependencies.deviceRegistration,
+        });
+      }
+      return provisionCurrentDevice(input);
+    },
     async getNativeSnapshot() {
       const snapshot = await crewRollTransfer.getSnapshot();
       return Object.freeze({ activeTripId: snapshot.activeTripId });
@@ -90,16 +105,17 @@ function createProductionComposition(
       return recoveryStore.load(scope);
     },
     createScopedTripSession(scope, device) {
+      const native = nativeSessions.capture();
       const activeTrip = createActivateObservedTrip({
         device,
-        native: crewRollTransfer,
+        native,
       });
       const createTrip = createCreateImmediateTrip({
         afterAccepted: acceptedResponse,
         api: mobileDependencies.tripApi,
         clock: { now: () => Date.now() },
         device,
-        native: crewRollTransfer,
+        native,
         random,
         recoveryStore,
         scope,
@@ -116,12 +132,12 @@ function createProductionComposition(
         activeTrip,
         api: mobileDependencies.tripApi,
         device,
-        native: crewRollTransfer,
+        native,
       });
       const approveMember = createApproveMember({
         api: mobileDependencies.tripApi,
         device,
-        native: crewRollTransfer,
+        native,
         random,
       });
       const startTrip = createStartAndActivateTrip({
@@ -166,10 +182,27 @@ function createProductionComposition(
             ? readiness.replayPendingMutation()
             : startTrip.replayPendingMutation();
         },
-        async setPhotoReadiness(tripId: string, requestPermission: boolean) {
-          const permission = requestPermission
-            ? await photoPermission.request()
-            : await photoPermission.read();
+        async setPhotoReadiness(
+          tripId: string,
+          requestPermission: boolean | "automatic",
+        ) {
+          const permission =
+            requestPermission === "automatic"
+              ? await photoPermission.requestAutomatically()
+              : requestPermission
+                ? await photoPermission.request()
+                : await photoPermission.read();
+          const current = await hydrateTrip.hydrate(tripId);
+          // Membership readiness is only mutable in the lobby. Active-trip
+          // permission checks stay local and must not produce failing writes.
+          if (
+            current.status !== "LOBBY" ||
+            current.members.find(
+              (member) => member.membershipId === current.currentMembershipId,
+            )?.fullPhotoLibraryAccess === permission.fullPhotoLibraryAccess
+          ) {
+            return Object.freeze({ permission, trip: current });
+          }
           const trip = await readiness.publish(
             tripId,
             permission.fullPhotoLibraryAccess,
@@ -227,12 +260,6 @@ function ProductionSessionBridge({
           ),
         })
       : null;
-
-  useEffect(() => {
-    if (fontsReady && auth.isLoaded) {
-      void SplashScreen.hideAsync();
-    }
-  }, [auth.isLoaded, fontsReady]);
 
   return (
     <DevelopmentAcceptanceProvider value={acceptance}>

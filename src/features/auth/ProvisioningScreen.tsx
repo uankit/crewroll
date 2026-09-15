@@ -40,8 +40,8 @@ export function ProvisioningScreen(props: ProvisioningScreenProps) {
             Connecting this phone
           </AppText>
           <AppText tone="secondary">
-            CrewRoll creates a secure identity for this phone before your trip
-            photos can arrive.
+            CrewRoll is checking this phone&apos;s secure connection before opening
+            your trips.
           </AppText>
         </Stack>
 

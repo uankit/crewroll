@@ -29,6 +29,12 @@ const knownRouteTemplates = new Set([
   "/v1/devices",
   "/v1/devices/:deviceId",
   "/v1/devices/:deviceId/push-token",
+  "/v1/assets/upload-sessions",
+  "/v1/assets/:assetId/commit",
+  "/v1/deliveries/pending",
+  "/v1/deliveries/:deliveryId/download-session",
+  "/v1/deliveries/:deliveryId/saved-receipt",
+  "/v1/local-media/object",
   "/webhooks/clerk",
 ]);
 

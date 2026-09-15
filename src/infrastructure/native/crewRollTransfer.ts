@@ -2,6 +2,7 @@ import { installCrewRollFormats } from "@crewroll/contracts";
 import {
   ActivateTripCommandSchema,
   AssetPageSchema,
+  ClearDeviceSessionCommandSchema,
   CreateTripKeyCommandSchema,
   CreateTripKeyResultSchema,
   DeactivateTripCommandSchema,
@@ -20,6 +21,7 @@ import {
   WrapTripKeyResultSchema,
   type ActivateTripCommand,
   type AssetPage,
+  type ClearDeviceSessionCommand,
   type CreateTripKeyCommand,
   type CreateTripKeyResult,
   type DeactivateTripCommand,
@@ -45,6 +47,8 @@ import {
   type CrewRollTransferEventSubscription,
   type CrewRollTransferNativeModule,
 } from "../../../modules/crewroll-transfer";
+
+import { createSingleFlightRead } from "./singleFlightRead";
 
 installCrewRollFormats(FormatRegistry);
 
@@ -73,6 +77,7 @@ export interface CrewRollTransferPort {
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
+  clearDeviceSession(command: ClearDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
   discardProvisionalTripKey(
     command: DiscardProvisionalTripKeyCommand,
@@ -96,8 +101,15 @@ type NativeModuleProvider = () => CrewRollTransferNativeModule;
 export function createCrewRollTransferPort(
   getNativeModule: NativeModuleProvider,
 ): CrewRollTransferPort {
+  const snapshots = createSingleFlightRead<DurableEngineSnapshot>();
+  const pages = createSingleFlightRead<AssetPage>();
+  const changed = () => {
+    snapshots.invalidate();
+    pages.invalidate();
+  };
   return {
     async ensureDeviceIdentity(command) {
+      changed();
       const parsed = parse(
         EnsureDeviceIdentityCommandSchema,
         command,
@@ -112,6 +124,7 @@ export function createCrewRollTransferPort(
       );
     },
     async installDeviceSession(command) {
+      changed();
       const parsed = parse(
         InstallDeviceSessionCommandSchema,
         command,
@@ -119,7 +132,17 @@ export function createCrewRollTransferPort(
       );
       await getNativeModule().installDeviceSession(parsed);
     },
+    async clearDeviceSession(command) {
+      changed();
+      const parsed = parse(
+        ClearDeviceSessionCommandSchema,
+        command,
+        "clearDeviceSession command",
+      );
+      await getNativeModule().clearDeviceSession(parsed);
+    },
     async createTripKey(command) {
+      changed();
       const parsed = parse(
         CreateTripKeyCommandSchema,
         command,
@@ -129,6 +152,7 @@ export function createCrewRollTransferPort(
       return parse(CreateTripKeyResultSchema, result, "createTripKey result");
     },
     async discardProvisionalTripKey(command) {
+      changed();
       const parsed = parse(
         DiscardProvisionalTripKeyCommandSchema,
         command,
@@ -137,6 +161,7 @@ export function createCrewRollTransferPort(
       await getNativeModule().discardProvisionalTripKey(parsed);
     },
     async wrapTripKey(command) {
+      changed();
       const parsed = parse(
         WrapTripKeyCommandSchema,
         command,
@@ -146,6 +171,7 @@ export function createCrewRollTransferPort(
       return parse(WrapTripKeyResultSchema, result, "wrapTripKey result");
     },
     async importTripKey(command) {
+      changed();
       const parsed = parse(
         ImportTripKeyCommandSchema,
         command,
@@ -154,6 +180,7 @@ export function createCrewRollTransferPort(
       await getNativeModule().importTripKey(parsed);
     },
     async activateTrip(command) {
+      changed();
       const parsed = parse(
         ActivateTripCommandSchema,
         command,
@@ -162,6 +189,7 @@ export function createCrewRollTransferPort(
       await getNativeModule().activateTrip(parsed);
     },
     async deactivateTrip(command) {
+      changed();
       const parsed = parse(
         DeactivateTripCommandSchema,
         command,
@@ -170,6 +198,7 @@ export function createCrewRollTransferPort(
       await getNativeModule().deactivateTrip(parsed);
     },
     async setTransferPolicy(command) {
+      changed();
       const parsed = parse(
         SetTransferPolicyCommandSchema,
         command,
@@ -190,13 +219,27 @@ export function createCrewRollTransferPort(
       await getNativeModule().retry(parsed);
     },
     async getSnapshot() {
-      const result: unknown = await getNativeModule().getSnapshot();
-      return parse(DurableEngineSnapshotSchema, result, "getSnapshot result");
+      return snapshots.read("snapshot", async () => {
+        const result: unknown = await getNativeModule().getSnapshot();
+        return parse(DurableEngineSnapshotSchema, result, "getSnapshot result");
+      });
     },
     async listAssets(query) {
       const parsed = parse(ListAssetsQuerySchema, query, "listAssets query");
-      const result: unknown = await getNativeModule().listAssets(parsed);
-      return parse(AssetPageSchema, result, "listAssets result");
+      return pages.read(JSON.stringify(parsed), async () => {
+        const result: unknown = await getNativeModule().listAssets(parsed);
+        const page = parse(AssetPageSchema, result, "listAssets result");
+        if (
+          page.items.some(
+            (asset) =>
+              asset.previewUri &&
+              (asset.assetId === null || asset.previewStage !== "SAVED"),
+          )
+        ) {
+          throw new CrewRollTransferProtocolError("listAssets preview");
+        }
+        return page;
+      });
     },
     subscribeToInvalidations(listener) {
       return getNativeModule().addListener("engineInvalidated", (event) => {

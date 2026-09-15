@@ -1,5 +1,6 @@
-import { AuthView } from "@clerk/expo/native";
+import { AuthView, useAuthViewState } from "@clerk/expo/native";
 import { fireEvent, render } from "@testing-library/react-native";
+import { Text } from "react-native";
 
 import { ClerkAuthSurface } from "./ClerkAuthSurface";
 
@@ -9,6 +10,10 @@ jest.mock("@clerk/expo/native", () => {
     jest.requireActual<typeof import("react-native")>("react-native");
 
   return {
+    useAuthViewState: jest.fn(() => ({
+      isLoaded: true,
+      isAuthFlowComplete: false,
+    })),
     AuthView: jest.fn(() =>
       React.createElement(
         View,
@@ -26,6 +31,25 @@ jest.mock("@clerk/expo/native", () => {
 describe("ClerkAuthSurface", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest
+      .mocked(useAuthViewState)
+      .mockReturnValue({ isLoaded: true, isAuthFlowComplete: false });
+  });
+
+  it("waits for native Clerk environment initialization before mounting the auth form", async () => {
+    jest
+      .mocked(useAuthViewState)
+      .mockReturnValue({ isLoaded: false, isAuthFlowComplete: false });
+    const view = await render(
+      <ClerkAuthSurface loading={<Text>Loading secure sign-in…</Text>} />,
+    );
+    expect(AuthView).not.toHaveBeenCalled();
+    expect(view.getByText("Loading secure sign-in…")).toBeOnTheScreen();
+    jest
+      .mocked(useAuthViewState)
+      .mockReturnValue({ isLoaded: true, isAuthFlowComplete: false });
+    await view.rerender(<ClerkAuthSurface />);
+    expect(view.getByTestId("clerk-auth-view")).toBeOnTheScreen();
   });
 
   it("renders Clerk's combined native auth view as non-dismissible", async () => {

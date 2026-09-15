@@ -1,6 +1,9 @@
 import { buildApp } from "../app/buildApp.js";
 import { loadEnvironment, type Environment } from "../config/env.js";
 import { createDatabase } from "../db/database.js";
+import { createKyselyMediaService } from "../db/media/kyselyMediaService.js";
+import { createFileCiphertextStore } from "../platform/localMedia/fileCiphertextStore.js";
+import { createLocalPushTokenProtector } from "../platform/localMedia/localPushTokenProtector.js";
 import { createKyselyDeviceAuthorizationSnapshotReader } from "../db/devices/kyselyDeviceAuthorizationSnapshotReader.js";
 import { createKyselyDeviceUnitOfWork } from "../db/devices/kyselyDeviceUnitOfWork.js";
 import { createKyselyIdentityUnitOfWork } from "../db/identity/kyselyIdentityUnitOfWork.js";
@@ -48,6 +51,25 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  async media({ database, environment, clock, authenticator }) {
+    if (!environment.localMediaOrigin) return undefined;
+    const local = await createFileCiphertextStore({
+      directory: required(environment.localMediaDirectory),
+      origin: environment.localMediaOrigin,
+      signingKey: required(environment.backgroundCredentialHmacKeyV1),
+      nodeEnvironment: environment.nodeEnvironment,
+      now: () => clock.now(),
+    });
+    return {
+      authenticator,
+      localObjects: local.gateway,
+      service: createKyselyMediaService(
+        database as Parameters<typeof createKyselyMediaService>[0],
+        local.store,
+        clock,
+      ),
+    };
+  },
   approveJoinRequest: createApproveJoinRequest,
   backgroundCredentials: (environment) =>
     createHmacBackgroundCredentialIssuer(
@@ -72,7 +94,7 @@ export const productionApiFactories: ApiRuntimeFactories = {
       >[0],
     ),
   getTrip: createGetTrip,
-  ids: () => ({ uuid: () => globalThis.crypto.randomUUID() }),
+  ids: () => ({ uuid: () => crypto.randomUUID() }),
   identityUnitOfWork: (database) =>
     createKyselyIdentityUnitOfWork(
       database as Parameters<typeof createKyselyIdentityUnitOfWork>[0],
@@ -86,10 +108,15 @@ export const productionApiFactories: ApiRuntimeFactories = {
   },
   logger: createSafeLogger,
   pushTokenProtector: (environment) =>
-    createKmsPushTokenProtector({
-      keyId: required(environment.kmsPushTokenKeyId),
-      region: required(environment.awsRegion),
-    }),
+    environment.localMediaOrigin
+      ? createLocalPushTokenProtector(
+          required(environment.backgroundCredentialHmacKeyV1),
+          environment.nodeEnvironment,
+        )
+      : createKmsPushTokenProtector({
+          keyId: required(environment.kmsPushTokenKeyId),
+          region: required(environment.awsRegion),
+        }),
   registerDevice: createRegisterDevice,
   rejectJoinRequest: createRejectJoinRequest,
   requestJoin: createRequestJoin,

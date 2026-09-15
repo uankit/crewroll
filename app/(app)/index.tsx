@@ -67,6 +67,13 @@ export default function ProtectedHomeRoute() {
           state={{ kind: "unknown-join", onRecover: retry }}
         />
       );
+    case "READY_PENDING_APPROVAL":
+      return (
+        <HomeScreen
+          {...actions}
+          state={{ kind: "pending-approval", onRecover: retry }}
+        />
+      );
     case "READY_NO_TRIP":
       return <HomeScreen {...actions} />;
     case "LOADING_FONTS_OR_CLERK":

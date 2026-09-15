@@ -341,6 +341,8 @@ describe("canonical OpenAPI artifact", () => {
       "/v1/trips/{tripId}/reconciliation",
       "/v1/assets/upload-sessions",
       "/v1/assets/{assetId}/commit",
+      "/v1/assets/{assetId}/preview",
+      "/v1/trips/{tripId}/previews",
       "/v1/sync",
       "/v1/deliveries/{deliveryId}/download-session",
       "/v1/deliveries/{deliveryId}/saved-receipt",
@@ -471,6 +473,9 @@ describe("canonical OpenAPI artifact", () => {
       "GET /v1/trips/{tripId}/reconciliation": "BackgroundDeviceBearer",
       "POST /v1/assets/upload-sessions": "BackgroundDeviceBearer",
       "POST /v1/assets/{assetId}/commit": "BackgroundDeviceBearer",
+      "POST /v1/assets/{assetId}/preview": "BackgroundDeviceBearer",
+      "GET /v1/assets/{assetId}/preview": "BackgroundDeviceBearer",
+      "GET /v1/trips/{tripId}/previews": "BackgroundDeviceBearer",
       "GET /v1/sync": "BackgroundDeviceBearer",
       "POST /v1/deliveries/{deliveryId}/download-session":
         "BackgroundDeviceBearer",

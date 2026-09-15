@@ -161,6 +161,24 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
         }
     }
 
+    public func clearSession() throws {
+        try transaction { database in
+            if let scope = database.selectedScope {
+                let key = scopeKey(scope)
+                database.scopes[key]?.secureClearSession()
+                if var state = database.scopes[key] {
+                    if let id = state.activeMetadata?.tripID, var trip = state.trips[id] {
+                        trip.state = .installed
+                        state.trips[id] = trip
+                    }
+                    state.activeMetadata = nil
+                    database.scopes[key] = state
+                }
+            }
+            database.selectedScope = nil
+        }
+    }
+
     public func createTrip(
         scope: NativeKeyScope,
         tripID: String,
@@ -300,6 +318,17 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
             }
             state.activeMetadata = nil
             database.scopes[key] = state
+        }
+    }
+
+    public func mediaContext() throws -> NativeMediaContext? {
+        try read { database in
+            guard let scope = database.selectedScope,
+                  let state = database.scopes[scopeKey(scope)],
+                  let session = state.session,
+                  let metadata = state.activeMetadata,
+                  let trip = state.trips[metadata.tripID], trip.state == .active else { return nil }
+            return NativeMediaContext(scope: scope, session: session, metadata: metadata, tripKey: trip.key)
         }
     }
 

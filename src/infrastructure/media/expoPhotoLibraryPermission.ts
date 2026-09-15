@@ -1,5 +1,6 @@
 import * as Linking from "expo-linking";
 import * as MediaLibrary from "expo-media-library";
+import { PermissionsAndroid, Platform } from "react-native";
 
 export type PhotoLibraryPermissionState =
   | Readonly<{
@@ -39,6 +40,13 @@ export interface SettingsLinkingApi {
   openSettings(): Promise<void>;
 }
 
+export class PhotoLibraryPermissionError extends Error {
+  constructor() {
+    super("Photo access is unavailable. Please try again.");
+    this.name = "PhotoLibraryPermissionError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -67,6 +75,8 @@ function project(value: unknown): PhotoLibraryPermissionState {
 }
 
 export class ExpoPhotoLibraryPermission implements PhotoLibraryPermissionPort {
+  private automaticRequest: Promise<PhotoLibraryPermissionState> | null = null;
+  private metadataPrompted = false;
   constructor(
     private readonly dependencies: Readonly<{
       media: MediaLibraryPermissionApi;
@@ -74,23 +84,98 @@ export class ExpoPhotoLibraryPermission implements PhotoLibraryPermissionPort {
     }> = { media: MediaLibrary, linking: Linking },
   ) {}
 
+  /** Prompt on first use only. Denial/limited access requires a deliberate retry. */
+  requestAutomatically(): Promise<PhotoLibraryPermissionState> {
+    if (this.automaticRequest) return this.automaticRequest;
+    const request = (async () => {
+      const response = await this.dependencies.media.getPermissionsAsync(
+        false,
+        ["photo"],
+      );
+      if (
+        isRecord(response) &&
+        response.status === "undetermined" &&
+        response.canAskAgain === true
+      ) {
+        this.metadataPrompted = true;
+        return this.request();
+      }
+      const permission = await this.read();
+      if (
+        Platform.OS === "android" &&
+        project(response).kind === "FULL" &&
+        permission.kind === "REQUESTABLE" &&
+        !this.metadataPrompted
+      ) {
+        this.metadataPrompted = true;
+        return this.request();
+      }
+      return permission;
+    })().catch(() => {
+      throw new PhotoLibraryPermissionError();
+    });
+    this.automaticRequest = request;
+    void request.then(
+      () => {
+        this.automaticRequest = null;
+      },
+      () => {
+        this.automaticRequest = null;
+      },
+    );
+    return request;
+  }
+
   async read(): Promise<PhotoLibraryPermissionState> {
     try {
-      return project(
+      const photo = project(
         await this.dependencies.media.getPermissionsAsync(false, ["photo"]),
       );
+      if (photo.kind !== "FULL" || Platform.OS !== "android") return photo;
+      return (await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
+      ))
+        ? photo
+        : {
+            kind: "REQUESTABLE",
+            fullPhotoLibraryAccess: false,
+            canAskAgain: true,
+          };
     } catch {
-      return project(null);
+      throw new PhotoLibraryPermissionError();
     }
   }
 
   async request(): Promise<PhotoLibraryPermissionState> {
     try {
-      return project(
+      const photo = project(
         await this.dependencies.media.requestPermissionsAsync(false, ["photo"]),
       );
+      if (photo.kind !== "FULL" || Platform.OS !== "android") return photo;
+      const permission = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
+        {
+          title: "Share exact original photos",
+          message:
+            "Android needs this permission to preserve original photo metadata, which can include where a photo was taken. Originals are encrypted before sharing with your trip.",
+          buttonPositive: "Continue",
+          buttonNegative: "Not now",
+        },
+      );
+      if (permission === PermissionsAndroid.RESULTS.GRANTED) return photo;
+      return permission === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+        ? {
+            kind: "SETTINGS_REQUIRED",
+            fullPhotoLibraryAccess: false,
+            canAskAgain: false,
+          }
+        : {
+            kind: "REQUESTABLE",
+            fullPhotoLibraryAccess: false,
+            canAskAgain: true,
+          };
     } catch {
-      return project(null);
+      throw new PhotoLibraryPermissionError();
     }
   }
 
@@ -98,7 +183,7 @@ export class ExpoPhotoLibraryPermission implements PhotoLibraryPermissionPort {
     try {
       await this.dependencies.linking.openSettings();
     } catch {
-      // The caller receives no native/provider error detail.
+      throw new PhotoLibraryPermissionError();
     }
   }
 }

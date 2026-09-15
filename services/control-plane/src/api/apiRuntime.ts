@@ -1,4 +1,6 @@
 import type { AppDependencies } from "../app/dependencies.js";
+import { createBackgroundDeviceAuthenticator } from "../modules/devices/index.js";
+import type { MediaRouteDependencies } from "../modules/media/index.js";
 import type {
   BackgroundCredentialIssuer,
   ClerkTokenVerifier,
@@ -70,6 +72,12 @@ export class ApiConfigurationError extends Error {
 }
 
 export interface ApiRuntimeFactories {
+  media?(input: {
+    database: unknown;
+    environment: Environment;
+    clock: Clock;
+    authenticator: MediaRouteDependencies["authenticator"];
+  }): Promise<MediaRouteDependencies | undefined>;
   approveJoinRequest(
     dependencies: ApproveJoinRequestDependencies,
   ): TripRouteDependencies["approveJoinRequest"];
@@ -239,7 +247,14 @@ export async function createApiRuntime(
     );
     const startTrip = factories.startTrip(tripServiceDependencies);
     const getTrip = factories.getTrip({ unitOfWork: tripUnitOfWork });
+    const media = await factories.media?.({
+      database: databaseHandle.database,
+      environment,
+      clock,
+      authenticator: createBackgroundDeviceAuthenticator({ clock, unitOfWork }),
+    });
     app = factories.buildApp({
+      ...(media ? { media } : {}),
       clock,
       devices: {
         registerDevice,

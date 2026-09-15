@@ -146,6 +146,13 @@ export const ReconcileNowCommandSchema = ClosedObject({
 });
 export type ReconcileNowCommand = Static<typeof ReconcileNowCommandSchema>;
 
+export const ClearDeviceSessionCommandSchema = ClosedObject({
+  protocolVersion: Type.Literal(1),
+});
+export type ClearDeviceSessionCommand = Static<
+  typeof ClearDeviceSessionCommandSchema
+>;
+
 export const RetryCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   workId: UuidSchema,
@@ -175,6 +182,7 @@ export const DurableEngineSnapshotSchema = ClosedObject({
   revision: Type.Integer({ minimum: 0 }),
   activeTripId: Type.Union([TripIdSchema, Type.Null()]),
   paused: Type.Boolean(),
+  cellularAllowed: Type.Optional(Type.Boolean()),
   counts: EngineCountsSchema,
   blockers: Type.Array(EngineBlockerSchema, { uniqueItems: true }),
 });
@@ -193,6 +201,14 @@ export const NativeAssetProjectionSchema = ClosedObject({
   assetId: Type.Union([AssetIdSchema, Type.Null()]),
   capturedAt: DateTimeSchema,
   previewStage: TransferStageSchema,
+  // Only a native-verified, protected local render file. Never a remote grant,
+  // content key, or photo byte array. Optional for installed v1 clients.
+  previewUri: Type.Optional(
+    Type.Union([
+      Type.String({ pattern: "^file:///", maxLength: 2048 }),
+      Type.Null(),
+    ]),
+  ),
   originalStage: TransferStageSchema,
   blocker: Type.Union([EngineBlockerSchema, Type.Null()]),
 });
@@ -208,6 +224,7 @@ export type ListAssetsQuery = Static<typeof ListAssetsQuerySchema>;
 export const AssetPageSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   revision: Type.Integer({ minimum: 0 }),
+  activeTripId: Type.Optional(Type.Union([TripIdSchema, Type.Null()])),
   items: Type.Array(NativeAssetProjectionSchema, { maxItems: 100 }),
   nextCursor: Type.Union([OpaqueCursorSchema, Type.Null()]),
 });

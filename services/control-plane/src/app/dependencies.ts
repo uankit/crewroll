@@ -6,12 +6,14 @@ import type { Clock } from "../shared/time/clock.js";
 import type { DeviceRouteDependencies } from "../modules/devices/index.js";
 import type { ClerkWebhookRouteDependencies } from "../modules/identity/index.js";
 import type { TripRouteDependencies } from "../modules/trips/index.js";
+import type { MediaRouteDependencies } from "../modules/media/index.js";
 
 export interface ReadinessProbe {
   check(): Promise<void>;
 }
 
 export interface AppDependencies {
+  readonly media?: MediaRouteDependencies;
   readonly clock: Clock;
   readonly devices: DeviceRouteDependencies;
   readonly environment: Environment;

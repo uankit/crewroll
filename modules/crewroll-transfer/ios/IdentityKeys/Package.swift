@@ -4,12 +4,9 @@ import Foundation
 
 let sodiumDependency: Package.Dependency
 if let local = ProcessInfo.processInfo.environment["CREWROLL_SWIFT_SODIUM_PATH"] {
-    sodiumDependency = .package(path: local)
+    sodiumDependency = .package(name: "swift-sodium", path: local)
 } else {
-    sodiumDependency = .package(
-        url: "https://github.com/jedisct1/swift-sodium.git",
-        exact: "0.11.0"
-    )
+    sodiumDependency = .package(name: "swift-sodium", path: "../Vendor")
 }
 
 let package = Package(

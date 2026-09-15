@@ -11,7 +11,7 @@ const controlPlaneBoundaryPolicy = createControlPlaneBoundaryPolicy({
 });
 
 export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**"] },
+  { ignores: ["dist/**", "coverage/**", "**/.wrangler/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
@@ -26,6 +26,20 @@ export default tseslint.config(
     ...controlPlaneBoundaryPolicy,
     rules: {
       ...controlPlaneBoundaryPolicy.rules,
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+    },
+  },
+  {
+    files: ["worker/**/*.ts", "test/worker/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+        project: "./tsconfig.worker.json",
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
     },

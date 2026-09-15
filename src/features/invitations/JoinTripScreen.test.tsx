@@ -169,7 +169,7 @@ describe("JoinTripScreen", () => {
 
     screen.getByText("CrewRoll could not check this invite");
     screen.getByText(
-      "Check your connection and try again. Your request has not been changed.",
+      "Your request may already have reached the owner. Check again to recover it safely.",
     );
     expect(
       screen.queryByText(/token stack|wrappedKey|request-id-private/i),

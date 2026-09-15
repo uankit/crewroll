@@ -113,6 +113,8 @@ public struct ActiveTripMetadata: Codable, Equatable, Sendable {
 }
 
 public protocol NativeKeyStore: AnyObject {
+    func clearSession() throws
+    func mediaContext() throws -> NativeMediaContext?
     func loadIdentity(accountHash: String) throws -> DeviceIdentityMaterial?
     func reservePendingIdentity(
         accountHash: String,
@@ -141,6 +143,17 @@ public protocol NativeKeyStore: AnyObject {
     ) throws -> TripImportOutcome
     func activate(scope: NativeKeyScope, metadata: ActiveTripMetadata) throws
     func deactivate(scope: NativeKeyScope, tripID: String) throws
+}
+
+public struct NativeMediaContext {
+    public let scope: NativeKeyScope
+    public var session: DeviceSessionRecord
+    public let metadata: ActiveTripMetadata
+    public var tripKey: Data
+}
+
+public extension NativeKeyStore {
+    func mediaContext() throws -> NativeMediaContext? { nil }
 }
 
 public protocol NativeKeyCrypto: AnyObject {
@@ -873,10 +886,24 @@ public final class NativeKeyLifecycle {
         try store.activate(scope: session.scope, metadata: metadata)
     }
 
+    public func clearDeviceSession() throws { try store.clearSession() }
+
     public func deactivateTrip(tripID: String) throws {
         let session = try currentSession()
         try NativeCommandDecoder.requireTripID(tripID)
         try store.deactivate(scope: session.scope, tripID: tripID)
+    }
+
+    /// Native-only: key and bearer never cross the JavaScript bridge.
+    public func mediaContext() throws -> NativeMediaContext? {
+        try prepare()
+        guard let context = try store.mediaContext() else { return nil }
+        try withValidatedIdentity(scope: context.scope) { _ in () }
+        guard context.tripKey.count == 32, context.session.expiresAt > clock.now else {
+            throw NativeKeyError.materialLost
+        }
+        try NativeCommandDecoder.validate(context.metadata)
+        return context
     }
 
     private func prepare() throws {

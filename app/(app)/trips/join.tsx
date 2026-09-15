@@ -41,6 +41,10 @@ export default function JoinTripRoute() {
     void actions
       .join(inviteCode)
       .then((result) => {
+        if (result.kind === "PENDING_APPROVAL") {
+          router.replace("/(app)");
+          return;
+        }
         if (result.kind === "REJECTED") {
           setState({
             kind: "rejected",
@@ -73,7 +77,7 @@ export default function JoinTripRoute() {
           case "FAILED":
             setState({
               kind: "failed",
-              onRetry: () => requestJoin(inviteCode),
+              onRetry: recoverUnknownJoin,
             });
         }
       });

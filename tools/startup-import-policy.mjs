@@ -142,6 +142,11 @@ const APPROVED_CONTRACT_SCRIPTS = new Map([
   ["openapi:check", "tsx generator/check-openapi.ts"],
 ]);
 const APPROVED_CONTROL_SCRIPTS = new Map([
+  ["typecheck:worker", "tsc -p tsconfig.worker.json --noEmit"],
+  [
+    "test:worker:serve",
+    "wrangler dev --config test/worker/wrangler.jsonc --port 8791 --show-interactive-dev-session=false",
+  ],
   [
     "build",
     "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",

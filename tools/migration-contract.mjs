@@ -245,7 +245,7 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       "schema",
       "migrations",
     ];
-    const optionalApiRepositories = ["devices", "identity", "trips"];
+    const optionalApiRepositories = ["devices", "identity", "trips", "media"];
     if (
       !dbEntries ||
       new Set(dbEntries).size !== dbEntries.length ||

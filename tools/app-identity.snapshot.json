@@ -2,7 +2,7 @@
   "name": "CrewRoll",
   "slug": "AirMesh",
   "scheme": "airmesh",
-  "iosBundleIdentifier": "com.uankit53.airmesh",
+  "iosBundleIdentifier": "app.crewroll.mobile",
   "androidPackage": "com.uankit53.airmesh",
   "easProjectId": "fe1de141-5c42-4250-9c1f-f7313845dc8e",
   "updatesUrl": "https://u.expo.dev/fe1de141-5c42-4250-9c1f-f7313845dc8e",

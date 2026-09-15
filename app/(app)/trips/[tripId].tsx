@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   useAppSession,
+  ActiveTripTransfers,
   useTripProjection,
   createPhotoReadinessReconciler,
   permissionForLobbyEntry,
@@ -45,7 +46,8 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     actions,
     focused,
     tripId,
-    session.snapshot.phase === "READY_LOBBY",
+    session.snapshot.phase === "READY_LOBBY" ||
+      session.snapshot.phase === "READY_ACTIVE",
   );
 
   const reconcilePhotoReadiness = useCallback(() => {
@@ -59,17 +61,27 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
       if (cancelled) return;
       setObservedEntry({ focused, tripId });
       setEntryReconciled(false);
-      if (!focused || session.snapshot.phase !== "READY_LOBBY") return;
-      await reconcilePhotoReadiness();
+      if (
+        !focused ||
+        (session.snapshot.phase !== "READY_LOBBY" &&
+          session.snapshot.phase !== "READY_ACTIVE")
+      )
+        return;
+      await reconcilePhotoReadiness().catch(() => undefined);
       if (!cancelled) setEntryReconciled(true);
     });
-    if (!focused || session.snapshot.phase !== "READY_LOBBY") {
+    if (
+      !focused ||
+      (session.snapshot.phase !== "READY_LOBBY" &&
+        session.snapshot.phase !== "READY_ACTIVE")
+    ) {
       return () => {
         cancelled = true;
       };
     }
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") reconcilePhotoReadiness();
+      if (state === "active")
+        void reconcilePhotoReadiness().catch(() => undefined);
     });
     return () => {
       cancelled = true;
@@ -130,6 +142,11 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const ownerInviteCode = session.ownerInviteCode;
   return (
     <LobbyScreen
+      transferContent={
+        activation?.kind === "ready" || trip.status === "ENDING" ? (
+          <ActiveTripTransfers key={trip.id} tripId={trip.id} />
+        ) : undefined
+      }
       {...(activation === undefined ? {} : { activation })}
       {...(approvingMembershipId === undefined
         ? {}

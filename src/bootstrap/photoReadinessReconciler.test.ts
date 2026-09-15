@@ -50,7 +50,10 @@ describe("photo readiness reconciliation sequencing", () => {
     expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
     first.resolve();
     await drained;
-    expect(actions.publishPhotoReadiness).toHaveBeenLastCalledWith("B", false);
+    expect(actions.publishPhotoReadiness).toHaveBeenLastCalledWith(
+      "B",
+      "automatic",
+    );
   });
 
   it("coalesces a foreground event while the same trip is in flight", async () => {
@@ -67,6 +70,7 @@ describe("photo readiness reconciliation sequencing", () => {
     const drained = reconciler.reconcile(actions, "A");
     first.resolve();
     await drained;
-    expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(2);
+    expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
+    expect(actions.invalidatePhotoReadiness).toHaveBeenCalledTimes(1);
   });
 });

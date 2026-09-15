@@ -54,6 +54,8 @@ const sourceSchema = z.object({
   KMS_PUSH_TOKEN_KEY_ID: nonemptySecretSchema.optional(),
   LOG_LEVEL: logLevelSchema,
   MEDIA_BUCKET: nonemptySecretSchema.optional(),
+  LOCAL_MEDIA_DIRECTORY: nonemptySecretSchema.optional(),
+  LOCAL_MEDIA_ORIGIN: z.url().optional(),
   NODE_ENV: nodeEnvironmentSchema,
   PORT: z
     .string()
@@ -83,6 +85,8 @@ export type NodeEnvironment = z.infer<typeof nodeEnvironmentSchema>;
 export type LogLevel = z.infer<typeof logLevelSchema>;
 
 export interface Environment {
+  readonly localMediaDirectory?: string;
+  readonly localMediaOrigin?: string;
   readonly apnsBundleId: string | undefined;
   readonly apnsKeyId: string | undefined;
   readonly apnsPrivateKey: string | undefined;
@@ -213,9 +217,21 @@ function parseAuthorizedParties(
   return origins;
 }
 
-export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
+export function loadEnvironment(
+  source: Readonly<Record<string, string | undefined>>,
+  options: { platform?: "node" | "cloudflare" } = {},
+): Environment {
   const parsed = sourceSchema.safeParse(source);
   const invalidKeys = new Set<string>();
+  if (
+    Boolean(source.LOCAL_MEDIA_DIRECTORY) !== Boolean(source.LOCAL_MEDIA_ORIGIN)
+  ) {
+    invalidKeys.add(
+      source.LOCAL_MEDIA_DIRECTORY
+        ? "LOCAL_MEDIA_ORIGIN"
+        : "LOCAL_MEDIA_DIRECTORY",
+    );
+  }
 
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -225,7 +241,27 @@ export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
   }
 
   if (source.NODE_ENV === "production") {
+    for (const key of ["LOCAL_MEDIA_DIRECTORY", "LOCAL_MEDIA_ORIGIN"]) {
+      if (source[key] !== undefined) invalidKeys.add(key);
+    }
     for (const key of productionOnlyKeys) {
+      // These integrations belong to the Node push worker, not the Cloudflare
+      // foreground API. Cloudflare validates its actual R2/Hyperdrive bindings
+      // and independent token-encryption secret at the Worker entrypoint.
+      if (
+        options.platform === "cloudflare" &&
+        [
+          "APNS_BUNDLE_ID",
+          "APNS_KEY_ID",
+          "APNS_PRIVATE_KEY",
+          "APNS_TEAM_ID",
+          "AWS_REGION",
+          "FIREBASE_SERVICE_ACCOUNT_JSON",
+          "KMS_PUSH_TOKEN_KEY_ID",
+          "MEDIA_BUCKET",
+        ].includes(key)
+      )
+        continue;
       const value = source[key];
       if (value === undefined || value.trim().length === 0) {
         invalidKeys.add(key);
@@ -298,6 +334,8 @@ export function loadEnvironment(source: NodeJS.ProcessEnv): Environment {
     kmsPushTokenKeyId: parsed.data.KMS_PUSH_TOKEN_KEY_ID,
     logLevel: parsed.data.LOG_LEVEL,
     mediaBucket: parsed.data.MEDIA_BUCKET,
+    localMediaDirectory: parsed.data.LOCAL_MEDIA_DIRECTORY,
+    localMediaOrigin: parsed.data.LOCAL_MEDIA_ORIGIN,
     nodeEnvironment: parsed.data.NODE_ENV,
     port: parsed.data.PORT,
   } as Environment;

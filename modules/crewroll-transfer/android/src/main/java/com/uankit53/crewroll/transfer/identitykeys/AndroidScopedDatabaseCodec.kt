@@ -44,9 +44,11 @@ internal class AesGcmScopedSecretCipher(
   private val random: SecureRandom = SecureRandom(),
 ) : AndroidScopedSecretCipher {
   override fun seal(plaintext: ByteArray, aad: ByteArray): ByteArray = try {
-    val nonce = ByteArray(12).also(random::nextBytes)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
+    // AndroidKeyStore requires provider-generated IVs when randomized encryption is enabled.
+    cipher.init(Cipher.ENCRYPT_MODE, key, random)
+    val nonce = cipher.iv
+    if (nonce.size != 12) throw NativeKeyException.materialLost()
     cipher.updateAAD(aad)
     nonce + cipher.doFinal(plaintext)
   } catch (_: Throwable) {

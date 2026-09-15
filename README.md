@@ -2,7 +2,11 @@
 
 CrewRoll is a photo-only trip app: up to ten people use their normal iPhone or Android cameras, and every eligible trip photo is automatically delivered as an exact original to every nominated member device.
 
-This repository has been reset around a greenfield architecture. The release identity used by the existing TestFlight, Play, and EAS projects is intentionally unchanged. The current code is the verified Expo SDK 57 foundation and first home/create/join UI slice; the native transfer engine and control plane are specified but not yet implemented.
+The release identity used by the existing TestFlight, Play, and EAS projects is intentionally unchanged. The Expo SDK 57 app now includes authentication and trip workflows, a PostgreSQL control plane, and native encrypted photo-transfer implementations for iOS and Android. Live account setup and physical multi-phone acceptance are still required; automated checks are not an MVP release sign-off. See the [current proof and setup checklist](docs/runbooks/photo-sharing-proof.md).
+
+For the latest crash-fixed Android download, actual cross-platform emulator
+results, and the remaining TestFlight upload blocker, see the
+[September 10 startup/recovery record](docs/runbooks/startup-crash-2026-09-10.md).
 
 ## Product contract
 
@@ -35,7 +39,7 @@ npm run verify:bundle
 npm run start
 ```
 
-The currently implemented routes are `/`, `/trips/create`, and `/trips/join`. They establish the root Expo topology and semantic design-system boundary without pretending that transfers exist yet.
+The app includes authentication, home/create/join, trip approval and readiness, Start, and active-trip local transfer progress. The current photo worker reconciles while CrewRoll is open or reopened; continuous OS-background delivery is not implemented.
 
 ## Release identity guard
 
@@ -45,4 +49,4 @@ Before changing mobile configuration, run:
 npm run verify:identity
 ```
 
-The guard protects the existing `com.uankit53.airmesh` iOS/Android identity, `AirMesh` Expo slug, `airmesh` scheme, EAS project, Updates URL, runtime policy, remote version source, and production auto-increment lineage. Generated `ios/` and `android/` folders are ignored because this project uses Continuous Native Generation; remote signing credentials are not stored in this repository.
+The guard protects the existing TestFlight app's `app.crewroll.mobile` iOS identity and the `com.uankit53.airmesh` Android identity, plus the `AirMesh` Expo slug, `airmesh` scheme, EAS project, Updates URL, runtime policy, remote version source, and production auto-increment lineage. The iOS identifier was reconciled with App Store Connect app `6797897853` on September 10, 2026. Generated `ios/` and `android/` folders are ignored because this project uses Continuous Native Generation; remote signing credentials are not stored in this repository.

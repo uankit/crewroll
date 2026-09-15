@@ -119,7 +119,7 @@ function ResultScreen({ state }: { readonly state: ResultState }) {
       <Screen testID="join-trip-screen">
         <Stack gap="xl">
           <InlineBanner
-            body="Check your connection and try again. Your request has not been changed."
+            body="Your request may already have reached the owner. Check again to recover it safely."
             icon="!"
             title="CrewRoll could not check this invite"
             tone="warning"

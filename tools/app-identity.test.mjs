@@ -19,7 +19,7 @@ const publicConfig = {
   name: "CrewRoll",
   slug: "AirMesh",
   scheme: "airmesh",
-  ios: { bundleIdentifier: "com.uankit53.airmesh" },
+  ios: { bundleIdentifier: "app.crewroll.mobile" },
   android: { package: "com.uankit53.airmesh" },
   extra: {
     eas: { projectId: "fe1de141-5c42-4250-9c1f-f7313845dc8e" },
@@ -69,7 +69,7 @@ test("rejects identity drift with a field-specific error", () => {
 
   assert.throws(
     () => assertIdentity(drifted, snapshot),
-    /iosBundleIdentifier: expected com\.uankit53\.airmesh, received com\.example\.replacement/,
+    /iosBundleIdentifier: expected app\.crewroll\.mobile, received com\.example\.replacement/,
   );
 });
 
@@ -83,4 +83,33 @@ test("rejects missing production auto-increment instead of defaulting it", () =>
     () => assertIdentity(incomplete, snapshot),
     /productionAutoIncrement: expected true, received undefined/,
   );
+});
+
+test("TestFlight targets the existing Apple app without changing Android or production", async () => {
+  const readConfig = async (filename) =>
+    JSON.parse(
+      await readFile(new URL(`../${filename}`, import.meta.url), "utf8"),
+    );
+  const [app, eas, manifest, lockfile] = await Promise.all(
+    ["app.json", "eas.json", "package.json", "package-lock.json"].map(
+      readConfig,
+    ),
+  );
+
+  assert.equal(app.expo.ios.bundleIdentifier, "app.crewroll.mobile");
+  assert.equal(app.expo.ios.infoPlist.ITSAppUsesNonExemptEncryption, false);
+  assert.equal(app.expo.android.package, "com.uankit53.airmesh");
+  assert.deepEqual(eas.build.testflight, {
+    extends: "production",
+    distribution: "store",
+    channel: "testflight",
+    environment: "preview",
+  });
+  assert.equal(eas.submit.testflight.ios.ascAppId, "6797897853");
+  assert.equal(eas.build.production.autoIncrement, true);
+  assert.equal(eas.build.production.environment, "production");
+  assert.equal(app.expo.runtimeVersion.policy, "appVersion");
+  assert.equal(manifest.version, app.expo.version);
+  assert.equal(lockfile.version, app.expo.version);
+  assert.equal(lockfile.packages[""].version, app.expo.version);
 });

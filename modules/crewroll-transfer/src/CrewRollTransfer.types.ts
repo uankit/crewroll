@@ -1,6 +1,7 @@
 import type {
   ActivateTripCommand,
   AssetPage,
+  ClearDeviceSessionCommand,
   CreateTripKeyCommand,
   CreateTripKeyResult,
   DeactivateTripCommand,
@@ -28,6 +29,7 @@ export interface CrewRollTransferNativeModule {
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
+  clearDeviceSession(command: ClearDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
   discardProvisionalTripKey(
     command: DiscardProvisionalTripKeyCommand,

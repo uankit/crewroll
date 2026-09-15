@@ -482,6 +482,7 @@ test("complete topology admits only the exact bounded API repositories", async (
   await mkdir(path.join(rootPath, "services/control-plane/src/db/devices"));
   await mkdir(path.join(rootPath, "services/control-plane/src/db/identity"));
   await mkdir(path.join(rootPath, "services/control-plane/src/db/trips"));
+  await mkdir(path.join(rootPath, "services/control-plane/src/db/media"));
 
   const result = await classifyMigrationContract({ rootPath });
 
@@ -489,7 +490,7 @@ test("complete topology admits only the exact bounded API repositories", async (
   assert.deepEqual(result.findings, []);
 });
 
-test("nearby Trip repository spellings never widen the DB root", async (t) => {
+test("nearby repository spellings never widen the DB root", async (t) => {
   const cases = [
     [
       "sibling directory",
@@ -503,6 +504,8 @@ test("nearby Trip repository spellings never widen the DB root", async (t) => {
     ],
     ["near-name directory", "services/control-plane/src/db/trip", "directory"],
     ["near-name file", "services/control-plane/src/db/trips.ts", "file"],
+    ["media sibling", "services/control-plane/src/db/media-copy", "directory"],
+    ["media file", "services/control-plane/src/db/media.ts", "file"],
   ];
 
   for (const [name, relativePath, kind] of cases) {

@@ -20,6 +20,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "start:api": "node dist/src/api/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
+    "test:worker:serve": "wrangler dev --config test/worker/wrangler.jsonc --port 8791 --show-interactive-dev-session=false",
     "prelint": "npm run build --workspace @crewroll/contracts",
     "lint": "eslint src test --max-warnings=0",
     "test": "npm run build && vitest run",
@@ -63,6 +65,7 @@
     "tsx": "4.23.12",
     "typescript": "6.0.3",
     "typescript-eslint": "8.68.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "wrangler": "4.130.0"
   }
 }

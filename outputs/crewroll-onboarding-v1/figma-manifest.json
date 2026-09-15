@@ -1,0 +1,271 @@
+{
+  "fileKey": "aJHBtfIOx8oc7BgbzbKJIa",
+  "fileUrl": "https://www.figma.com/design/aJHBtfIOx8oc7BgbzbKJIa",
+  "prototypeUrl": "https://www.figma.com/proto/aJHBtfIOx8oc7BgbzbKJIa?page-id=2%3A62&node-id=8-5&starting-point-node-id=8%3A5&scaling=scale-down",
+  "pages": {
+    "cover": "0:1",
+    "onboarding": "2:62",
+    "foundations": "2:63",
+    "brand": "2:64",
+    "buttons": "2:65",
+    "fields": "2:66",
+    "qa": "2:67"
+  },
+  "screens": {
+    "welcome": {
+      "root": "8:5",
+      "main": "8:20",
+      "footer": "8:21",
+      "body": "8:19"
+    },
+    "auth": {
+      "root": "8:25",
+      "main": "8:40",
+      "footer": "8:41",
+      "body": "8:39"
+    },
+    "verify": {
+      "root": "8:45",
+      "main": "8:60",
+      "footer": "8:61",
+      "body": "8:59"
+    },
+    "firstTrip": {
+      "root": "8:65",
+      "main": "8:80",
+      "footer": "8:81",
+      "body": "8:79"
+    },
+    "createTrip": {
+      "root": "8:85",
+      "main": "8:100",
+      "footer": "8:101",
+      "body": "8:99"
+    },
+    "inviteCode": {
+      "root": "11:49",
+      "main": "11:64",
+      "footer": "11:65",
+      "body": "11:63"
+    },
+    "tripDetails": {
+      "root": "8:105",
+      "main": "8:120",
+      "footer": "8:121",
+      "body": "8:119"
+    },
+    "waitingApproval": {
+      "root": "8:125",
+      "main": "8:140",
+      "footer": "8:141",
+      "body": "8:139"
+    },
+    "photoAccessGuest": {
+      "root": "8:145",
+      "main": "8:160",
+      "footer": "8:161",
+      "body": "8:159"
+    },
+    "photoAccessHost": {
+      "root": "31:285"
+    },
+    "galleryWaiting": {
+      "root": "8:165",
+      "main": "8:180",
+      "footer": "8:181",
+      "body": "8:179"
+    },
+    "galleryHostWaiting": {
+      "root": "11:69",
+      "main": "11:84",
+      "footer": "11:85",
+      "body": "11:83"
+    },
+    "galleryInviteSheet": {
+      "root": "37:168",
+      "sheet": "37:236"
+    },
+    "galleryLive": {
+      "root": "31:220",
+      "main": "31:235",
+      "footer": "31:255",
+      "body": "31:234"
+    }
+  },
+  "recovery": {
+    "codeError": {
+      "root": "13:60",
+      "next": "13:107",
+      "edit": "13:108",
+      "back": "13:77"
+    },
+    "limited": {
+      "root": "13:114",
+      "next": "13:154",
+      "back": "13:131"
+    }
+  },
+  "share": {
+    "sheetSource": "14:63",
+    "sheetCopy": "33:176",
+    "fullScreenState": "37:168",
+    "fullScreenCopy": "37:243",
+    "copiedToast": "14:72"
+  },
+  "sizing": {
+    "android": {
+      "root": "16:2",
+      "name": "Android · 360 × 800",
+      "w": 360,
+      "h": 800
+    },
+    "large": {
+      "root": "16:50",
+      "name": "Large phone · 430 × 932",
+      "w": 430,
+      "h": 932
+    },
+    "dark": {
+      "root": "16:86",
+      "name": "Dark theme · 393 × 852",
+      "w": 393,
+      "h": 852
+    }
+  },
+  "cover": "2:68",
+  "prototype": {
+    "nodeEdgeCount": 26,
+    "invalidDestinations": 0,
+    "keyEdges": [
+      {
+        "from": "8:220",
+        "to": "8:25",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "9:69",
+        "to": "8:85",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "9:71",
+        "to": "11:49",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "10:47",
+        "to": "31:285",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "31:322",
+        "to": "11:69",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "32:156",
+        "to": "37:168",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "37:243",
+        "to": "14:72",
+        "navigation": "OVERLAY"
+      },
+      {
+        "from": "32:226",
+        "to": "31:220",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "11:134",
+        "to": "8:105",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "10:82",
+        "to": "8:125",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "8:125",
+        "to": "8:145",
+        "navigation": "AFTER_TIMEOUT"
+      },
+      {
+        "from": "10:134",
+        "to": "8:165",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "8:165",
+        "to": "31:220",
+        "navigation": "AFTER_TIMEOUT"
+      }
+    ],
+    "flowStartingPoints": [
+      {
+        "nodeId": "8:5",
+        "name": "Start here · New account"
+      },
+      {
+        "nodeId": "11:49",
+        "name": "Join a trip · Signed in"
+      },
+      {
+        "nodeId": "8:145",
+        "name": "Guest · Photo access"
+      },
+      {
+        "nodeId": "31:285",
+        "name": "Host · Photo access"
+      },
+      {
+        "nodeId": "13:60",
+        "name": "Recovery · Expired email code"
+      }
+    ]
+  },
+  "contrast": [
+    {
+      "name": "Light body",
+      "ratio": 14.67
+    },
+    {
+      "name": "Light secondary",
+      "ratio": 5.39
+    },
+    {
+      "name": "Primary button",
+      "ratio": 4.89
+    },
+    {
+      "name": "Dark body",
+      "ratio": 16.26
+    },
+    {
+      "name": "Dark secondary",
+      "ratio": 9.09
+    },
+    {
+      "name": "Dark button",
+      "ratio": 6.14
+    },
+    {
+      "name": "Error text",
+      "ratio": 6.03
+    }
+  ],
+  "scope": "Figma only; no application source changes. Authentication, native photo permission, clipboard copy, host approval, and trip-start events are simulated in the prototype.",
+  "revision": {
+    "date": "2026-09-15",
+    "reviewBoard": "review-board.png",
+    "welcomeAsset": "crewroll-welcome-trip-perspectives-v1.png",
+    "checks": {
+      "screensAudited": 16,
+      "textOverflow": 0,
+      "undersizedControls": 0,
+      "prototypeInvalidDestinations": 0
+    }
+  }
+}

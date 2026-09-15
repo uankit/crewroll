@@ -4,6 +4,8 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import Fastify, { type FastifyReply, LogController } from "fastify";
 import { TypeBoxValidatorCompiler } from "@fastify/type-provider-typebox";
+import { TypeGuard } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 
 import {
   DomainError,
@@ -14,6 +16,7 @@ import type { AppDependencies } from "./dependencies.js";
 import { deviceRoutes } from "../modules/devices/index.js";
 import { clerkWebhookRoutes } from "../modules/identity/index.js";
 import { tripRoutes } from "../modules/trips/index.js";
+import { mediaRoutes } from "../modules/media/index.js";
 
 const corsMethods = [
   "GET",
@@ -67,8 +70,19 @@ function classifyError(error: unknown): DomainErrorKind {
   return "INTERNAL_ERROR";
 }
 
-export function buildApp(dependencies: AppDependencies) {
+export function buildApp(
+  dependencies: Omit<AppDependencies, "environment"> & {
+    environment: Pick<
+      AppDependencies["environment"],
+      "nodeEnvironment" | "debugCorsOrigins"
+    >;
+  },
+  options: { scheduledMediaCleanup?: boolean; isolateStartup?: boolean } = {},
+) {
   const app = Fastify({
+    // Static Worker startup has no running timers. Avvio otherwise treats its
+    // zero timer handle as an already-fired timeout and never finishes booting.
+    ...(options.isolateStartup ? { pluginTimeout: 0 } : {}),
     genReqId: () => dependencies.ids.uuid(),
     logController: new LogController({
       disableRequestLogging: true,
@@ -78,6 +92,20 @@ export function buildApp(dependencies: AppDependencies) {
     requestIdHeader: false,
   });
   app.setValidatorCompiler(TypeBoxValidatorCompiler);
+  if (options.isolateStartup) {
+    // fast-json-stringify lazily compiles union checks while serializing, which
+    // Workers forbids after startup. Validate closed response contracts before
+    // JSON serialization so switching compilers cannot expose extra fields.
+    app.setSerializerCompiler(({ schema }) => {
+      if (!TypeGuard.IsSchema(schema))
+        throw new Error("Expected a TypeBox response schema");
+      return (value: unknown) => {
+        if (!Value.Check(schema, value))
+          throw new Error("Invalid API response");
+        return JSON.stringify(value);
+      };
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);
@@ -129,6 +157,36 @@ export function buildApp(dependencies: AppDependencies) {
   app.register(deviceRoutes, dependencies.devices);
   app.register(clerkWebhookRoutes, dependencies.identity);
   app.register(tripRoutes, dependencies.trips);
+  if (dependencies.media) app.register(mediaRoutes, dependencies.media);
+  if (dependencies.media && options.scheduledMediaCleanup !== false) {
+    const media = dependencies.media.service;
+    let pending: Promise<void> | undefined;
+    const clean = () => {
+      if (pending) return;
+      pending = media
+        .cleanup()
+        .then(
+          () => undefined,
+          () => {
+            dependencies.logger.warn({ event: "media.cleanup.retry" });
+          },
+        )
+        .finally(() => {
+          pending = undefined;
+        });
+    };
+    let timer: ReturnType<typeof setInterval> | undefined;
+    app.addHook("onReady", (done) => {
+      clean();
+      timer = setInterval(clean, 60_000);
+      timer.unref();
+      done();
+    });
+    app.addHook("onClose", async () => {
+      if (timer) clearInterval(timer);
+      await pending;
+    });
+  }
 
   app.addHook("onResponse", async (request, reply) => {
     request.log.info({

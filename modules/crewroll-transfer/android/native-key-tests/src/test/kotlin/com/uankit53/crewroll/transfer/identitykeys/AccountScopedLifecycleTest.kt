@@ -104,6 +104,21 @@ class AccountScopedLifecycleTest {
     }
   }
 
+  @Test fun `sign out erases session and preserves identity and trip keys`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA))
+    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    fixture.subject.createTripKey(tripA, 1)
+    val before = fixture.subject.ensureDeviceIdentity(accountA)
+    fixture.subject.clearDeviceSession()
+    fixture.subject.clearDeviceSession()
+    assertNull(fixture.store.activeSession())
+    assertNull(fixture.store.session(scope))
+    assertNotNull(fixture.store.trip(scope, tripA))
+    assertEquals(before, fixture.subject.ensureDeviceIdentity(accountA))
+    fixture.ensureAndInstall(accountA, deviceA)
+    assertEquals(scope, fixture.store.activeSession()?.scope)
+  }
+
   @Test fun `installed session is sole scope and switch quarantines prior keys`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
     val scopeA = fixture.ensureAndInstall(accountA, deviceA)
@@ -727,6 +742,17 @@ private class ScopedStore : NativeKeyStore {
       lastLoadedBearer = session.backgroundBearer
       ScopedDeviceSession(scope, session)
     }
+  }
+  override fun clearSession() = transaction {
+    selectedScope?.let { scope ->
+      scopes[scope]?.let { state ->
+        state.session?.backgroundBearer?.fill(0)
+        state.session = null
+        state.activeMetadata?.tripId?.let { id -> state.trips[id]?.let { state.trips[id] = it.copy(state = KeyState.INSTALLED) } }
+        state.activeMetadata = null
+      }
+    }
+    selectedScope = null
   }
   override fun installSession(scope: NativeKeyScope, value: DeviceSessionRecord) = transaction {
     selectedScope?.takeIf { it != scope }?.let { prior ->

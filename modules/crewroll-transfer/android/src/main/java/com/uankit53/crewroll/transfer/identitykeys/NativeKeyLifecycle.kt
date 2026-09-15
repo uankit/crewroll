@@ -66,12 +66,18 @@ data class ActiveTripMetadata(
   val keyEpoch: Int,
 )
 
+data class NativeMediaContext(val scope: NativeKeyScope, val session: DeviceSessionRecord, val metadata: ActiveTripMetadata, val tripKey: ByteArray) {
+  fun erase() { tripKey.fill(0); session.backgroundBearer.fill(0) }
+}
+
 interface NativeKeyStore {
+  fun mediaContext(): NativeMediaContext? = null
   fun loadIdentity(accountHash: String): DeviceIdentityMaterial?
   fun reservePendingIdentity(accountHash: String, makeInstallationId: () -> String): NativeKeyScope
   fun finalizeIdentity(scope: NativeKeyScope, value: DeviceIdentityMaterial)
   fun hasScopedMaterial(accountHash: String): Boolean
   fun activeSession(): ScopedDeviceSession?
+  fun clearSession()
   fun installSession(scope: NativeKeyScope, value: DeviceSessionRecord)
   fun createTrip(scope: NativeKeyScope, tripId: String, makeValue: () -> TripKeyRecord): TripCreateOutcome
   fun loadTrip(scope: NativeKeyScope, tripId: String): TripKeyRecord?
@@ -361,6 +367,11 @@ class NativeKeyCleanupCoordinator(
   private var scheduledAt: Instant? = null
   private var generation = 0L
   private var isCancelled = false
+  private var reconciled = false
+
+  fun reconcileIfDue(now: Instant) = lock.withLock {
+    if (!reconciled || scheduledAt?.let { !it.isAfter(now) } == true) reconcile()
+  }
 
   fun reconcile() {
     lock.withLock {
@@ -368,7 +379,9 @@ class NativeKeyCleanupCoordinator(
       generation += 1
       scheduler.cancel()
       scheduledAt = null
+      reconciled = false
       runner.run()?.let(::armLocked)
+      reconciled = true
     }
   }
 
@@ -412,6 +425,7 @@ class NativeKeyCleanupCoordinator(
         }
       } catch (_: Throwable) {
         // Access-locked/transient failures remain disarmed until the next wake.
+        reconciled = false
       }
     }
   }
@@ -469,6 +483,16 @@ class NativeKeyLifecycle(
       if (persisted.installationId != scope.installationId) throw NativeKeyException.materialLost()
       publicIdentity(persisted, scope)
     } finally { crypto.zeroize(persisted.e2eePrivateKey) }
+  }
+  fun mediaContext(): NativeMediaContext? {
+    prepare()
+    val value = store.mediaContext() ?: return null
+    try {
+      withValidatedIdentity(value.scope) { }
+      if (value.tripKey.size != 32 || value.session.expiresAt <= clock.now()) throw NativeKeyException.materialLost()
+      NativeCommandDecoder.validate(value.metadata)
+      return value
+    } catch (error: Throwable) { value.erase(); throw error }
   }
 
   fun installDeviceSession(
@@ -606,13 +630,17 @@ class NativeKeyLifecycle(
     store.activate(session.scope, metadata)
   }
 
+  fun clearDeviceSession() { store.clearSession() }
+
   fun deactivateTrip(tripId: String) {
     val session = currentSession()
     NativeCommandDecoder.requireTripId(tripId)
     store.deactivate(session.scope, tripId)
   }
 
-  private fun prepare() = reconcileCleanup()
+  private fun prepare() {
+    cleanupCoordinator?.reconcileIfDue(clock.now()) ?: cleanupRunner.run()
+  }
   private fun reconcileCleanup() {
     cleanupCoordinator?.reconcile() ?: run { cleanupRunner.run() }
   }

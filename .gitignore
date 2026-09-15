@@ -11,6 +11,9 @@ expo-env.d.ts
 /ios/
 /android/
 .kotlin/
+modules/crewroll-transfer/android/native-key-tests/.gradle/
+modules/crewroll-transfer/android/build/
+modules/crewroll-transfer/ios/IdentityKeys/.build/
 *.orig.*
 *.jks
 *.p8
@@ -33,6 +36,8 @@ yarn-error.*
 .env*.local
 
 # Generated test/build artifacts
+.wrangler/
+.dev.vars*
 *.tsbuildinfo
 coverage/
 outputs/**/previews/

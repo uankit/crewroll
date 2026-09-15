@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { Type } from "@sinclair/typebox";
 
 import {
   validRegisterDeviceBody,
@@ -12,6 +13,68 @@ import type { IdGenerator } from "../../src/shared/ids/idGenerator.js";
 import { createTestDependencies, fixedRequestId } from "../support/fakes.js";
 
 const closeApps: (() => Promise<void>)[] = [];
+
+it("Worker response serialization fails closed on unexpected fields", async () => {
+  const { dependencies } = createTestDependencies({
+    nodeEnvironment: "production",
+  });
+  const app = track(
+    buildApp(dependencies, {
+      isolateStartup: true,
+      scheduledMediaCleanup: false,
+    }),
+  );
+  app.get(
+    "/response-proof",
+    {
+      schema: {
+        response: {
+          200: Type.Object(
+            { visible: Type.String() },
+            { additionalProperties: false },
+          ),
+        },
+      },
+    },
+    () =>
+      Promise.resolve({
+        visible: "allowed",
+        privateToken: "never-expose-this",
+      }),
+  );
+  const result = await app.inject({ method: "GET", url: "/response-proof" });
+  expect(result.statusCode).toBe(500);
+  expect(result.body).not.toContain("never-expose-this");
+});
+
+it("Worker response serialization preserves valid union contracts", async () => {
+  const { dependencies } = createTestDependencies({
+    nodeEnvironment: "production",
+  });
+  const app = track(
+    buildApp(dependencies, {
+      isolateStartup: true,
+      scheduledMediaCleanup: false,
+    }),
+  );
+  app.get(
+    "/response-proof",
+    {
+      schema: {
+        response: {
+          200: Type.Object(
+            { result: Type.Union([Type.Literal("ok"), Type.Null()]) },
+            { additionalProperties: false },
+          ),
+        },
+      },
+    },
+    () => Promise.resolve({ result: "ok" }),
+  );
+  const result = await app.inject({ method: "GET", url: "/response-proof" });
+  expect(result.statusCode).toBe(200);
+  expect(result.json()).toEqual({ result: "ok" });
+});
 
 function track<T extends { close(): Promise<void> }>(app: T): T {
   closeApps.push(() => app.close());

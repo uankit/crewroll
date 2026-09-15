@@ -5,7 +5,7 @@ const root = process.cwd();
 const read = (path: string) => readFileSync(join(root, path), "utf8");
 
 describe("native identity and trip-key production policy", () => {
-  it("maps the exact eight commands to real iOS and Android lifecycle services", () => {
+  it("maps the identity commands to real iOS and Android lifecycle services", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
     );
@@ -15,6 +15,7 @@ describe("native identity and trip-key production policy", () => {
     for (const method of [
       "ensureDeviceIdentity",
       "installDeviceSession",
+      "clearDeviceSession",
       "createTripKey",
       "discardProvisionalTripKey",
       "wrapTripKey",
@@ -168,13 +169,27 @@ describe("native identity and trip-key production policy", () => {
     expect(codec).toContain("AndroidScopedSecretType.TRIP_KEY");
     expect(store).toContain("legacyOuterAad");
     expect(store).toContain("CRKEYDB3|atomic-container|2");
-    expect(store).toContain("secureReplaceSession");
+    expect(
+      read(
+        "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/identitykeys/AccountScopedKeyStore.kt",
+      ),
+    ).toContain("secureReplaceSession");
+    expect(store).toContain(
+      "NativeKeyStore by AccountScopedKeyStore(AndroidScopedDatabaseFile(context))",
+    );
     const saveDatabase = store.slice(
-      store.indexOf("private fun saveDatabase"),
+      store.indexOf("override fun save"),
       store.indexOf("private fun requireUnlocked"),
     );
     expect(saveDatabase).toContain("outerAad");
     expect(saveDatabase).not.toContain("legacyOuterAad");
+    expect(store).toContain("setRandomizedEncryptionRequired(true)");
+    expect(saveDatabase).toContain(
+      "AesGcmScopedSecretCipher(key, random).seal(plaintext, outerAad)",
+    );
+    expect(codec).toContain("cipher.init(Cipher.ENCRYPT_MODE, key, random)");
+    expect(codec).toContain("val nonce = cipher.iv");
+    expect(codec).not.toMatch(/Cipher\.ENCRYPT_MODE, key, GCMParameterSpec/);
     expect(store).not.toContain("getExternalFilesDir");
     expect(infrastructure).toContain("AndroidAccountScopedKeyStore(context)");
     expect(infrastructure).toContain("AndroidAccountNamespaceHasher()");
@@ -215,9 +230,9 @@ describe("native identity and trip-key production policy", () => {
       swift.match(/NativeCommandDecoder\.require\(command, for:/g),
     ).toHaveLength(8);
     expect(swift).toContain("NativeCommandDecoder.activation");
-    expect(swift).not.toContain(
-      "NativeCommandDecoder.requireProtocol(command)",
-    );
+    expect(
+      swift.slice(0, swift.indexOf('AsyncFunction("setTransferPolicy")')),
+    ).not.toContain("NativeCommandDecoder.requireProtocol(command)");
     expect(swift).not.toContain('command["releaseAt"] as? String');
     expect(
       kotlin.match(
@@ -225,9 +240,9 @@ describe("native identity and trip-key production policy", () => {
       ),
     ).toHaveLength(8);
     expect(kotlin).toContain("NativeCommandDecoder.activation");
-    expect(kotlin).not.toContain(
-      "NativeCommandDecoder.requireProtocol(command)",
-    );
+    expect(
+      kotlin.slice(0, kotlin.indexOf('AsyncFunction("setTransferPolicy")')),
+    ).not.toContain("NativeCommandDecoder.requireProtocol(command)");
     expect(kotlin).not.toContain(
       '(command["protocolVersion"] as? Number)?.toInt()',
     );

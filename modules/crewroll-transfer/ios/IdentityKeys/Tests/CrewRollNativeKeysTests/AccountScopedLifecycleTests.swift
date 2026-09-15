@@ -106,6 +106,21 @@ final class AccountScopedLifecycleTests: XCTestCase {
         }
     }
 
+    func testSignOutErasesSessionAndPreservesIdentityAndTripKeys() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        _ = try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        let before = try fixture.subject.ensureDeviceIdentity(accountID: accountA)
+        try fixture.subject.clearDeviceSession()
+        try fixture.subject.clearDeviceSession()
+        XCTAssertNil(try fixture.store.activeSession())
+        XCTAssertNil(fixture.store.session(scope))
+        XCTAssertNotNil(try fixture.store.loadTrip(scope: scope, tripID: tripA))
+        XCTAssertEqual(before, try fixture.subject.ensureDeviceIdentity(accountID: accountA))
+        _ = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        XCTAssertEqual(scope, try fixture.store.activeSession()?.scope)
+    }
+
     func testInstalledSessionIsTheOnlyScopeAndAccountSwitchQuarantinesPriorKeys() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
         let scopeA = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
@@ -945,6 +960,16 @@ private final class ScopedMemoryStore: NativeKeyStore {
     func activeSession() throws -> ScopedDeviceSession? {
         guard let selectedScope, let session = scopes[selectedScope]?.session else { return nil }
         return ScopedDeviceSession(scope: selectedScope, session: session)
+    }
+    func clearSession() throws {
+        try transaction {
+            if let scope = selectedScope {
+                scopes[scope]?.session = nil
+                if let id = scopes[scope]?.activeMetadata?.tripID { scopes[scope]?.trips[id]?.state = .installed }
+                scopes[scope]?.activeMetadata = nil
+            }
+            selectedScope = nil
+        }
     }
     func installSession(scope: NativeKeyScope, value: DeviceSessionRecord) throws {
         try transaction {

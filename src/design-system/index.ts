@@ -105,3 +105,4 @@ export { motion, reducedMotion, type CrewRollMotion } from "./tokens/motion";
 export { radius } from "./tokens/radius";
 export { spacing } from "./tokens/spacing";
 export { typography, type TypographyVariant } from "./tokens/typography";
+export { TripPhotoGallery, type TripPhoto } from "./product/TripPhotoGallery";

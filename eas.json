@@ -24,6 +24,18 @@
         "buildType": "apk"
       }
     },
+    "preview-simulator": {
+      "extends": "preview",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "testflight": {
+      "extends": "production",
+      "distribution": "store",
+      "channel": "testflight",
+      "environment": "preview"
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production",
@@ -31,6 +43,11 @@
     }
   },
   "submit": {
+    "testflight": {
+      "ios": {
+        "ascAppId": "6797897853"
+      }
+    },
     "production": {}
   }
 }

@@ -18,6 +18,7 @@ export default function ProvisionRoute() {
     case "READY_NO_TRIP":
     case "READY_UNKNOWN_CREATE":
     case "READY_UNKNOWN_JOIN":
+    case "READY_PENDING_APPROVAL":
     case "READY_LOBBY":
     case "READY_ACTIVE":
       return <Redirect href="/(app)" withAnchor />;

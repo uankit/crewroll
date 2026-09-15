@@ -197,14 +197,19 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
       return Object.freeze({ status: "REJECTED" as const });
     }
 
-    try {
-      await recoveryStore.save(scope, {
-        state: "CONFIRMED",
-        tripId: response.tripId,
-        membershipId: response.membershipId,
-      });
-    } catch {
-      throw internalProblem();
+    // Pending members cannot read the trip projection yet. Keep the original
+    // command so polling/relaunch can read its current membership outcome
+    // without consuming another invite use or creating a second join request.
+    if (response.status === "ACTIVE") {
+      try {
+        await recoveryStore.save(scope, {
+          state: "CONFIRMED",
+          tripId: response.tripId,
+          membershipId: response.membershipId,
+        });
+      } catch {
+        throw internalProblem();
+      }
     }
 
     return Object.freeze({

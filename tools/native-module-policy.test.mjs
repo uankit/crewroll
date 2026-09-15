@@ -78,7 +78,7 @@ test("Expo autolinking discovers only the canonical CrewRoll native shells", () 
   ]);
 });
 
-test("both native shells expose only the accepted key vertical and keep engine work closed", () => {
+test("native bridges keep the closed protocol and wire only implemented transfer engines", () => {
   const moduleRoot = path.join(root, "modules", "crewroll-transfer");
   const swift = readFileSync(
     path.join(moduleRoot, "ios", "CrewRollTransferModule.swift"),
@@ -102,6 +102,7 @@ test("both native shells expose only the accepted key vertical and keep engine w
   const keyMethodNames = [
     "ensureDeviceIdentity",
     "installDeviceSession",
+    "clearDeviceSession",
     "createTripKey",
     "discardProvisionalTripKey",
     "wrapTripKey",
@@ -129,7 +130,6 @@ test("both native shells expose only the accepted key vertical and keep engine w
       1,
     );
     assert.doesNotMatch(source, /ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED/);
-    assert.match(source, /ERR_CREWROLL_TRANSFER_SCOPE_PENDING/);
     assert.equal(
       (source.match(/AsyncFunction\("discardProvisionalTripKey"\)/g) ?? [])
         .length,
@@ -138,17 +138,18 @@ test("both native shells expose only the accepted key vertical and keep engine w
     for (const method of keyMethodNames) {
       assert.match(source, new RegExp(`lifecycle\\.${method}`));
     }
-    assert.equal(
-      (source.match(/promise\.reject\(pendingScopeException\(\)\)/g) ?? [])
-        .length,
-      pendingEngineMethodNames.length,
-    );
   }
-
+  assert.doesNotMatch(swift, /pendingScopeException|inactiveSnapshot/);
+  assert.match(swift, /ApplePhotoTransferEngine/);
+  for (const method of ["setPolicy", "wake", "retry", "snapshot", "listAssets"])
+    assert.match(swift, new RegExp(`await engine\\.${method}`));
+  assert.doesNotMatch(
+    kotlin,
+    /pendingScopeException|inactiveSnapshot|TRANSFER_SCOPE_PENDING/,
+  );
+  assert.match(kotlin, /NativePhotoTransferEngine/);
+  for (const method of ["policy", "wake", "retry", "snapshot", "assets"])
+    assert.match(kotlin, new RegExp(`engine\\(\\)\\.${method}`));
   assert.match(swift, /"protocolVersion": 1/);
-  assert.match(swift, /"revision": 0/);
-  assert.match(swift, /"activeTripId": NSNull\(\)/);
   assert.match(kotlin, /"protocolVersion" to 1/);
-  assert.match(kotlin, /"revision" to 0/);
-  assert.match(kotlin, /"activeTripId" to null/);
 });

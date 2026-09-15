@@ -1,0 +1,10 @@
+{
+  "name": "crewroll-local-worker-proof",
+  "main": "runtimeProof.ts",
+  "compatibility_date": "2026-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": { "pino": "../../../../node_modules/pino/pino.js" },
+  "r2_buckets": [
+    { "binding": "CIPHERTEXT", "bucket_name": "crewroll-local-proof" },
+  ],
+}

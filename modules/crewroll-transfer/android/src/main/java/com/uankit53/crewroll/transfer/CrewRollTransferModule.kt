@@ -10,32 +10,57 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.time.Instant
-
-private const val PENDING_SCOPE_CODE = "ERR_CREWROLL_TRANSFER_SCOPE_PENDING"
-private const val PENDING_SCOPE_MESSAGE =
-  "This native transfer operation is outside the identity and key vertical."
-
-private fun pendingScopeException() = CodedException(PENDING_SCOPE_CODE, PENDING_SCOPE_MESSAGE, null)
+import java.io.File
+import java.util.concurrent.CompletableFuture
+import com.goterl.lazysodium.SodiumAndroid
+import com.uankit53.crewroll.transfer.media.AndroidPhotoLibrary
+import com.uankit53.crewroll.transfer.media.NativePhotoCrypto
+import com.uankit53.crewroll.transfer.media.NativePhotoTransferEngine
+import com.uankit53.crewroll.transfer.media.NativePhotoTransport
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.util.Log
+import com.uankit53.crewroll.transfer.identitykeys.NativeMediaSession
+import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
 
 class CrewRollTransferModule : Module() {
   private var productionLifecycle: NativeKeyLifecycle? = null
+  private var photoEngine: NativePhotoTransferEngine? = null
+  @Volatile private var foreground = true
+  private val commands = NativeOperationQueue { name, state, ms ->
+    Log.i("CrewRollSession", "operation=$name state=$state durationMs=$ms")
+  }
+  private val mediaSession = NativeMediaSession({ lifecycle().mediaContext() })
 
   override fun definition() = ModuleDefinition {
     Name("CrewRollTransfer")
     Events("engineInvalidated")
     OnCreate {
-      runLifecycleCleanup()
+      commands.submit("startupCleanup") { runLifecycleCleanup() }
     }
     OnActivityEntersForeground {
-      runLifecycleCleanup()
+      foreground = true
+      commands.submit("foregroundCleanup") {
+        runLifecycleCleanup()
+        photoEngine?.foreground(true)
+      }
+    }
+    OnActivityEntersBackground {
+      foreground = false
+      photoEngine?.foreground(false)
     }
     OnDestroy {
-      productionLifecycle?.cancelScheduledCleanup()
-      productionLifecycle = null
+      commands.submit("close") {
+        mediaSession.close()
+        photoEngine?.close(); photoEngine = null
+        productionLifecycle?.cancelScheduledCleanup()
+        productionLifecycle = null
+      }
+      commands.close()
     }
 
     AsyncFunction("ensureDeviceIdentity") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("ensureDeviceIdentity", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.ENSURE_DEVICE_IDENTITY)
         val lifecycle = lifecycle()
         val identity = lifecycle.ensureDeviceIdentity(string(command, "accountId"))
@@ -52,7 +77,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("installDeviceSession") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("installDeviceSession", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.INSTALL_DEVICE_SESSION)
         val lifecycle = lifecycle()
         lifecycle.installDeviceSession(
@@ -66,8 +91,15 @@ class CrewRollTransferModule : Module() {
         null
       }
     }
+    AsyncFunction("clearDeviceSession") { command: Map<String, Any?>, promise: Promise ->
+      future("clearDeviceSession", promise) {
+        requireCommand(command, setOf("protocolVersion"))
+        val lifecycle = lifecycle()
+        engine().stop().thenApply { mediaSession.change { lifecycle.clearDeviceSession() }; null }
+      }
+    }
     AsyncFunction("createTripKey") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("createTripKey", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.CREATE_TRIP_KEY)
         val lifecycle = lifecycle()
         val result = lifecycle.createTripKey(string(command, "tripId"), integer(command, "keyEpoch"))
@@ -79,7 +111,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("discardProvisionalTripKey") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("discardProvisionalTripKey", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.DISCARD_PROVISIONAL_TRIP_KEY)
         val lifecycle = lifecycle()
         lifecycle.discardProvisionalTripKey(string(command, "tripId"), integer(command, "keyEpoch"))
@@ -87,7 +119,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("wrapTripKey") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("wrapTripKey", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.WRAP_TRIP_KEY)
         val lifecycle = lifecycle()
         val result = lifecycle.wrapTripKey(
@@ -110,7 +142,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("importTripKey") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      bridge("importTripKey", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_TRIP_KEY)
         val lifecycle = lifecycle()
         lifecycle.importTripKey(
@@ -126,40 +158,45 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("activateTrip") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      future("activateTrip", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
         val lifecycle = lifecycle()
         lifecycle.activateTrip(NativeCommandDecoder.activation(command))
-        null
+        engine().activate().thenApply { null }
       }
     }
     AsyncFunction("deactivateTrip") { command: Map<String, Any?>, promise: Promise ->
-      bridge(promise) {
+      future("deactivateTrip", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.DEACTIVATE_TRIP)
         val lifecycle = lifecycle()
         lifecycle.deactivateTrip(string(command, "tripId"))
-        null
+        engine().stop().thenApply { null }
       }
     }
-    AsyncFunction("setTransferPolicy") { _: Map<String, Any?>, promise: Promise ->
-      promise.reject(pendingScopeException())
+    AsyncFunction("setTransferPolicy") { command: Map<String, Any?>, promise: Promise ->
+      future("setTransferPolicy", promise) {
+        NativeCommandDecoder.requireProtocol(command)
+        if (command.keys != setOf("protocolVersion", "paused", "cellularAllowed") || command["paused"] !is Boolean || command["cellularAllowed"] !is Boolean) {
+          throw NativeKeyException.invalidCommand()
+        }
+        engine().policy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean).thenApply { null }
+      }
     }
-    AsyncFunction("reconcileNow") { _: Map<String, Any?>, promise: Promise ->
-      promise.reject(pendingScopeException())
+    AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
+      future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); engine().wake().thenApply { null } }
     }
-    AsyncFunction("retry") { _: Map<String, Any?>, promise: Promise ->
-      promise.reject(pendingScopeException())
+    AsyncFunction("retry") { command: Map<String, Any?>, promise: Promise ->
+      future("retry", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion", "workId")); engine().retry(string(command, "workId")).thenApply { null } }
     }
-    AsyncFunction("getSnapshot") {
-      inactiveSnapshot()
+    AsyncFunction("getSnapshot") { promise: Promise ->
+      future("getSnapshot", promise, changesSession = false) { engine().snapshot() }
     }
-    AsyncFunction("listAssets") { _: Map<String, Any?> ->
-      mapOf(
-        "protocolVersion" to 1,
-        "revision" to 0,
-        "items" to emptyList<Map<String, Any?>>(),
-        "nextCursor" to null
-      )
+    AsyncFunction("listAssets") { command: Map<String, Any?>, promise: Promise ->
+      future("listAssets", promise, changesSession = false) {
+        requireCommand(command, setOf("protocolVersion", "limit", "cursor"))
+        if (command["cursor"] != null && command["cursor"] !is String) throw NativeKeyException.invalidCommand()
+        engine().assets(integer(command, "limit"), command["cursor"] as? String)
+      }
     }
   }
 
@@ -168,25 +205,53 @@ class CrewRollTransferModule : Module() {
     val context = appContext.reactContext ?: throw NativeKeyException.materialLost()
     return AndroidNativeKeyInfrastructure.makeLifecycle(context).also { productionLifecycle = it }
   }
-
-  private fun runLifecycleCleanup() {
-    try {
-      lifecycle().runScheduledCleanup()
-    } catch (_: Throwable) {
-      // Access-locked and transient failures are retried on the next foreground wake.
+  private fun engine(): NativePhotoTransferEngine {
+    photoEngine?.let { return it }
+    val context = appContext.reactContext?.applicationContext ?: throw NativeKeyException.materialLost()
+    lifecycle()
+    val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    return NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() }, AndroidPhotoLibrary(context), NativePhotoCrypto(SodiumAndroid()), { cellular ->
+      NativePhotoTransport {
+        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
+          (cellular || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+      }
+    }, { revision -> sendEvent("engineInvalidated", mapOf("protocolVersion" to 1, "type" to "ENGINE_INVALIDATED", "revision" to revision)) }).also { photoEngine = it; it.foreground(foreground) }
+  }
+  private fun requireCommand(command: Map<String, Any?>, keys: Set<String>) {
+    if (command.keys != keys) throw NativeKeyException.invalidCommand()
+    NativeCommandDecoder.requireProtocol(command)
+  }
+  private fun future(name: String, promise: Promise, changesSession: Boolean = true, operation: () -> CompletableFuture<*>) {
+    val started = System.nanoTime()
+    commands.submit("dispatch_$name") {
+      if (changesSession) mediaSession.change(operation) else operation()
+    }.whenComplete { pending, queueError ->
+      if (queueError != null) reject(promise, queueError)
+      else pending.whenComplete { value, error ->
+        if (changesSession) mediaSession.clear()
+        val elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+        Log.i("CrewRollSession", "operation=$name state=${if (error == null) "completed" else "failed"} durationMs=$elapsed")
+        if (error == null) promise.resolve(value) else reject(promise, error)
+      }
     }
   }
 
-  private fun bridge(promise: Promise, operation: () -> Any?) {
-    try {
-      promise.resolve(operation())
-    } catch (error: NativeKeyException) {
-      val code = publicErrorCode(error)
-      promise.reject(CodedException(code, code, null))
-    } catch (_: Throwable) {
-      val code = "KEY_MATERIAL_LOST"
-      promise.reject(CodedException(code, code, null))
+  private fun runLifecycleCleanup() {
+    // Errors are recorded by the queue and surfaced by the next session operation.
+    lifecycle().runScheduledCleanup()
+  }
+
+  private fun bridge(name: String, promise: Promise, operation: () -> Any?) {
+    commands.submit(name) { mediaSession.change(operation) }.whenComplete { value, error ->
+      if (error == null) promise.resolve(value) else reject(promise, error)
     }
+  }
+
+  private fun reject(promise: Promise, error: Throwable) {
+    val cause = error.cause ?: error
+    val code = if (cause is NativeKeyException) publicErrorCode(cause) else "ERR_CREWROLL_NATIVE_PROTOCOL"
+    promise.reject(CodedException(code, code, null))
   }
 
   private fun publicErrorCode(error: NativeKeyException) = when (error.code) {
@@ -203,17 +268,4 @@ class CrewRollTransferModule : Module() {
   private fun instant(command: Map<String, Any?>, key: String): Instant =
     NativeCommandDecoder.instant(command, key)
 
-  private fun inactiveSnapshot() = mapOf(
-    "protocolVersion" to 1,
-    "revision" to 0,
-    "activeTripId" to null,
-    "paused" to false,
-    "counts" to mapOf(
-      "discovered" to 0,
-      "previewReady" to 0,
-      "originalsSaved" to 0,
-      "blocked" to 0
-    ),
-    "blockers" to emptyList<String>()
-  )
 }

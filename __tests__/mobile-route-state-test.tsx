@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "expo-router/testing-library";
 import { type PropsWithChildren, useSyncExternalStore } from "react";
+import * as SplashScreen from "expo-splash-screen";
 
 import type { AppSessionSnapshot } from "../src/bootstrap/AppSessionProvider";
 import { sessionUiStore } from "../src/bootstrap/state/sessionUiStore";
@@ -86,6 +87,11 @@ function pendingMemberTrip(): TripView {
     })),
   };
 }
+
+jest.mock("@clerk/expo/native", () => ({
+  ...jest.requireActual("@clerk/expo/native"),
+  useAuthViewState: () => ({ isLoaded: true, isAuthFlowComplete: false }),
+}));
 
 const mockActions = {
   approve: jest.fn(),
@@ -190,7 +196,8 @@ function setPhase(phase: AppSessionSnapshot["phase"]): void {
   } else if (
     phase === "READY_NO_TRIP" ||
     phase === "READY_UNKNOWN_CREATE" ||
-    phase === "READY_UNKNOWN_JOIN"
+    phase === "READY_UNKNOWN_JOIN" ||
+    phase === "READY_PENDING_APPROVAL"
   ) {
     snapshot = { phase, deviceId };
   } else {
@@ -239,6 +246,15 @@ describe("Expo Router mobile journey", () => {
     sessionUiStore.getState().clear();
   });
 
+  it("reveals the startup recovery screen without waiting for network authentication", async () => {
+    setPhase("LOADING_FONTS_OR_CLERK");
+    const router = await renderActualRouter("/");
+
+    expect(screen.getByTestId("launch-busy")).toBeOnTheScreen();
+    expect(SplashScreen.hideAsync).toHaveBeenCalled();
+    await router.unmount();
+  });
+
   it.each([
     ["LOADING_FONTS_OR_CLERK", "/"],
     ["SIGNED_OUT", "/sign-in"],
@@ -247,6 +263,7 @@ describe("Expo Router mobile journey", () => {
     ["READY_NO_TRIP", "/"],
     ["READY_UNKNOWN_CREATE", "/"],
     ["READY_UNKNOWN_JOIN", "/"],
+    ["READY_PENDING_APPROVAL", "/"],
     ["READY_LOBBY", "/"],
     ["READY_ACTIVE", "/"],
   ] as const)(
@@ -268,6 +285,7 @@ describe("Expo Router mobile journey", () => {
     ["READY_NO_TRIP", "/sign-in", "/"],
     ["READY_UNKNOWN_CREATE", "/sign-in", "/"],
     ["READY_UNKNOWN_JOIN", "/sign-in", "/"],
+    ["READY_PENDING_APPROVAL", "/sign-in", "/"],
     ["READY_LOBBY", "/sign-in", "/"],
     ["READY_ACTIVE", "/sign-in", "/"],
   ] as const)(
@@ -477,7 +495,7 @@ describe("Expo Router mobile journey", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Start trip" }));
     await waitFor(() => expect(mockActions.start).toHaveBeenCalledWith(tripId));
     await waitFor(() =>
-      expect(screen.getByText("This phone is ready")).toBeOnTheScreen(),
+      expect(screen.queryByText("Start trip")).not.toBeOnTheScreen(),
     );
   });
 
@@ -512,7 +530,7 @@ describe("Expo Router mobile journey", () => {
     );
     expect(mockActions.start).not.toHaveBeenCalled();
     await waitFor(() =>
-      expect(screen.getByText("This phone is ready")).toBeOnTheScreen(),
+      expect(screen.queryByText("Try activation again")).not.toBeOnTheScreen(),
     );
   });
 

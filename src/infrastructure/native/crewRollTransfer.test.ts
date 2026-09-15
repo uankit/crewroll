@@ -53,6 +53,7 @@ function nativeModule(overrides: NativeOverrides = {}) {
   const module = {
     ensureDeviceIdentity: async () => identity,
     installDeviceSession: async () => undefined,
+    clearDeviceSession: async () => undefined,
     createTripKey: async () => ({
       protocolVersion: 1,
       tripId,
@@ -108,6 +109,7 @@ describe("CrewRoll native transfer boundary", () => {
 
     expect(Object.keys(port).sort()).toEqual([
       "activateTrip",
+      "clearDeviceSession",
       "createTripKey",
       "deactivateTrip",
       "discardProvisionalTripKey",

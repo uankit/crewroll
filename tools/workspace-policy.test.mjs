@@ -1003,7 +1003,14 @@ test("mobile source uses only the locked topology and public route imports", asy
 
   const publicImports = [
     ["app/index.tsx", /^import \{ Redirect \} from "expo-router";$/mu],
-    ["app/index.tsx", /^import \{ useAppSession \} from "@\/bootstrap";$/mu],
+    [
+      "app/index.tsx",
+      /^import \{[^}]*\buseAppSession\b[^}]*\} from "@\/bootstrap";$/mu,
+    ],
+    [
+      "app/index.tsx",
+      /^import \{[^}]*\bSessionLoadingScreen\b[^}]*\} from "@\/bootstrap";$/mu,
+    ],
     [
       "app/(app)/index.tsx",
       /import\s*\{[^}]*\bHomeScreen\b[^}]*\}\s*from "@\/features\/home";/u,
@@ -1163,7 +1170,7 @@ test("EAS CLI is remote-pinned in all four build commands and never installed lo
   }
 });
 
-test("EAS CLI pin changes no release profile or submission behavior", async () => {
+test("EAS release profiles and submission destinations stay explicit", async () => {
   const easJson = await readJson("eas.json");
   assert.deepEqual(easJson, {
     cli: { version: "22.4.0", appVersionSource: "remote" },
@@ -1184,13 +1191,26 @@ test("EAS CLI pin changes no release profile or submission behavior", async () =
         environment: "preview",
         android: { buildType: "apk" },
       },
+      "preview-simulator": {
+        extends: "preview",
+        ios: { simulator: true },
+      },
+      testflight: {
+        extends: "production",
+        distribution: "store",
+        channel: "testflight",
+        environment: "preview",
+      },
       production: {
         autoIncrement: true,
         channel: "production",
         environment: "production",
       },
     },
-    submit: { production: {} },
+    submit: {
+      testflight: { ios: { ascAppId: "6797897853" } },
+      production: {},
+    },
   });
 });
 

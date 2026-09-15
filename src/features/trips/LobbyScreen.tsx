@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { StartBlocker, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import {
@@ -7,6 +8,7 @@ import {
   InlineBanner,
   InviteCard,
   MemberReadinessRow,
+  MemberStack,
   Screen,
   Stack,
   StatusBadge,
@@ -33,6 +35,7 @@ export type LobbyActivationState =
 
 export type LobbyPhotoPermissionState =
   | Readonly<{ kind: "CHECKING" }>
+  | Readonly<{ kind: "UNAVAILABLE" }>
   | Readonly<{ kind: "FULL" }>
   | Readonly<{ kind: "REQUESTABLE" }>
   | Readonly<{ kind: "SETTINGS_REQUIRED" }>;
@@ -46,6 +49,7 @@ export type LobbyScreenProps = Readonly<{
   onStart?: () => void;
   starting?: boolean;
   activation?: LobbyActivationState;
+  transferContent?: ReactNode;
   photoPermission: LobbyPhotoPermissionState;
   onRequestPhotoAccess?: () => void;
   onOpenPhotoSettings?: () => void;
@@ -201,6 +205,7 @@ function ActiveTripStatus({
 
 export function LobbyScreen({
   activation,
+  transferContent,
   approvingMembershipId,
   endsLabel,
   invite,
@@ -236,23 +241,45 @@ export function LobbyScreen({
             {trip.name}
           </AppText>
           <AppText tone="secondary">
-            New eligible photos can arrive automatically once this trip starts.
+            {trip.status === "ACTIVE"
+              ? "Your crew, one shared trip. Photos appear here as they arrive."
+              : "New eligible photos can arrive automatically once this trip starts."}
           </AppText>
         </Stack>
 
-        <TripSummaryCard
-          details={[
-            { label: "Ends", value: endsLabel },
-            {
-              label: "Members",
-              value: `${trip.members.length} ${
-                trip.members.length === 1 ? "person" : "people"
-              }`,
-            },
-          ]}
-          name={trip.name}
-          status={tripStatus(trip)}
-        />
+        {trip.status === "ACTIVE" || trip.status === "ENDING" ? (
+          <Stack gap="sm">
+            <MemberStack
+              label="Trip crew"
+              maxVisible={5}
+              members={trip.members.map((member) => ({
+                key: member.membershipId,
+                displayName: member.displayName,
+              }))}
+            />
+            <AppText tone="secondary" variant="caption">
+              {trip.members.length} people · Ends {endsLabel}
+            </AppText>
+            {trip.status === "ACTIVE" && activation?.kind !== "ready" ? (
+              <ActiveTripStatus activation={activation} />
+            ) : null}
+            {transferContent}
+          </Stack>
+        ) : (
+          <TripSummaryCard
+            details={[
+              { label: "Ends", value: endsLabel },
+              {
+                label: "Members",
+                value: `${trip.members.length} ${
+                  trip.members.length === 1 ? "person" : "people"
+                }`,
+              },
+            ]}
+            name={trip.name}
+            status={tripStatus(trip)}
+          />
+        )}
 
         {isOwner && trip.status === "LOBBY" && invite ? (
           <InviteCard
@@ -277,7 +304,8 @@ export function LobbyScreen({
           />
         ) : null}
 
-        {trip.status === "LOBBY" && currentMember?.status === "ACTIVE" ? (
+        {(trip.status === "LOBBY" || trip.status === "ACTIVE") &&
+        currentMember?.status === "ACTIVE" ? (
           <Stack gap="sm">
             {photoPermission.kind === "CHECKING" ? (
               <InlineBanner
@@ -293,6 +321,22 @@ export function LobbyScreen({
                 onPress={onRequestPhotoAccess ?? (() => undefined)}
               />
             ) : null}
+            {photoPermission.kind === "UNAVAILABLE" ? (
+              <Stack gap="sm">
+                <InlineBanner
+                  title="Photo access could not be checked"
+                  body="No photos are being claimed as ready. Please try again."
+                  icon="!"
+                  tone="warning"
+                />
+                {onRequestPhotoAccess ? (
+                  <Button
+                    label="Retry photo access"
+                    onPress={onRequestPhotoAccess}
+                  />
+                ) : null}
+              </Stack>
+            ) : null}
             {photoPermission.kind === "SETTINGS_REQUIRED" ? (
               <Button
                 label="Open photo settings"
@@ -303,43 +347,41 @@ export function LobbyScreen({
           </Stack>
         ) : null}
 
-        <Stack gap="sm">
-          <AppText accessibilityRole="header" variant="title2">
-            Trip crew
-          </AppText>
-          {trip.members.map((member) => {
-            const readiness = memberReadiness(member);
-            const approving = approvingMembershipId === member.membershipId;
-            const canApprove =
-              isOwner &&
-              trip.status === "LOBBY" &&
-              member.status === "PENDING_KEY" &&
-              onApproveMember !== undefined;
+        {trip.status !== "ACTIVE" && trip.status !== "ENDING" ? (
+          <Stack gap="sm">
+            <AppText accessibilityRole="header" variant="title2">
+              Trip crew
+            </AppText>
+            {trip.members.map((member) => {
+              const readiness = memberReadiness(member);
+              const approving = approvingMembershipId === member.membershipId;
+              const canApprove =
+                isOwner &&
+                trip.status === "LOBBY" &&
+                member.status === "PENDING_KEY" &&
+                onApproveMember !== undefined;
 
-            return (
-              <Stack gap="xs" key={member.membershipId}>
-                <MemberReadinessRow
-                  displayName={member.displayName}
-                  readiness={readiness.status}
-                  supportingText={readiness.supportingText}
-                />
-                {canApprove ? (
-                  <Button
-                    accessibilityHint={`Approves secure trip access for ${member.displayName}.`}
-                    disabled={mutationActive && !approving}
-                    label={`Approve ${member.displayName}`}
-                    loading={approving}
-                    onPress={() => onApproveMember(member.membershipId)}
-                    variant="secondary"
+              return (
+                <Stack gap="xs" key={member.membershipId}>
+                  <MemberReadinessRow
+                    displayName={member.displayName}
+                    readiness={readiness.status}
+                    supportingText={readiness.supportingText}
                   />
-                ) : null}
-              </Stack>
-            );
-          })}
-        </Stack>
-
-        {trip.status === "ACTIVE" ? (
-          <ActiveTripStatus activation={activation} />
+                  {canApprove ? (
+                    <Button
+                      accessibilityHint={`Approves secure trip access for ${member.displayName}.`}
+                      disabled={mutationActive && !approving}
+                      label={`Approve ${member.displayName}`}
+                      loading={approving}
+                      onPress={() => onApproveMember(member.membershipId)}
+                      variant="secondary"
+                    />
+                  ) : null}
+                </Stack>
+              );
+            })}
+          </Stack>
         ) : null}
 
         {isOwner && trip.status === "LOBBY" ? (

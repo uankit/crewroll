@@ -40,6 +40,67 @@ function captureEnvironmentError(source: NodeJS.ProcessEnv): EnvironmentError {
 }
 
 describe("loadEnvironment", () => {
+  it("requires real auth secrets in Cloudflare mode but not unused AWS push integrations", () => {
+    const source = {
+      ...developmentEnvironment,
+      NODE_ENV: "production",
+      BACKGROUND_CREDENTIAL_HMAC_KEY_V1:
+        productionProviderEnvironment.BACKGROUND_CREDENTIAL_HMAC_KEY_V1,
+      CLERK_AUTHORIZED_PARTIES_JSON: "[]",
+      CLERK_ISSUER: productionProviderEnvironment.CLERK_ISSUER,
+      CLERK_SECRET_KEY: productionProviderEnvironment.CLERK_SECRET_KEY,
+      CLERK_WEBHOOK_SECRET: productionProviderEnvironment.CLERK_WEBHOOK_SECRET,
+      INVITE_CODE_HMAC_KEY: productionProviderEnvironment.INVITE_CODE_HMAC_KEY,
+    };
+    expect(
+      loadEnvironment(source, { platform: "cloudflare" }).nodeEnvironment,
+    ).toBe("production");
+    expect(() => loadEnvironment(source)).toThrow(EnvironmentError);
+    for (const key of [
+      "CLERK_SECRET_KEY",
+      "CLERK_WEBHOOK_SECRET",
+      "BACKGROUND_CREDENTIAL_HMAC_KEY_V1",
+      "INVITE_CODE_HMAC_KEY",
+    ]) {
+      const missing: Record<string, string> = { ...source };
+      delete missing[key];
+      expect(() =>
+        loadEnvironment(missing, { platform: "cloudflare" }),
+      ).toThrow(EnvironmentError);
+    }
+    expect(() =>
+      loadEnvironment(
+        {
+          ...source,
+          LOCAL_MEDIA_ORIGIN: "https://local.invalid",
+          LOCAL_MEDIA_DIRECTORY: "/tmp/local",
+        },
+        { platform: "cloudflare" },
+      ),
+    ).toThrow(EnvironmentError);
+  });
+  it("requires both local ciphertext settings and rejects them in production", () => {
+    const local = {
+      LOCAL_MEDIA_ORIGIN: "https://phone-proof.example",
+      LOCAL_MEDIA_DIRECTORY: "/private/tmp/crewroll-ciphertext",
+    };
+    expect(
+      loadEnvironment({ ...developmentEnvironment, ...local }).localMediaOrigin,
+    ).toBe(local.LOCAL_MEDIA_ORIGIN);
+    for (const key of Object.keys(local)) {
+      const source: NodeJS.ProcessEnv = { ...developmentEnvironment, ...local };
+      delete source[key];
+      expect(captureEnvironmentError(source).invalidKeys).toContain(key);
+    }
+    expect(
+      captureEnvironmentError({
+        ...developmentEnvironment,
+        ...productionProviderEnvironment,
+        ...local,
+        NODE_ENV: "production",
+      }).invalidKeys,
+    ).toEqual(["LOCAL_MEDIA_DIRECTORY", "LOCAL_MEDIA_ORIGIN"]);
+  });
   it("parses the smallest development environment without reading globals", () => {
     const environment = loadEnvironment(developmentEnvironment);
 

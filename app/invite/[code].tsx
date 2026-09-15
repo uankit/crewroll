@@ -88,6 +88,8 @@ export default function InviteRoute() {
           />
         </Screen>
       );
+    case "READY_PENDING_APPROVAL":
+      return <Redirect href="/(app)" withAnchor />;
     case "READY_LOBBY":
     case "READY_ACTIVE":
       return <Redirect href={`/trips/${snapshot.tripId}`} withAnchor />;

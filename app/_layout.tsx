@@ -8,6 +8,7 @@ import {
 } from "@expo-google-fonts/manrope";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
+import { useEffect } from "react";
 
 import { AppNavigator, AppProviders } from "@/bootstrap";
 
@@ -21,9 +22,15 @@ export default function RootLayout() {
     Manrope_700Bold,
     Manrope_800ExtraBold,
   });
+  const fontsReady = loaded || error !== null;
+
+  useEffect(() => {
+    // Network authentication must not cover the actionable startup screen.
+    if (fontsReady) void SplashScreen.hideAsync();
+  }, [fontsReady]);
 
   return (
-    <AppProviders fontsReady={loaded || error !== null}>
+    <AppProviders fontsReady={fontsReady}>
       <StatusBar style="auto" />
       <AppNavigator />
     </AppProviders>
