@@ -1,5 +1,7 @@
 import type { PropsWithChildren } from "react";
 import {
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   View,
@@ -51,16 +53,22 @@ export function Screen({
       testID={testID}
       style={[styles.root, { backgroundColor: colors.background }, style]}
     >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        contentInsetAdjustmentBehavior="automatic"
-        automaticallyAdjustKeyboardInsets
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+      <KeyboardAvoidingView
+        enabled={Platform.OS === "android"}
+        behavior="height"
+        style={styles.root}
       >
-        {content}
-      </ScrollView>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          contentInsetAdjustmentBehavior="automatic"
+          automaticallyAdjustKeyboardInsets
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+        >
+          {content}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

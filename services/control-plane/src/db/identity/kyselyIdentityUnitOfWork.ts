@@ -1,6 +1,7 @@
 import { sql, type Kysely } from "kysely";
 
 import type { IdentityUnitOfWork } from "../../modules/identity/ports/identityUnitOfWork.js";
+import type { ProfileRepository } from "../../modules/identity/ports/profileRepository.js";
 import { DomainError } from "../../shared/errors/domainError.js";
 import type { Database } from "../schema/tables.js";
 
@@ -18,8 +19,18 @@ function isEventRace(error: unknown): boolean {
 
 export function createKyselyIdentityUnitOfWork(
   database: Kysely<Database>,
-): IdentityUnitOfWork {
+): IdentityUnitOfWork & ProfileRepository {
   return {
+    async synchronizeProfile(clerkSubject, displayName, candidateUserId, now) {
+      const result = await sql<{ id: string }>`
+        insert into users (id, clerk_subject, display_name, created_at, updated_at, deleted_at)
+        values (${candidateUserId}::uuid, ${clerkSubject}, ${displayName}, ${now}, ${now}, null)
+        on conflict (clerk_subject) do update set display_name = excluded.display_name, updated_at = excluded.updated_at
+        where users.deleted_at is null
+        returning id
+      `.execute(database);
+      if (!result.rows[0]) throw new DomainError("AUTH_INVALID");
+    },
     async applyWebhook(event, candidateUserId, now) {
       try {
         return await database.transaction().execute(async (transaction) => {

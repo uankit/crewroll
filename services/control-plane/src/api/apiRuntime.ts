@@ -18,6 +18,9 @@ import type {
   ClerkWebhookServiceDependencies,
   ClerkWebhookVerifier,
   IdentityUnitOfWork,
+  ProfileRepository,
+  ProfileRouteDependencies,
+  SyncProfileDependencies,
 } from "../modules/identity/index.js";
 import type {
   ApproveJoinRequestDependencies,
@@ -73,6 +76,9 @@ export class ApiConfigurationError extends Error {
 }
 
 export interface ApiRuntimeFactories {
+  syncProfile(
+    dependencies: SyncProfileDependencies,
+  ): ProfileRouteDependencies["syncProfile"];
   media?(input: {
     database: unknown;
     environment: Environment;
@@ -98,7 +104,7 @@ export interface ApiRuntimeFactories {
   ): TripRouteDependencies["previewInvite"];
   getTrip(dependencies: GetTripDependencies): TripRouteDependencies["getTrip"];
   ids(): IdGenerator;
-  identityUnitOfWork(database: unknown): IdentityUnitOfWork;
+  identityUnitOfWork(database: unknown): IdentityUnitOfWork & ProfileRepository;
   inviteCodeCryptography(environment: Environment): InviteCodeCryptography;
   logger(environment: Environment): Logger;
   pushTokenProtector(environment: Environment): KmsPushTokenProtectorHandle;
@@ -273,6 +279,15 @@ export async function createApiRuntime(
       environment,
       ids,
       identity: { webhookService },
+      profile: {
+        tokenVerifier,
+        syncProfile: factories.syncProfile({
+          directory,
+          repository: identityUnitOfWork,
+          clock,
+          ids,
+        }),
+      },
       logger,
       readiness: {
         async check() {

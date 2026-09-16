@@ -60,6 +60,7 @@ const stages = [
   "startTrip",
   "getTrip",
   "previewInvite",
+  "syncProfile",
   "buildApp",
 ] as const;
 type Stage = (typeof stages)[number];
@@ -88,6 +89,9 @@ function createRuntimeHarness(
   const snapshots = { slot: "snapshots" };
   const unitOfWork = { slot: "unitOfWork" };
   const identityUnitOfWork = { slot: "identityUnitOfWork" };
+  const syncProfile = {
+    execute: () => Promise.resolve({ displayName: "Riya" }),
+  };
   const inviteCodeCryptography = { slot: "inviteCodeCryptography" };
   const foregroundTripSnapshots = { slot: "foregroundTripSnapshots" };
   const tripUnitOfWork = { slot: "tripUnitOfWork" };
@@ -300,6 +304,15 @@ function createRuntimeHarness(
       expect(actual).toEqual({ unitOfWork: tripUnitOfWork });
       return step("getTrip", getTrip);
     },
+    syncProfile: (actual: Record<string, unknown>) => {
+      expect(actual).toEqual({
+        directory,
+        repository: identityUnitOfWork,
+        clock,
+        ids,
+      });
+      return step("syncProfile", syncProfile);
+    },
     buildApp: (actual: Record<string, unknown>) => {
       expect(actual).toMatchObject({
         clock,
@@ -312,6 +325,10 @@ function createRuntimeHarness(
         environment,
         ids,
         identity: { webhookService },
+        profile: {
+          tokenVerifier,
+          syncProfile,
+        },
         logger,
         trips: {
           approveJoinRequest,

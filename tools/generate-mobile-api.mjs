@@ -18,6 +18,7 @@ export const requiredOperations = [
   "resolveCreateTripOutcome",
   "setTripReadiness",
   "startTrip",
+  "syncProfile",
 ];
 
 const UUID_SCHEMA = Object.freeze({ type: "string", format: "uuid" });
@@ -58,6 +59,15 @@ const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
 const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
 
 const operationExpectations = [
+  {
+    method: "put",
+    operationId: "syncProfile",
+    parameters: [],
+    path: "/v1/profile",
+    request: "SyncProfileBody",
+    response: "ProfileResponse",
+    successStatus: "200",
+  },
   {
     method: "post",
     operationId: "previewInvite",
@@ -465,9 +475,11 @@ function renderGeneratedTypes() {
     "InvitePreviewBody",
     "InvitePreviewResponse",
     "ProblemDetails",
+    "ProfileResponse",
     "RegisterDeviceBody",
     "SetTripReadinessBody",
     "StartTripBody",
+    "SyncProfileBody",
     "TripResponse",
   ];
   const lines = [
@@ -490,7 +502,7 @@ function renderGeneratedTypes() {
     );
     lines.push(`    path: ${JSON.stringify(operation.path)};`);
     lines.push(
-      `    headers: ${headers.map((header) => JSON.stringify(header)).join(" | ")};`,
+      `    headers: ${headers.length ? headers.map((header) => JSON.stringify(header)).join(" | ") : "never"};`,
     );
     if (operation.request !== null) {
       lines.push(`    request: ${operation.request};`);

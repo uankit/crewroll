@@ -11,6 +11,7 @@ import {
   installCrewRollFormats,
   TripResponseSchema,
   InvitePreviewResponseSchema,
+  ProfileResponseSchema,
 } from "@crewroll/contracts";
 import createClient from "openapi-fetch";
 import type { Client } from "openapi-fetch";
@@ -41,6 +42,7 @@ export class CrewRollTransportProblem extends Error {
 
 export type CrewRollApi = DeviceRegistrationPort &
   TripApiPort & {
+    syncProfile(): Promise<GeneratedResponse<"syncProfile">>;
     previewInvite(
       deviceId: string,
       inviteCode: string,
@@ -285,6 +287,15 @@ function parseCreateTripOutcome(
 
 class OpenApiCrewRollApi implements CrewRollApi {
   constructor(private readonly client: MobileClient) {}
+
+  async syncProfile(): Promise<GeneratedResponse<"syncProfile">> {
+    const profile = await this.request<GeneratedResponse<"syncProfile">>(() =>
+      this.client.PUT("/v1/profile", { body: {} }),
+    );
+    if (!matchesRuntimeSchema(ProfileResponseSchema as RuntimeSchema, profile))
+      throw new CrewRollTransportProblem();
+    return profile;
+  }
 
   async registerDevice(
     commandId: string,

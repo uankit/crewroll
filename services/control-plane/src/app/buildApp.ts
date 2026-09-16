@@ -14,7 +14,10 @@ import {
 import { toProblemDetails } from "../shared/errors/problemMapper.js";
 import type { AppDependencies } from "./dependencies.js";
 import { deviceRoutes } from "../modules/devices/index.js";
-import { clerkWebhookRoutes } from "../modules/identity/index.js";
+import {
+  clerkWebhookRoutes,
+  profileRoutes,
+} from "../modules/identity/index.js";
 import { tripRoutes } from "../modules/trips/index.js";
 import { mediaRoutes } from "../modules/media/index.js";
 
@@ -156,6 +159,7 @@ export function buildApp(
 
   app.register(deviceRoutes, dependencies.devices);
   app.register(clerkWebhookRoutes, dependencies.identity);
+  if (dependencies.profile) app.register(profileRoutes, dependencies.profile);
   app.register(tripRoutes, dependencies.trips);
   if (dependencies.media) app.register(mediaRoutes, dependencies.media);
   if (dependencies.media && options.scheduledMediaCleanup !== false) {

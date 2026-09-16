@@ -17,6 +17,8 @@ import {
   InvitePreviewResponseSchema,
   MembershipResponseSchema,
   ProblemDetailsSchema,
+  ProfileResponseSchema,
+  SyncProfileBodySchema,
   PublishPreviewBodySchema,
   PublishPreviewResponseSchema,
   PreviewDownloadResponseSchema,
@@ -117,6 +119,8 @@ const operation = (
 
 function componentSchemas(): Record<string, unknown> {
   return {
+    ProfileResponse: ProfileResponseSchema,
+    SyncProfileBody: SyncProfileBodySchema,
     DeviceRegistrationHeaders:
       publicObjectSchemas.DeviceRegistrationHeadersSchema,
     MobileCommandHeaders: publicObjectSchemas.MobileCommandHeadersSchema,
@@ -162,6 +166,15 @@ export function createOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: { title: "CrewRoll Control Plane", version: "1.0.0" },
     paths: {
+      "/v1/profile": {
+        put: operation(
+          "syncProfile",
+          [],
+          { "200": response("ProfileResponse") },
+          "SyncProfileBody",
+          "ClerkBearer",
+        ),
+      },
       "/v1/devices": {
         post: operation(
           "registerDevice",

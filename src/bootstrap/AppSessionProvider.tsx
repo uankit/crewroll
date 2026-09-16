@@ -217,6 +217,7 @@ const AppSessionContext = createContext<AppSessionContextValue | undefined>(
 type AppSessionProviderProps = PropsWithChildren<{
   auth: AppSessionAuthSnapshot;
   fontsReady: boolean;
+  profileReady?: boolean;
   onAuthInvalid?: () => void | Promise<void>;
   provisionInput: Readonly<{
     apiBaseUrl: string;
@@ -324,6 +325,7 @@ export function AppSessionProvider({
   auth,
   children,
   fontsReady,
+  profileReady = true,
   onAuthInvalid,
   provisionInput,
   queryClient,
@@ -731,6 +733,7 @@ export function AppSessionProvider({
   const renderedPublicOperationScope = JSON.stringify([
     authBindingKey,
     fontsReady,
+    profileReady,
     retryGeneration,
   ]);
   useLayoutEffect(() => {
@@ -814,6 +817,9 @@ export function AppSessionProvider({
           });
         if (sessionChanged) await clearForegroundQueryState(queryClient);
         if (!isCurrent()) return;
+        // Account teardown must still run while a new profile is incomplete.
+        // Registration starts only after its canonical name has been saved.
+        if (!profileReady) return;
         previousSessionKey.current = sessionKey;
         setPublishedQueryScope(null);
         setOwnerInvite(null);
@@ -995,6 +1001,7 @@ export function AppSessionProvider({
     clearAndSignOut,
     fontsReady,
     observeOperation,
+    profileReady,
     provisionInput.apiBaseUrl,
     provisionInput.appVersion,
     provisionInput.platform,
@@ -1102,7 +1109,11 @@ export function AppSessionProvider({
     if (!auth.isSignedIn || snapshot.phase === "SIGNED_OUT") {
       return { phase: "SIGNED_OUT" };
     }
-    if (authBindingKey === null || publicSessionKey !== authBindingKey) {
+    if (
+      !profileReady ||
+      authBindingKey === null ||
+      publicSessionKey !== authBindingKey
+    ) {
       return { phase: "PROVISIONING_DEVICE" };
     }
     return snapshot;
@@ -1111,6 +1122,7 @@ export function AppSessionProvider({
     auth.isSignedIn,
     authBindingKey,
     fontsReady,
+    profileReady,
     publicSessionKey,
     snapshot,
   ]);

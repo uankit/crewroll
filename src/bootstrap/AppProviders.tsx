@@ -20,6 +20,9 @@ import {
 import { createSetTripReadiness } from "../application/trips/SetTripReadiness";
 import { createStartAndActivateTrip } from "../application/trips/StartAndActivateTrip";
 import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvider";
+import { BrandLoading, Screen } from "../design-system";
+import { ProfileScreen } from "../features/auth/ProfileScreen";
+import { useProfileCompletion } from "../infrastructure/auth/useProfileCompletion";
 import { ClerkSessionTokenSource } from "../infrastructure/auth/clerkSessionToken";
 import { ExpoPhotoLibraryPermission } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
@@ -213,7 +216,11 @@ function createProductionComposition(
     },
   });
 
-  return Object.freeze({ developmentCut, runtime });
+  return Object.freeze({
+    developmentCut,
+    runtime,
+    profileApi: mobileDependencies.profileApi,
+  });
 }
 
 function ProductionSessionBridge({
@@ -228,6 +235,12 @@ function ProductionSessionBridge({
   const [composition] = useState(() =>
     createProductionComposition(env, auth.getToken),
   );
+  const profile = useProfileCompletion({
+    api: composition.profileApi,
+    scope: env.apiUrl,
+  });
+
+  const profileReady = profile.accountId === auth.userId && profile.ready;
 
   const authSnapshot: AppSessionAuthSnapshot = !auth.isLoaded
     ? { isLoaded: false, isSignedIn: undefined }
@@ -265,6 +278,7 @@ function ProductionSessionBridge({
       <AppSessionProvider
         auth={authSnapshot}
         fontsReady={fontsReady}
+        profileReady={profileReady}
         onAuthInvalid={onAuthInvalid}
         provisionInput={{
           apiBaseUrl: env.apiUrl,
@@ -274,7 +288,24 @@ function ProductionSessionBridge({
         queryClient={queryClient}
         runtime={composition.runtime}
       >
-        {children}
+        {auth.isSignedIn && !profileReady ? (
+          !fontsReady || profile.checking ? (
+            <Screen scroll={false}>
+              <BrandLoading />
+            </Screen>
+          ) : (
+            <ProfileScreen
+              name={profile.name}
+              setName={profile.setName}
+              busy={profile.busy}
+              error={profile.error}
+              onSave={() => void profile.save()}
+              onUseAnotherAccount={() => void signOut()}
+            />
+          )
+        ) : (
+          children
+        )}
       </AppSessionProvider>
     </DevelopmentAcceptanceProvider>
   );

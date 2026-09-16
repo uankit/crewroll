@@ -8,6 +8,7 @@ export * from "./events.js";
 export * from "./ids.js";
 export * from "./problems.js";
 export * from "./previews.js";
+export * from "./profile.js";
 export * from "./sync.js";
 export * from "./trips.js";
 
@@ -41,6 +42,7 @@ import {
   TripChangedEventSchema,
 } from "./events.js";
 import { ProblemDetailsSchema } from "./problems.js";
+import { ProfileResponseSchema, SyncProfileBodySchema } from "./profile.js";
 import {
   PublishPreviewBodySchema,
   PublishPreviewResponseSchema,
@@ -78,6 +80,8 @@ import {
 } from "./trips.js";
 
 export const publicObjectSchemas = {
+  ProfileResponseSchema,
+  SyncProfileBodySchema,
   PublishPreviewBodySchema,
   PublishPreviewResponseSchema,
   PreviewDownloadResponseSchema,

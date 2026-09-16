@@ -70,9 +70,9 @@ The API’s authenticated `POST /v1/trips/invite-preview` is read-only and no-st
 
 ## Remaining work
 
-- Email-only accounts without an existing profile name currently appear as **CrewRoll member**. Add name collection in the account flow and confirm the Clerk profile configuration before accepting the named-crew experience.
+The [profile and device follow-up](profile-device-and-photo-flow-2026-09-16.md) completed name collection, canonical profile sync, named-crew acceptance, Expo SDK 57 patch alignment, and an Android native rebuild/upgrade. Expo Doctor now passes 21/21. The earlier check results above describe the original visual-pass baseline.
+
 - Exercise Google and Apple provider sign-in with configured provider accounts. Email signup and verification were exercised here.
-- Align the 16 Expo SDK 57 package patch versions reported by Expo Doctor, rebuild native apps, and rerun native acceptance. These dependency upgrades were kept out of this visual pass.
 - Physical Android/iPhone verification: system safe areas, large text, stock-camera ownership/path behavior, background/killed-app delivery, upgrades, and battery/network constraints.
 - Verify end-of-trip delivery/expiry on physical devices separately. Existing protocol tests remain in place, but the first user flow above is not a substitute for that acceptance.
 

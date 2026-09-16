@@ -1,0 +1,3 @@
+{"at": "2026-09-16T06:32:37.210935+00:00", "stage": "guest-first-launch-after-native-upgrade"}
+{"at": "2026-09-16T06:42:49.356628+00:00", "stage": "guest-resumes-after-host-camera-capture", "sourceMediaStoreId": 27}
+{"at": "2026-09-16T06:47:57.934195+00:00", "stage": "guest-final-cold-launch"}

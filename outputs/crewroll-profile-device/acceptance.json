@@ -1,0 +1,80 @@
+{
+  "recordedAt": "2026-09-16T06:50:47.090348+00:00",
+  "scope": "One Android API 36 emulator, two isolated Android users, real stock-camera capture and encrypted delivery",
+  "figma": {
+    "file": "aJHBtfIOx8oc7BgbzbKJIa",
+    "profileFrame": "93:169",
+    "navigationEdgesChecked": 31,
+    "invalidDestinations": 0
+  },
+  "deployment": {
+    "workerVersion": "3dfca03e-cf79-46cd-9606-c0e973279567",
+    "profileUnauthenticatedStatus": 401
+  },
+  "profile": {
+    "hostName": "Ananya",
+    "guestName": "Riya",
+    "oneTimeNamesSaved": true,
+    "namedCrewVerified": true,
+    "hostFilterPhotoCount": 2,
+    "guestFilterPhotoCount": 0,
+    "compactKeyboardContinueVisible": true
+  },
+  "upgrade": {
+    "method": "adb install -r after full Android native build",
+    "existingAccountsPreserved": true,
+    "existingTripPreserved": true,
+    "existingOriginalSha256": "c22ad0b17d4987d5cfb5c0166c266f47939fc907c120cdc866e31a99115b0b1c"
+  },
+  "photo": {
+    "sourceAndroidUser": 0,
+    "recipientAndroidUser": 10,
+    "sourceMediaStoreId": 27,
+    "recipientMediaStoreId": 20,
+    "bytes": 36774,
+    "sha256": "752aa704b2abf7d06fdd983e40c7e96f5cb01beb639c61706e101d53282a1e1c",
+    "exactBytesEqual": true,
+    "guestStoppedDuringCaptureAndUpload": true,
+    "hostStoppedBeforeGuestResume": true,
+    "receivedAfterGuestResume": true
+  },
+  "coldLaunch": {
+    "profileStepRepeated": false,
+    "originalsSaved": 2,
+    "mediaStoreIds": [
+      19,
+      20
+    ],
+    "duplicateSaveObserved": false,
+    "developmentLauncherBundleSelectionRequired": true
+  },
+  "network": {
+    "scope": "Observed JS API traffic after debugger attachment; excludes Clerk and native transport",
+    "requestCounts": {
+      "GET /v1/trips/01a0a8a1-e232-7cd4-b6d0-1c70ddf5c9f5": 20,
+      "PUT /v1/profile": 2
+    },
+    "responseStatuses": {
+      "200": 22
+    },
+    "coldLaunchRequestCounts": {
+      "GET /v1/trips/01a0a8a1-e232-7cd4-b6d0-1c70ddf5c9f5": 3
+    }
+  },
+  "checks": {
+    "expoDoctor": "21/21 passed",
+    "postgresProfileIntegration": "3/3 passed",
+    "fullAndroidNativeBuild": "passed",
+    "deviceSessionRestore": "Existing native account, installation, origin, expiry, and key-validity tests retained",
+    "finalProfileSessionRouteTests": "83/83 passed",
+    "finalTypeScript": "passed",
+    "finalScopedLint": "passed",
+    "failedSyncEditRecovery": "Regression reproduced, corrected, and passed"
+  },
+  "limits": [
+    "Two emulator user installations, not two physical phones",
+    "Physical Android and iPhone background/force-quit acceptance pending",
+    "iOS app layout and provider Google/Apple sign-in acceptance pending",
+    "No hardware attestation or biometric verification claim"
+  ]
+}

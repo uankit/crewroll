@@ -209,6 +209,7 @@ function SnapshotProbe() {
 }
 
 type HarnessProps = PropsWithChildren<{
+  profileReady?: boolean;
   auth: AppSessionAuthSnapshot;
   runtime: AppSessionRuntime;
   queryClient?: QueryClient;
@@ -216,6 +217,7 @@ type HarnessProps = PropsWithChildren<{
 }>;
 
 function Harness({
+  profileReady = true,
   auth,
   children,
   runtime,
@@ -226,6 +228,7 @@ function Harness({
     <AppSessionProvider
       auth={auth}
       fontsReady
+      profileReady={profileReady}
       {...(onAuthInvalid === undefined ? {} : { onAuthInvalid })}
       provisionInput={{
         apiBaseUrl: "https://api.crewroll.test",
@@ -1759,5 +1762,75 @@ describe("AppSessionProvider", () => {
       expect(screen.getByText(`READY_ACTIVE:${tripId}`)).toBeOnTheScreen(),
     );
     expect(scoped.startTrip).not.toHaveBeenCalled();
+  });
+});
+
+describe("profile completion boundary", () => {
+  it("preserves cold credentials but does not register until the profile is ready", async () => {
+    const { runtime } = createRuntime();
+    const pauseTransfers = jest.fn(async () => undefined);
+    const stableRuntime = { ...runtime, pauseTransfers };
+    const queryClient = createQueryClient();
+    const view = (ready: boolean) => (
+      <Harness
+        auth={signedIn}
+        runtime={stableRuntime}
+        queryClient={queryClient}
+        profileReady={ready}
+      >
+        <SessionProbe />
+      </Harness>
+    );
+    const { rerender } = await render(view(false));
+    expect(runtime.provisionCurrentDevice).not.toHaveBeenCalled();
+    expect(pauseTransfers).toHaveBeenCalledWith({
+      preserveDeviceSession: true,
+    });
+    expect(screen.getByTestId("session-probe")).toHaveTextContent(
+      "PROVISIONING_DEVICE",
+    );
+    await rerender(view(true));
+    await waitFor(() =>
+      expect(screen.getByTestId("session-probe")).toHaveTextContent(
+        "READY_NO_TRIP",
+      ),
+    );
+    expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses the previous account while the new account is missing a name", async () => {
+    const { runtime } = createRuntime();
+    const pauseTransfers = jest.fn(async () => undefined);
+    const stableRuntime = { ...runtime, pauseTransfers };
+    const queryClient = createQueryClient();
+    const view = (auth: AppSessionAuthSnapshot, ready: boolean) => (
+      <Harness
+        auth={auth}
+        runtime={stableRuntime}
+        queryClient={queryClient}
+        profileReady={ready}
+      >
+        <SessionProbe />
+      </Harness>
+    );
+    const { rerender } = await render(view(signedIn, true));
+    await waitFor(() =>
+      expect(screen.getByTestId("session-probe")).toHaveTextContent(
+        "READY_NO_TRIP",
+      ),
+    );
+    const next = {
+      ...signedIn,
+      userId: "user_two",
+      sessionId: "session_two",
+    } as const;
+    await rerender(view(next, false));
+    expect(pauseTransfers).toHaveBeenLastCalledWith({
+      preserveDeviceSession: false,
+    });
+    expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("session-probe")).toHaveTextContent(
+      "PROVISIONING_DEVICE",
+    );
   });
 });

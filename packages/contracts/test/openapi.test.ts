@@ -326,6 +326,7 @@ describe("canonical OpenAPI artifact", () => {
   it("contains only the canonical v1 routes and header variants", () => {
     const document = createOpenApiDocument();
     expect(Object.keys(document.paths)).toEqual([
+      "/v1/profile",
       "/v1/devices",
       "/v1/devices/{deviceId}/push-token",
       "/v1/devices/{deviceId}",
@@ -458,6 +459,7 @@ describe("canonical OpenAPI artifact", () => {
       );
     }
     expect(operationSecurity(document)).toEqual({
+      "PUT /v1/profile": "ClerkBearer",
       "POST /v1/devices": "ClerkBearer",
       "PATCH /v1/devices/{deviceId}/push-token": "ClerkBearer",
       "DELETE /v1/devices/{deviceId}": "ClerkBearer",

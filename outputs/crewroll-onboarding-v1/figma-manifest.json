@@ -90,6 +90,12 @@
       "main": "31:235",
       "footer": "31:255",
       "body": "31:234"
+    },
+    "profile": {
+      "root": "93:169",
+      "main": "93:184",
+      "footer": "93:196",
+      "body": "93:193"
     }
   },
   "recovery": {
@@ -134,7 +140,7 @@
   },
   "cover": "2:68",
   "prototype": {
-    "nodeEdgeCount": 26,
+    "nodeEdgeCount": 31,
     "invalidDestinations": 0,
     "keyEdges": [
       {
@@ -201,6 +207,21 @@
         "from": "8:165",
         "to": "31:220",
         "navigation": "AFTER_TIMEOUT"
+      },
+      {
+        "from": "9:48",
+        "to": "93:169",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "93:197",
+        "to": "8:65",
+        "navigation": "NAVIGATE"
+      },
+      {
+        "from": "94:173",
+        "to": "8:25",
+        "navigation": "NAVIGATE"
       }
     ],
     "flowStartingPoints": [
@@ -266,6 +287,13 @@
       "textOverflow": 0,
       "undersizedControls": 0,
       "prototypeInvalidDestinations": 0
+    },
+    "profileCompletion": {
+      "date": "2026-09-16",
+      "frame": "93:169",
+      "condition": "Only when the signed-in account has no usable display name",
+      "verifiedNavigationEdges": 3,
+      "invalidDestinations": 0
     }
   }
 }

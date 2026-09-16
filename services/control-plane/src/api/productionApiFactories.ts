@@ -15,7 +15,10 @@ import {
   createRevokeDevice,
   createUpdateDevicePushToken,
 } from "../modules/devices/index.js";
-import { createClerkWebhookService } from "../modules/identity/index.js";
+import {
+  createClerkWebhookService,
+  createSyncProfile,
+} from "../modules/identity/index.js";
 import {
   createApproveJoinRequest,
   createCreateTrip,
@@ -52,6 +55,7 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  syncProfile: createSyncProfile,
   async media({ database, environment, clock, authenticator }) {
     if (!environment.localMediaOrigin) return undefined;
     const local = await createFileCiphertextStore({

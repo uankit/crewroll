@@ -6,6 +6,7 @@ import type { TripApiPort } from "../application/trips/ports";
 import { createCrewRollApi } from "../infrastructure/api/crewRollApi";
 
 export type MobileDependencies = Readonly<{
+  profileApi: Pick<ReturnType<typeof createCrewRollApi>, "syncProfile">;
   deviceRegistration: DeviceRegistrationPort;
   tripApi: TripApiPort &
     Pick<ReturnType<typeof createCrewRollApi>, "previewInvite">;
@@ -20,6 +21,7 @@ export function createMobileDependencies(
 ): MobileDependencies {
   const crewRollApi = createCrewRollApi(input);
   return Object.freeze({
+    profileApi: crewRollApi,
     deviceRegistration: crewRollApi,
     tripApi: crewRollApi,
   });

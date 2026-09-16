@@ -48,6 +48,18 @@ export const workerApp = buildApp(
         handle: (...args) => current().identity.webhookService.handle(...args),
       },
     },
+    profile: {
+      tokenVerifier: {
+        verify: (...args) => current().devices.tokenVerifier.verify(...args),
+      },
+      syncProfile: {
+        execute: (...args) => {
+          const profile = current().profile;
+          if (!profile) throw new Error("CrewRoll profile service missing");
+          return profile.syncProfile.execute(...args);
+        },
+      },
+    },
     trips: {
       tokenVerifier: {
         verify: (...args) => current().trips.tokenVerifier.verify(...args),

@@ -49,6 +49,7 @@ test("generates the exact bounded current mobile operations deterministically", 
         "resolveCreateTripOutcome",
         "setTripReadiness",
         "startTrip",
+        "syncProfile",
       ]);
 
       await generateMobileApi({ inputPath, outputPath });
