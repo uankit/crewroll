@@ -76,6 +76,11 @@ export class ApiConfigurationError extends Error {
 }
 
 export interface ApiRuntimeFactories {
+  tripContinuity?(
+    database: unknown,
+    clock: Clock,
+    environment: Environment,
+  ): NonNullable<TripRouteDependencies["continuity"]>;
   tripLifecycle?(
     database: unknown,
     clock: Clock,
@@ -272,6 +277,11 @@ export async function createApiRuntime(
       authenticator: createBackgroundDeviceAuthenticator({ clock, unitOfWork }),
     });
     const lifecycle = factories.tripLifecycle?.(databaseHandle.database, clock);
+    const continuity = factories.tripContinuity?.(
+      databaseHandle.database,
+      clock,
+      environment,
+    );
     app = factories.buildApp({
       ...(media
         ? { media: { ...media, ...(lifecycle ? { lifecycle } : {}) } }
@@ -311,6 +321,7 @@ export async function createApiRuntime(
         },
       },
       trips: {
+        ...(continuity ? { continuity } : {}),
         ...(lifecycle ? { lifecycle } : {}),
         approveJoinRequest,
         createTrip,

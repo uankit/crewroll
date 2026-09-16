@@ -1,4 +1,4 @@
-import { createUuidV4 } from "../domain/ids/random";
+import { createUuidV4, createInviteCode } from "../domain/ids/random";
 import type { TripLifecycleBody } from "@crewroll/contracts";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
@@ -168,7 +168,93 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
         scope,
       });
 
+      const continuity = (tripId: string) =>
+        mobileDependencies.tripApi.getTripContinuity(device.deviceId, tripId);
+      const mutateContinuity = async (
+        tripId: string,
+        body: import("@crewroll/contracts").TripContinuityBody,
+      ) =>
+        mobileDependencies.tripApi.changeTripContinuity(
+          device.deviceId,
+          await createUuidV4(random),
+          tripId,
+          body,
+        );
+      const invites = new Map<
+        string,
+        Promise<import("@crewroll/contracts").TripContinuity>
+      >();
       return Object.freeze({
+        getTripContinuity: continuity,
+        ensureOwnerInvite(tripId: string) {
+          const existing = invites.get(tripId);
+          if (existing) return existing;
+          const pending = (async () => {
+            const state = await continuity(tripId);
+            if (state.ownerInviteCode) return state;
+            const saved = await recoveryStore.load(scope);
+            const inviteCode =
+              saved?.state === "CONFIRMED" &&
+              saved.tripId === tripId &&
+              saved.ownerInviteCode
+                ? saved.ownerInviteCode
+                : await createInviteCode(random);
+            return mutateContinuity(tripId, {
+              action: "SAVE_INVITE",
+              inviteCode,
+              expectedVersion: state.version,
+            });
+          })().finally(() => invites.delete(tripId));
+          invites.set(tripId, pending);
+          return pending;
+        },
+        async requestDeviceRecovery(tripId: string) {
+          const state = await continuity(tripId);
+          return mutateContinuity(tripId, {
+            action: "REQUEST_DEVICE",
+            expectedVersion: state.version,
+          });
+        },
+        async resolveDeviceRecovery(
+          tripId: string,
+          requestId: string,
+          approve: boolean,
+        ) {
+          const state = await continuity(tripId);
+          const request = state.approvalRequests.find(
+            (r) => r.requestId === requestId,
+          );
+          if (!request) throw new Error("DEVICE_REQUEST_UNAVAILABLE");
+          if (!approve)
+            return mutateContinuity(tripId, {
+              action: "REJECT_DEVICE",
+              requestId,
+              expectedVersion: state.version,
+            });
+          const envelope = await native.wrapTripKey({
+            protocolVersion: 1,
+            tripId,
+            keyEpoch: 1,
+            recipientDeviceId: request.deviceId,
+            recipientE2eePublicKey: request.e2eePublicKey,
+            recipientE2eeKeyVersion: 1,
+          });
+          const result = await mutateContinuity(tripId, {
+            action: "APPROVE_DEVICE",
+            requestId,
+            wrappedKey: envelope.wrappedKey,
+            expectedVersion: state.version,
+          });
+          if (!result.onThisDevice) {
+            await native.setTransferPolicy({
+              protocolVersion: 1,
+              paused: true,
+              cellularAllowed: false,
+            });
+            await native.clearDeviceSession({ protocolVersion: 1 });
+          }
+          return result;
+        },
         listTrips: () => mobileDependencies.tripApi.listTrips(device.deviceId),
         getTripLifecycle: (tripId: string) =>
           mobileDependencies.tripApi.getTripLifecycle(device.deviceId, tripId),
@@ -224,18 +310,8 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
             ? await photoPermission.request()
             : await photoPermission.read();
           const current = await hydrateTrip.hydrate(tripId);
-          // Membership readiness is only mutable in the lobby. Active-trip
-          // permission checks stay local and must not produce failing writes.
-          if (
-            current.status !== "LOBBY" ||
-            current.members.find(
-              (member) => member.membershipId === current.currentMembershipId,
-            )?.fullPhotoLibraryAccess === permission.fullPhotoLibraryAccess
-          ) {
-            return Object.freeze({ permission, trip: current });
-          }
-          const trip = await readiness.publish(
-            tripId,
+          const trip = await readiness.reconcile(
+            current,
             permission.fullPhotoLibraryAccess,
           );
           return Object.freeze({ permission, trip });

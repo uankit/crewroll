@@ -22,4 +22,10 @@ class NativeCapturePolicyTest {
     @Test fun `left membership has no capture windows`() {
         assertTrue(policy("LEFT").windows(time(0), time(100)).isEmpty())
     }
+    @Test fun `late approval and replacement phones cannot discover earlier captures`() {
+        val value = NativeCapturePolicy(JSONObject().put("tripId", "trip").put("version", 4).put("participation", "JOINED")
+            .put("captureFrom", time(55).toString()).put("captureUntil", time(80).toString()).put("excludedCaptureWindows", JSONArray()), "trip")
+        assertEquals(listOf(time(55) to time(80)), value.windows(time(0), time(100)))
+        assertTrue(policy("JOINING").windows(time(0), time(100)).isEmpty())
+    }
 }

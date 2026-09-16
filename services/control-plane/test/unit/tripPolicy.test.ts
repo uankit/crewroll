@@ -288,12 +288,14 @@ describe("pure Trip Room policy", () => {
     });
   });
 
-  it("freezes membership, envelope, nominated-device, and readiness mutations after Start except exact replay", () => {
+  it("allows live trip membership updates and freezes them while ending", () => {
     expect(
       valueOf(evaluateMutationFreeze({ exactReplay: false, state: "LOBBY" })),
     ).toEqual({ mutable: true });
+    expect(
+      valueOf(evaluateMutationFreeze({ exactReplay: false, state: "ACTIVE" })),
+    ).toEqual({ mutable: true });
     for (const state of [
-      "ACTIVE",
       "ENDING",
       "COMPLETE",
       "INCOMPLETE_EXPIRED",

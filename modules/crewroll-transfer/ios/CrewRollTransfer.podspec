@@ -14,6 +14,6 @@ Pod::Spec.new do |s|
   # Reviewed Swift-Sodium 0.11.0 / libsodium 1.0.22 binary.
   # XCFramework inventory SHA-256: d63396012090ae91657484d892cae9b83aeaeb1202e4ea52ef563a21a68dce5b
   s.vendored_frameworks = 'Vendor/Clibsodium.xcframework'
-  s.source_files = 'CrewRollTransferModule.swift', 'IdentityKeys/Sources/**/*.{h,m,mm,swift}'
+  s.source_files = '*.swift', 'IdentityKeys/Sources/**/*.{h,m,mm,swift}'
   s.swift_version = '5.9'
 end

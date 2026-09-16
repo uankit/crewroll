@@ -191,7 +191,8 @@ class NativePhotoTransferEngine(
             val header = obj.getJSONObject("requiredHeaders")
             val headers = header.keys().asSequence().associateWith { header.getString(it) }
             val file = File(File(ledger.directory, work.getString("directory")), variant.lowercase() + ".ciphertext")
-            val etag = n.upload(obj.getString("url"), headers, file); current(c, epoch)
+            val etag = obj.optionalString("uploadedEtag") ?: n.upload(obj.getString("url"), headers, file); current(c, epoch)
+            require(etag.isNotEmpty() && etag.length <= 256)
             work.getJSONObject("etags").put(variant, etag); ledger.put(work)
         }
         if (previewOnly) {
@@ -216,7 +217,8 @@ class NativePhotoTransferEngine(
     }
     private fun receive(work: JSONObject, c: NativeMediaContext, epoch: Long, ledger: NativeTransferJournal, n: NativePhotoTransportPort) {
         val assetId = work.getString("assetId"); val deliveryId = work.getString("deliveryId")
-        // Only a published app-owned MediaStore row qualifies as already saved.
+        // Reinstall can clear MediaStore ownership. Recognize the stable filename,
+        // then verify the bytes against the authenticated manifest before any receipt.
         var saved = photos.findSaved(assetId)
         if (saved == null || work.isNull("downloadBody")) {
             val grant = n.json("/v1/deliveries/$deliveryId/download-session", "POST", JSONObject().put("variants", JSONArray(listOf("ORIGINAL"))), c, work.getString("workId"))

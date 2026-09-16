@@ -9,6 +9,8 @@ const root = path.dirname(
 );
 
 export const requiredOperations = [
+  "getTripContinuity",
+  "changeTripContinuity",
   "listTrips",
   "getTripLifecycle",
   "changeTripLifecycle",
@@ -42,9 +44,9 @@ const HTTP_METHODS = [
   "put",
   "trace",
 ];
-// Canonical-key SHA-256 of the accepted API3 TripResponseSchema at 9e12cb8.
+// Canonical-key SHA-256 after adding authenticated envelope sender identity for device recovery.
 const ACCEPTED_TRIP_RESPONSE_SCHEMA_SHA256 =
-  "cb150f5ded252ff4b16e0c49e526aaec26f3955694ae678cd483a29c1fa1f3c1";
+  "e6374d8f60fa6f84529e949dc58e889d620fa38b81b5506b06bcc96fea345f8d";
 const CLERK_BEARER_SCHEME = Object.freeze({
   type: "http",
   scheme: "bearer",
@@ -62,6 +64,24 @@ const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
 const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
 
 const operationExpectations = [
+  {
+    method: "get",
+    operationId: "getTripContinuity",
+    parameters: [deviceHeader(), tripPath()],
+    path: "/v1/trips/{tripId}/continuity",
+    request: null,
+    response: "TripContinuity",
+    successStatus: "200",
+  },
+  {
+    method: "post",
+    operationId: "changeTripContinuity",
+    parameters: [deviceHeader(), commandHeader(), tripPath()],
+    path: "/v1/trips/{tripId}/continuity",
+    request: "TripContinuityBody",
+    response: "TripContinuity",
+    successStatus: "200",
+  },
   {
     method: "get",
     operationId: "listTrips",
@@ -501,6 +521,8 @@ function renderPaths(lines) {
 
 function renderGeneratedTypes() {
   const importedTypes = [
+    "TripContinuity",
+    "TripContinuityBody",
     "TripListResponse",
     "TripLifecycleBody",
     "TripTransferState",

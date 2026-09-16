@@ -1,4 +1,7 @@
 import {
+  TripContinuitySchema,
+  type TripContinuity,
+  type TripContinuityBody,
   TripListResponseSchema,
   TripTransferStateSchema,
   type TripLifecycleBody,
@@ -47,6 +50,16 @@ export class CrewRollTransportProblem extends Error {
 
 export type CrewRollApi = DeviceRegistrationPort &
   TripApiPort & {
+    getTripContinuity(
+      deviceId: string,
+      tripId: string,
+    ): Promise<TripContinuity>;
+    changeTripContinuity(
+      deviceId: string,
+      commandId: string,
+      tripId: string,
+      body: TripContinuityBody,
+    ): Promise<TripContinuity>;
     listTrips(deviceId: string): Promise<TripListResponse>;
     getTripLifecycle(
       deviceId: string,
@@ -304,6 +317,47 @@ function parseCreateTripOutcome(
 class OpenApiCrewRollApi implements CrewRollApi {
   constructor(private readonly client: MobileClient) {}
 
+  async getTripContinuity(
+    deviceId: string,
+    tripId: string,
+  ): Promise<TripContinuity> {
+    const value = await this.request<TripContinuity>(() =>
+      this.client.GET("/v1/trips/{tripId}/continuity", {
+        params: {
+          header: { "X-CrewRoll-Device-Id": deviceId },
+          path: { tripId },
+        },
+      }),
+    );
+    if (
+      !matchesRuntimeSchema(TripContinuitySchema as RuntimeSchema, value) ||
+      value.tripId !== tripId
+    )
+      throw new CrewRollTransportProblem();
+    return value;
+  }
+  async changeTripContinuity(
+    deviceId: string,
+    commandId: string,
+    tripId: string,
+    body: TripContinuityBody,
+  ): Promise<TripContinuity> {
+    const value = await this.request<TripContinuity>(() =>
+      this.client.POST("/v1/trips/{tripId}/continuity", {
+        body,
+        params: {
+          header: commandHeaders(deviceId, commandId),
+          path: { tripId },
+        },
+      }),
+    );
+    if (
+      !matchesRuntimeSchema(TripContinuitySchema as RuntimeSchema, value) ||
+      value.tripId !== tripId
+    )
+      throw new CrewRollTransportProblem();
+    return value;
+  }
   async listTrips(deviceId: string): Promise<TripListResponse> {
     const value = await this.request<TripListResponse>(() =>
       this.client.GET("/v1/trips", {

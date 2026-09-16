@@ -1,7 +1,8 @@
 {
   "platforms": ["apple", "android"],
   "apple": {
-    "modules": ["CrewRollTransferModule"]
+    "modules": ["CrewRollTransferModule"],
+    "appDelegateSubscribers": ["CrewRollBackgroundTasks"]
   },
   "android": {
     "modules": ["com.uankit53.crewroll.transfer.CrewRollTransferModule"]

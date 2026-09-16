@@ -155,6 +155,7 @@ describe.sequential("media and coordination schema", () => {
         "purge_pending_at:timestamptz:YES:NO",
         "purged_at:timestamptz:YES:NO",
         "expired_at:timestamptz:YES:NO",
+        "captured_at:timestamptz:YES:NO",
       ],
       audit_events: [
         "id:uuid:NO:NO",
@@ -232,11 +233,12 @@ describe.sequential("media and coordination schema", () => {
         "state:text:NO:NO",
         "expires_at:timestamptz:NO:NO",
         "created_at:timestamptz:NO:NO",
+        "captured_at:timestamptz:YES:NO",
       ],
     });
   });
 
-  it("keeps true capture time and plaintext media metadata out of PostgreSQL", async () => {
+  it("keeps plaintext content and location metadata out of PostgreSQL", async () => {
     const prohibited = await sql<{ column_name: string }>`
       select column_name
       from information_schema.columns
@@ -247,7 +249,7 @@ describe.sequential("media and coordination schema", () => {
           'api_idempotency', 'audit_events', 'clerk_webhook_events'
         )
         and column_name in (
-          'captured_at', 'plaintext_sha256', 'filename', 'mime_type', 'exif',
+          'plaintext_sha256', 'filename', 'mime_type', 'exif',
           'width', 'height', 'raw_source_id', 'push_token', 'media_key',
           'content_key', 'latitude', 'longitude', 'location'
         )
@@ -364,7 +366,7 @@ describe.sequential("media and coordination schema", () => {
     expect(constraints.rows).toEqual([
       { conname: "api_idempotency_user_id_fk", delete_action: "r" },
       { conname: "asset_objects_asset_id_fk", delete_action: "r" },
-      { conname: "assets_source_member_fk", delete_action: "r" },
+      { conname: "assets_source_device_fk", delete_action: "r" },
       { conname: "assets_trip_id_fk", delete_action: "r" },
       {
         conname: "audit_events_actor_user_device_fk",
@@ -388,7 +390,7 @@ describe.sequential("media and coordination schema", () => {
         conname: "upload_objects_upload_session_id_fk",
         delete_action: "r",
       },
-      { conname: "upload_sessions_source_member_fk", delete_action: "r" },
+      { conname: "upload_sessions_source_device_fk", delete_action: "r" },
       { conname: "upload_sessions_trip_id_fk", delete_action: "r" },
     ]);
   });
@@ -491,7 +493,7 @@ describe.sequential("media and coordination schema", () => {
     }
   });
 
-  it("enforces upload-session identity, source membership, and uniqueness", async () => {
+  it("enforces upload-session identity, immutable source device, and uniqueness", async () => {
     const parents = await fixture.parents();
     const first = await fixture.uploadSession(parents);
 
@@ -513,9 +515,9 @@ describe.sequential("media and coordination schema", () => {
     );
     await expectPostgresError(
       fixture.uploadSession(parents, {
-        source_device_id: parents.outsiderDeviceId,
+        source_device_id: fixture.uuid(),
       }),
-      { code: "23503", constraint: "upload_sessions_source_member_fk" },
+      { code: "23503", constraint: "upload_sessions_source_device_fk" },
     );
   });
 
@@ -671,8 +673,8 @@ describe.sequential("media and coordination schema", () => {
       { code: "23502", column: "committed_at" },
     );
     await expectPostgresError(
-      fixture.asset(parents, { source_device_id: parents.outsiderDeviceId }),
-      { code: "23503", constraint: "assets_source_member_fk" },
+      fixture.asset(parents, { source_device_id: fixture.uuid() }),
+      { code: "23503", constraint: "assets_source_device_fk" },
     );
   });
 
@@ -1094,7 +1096,11 @@ describe.sequential("media and coordination schema", () => {
     const prior = await startMigratedPostgres();
 
     try {
-      await migrateDown(prior.db);
+      await migrateDown(prior.db); // 008
+      await migrateDown(prior.db); // 007
+      await migrateDown(prior.db); // 006
+      await migrateDown(prior.db); // one migration
+
       await migrateDown(prior.db);
       await migrateDown(prior.db);
       await migrateDown(prior.db);
@@ -1136,7 +1142,10 @@ describe.sequential("media and coordination schema", () => {
   });
 
   it("migrates an empty database up, fully down, and up again", async () => {
-    await migrateDown(db);
+    await migrateDown(db); // 008
+    await migrateDown(db); // 007
+    await migrateDown(db); // 006
+    await migrateDown(db); // 005
 
     const readinessAfterFifthDown = await sql<{ column_name: string }>`
       select column_name
@@ -1265,9 +1274,11 @@ describe.sequential("media and coordination schema", () => {
       "inbox_events",
       "outbox_events",
       "receipts",
+      "trip_device_requests",
       "trip_invites",
       "trip_key_envelopes",
       "trip_members",
+      "trip_owner_invites",
       "trips",
       "upload_objects",
       "upload_sessions",

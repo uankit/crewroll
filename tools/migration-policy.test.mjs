@@ -34,6 +34,34 @@ const safeCreate = `
 `;
 const safeDrop = 'await db.schema.dropTable("users").execute();';
 
+test("allows literal foreign keys when rebinding immutable device history", async (t) => {
+  const result = await analyzeSource(
+    t,
+    migrationSource({
+      upBody:
+        'await db.schema.alterTable("assets").addForeignKeyConstraint("source_fk", ["source_device_id"], "devices", ["id"], fk => fk.onDelete("restrict")).execute();',
+      downBody:
+        'await db.schema.alterTable("assets").dropConstraint("source_fk").execute();',
+    }),
+  );
+  assert.deepEqual(result.findings, []);
+});
+for (const command of [
+  'addForeignKeyConstraint("source_fk", columns, "devices", ["id"])',
+  'addForeignKeyConstraint("source_fk", ["source_device_id"], table, ["id"])',
+  'addForeignKeyConstraint("source_fk", ["source_device_id", "trip_id"], "devices", ["id"])',
+  'addForeignKeyConstraint("source_fk", ["source_device_id"], "devices", ["id"], fk => steal(fk))',
+])
+  test(`rejects unbounded alter-table foreign key: ${command}`, async (t) => {
+    const result = await analyzeSource(
+      t,
+      migrationSource({
+        upBody: `await db.schema.alterTable("assets").${command}.execute();`,
+      }),
+    );
+    assert.ok(result.findings.length > 0);
+  });
+
 function migrationSource({
   imports = typeImport,
   declarations = "",

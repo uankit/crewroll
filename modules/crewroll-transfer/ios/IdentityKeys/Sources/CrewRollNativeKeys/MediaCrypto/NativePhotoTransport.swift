@@ -18,7 +18,10 @@ private final class NoMediaRedirects: NSObject, URLSessionTaskDelegate {
 public final class NativePhotoTransport: NativePhotoTransportPort {
     private let delegate = NoMediaRedirects()
     private let session: URLSession
+    private let cellularAllowed: Bool
+    private let owner = UUID()
     public init(cellularAllowed: Bool) {
+        self.cellularAllowed = cellularAllowed
         let configuration = URLSessionConfiguration.ephemeral
         configuration.allowsCellularAccess = cellularAllowed
         configuration.timeoutIntervalForRequest = 60
@@ -28,7 +31,12 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
     deinit { session.invalidateAndCancel() }
-    public func cancel() { session.invalidateAndCancel() }
+    public func cancel() {
+        session.invalidateAndCancel()
+        #if os(iOS)
+        AppleBackgroundTransfer.shared.cancel(owner: owner)
+        #endif
+    }
 
     public func json(path: String, method: String, body: Data?, context: NativeMediaContext, commandID: String) async throws -> Data {
         guard let base = URL(string: context.session.apiBaseURL), base.scheme == "https",
@@ -52,19 +60,28 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
         var request = try objectRequest(url)
         request.httpMethod = "PUT"
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        #if os(iOS)
+        return try await AppleBackgroundTransfer.shared.transfer(request: request, upload: file, expectedBytes: nil, cellular: cellularAllowed, owner: owner)
+        #else
         let (_, response) = try await session.upload(for: request, fromFile: file)
         try requireSuccess(response, authenticated: false)
         guard let etag = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag"), etag.count <= 256 else { throw NativeKeyError.invalidEnvelope }
         return etag
+        #endif
     }
 
     public func download(url: String, destination: URL, expectedBytes: UInt64) async throws {
+        #if os(iOS)
+        let key = try await AppleBackgroundTransfer.shared.transfer(request: objectRequest(url), upload: nil, expectedBytes: expectedBytes, cellular: cellularAllowed, owner: owner)
+        try AppleBackgroundTransfer.shared.copyDownload(key: key, destination: destination)
+        #else
         let (temporary, response) = try await session.download(for: objectRequest(url))
         defer { try? FileManager.default.removeItem(at: temporary) }
         try requireSuccess(response, authenticated: false)
         let attributes = try FileManager.default.attributesOfItem(atPath: temporary.path)
         guard (attributes[.size] as? NSNumber)?.uint64Value == expectedBytes else { throw NativeKeyError.invalidEnvelope }
         try FileManager.default.moveItem(at: temporary, to: destination)
+        #endif
     }
 
     private func objectRequest(_ raw: String) throws -> URLRequest {

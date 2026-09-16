@@ -137,6 +137,7 @@ export function createKyselyMediaService(
   async function uploadResponse(
     tx: Tx,
     sessionId: string,
+    recoverUploaded = false,
   ): Promise<UploadSessionResponse> {
     const session = await tx
       .selectFrom("upload_sessions")
@@ -152,8 +153,18 @@ export function createKyselyMediaService(
       variants.map(async (variant) => {
         const object = objects.find((item) => item.variant === variant)!;
         const checksum = b64(object.expected_ciphertext_sha256);
+        const uploaded = recoverUploaded
+          ? await store.inspect(object.s3_key)
+          : null;
+        if (
+          uploaded &&
+          (uploaded.bytes !== object.expected_ciphertext_bytes ||
+            uploaded.checksum !== checksum)
+        )
+          throw new DomainError("CONFLICT");
         return {
           variant,
+          ...(uploaded ? { uploadedEtag: uploaded.etag } : {}),
           url: await store.upload(
             {
               key: object.s3_key,
@@ -186,6 +197,7 @@ export function createKyselyMediaService(
       body.tripId,
       body.assetId,
       body.sourceAssetKey,
+      body.capturedAt,
       body.formatVersion,
       body.keyEpoch,
       body.encryptedManifest,
@@ -291,6 +303,7 @@ export function createKyselyMediaService(
           .where("trip_id", "=", trip.id)
           .where("state", "=", "ACTIVE")
           .where("left_at", "is", null)
+          .where("approved_at", "<=", session.captured_at ?? trip.started_at!)
           .where((eb) =>
             eb.or([
               eb("leaving_at", "is", null),
@@ -339,14 +352,15 @@ export function createKyselyMediaService(
           .innerJoin("upload_objects as o", "o.upload_session_id", "u.id")
           .innerJoin("trips as t", "t.id", "u.trip_id")
           .leftJoin("assets as a", "a.id", "u.client_asset_id")
+          .innerJoin(
+            "devices as source_device",
+            "source_device.id",
+            "u.source_device_id",
+          )
           .innerJoin("trip_members as source_member", (join) =>
             join
               .onRef("source_member.trip_id", "=", "u.trip_id")
-              .onRef(
-                "source_member.participating_device_id",
-                "=",
-                "u.source_device_id",
-              ),
+              .onRef("source_member.user_id", "=", "source_device.user_id"),
           )
           .select([
             ...previewColumns,
@@ -387,17 +401,25 @@ export function createKyselyMediaService(
         await authorize(tx, actor);
         const session = await tx
           .selectFrom("upload_sessions")
-          .select(["trip_id", "state", "created_at", "source_device_id"])
+          .select([
+            "trip_id",
+            "state",
+            "created_at",
+            "source_device_id",
+            "captured_at",
+          ])
           .where("client_asset_id", "=", assetId)
           .executeTakeFirst();
         if (!session) throw new DomainError("NOT_FOUND");
         const trip = await tripFor(tx, actor, session.trip_id);
         const viewer = await tx
           .selectFrom("trip_members")
-          .select("leaving_at")
+          .select(["leaving_at", "approved_at"])
           .where("trip_id", "=", trip.id)
           .where("participating_device_id", "=", actor.deviceId)
           .executeTakeFirstOrThrow();
+        if (viewer.approved_at! > (session.captured_at ?? trip.started_at!))
+          throw new DomainError("NOT_FOUND");
         if (
           viewer.leaving_at &&
           !(
@@ -414,14 +436,15 @@ export function createKyselyMediaService(
           .innerJoin("upload_objects as o", "o.upload_session_id", "u.id")
           .innerJoin("trips as t", "t.id", "u.trip_id")
           .leftJoin("assets as a", "a.id", "u.client_asset_id")
+          .innerJoin(
+            "devices as source_device",
+            "source_device.id",
+            "u.source_device_id",
+          )
           .innerJoin("trip_members as source_member", (join) =>
             join
               .onRef("source_member.trip_id", "=", "u.trip_id")
-              .onRef(
-                "source_member.participating_device_id",
-                "=",
-                "u.source_device_id",
-              ),
+              .onRef("source_member.user_id", "=", "source_device.user_id"),
           )
           .select(previewColumns)
           .where("u.client_asset_id", "=", assetId)
@@ -480,7 +503,7 @@ export function createKyselyMediaService(
             tripId: existing.trip_id,
             assetId: existing.client_asset_id,
             sourceAssetKey: existing.source_asset_key,
-            capturedAt: body.capturedAt,
+            capturedAt: existing.captured_at?.toISOString() ?? body.capturedAt,
             formatVersion: 1,
             keyEpoch: 1,
             encryptedManifest: b64(existing.encrypted_manifest),
@@ -514,7 +537,7 @@ export function createKyselyMediaService(
               })
               .where("id", "=", existing.id)
               .execute();
-          return uploadResponse(tx, existing.id);
+          return uploadResponse(tx, existing.id, true);
         }
         const member = await tx
           .selectFrom("trip_members")
@@ -522,8 +545,22 @@ export function createKyselyMediaService(
           .where("trip_id", "=", trip.id)
           .where("participating_device_id", "=", actor.deviceId)
           .executeTakeFirstOrThrow();
+        const replacement = await tx
+          .selectFrom("trip_device_requests")
+          .select("resolved_at")
+          .where("trip_id", "=", trip.id)
+          .where("device_id", "=", actor.deviceId)
+          .where("state", "=", "APPROVED")
+          .executeTakeFirst();
         if (
           !captureAllowed(capturedAt, {
+            startsAt: new Date(
+              Math.max(
+                trip.started_at!.getTime(),
+                member.approved_at!.getTime(),
+                replacement?.resolved_at?.getTime() ?? 0,
+              ),
+            ),
             endsAt: trip.ends_at,
             endingAt: trip.ending_started_at,
             leavingAt: member.leaving_at,
@@ -550,6 +587,7 @@ export function createKyselyMediaService(
             trip_id: body.tripId,
             source_device_id: actor.deviceId,
             source_asset_key: body.sourceAssetKey,
+            captured_at: capturedAt,
             media_type: "PHOTO",
             key_epoch: 1,
             encryption_version: 1,
@@ -634,6 +672,7 @@ export function createKyselyMediaService(
             trip_id: session.trip_id,
             source_device_id: actor.deviceId,
             source_asset_key: session.source_asset_key,
+            captured_at: session.captured_at,
             committed_at: now,
             media_type: "PHOTO",
             key_epoch: 1,
@@ -672,6 +711,7 @@ export function createKyselyMediaService(
           .where("trip_id", "=", trip.id)
           .where("state", "=", "ACTIVE")
           .where("left_at", "is", null)
+          .where("approved_at", "<=", session.captured_at ?? trip.started_at!)
           .where((eb) =>
             eb.or([
               eb("leaving_at", "is", null),

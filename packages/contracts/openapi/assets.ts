@@ -40,6 +40,7 @@ export type CreateUploadSessionBody = Static<
 
 const PresignedUploadFields = {
   url: UriSchema,
+  uploadedEtag: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
   requiredHeaders: ClosedObject({
     "content-length": Type.String({ pattern: "^(?:0|[1-9]\\d*)$" }),
     "content-type": Type.Literal("application/octet-stream"),

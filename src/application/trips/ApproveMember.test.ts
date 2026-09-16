@@ -291,7 +291,7 @@ describe("ApproveMember.approve", () => {
         ),
       }),
     ],
-    ["trip is not in lobby", tripResponse({ status: "ACTIVE" })],
+    ["trip has ended", tripResponse({ status: "ENDING" })],
     [
       "target is already active",
       tripResponse({

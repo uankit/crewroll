@@ -880,7 +880,11 @@ describe("join and projection PostgreSQL concurrency", () => {
     successful(await seed.commands.readiness.execute(readinessInput));
     await context.db
       .updateTable("trips")
-      .set({ started_at: new Date(), state: "ACTIVE" })
+      .set({
+        started_at: new Date(),
+        state: "ENDING",
+        ending_started_at: new Date(),
+      })
       .where("id", "=", seed.room.body.tripId)
       .executeTakeFirstOrThrow();
 
@@ -889,7 +893,7 @@ describe("join and projection PostgreSQL concurrency", () => {
     ).toBe("ACTIVE");
     expect(
       successful(await seed.commands.readiness.execute(readinessInput)).status,
-    ).toBe("ACTIVE");
+    ).toBe("ENDING");
     expect(
       problemCode(
         await seed.commands.approve.execute({
@@ -943,7 +947,11 @@ describe("join and projection PostgreSQL concurrency", () => {
     successful(await seed.commands.reject.execute(rejectionInput));
     await context.db
       .updateTable("trips")
-      .set({ started_at: new Date(), state: "ACTIVE" })
+      .set({
+        started_at: new Date(),
+        state: "ENDING",
+        ending_started_at: new Date(),
+      })
       .where("id", "=", seed.room.body.tripId)
       .executeTakeFirstOrThrow();
 
@@ -1228,7 +1236,7 @@ describe("join and projection PostgreSQL concurrency", () => {
     ).toEqual({ started_at: null, state: "LOBBY", version: 2 });
   });
 
-  it("starts an eligible room once, revokes its invite, and replays only the exact key", async () => {
+  it("starts an eligible room once, keeps its invite, and replays only the exact key", async () => {
     const seed = await readyRoom(8401, "ABCD2345", createIds(640_000));
     const inboxesBefore = await context.db
       .selectFrom("inbox_events")
@@ -1297,7 +1305,7 @@ describe("join and projection PostgreSQL concurrency", () => {
     expect(trip.version).toBe(6);
     expect(trip.started_at).toBeInstanceOf(Date);
     expect(invite.uses_count).toBe(1);
-    expect(invite.revoked_at).toBeInstanceOf(Date);
+    expect(invite.revoked_at).toBeNull();
     expect(startRecords).toEqual([
       {
         idempotency_key: input.idempotencyKey,
@@ -1507,7 +1515,9 @@ describe("join and projection PostgreSQL concurrency", () => {
       status: "ACTIVE",
       version: 3,
     });
-    expect(problemCode(await joinResult)).toBe("INVITE_INVALID");
+    expect(successful(await joinResult)).toMatchObject({
+      status: "PENDING_KEY",
+    });
     const trip = await context.db
       .selectFrom("trips")
       .select(["member_count", "state", "version"])
@@ -1533,15 +1543,15 @@ describe("join and projection PostgreSQL concurrency", () => {
       .select(({ fn }) => fn.countAll<number>().as("count"))
       .where("aggregate_id", "=", seed.room.body.tripId)
       .executeTakeFirstOrThrow();
-    expect(trip).toEqual({ member_count: 1, state: "ACTIVE", version: 3 });
-    expect(invite.uses_count).toBe(0);
-    expect(invite.revoked_at).toBeInstanceOf(Date);
-    expect(Number(membershipCount.count)).toBe(1);
-    expect(Number(inboxCount.count)).toBe(0);
-    expect(Number(outboxCount.count)).toBe(2);
+    expect(trip).toEqual({ member_count: 2, state: "ACTIVE", version: 4 });
+    expect(invite.uses_count).toBe(1);
+    expect(invite.revoked_at).toBeNull();
+    expect(Number(membershipCount.count)).toBe(2);
+    expect(Number(inboxCount.count)).toBe(1);
+    expect(Number(outboxCount.count)).toBe(3);
   }, 10_000);
 
-  it("freezes join, approval, rejection, and readiness after a real Start while retaining exact replays", async () => {
+  it("freezes join, approval, rejection, and readiness once a started trip is ending while retaining exact replays", async () => {
     const sequence = 8801;
     const seed = await readyRoom(sequence, "ABCD2345", createIds(680_000));
     successful(
@@ -1552,6 +1562,11 @@ describe("join and projection PostgreSQL concurrency", () => {
         tripId: seed.room.body.tripId,
       }),
     );
+    await context.db
+      .updateTable("trips")
+      .set({ state: "ENDING", ending_started_at: new Date() })
+      .where("id", "=", seed.room.body.tripId)
+      .execute();
     const before = {
       devices: await context.db
         .selectFrom("devices")
@@ -1639,7 +1654,7 @@ describe("join and projection PostgreSQL concurrency", () => {
           tripId: seed.room.body.tripId,
         }),
       ).status,
-    ).toBe("ACTIVE");
+    ).toBe("ENDING");
 
     const lateMember = await actor(8803);
     expect(

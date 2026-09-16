@@ -24,6 +24,10 @@ const lifecycle: NonNullable<AppDependencies["trips"]["lifecycle"]> = {
   drained: (...args) => current().trips.lifecycle!.drained(...args),
   expire: () => current().trips.lifecycle!.expire(),
 };
+const continuity: NonNullable<AppDependencies["trips"]["continuity"]> = {
+  read: (...args) => current().trips.continuity!.read(...args),
+  change: (...args) => current().trips.continuity!.change(...args),
+};
 const logger = createSafeLogger({
   nodeEnvironment: "production",
   logLevel: "info",
@@ -69,6 +73,7 @@ export const workerApp = buildApp(
     },
     trips: {
       lifecycle,
+      continuity,
       tokenVerifier: {
         verify: (...args) => current().trips.tokenVerifier.verify(...args),
       },

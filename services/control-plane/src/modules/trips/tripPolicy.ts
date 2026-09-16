@@ -261,7 +261,7 @@ export function evaluateMutationFreeze(
   if (input.exactReplay) {
     return success(Object.freeze({ mutable: false, replay: true }));
   }
-  return input.state === "LOBBY"
+  return input.state === "LOBBY" || input.state === "ACTIVE"
     ? success(Object.freeze({ mutable: true }))
     : problem("MEMBERSHIP_FROZEN");
 }

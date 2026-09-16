@@ -9,7 +9,7 @@ private struct PendingPhotoPage: Decodable {
     let items: [Item]
 }
 private struct UploadGrant: Decodable {
-    struct Object: Decodable { let variant: String; let url: String; let requiredHeaders: [String: String] }
+    struct Object: Decodable { let variant: String; let url: String; let requiredHeaders: [String: String]; let uploadedEtag: String? }
     let uploadSessionId: String; let assetId: String; let objects: [Object]
 }
 private struct DownloadGrant: Decodable {
@@ -226,7 +226,10 @@ public actor ApplePhotoTransferEngine {
         guard grant.assetId == record.assetID, grant.objects.map(\.variant) == ["PREVIEW", "ORIGINAL"] else { throw NativeKeyError.invalidEnvelope }
         for object in grant.objects where record.etags[object.variant] == nil && (!previewOnly || object.variant == "PREVIEW") {
             let url = ledger.directory.appendingPathComponent(directoryName).appendingPathComponent(object.variant.lowercased() + ".ciphertext")
-            let etag = try await network.upload(url: object.url, headers: object.requiredHeaders, file: url)
+            let etag: String
+            if let uploaded = object.uploadedEtag { etag = uploaded }
+            else { etag = try await network.upload(url: object.url, headers: object.requiredHeaders, file: url) }
+            guard !etag.isEmpty, etag.count <= 256 else { throw NativeKeyError.invalidEnvelope }
             try assertCurrent(context, epoch)
             record.etags[object.variant] = etag
             try ledger.put(record)
@@ -262,7 +265,7 @@ public actor ApplePhotoTransferEngine {
     private func receive(_ input: NativePhotoWork, context: NativeMediaContext, epoch: Int, ledger: NativeTransferJournal, network: NativePhotoTransportPort) async throws {
         var record = input
         guard let deliveryID = record.deliveryID else { throw NativeKeyError.invalidState }
-        let alreadySaved = try record.savedLocalID.map { try library.exists($0) } ?? false
+        var alreadySaved = try record.savedLocalID.map { try library.exists($0) } ?? false
         if !alreadySaved || record.downloadBody == nil {
             record.downloadBody = try await network.json(path: "/v1/deliveries/\(deliveryID)/download-session", method: "POST", body: json(["variants": ["ORIGINAL"]]), context: context, commandID: record.workID)
             try assertCurrent(context, epoch)
@@ -277,6 +280,11 @@ public actor ApplePhotoTransferEngine {
         defer { manifest.eraseSecrets() }
         guard object.ciphertextBytes == String(manifest.original.ciphertextBytes),
               object.checksumSha256 == Data(manifest.original.ciphertextSHA256).base64EncodedString() else { throw NativeKeyError.invalidEnvelope }
+        if !alreadySaved, let existing = try library.findSaved(assetID: record.assetID, capturedAt: manifest.capturedAtMilliseconds.map { Date(timeIntervalSince1970: Double($0) / 1000) }) {
+            try await library.verifySaved(localID: existing, expectedBytes: manifest.original.plaintextBytes, expectedSHA256: manifest.original.plaintextSHA256)
+            try assertCurrent(context, epoch)
+            record.savedLocalID = existing; try ledger.put(record); alreadySaved = true
+        }
         if !alreadySaved {
             let directory = ledger.directory.appendingPathComponent("stage-\(UUID().uuidString.lowercased())")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)

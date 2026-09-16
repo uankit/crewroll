@@ -2,8 +2,7 @@ import ExpoModulesCore
 import CoreFoundation
 
 public final class CrewRollTransferModule: Module {
-  private var productionLifecycle: NativeKeyLifecycle?
-  private var photoEngine: ApplePhotoTransferEngine?
+  private var invalidationObserver: NSObjectProtocol?
   private let transferCommands = NativeTransferCommandFence()
 
   public func definition() -> ModuleDefinition {
@@ -11,17 +10,18 @@ public final class CrewRollTransferModule: Module {
     Events("engineInvalidated")
     OnCreate {
       self.runLifecycleCleanup()
+      self.invalidationObserver = NotificationCenter.default.addObserver(forName: .crewRollEngineInvalidated, object: nil, queue: nil) { [weak self] event in
+        if let revision = event.userInfo?["revision"] as? Int { self?.sendEvent("engineInvalidated", ["protocolVersion": 1, "type": "ENGINE_INVALIDATED", "revision": revision]) }
+      }
     }
     OnAppEntersForeground {
       self.runLifecycleCleanup()
-      if let engine = self.photoEngine { Task { await engine.wake() } }
+      try? CrewRollAppleRuntime.get().foreground(true)
+      if let engine = try? self.engine() { Task { await engine.wake() } }
     }
     OnDestroy {
-      _ = self.transferCommands.advance()
-      if let engine = self.photoEngine { Task { await engine.stop() } }
-      self.photoEngine = nil
-      self.productionLifecycle?.cancelScheduledCleanup()
-      self.productionLifecycle = nil
+      if let observer = self.invalidationObserver { NotificationCenter.default.removeObserver(observer) }
+      self.invalidationObserver = nil
     }
 
     AsyncFunction("ensureDeviceIdentity") { (command: [String: Any], promise: Promise) in
@@ -80,6 +80,8 @@ public final class CrewRollTransferModule: Module {
           await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
           do {
             guard self.transferCommands.matches(epoch) else { throw NativeKeyError.invalidCommand }
+            try CrewRollAppleRuntime.get().policy(enabled: false)
+            await AppleBackgroundTransfer.shared.clear()
             try lifecycle.clearDeviceSession()
             promise.resolve(nil)
           } catch { promise.reject(Self.bridgeException(error)) }
@@ -156,6 +158,7 @@ public final class CrewRollTransferModule: Module {
         try NativeCommandDecoder.require(command, for: .activateTrip)
         let lifecycle = try self.lifecycle()
         try lifecycle.activateTrip(try NativeCommandDecoder.activation(command))
+        try CrewRollAppleRuntime.get().policy(enabled: true)
         let engine = try self.engine()
         let epoch = self.transferCommands.advance()
         Task {
@@ -169,8 +172,9 @@ public final class CrewRollTransferModule: Module {
         try NativeCommandDecoder.require(command, for: .deactivateTrip)
         let lifecycle = try self.lifecycle()
         try lifecycle.deactivateTrip(tripID: try Self.string(command, "tripId"))
+        try CrewRollAppleRuntime.get().policy(enabled: false)
         let epoch = self.transferCommands.advance()
-        if let engine = self.photoEngine {
+        if let engine = try? self.engine() {
           Task {
             await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
             promise.resolve(nil)
@@ -184,6 +188,7 @@ public final class CrewRollTransferModule: Module {
         guard let pausedValue = command["paused"] as? NSNumber, CFGetTypeID(pausedValue) == CFBooleanGetTypeID(),
               let cellularValue = command["cellularAllowed"] as? NSNumber, CFGetTypeID(cellularValue) == CFBooleanGetTypeID() else { throw NativeKeyError.invalidCommand }
         let engine = try self.engine()
+        try CrewRollAppleRuntime.get().policy(enabled: !pausedValue.boolValue, cellular: cellularValue.boolValue)
         let epoch = self.transferCommands.advance()
         Task {
           await engine.setPolicy(paused: pausedValue.boolValue, cellularAllowed: cellularValue.boolValue, ifCurrent: { self.transferCommands.matches(epoch) })
@@ -238,29 +243,14 @@ public final class CrewRollTransferModule: Module {
     }
   }
 
-  private func engine() throws -> ApplePhotoTransferEngine {
-    if let photoEngine { return photoEngine }
-    let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-    let value = ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { [weak self] in
-      try self?.lifecycle().mediaContext()
-    }, invalidated: { [weak self] revision in
-      self?.sendEvent("engineInvalidated", ["protocolVersion": 1, "type": "ENGINE_INVALIDATED", "revision": revision])
-    })
-    photoEngine = value
-    return value
-  }
+  private func engine() throws -> ApplePhotoTransferEngine { try CrewRollAppleRuntime.get().engine }
 
   private static func require(_ command: [String: Any], keys: Set<String>) throws {
     guard Set(command.keys) == keys else { throw NativeKeyError.invalidCommand }
     try NativeCommandDecoder.requireProtocol(command)
   }
 
-  private func lifecycle() throws -> NativeKeyLifecycle {
-    if let productionLifecycle { return productionLifecycle }
-    let value = try AppleNativeKeyInfrastructure.makeLifecycle()
-    productionLifecycle = value
-    return value
-  }
+  private func lifecycle() throws -> NativeKeyLifecycle { try CrewRollAppleRuntime.get().lifecycle }
 
   private func runLifecycleCleanup() {
     do {

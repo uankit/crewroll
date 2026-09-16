@@ -54,7 +54,7 @@ describe("native identity and trip-key production policy", () => {
     }
   });
 
-  it("runs one serialized cleanup service at Expo 57 creation, foreground, expiry, and destroy", () => {
+  it("runs one serialized cleanup service at Expo 57 creation, foreground, and expiry across background workers", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
     );
@@ -70,7 +70,8 @@ describe("native identity and trip-key production policy", () => {
     for (const source of [swift, kotlin]) {
       expect(source).toContain("runLifecycleCleanup");
       expect(source).toContain("runScheduledCleanup");
-      expect(source).toContain("cancelScheduledCleanup");
+      // JS teardown must not terminate the process-wide OS transfer runtime.
+      expect(source).not.toContain("cancelScheduledCleanup");
     }
     const swiftLifecycle = read(
       "modules/crewroll-transfer/ios/IdentityKeys/Sources/CrewRollNativeKeys/NativeKeyLifecycle.swift",

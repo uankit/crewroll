@@ -1,3 +1,5 @@
+import { createKyselyTripContinuity } from "../db/trips/kyselyTripContinuity.js";
+import { createOwnerInviteVault } from "../platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../db/trips/kyselyTripLifecycle.js";
 import { buildApp } from "../app/buildApp.js";
 import { loadEnvironment, type Environment } from "../config/env.js";
@@ -31,6 +33,7 @@ import {
   createResolveForegroundActor,
   createSetTripReadiness,
   createStartTrip,
+  normalizeInviteCode,
 } from "../modules/trips/index.js";
 import { createClerkUserDirectory } from "../platform/clerk/clerkUserDirectory.js";
 import { createRemoteJoseClerkTokenVerifier } from "../platform/clerk/joseClerkTokenVerifier.js";
@@ -56,6 +59,14 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  tripContinuity: (database, clock, environment) =>
+    createKyselyTripContinuity(
+      database as Parameters<typeof createKyselyTripContinuity>[0],
+      clock,
+      createHmacInviteCodeHasher(environment.inviteCodeHmacKey),
+      createOwnerInviteVault(required(environment.inviteCodeHmacKey)),
+      normalizeInviteCode,
+    ),
   tripLifecycle: (database, clock) =>
     createKyselyTripLifecycle(
       database as Parameters<typeof createKyselyTripLifecycle>[0],

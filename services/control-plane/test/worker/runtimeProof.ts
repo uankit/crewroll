@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createR2CiphertextStore } from "../../worker/r2CiphertextStore.js";
 import { workerApp } from "../../worker/scopedApp.js";
 import { createWorkerRequestRuntime } from "../../worker/requestRuntime.js";
+import contract from "@crewroll/contracts/generated/crewroll.openapi.json" with { type: "json" };
 
 export default {
   async fetch(
@@ -76,6 +77,20 @@ export default {
           "Real trip routes reject missing Clerk auth",
         );
         await denied.text();
+        for (const method of ["GET", "POST"]) {
+          const deniedContinuity = await runtime.fetch(
+            new Request(
+              "https://crewroll.invalid/v1/trips/01990000-0000-7000-8000-000000000001/continuity",
+              { method },
+            ),
+            ctx,
+          );
+          assert(
+            deniedContinuity.status === 401,
+            `${method} continuity is wired through Worker auth`,
+          );
+          await deniedContinuity.text();
+        }
       } finally {
         await runtime.close();
       }
@@ -83,6 +98,24 @@ export default {
         workerApp.hasRoute({ method: "POST", url: "/v1/trips" }),
         "Fastify compiles trip routes in workerd",
       );
+      for (const [path, operation] of Object.entries(contract.paths)) {
+        for (const [schemaMethod, method] of [
+          ["get", "GET"],
+          ["post", "POST"],
+          ["put", "PUT"],
+          ["patch", "PATCH"],
+          ["delete", "DELETE"],
+        ] as const) {
+          if (schemaMethod in operation)
+            assert(
+              workerApp.hasRoute({
+                method,
+                url: path.replace(/\{([^}]+)\}/g, ":$1"),
+              }),
+              `Worker implements ${method} ${path}`,
+            );
+        }
+      }
       assert(
         workerApp.hasRoute({
           method: "POST",

@@ -1,3 +1,4 @@
+import { TripContinuityControls } from "./TripContinuityControls";
 import { useEffect, useState } from "react";
 import type { TripView } from "../domain/trips/model";
 import { AppText, Button, Sheet, Stack } from "../design-system";
@@ -39,6 +40,7 @@ export function TripInfoSheet({
           })}
         </AppText>
       </Stack>
+      <TripContinuityControls trip={trip} onChanged={onChanged} />
       <Stack gap="sm">
         <AppText variant="eyebrow" tone="secondary">
           YOUR CREW
@@ -60,33 +62,53 @@ export function TripInfoSheet({
         onChanged={onChanged}
       />
       {cellular !== null ? (
-        <Button
-          label={cellular ? "Use Wi-Fi only" : "Allow mobile data"}
-          variant="text"
-          loading={busy}
-          onPress={() => {
-            if (busy) return;
-            setBusy(true);
-            setError(false);
-            void crewRollTransfer
-              .getSnapshot()
-              .then(async (snapshot) => {
-                if (snapshot.activeTripId !== trip.id) return;
-                await crewRollTransfer.setTransferPolicy({
-                  protocolVersion: 1,
-                  paused: snapshot.paused,
-                  cellularAllowed: !cellular,
-                });
-                setCellular(!cellular);
-              })
-              .catch(() => setError(true))
-              .finally(() => setBusy(false));
-          }}
-        />
+        <Stack gap="xs">
+          <Button
+            label="Sync now"
+            variant="secondary"
+            loading={busy}
+            onPress={() => {
+              if (busy) return;
+              setBusy(true);
+              setError(false);
+              void crewRollTransfer
+                .reconcileNow({ protocolVersion: 1 })
+                .catch(() => setError(true))
+                .finally(() => setBusy(false));
+            }}
+          />
+          <AppText variant="caption" tone="secondary">
+            Sync continues in the background when your phone allows it. Opening
+            CrewRoll helps finish any waiting photos.
+          </AppText>
+          <Button
+            label={cellular ? "Use Wi-Fi only" : "Allow mobile data"}
+            variant="text"
+            loading={busy}
+            onPress={() => {
+              if (busy) return;
+              setBusy(true);
+              setError(false);
+              void crewRollTransfer
+                .getSnapshot()
+                .then(async (snapshot) => {
+                  if (snapshot.activeTripId !== trip.id) return;
+                  await crewRollTransfer.setTransferPolicy({
+                    protocolVersion: 1,
+                    paused: snapshot.paused,
+                    cellularAllowed: !cellular,
+                  });
+                  setCellular(!cellular);
+                })
+                .catch(() => setError(true))
+                .finally(() => setBusy(false));
+            }}
+          />
+        </Stack>
       ) : null}
       {error ? (
         <AppText tone="critical">
-          The connection setting couldn’t change. Try again.
+          Sync couldn’t update. Check your connection and try again.
         </AppText>
       ) : null}
     </Sheet>

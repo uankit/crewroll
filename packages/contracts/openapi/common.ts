@@ -211,6 +211,7 @@ export const AppVersionSchema = Type.String({
 });
 
 export const KeyEnvelopeSchema = ClosedObject({
+  senderDeviceId: Type.Optional(DeviceIdSchema),
   keyEpoch: Type.Literal(1),
   algorithmVersion: Type.Literal(1),
   wrappedKey: Base64ExactSchema(148),

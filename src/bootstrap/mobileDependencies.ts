@@ -11,7 +11,12 @@ export type MobileDependencies = Readonly<{
   tripApi: TripApiPort &
     Pick<
       ReturnType<typeof createCrewRollApi>,
-      "previewInvite" | "listTrips" | "getTripLifecycle" | "changeTripLifecycle"
+      | "getTripContinuity"
+      | "changeTripContinuity"
+      | "previewInvite"
+      | "listTrips"
+      | "getTripLifecycle"
+      | "changeTripLifecycle"
     >;
 }>;
 

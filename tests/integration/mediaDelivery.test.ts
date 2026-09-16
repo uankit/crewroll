@@ -1,3 +1,8 @@
+import { createKyselyTripContinuity } from "../../services/control-plane/src/db/trips/kyselyTripContinuity.js";
+import { normalizeInviteCode } from "../../services/control-plane/src/modules/trips/index.js";
+import { createKyselyTripUnitOfWork } from "../../services/control-plane/src/db/trips/kyselyTripUnitOfWork.js";
+import { createHmacInviteCodeHasher } from "../../services/control-plane/src/platform/crypto/hmacInviteCodeHasher.js";
+import { createOwnerInviteVault } from "../../services/control-plane/src/platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -894,5 +899,343 @@ describe.sequential("durable encrypted photo delivery", () => {
       await app.close();
       await rm(directory, { recursive: true, force: true });
     }
+  });
+  async function foreground(actor: MediaActor) {
+    const user = await context.db
+      .selectFrom("users")
+      .select("clerk_subject")
+      .where("id", "=", actor.userId)
+      .executeTakeFirstOrThrow();
+    return { ...actor, clerkSubject: user.clerk_subject };
+  }
+  const continuity = () =>
+    createKyselyTripContinuity(
+      context.db,
+      { now: () => now },
+      createHmacInviteCodeHasher("test-only-invite-secret"),
+      createOwnerInviteVault("test-only-invite-secret"),
+      normalizeInviteCode,
+    );
+  it("uses capture time for late-member upload, preview and original eligibility", async () => {
+    const approval = new Date(now.getTime() + 1000);
+    await context.db
+      .updateTable("trip_members")
+      .set({ approved_at: approval })
+      .where("participating_device_id", "=", members[1]!.deviceId)
+      .execute();
+    await expect(
+      service.createUpload(members[1]!, { ...body, assetId: randomUUID() }),
+    ).rejects.toMatchObject({ kind: "TRIP_STATE_CONFLICT" });
+    const upload = await uploaded();
+    now = new Date(approval.getTime() + 1000);
+    await service.publishPreview(members[0]!, body.assetId, {
+      uploadSessionId: upload.uploadSessionId,
+      etag: '"PREVIEW"',
+    });
+    expect(
+      (await service.previewFeed(members[1]!, tripId, "0")).items,
+    ).toHaveLength(0);
+    await expect(
+      service.previewDownload(members[1]!, body.assetId),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+    await service.commit(members[0]!, body.assetId, upload);
+    expect((await service.pending(members[1]!)).items).toHaveLength(0);
+    body = {
+      ...body,
+      assetId: randomUUID(),
+      sourceAssetKey: "src_" + "B".repeat(32),
+      capturedAt: now.toISOString(),
+    };
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    expect(
+      (await service.pending(members[1]!)).items.map((i) => i.assetId),
+    ).toEqual([body.assetId]);
+    expect((await lifecycle().read(members[1]!, tripId)).captureFrom).toBe(
+      approval.toISOString(),
+    );
+  });
+  it("rejects rewriting an upload's capture timestamp on retry", async () => {
+    await service.createUpload(members[0]!, body);
+    await expect(
+      service.createUpload(members[0]!, {
+        ...body,
+        capturedAt: new Date(now.getTime() + 1).toISOString(),
+      }),
+    ).rejects.toMatchObject({ kind: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  it("recovers verified upload ETags when the sender lost the PUT response", async () => {
+    const committed = await uploaded();
+    const retry = await service.createUpload(members[0]!, body);
+    expect(retry.objects.map((object) => object.uploadedEtag)).toEqual(
+      committed.objects.map((object) => object.etag),
+    );
+    await service.commit(members[0]!, body.assetId, {
+      uploadSessionId: retry.uploadSessionId,
+      objects: retry.objects.map((object) => ({
+        variant: object.variant,
+        etag: object.uploadedEtag!,
+      })) as typeof committed.objects,
+    });
+    expect((await service.pending(members[1]!)).items).toHaveLength(1);
+  });
+  it("keeps invite access owner-only and stores only encrypted code plus lookup HMAC", async () => {
+    const host = await foreground(members[0]!);
+    const initial = await continuity().read(host, tripId);
+    const saved = await continuity().change(host, tripId, {
+      action: "SAVE_INVITE",
+      inviteCode: "G0A7CREW",
+      expectedVersion: initial.version,
+    });
+    expect(saved.ownerInviteCode).toBe("G0A7CREW");
+    expect(
+      (await continuity().read(await foreground(members[1]!), tripId))
+        .ownerInviteCode,
+    ).toBeNull();
+    await expect(
+      continuity().change(await foreground(members[1]!), tripId, {
+        action: "SAVE_INVITE",
+        inviteCode: "N0TAC0DE",
+        expectedVersion: saved.version,
+      }),
+    ).rejects.toMatchObject({ kind: "TRIP_OWNER_REQUIRED" });
+    const stored = await context.db
+      .selectFrom("trip_owner_invites")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    expect(
+      Buffer.from(stored.encrypted_code).includes(Buffer.from("G0A7CREW")),
+    ).toBe(false);
+    await expect(
+      continuity().read(await foreground(outsider), tripId),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+  });
+  async function replacement(index = 1) {
+    const old = members[index]!;
+    const newDevice = await fixtures.device(old.userId);
+    const actor = await foreground({
+      userId: old.userId,
+      deviceId: newDevice.id,
+    });
+    const before = await continuity().read(actor, tripId);
+    const requested = await continuity().change(actor, tripId, {
+      action: "REQUEST_DEVICE",
+      expectedVersion: before.version,
+    });
+    return {
+      actor,
+      old,
+      request: requested.deviceRequest!,
+      version: requested.version,
+    };
+  }
+  it("preserves membership and cutoff but requires new save receipts after phone approval", async () => {
+    const upload = await uploaded();
+    await service.commit(members[0]!, body.assetId, upload);
+    const priorDelivery = (await service.pending(members[1]!)).items[0]!;
+    await service.saved(members[1]!, priorDelivery.deliveryId, randomUUID(), {
+      assetId: body.assetId,
+      savedAt: now.toISOString(),
+      engineRevision: 1,
+    });
+    const original = await context.db
+      .selectFrom("trip_members")
+      .selectAll()
+      .where("participating_device_id", "=", members[1]!.deviceId)
+      .executeTakeFirstOrThrow();
+    const { actor, old, request, version } = await replacement();
+    expect(
+      (
+        await continuity().change(actor, tripId, {
+          action: "REQUEST_DEVICE",
+          expectedVersion: version - 1,
+        })
+      ).version,
+    ).toBe(version);
+    await expect(service.pending(actor)).resolves.toMatchObject({ items: [] });
+    const host = await foreground(members[0]!);
+    await continuity().change(host, tripId, {
+      action: "APPROVE_DEVICE",
+      requestId: request.requestId,
+      expectedVersion: version,
+      wrappedKey: Buffer.alloc(148, 7).toString("base64"),
+    });
+    const resumed = await continuity().read(actor, tripId);
+    expect(resumed.onThisDevice).toBe(true);
+    expect(resumed.deviceRequest?.status).toBe("APPROVED");
+    const after = await context.db
+      .selectFrom("trip_members")
+      .selectAll()
+      .where("id", "=", original.id)
+      .executeTakeFirstOrThrow();
+    expect(after.approved_at).toEqual(original.approved_at);
+    expect(after.full_photo_library_access).toBe(false);
+    const newDelivery = (await service.pending(actor)).items[0]!;
+    expect(newDelivery.deliveryId).not.toBe(priorDelivery.deliveryId);
+    const delivered = await context.db
+      .selectFrom("deliveries")
+      .selectAll()
+      .where("id", "=", newDelivery.deliveryId)
+      .executeTakeFirstOrThrow();
+    expect(delivered.state).toBe("READY");
+    expect(delivered.saved_at).toBeNull();
+    await expect(service.pending(old)).rejects.toMatchObject({
+      kind: "AUTH_INVALID",
+    });
+    expect(
+      await context.db
+        .selectFrom("trip_members")
+        .selectAll()
+        .where("trip_id", "=", tripId)
+        .execute(),
+    ).toHaveLength(4);
+  });
+  it("allows a trusted current phone to approve its replacement without rolling back on revocation", async () => {
+    const { old, actor, request, version } = await replacement();
+    const result = await continuity().change(await foreground(old), tripId, {
+      action: "APPROVE_DEVICE",
+      requestId: request.requestId,
+      expectedVersion: version,
+      wrappedKey: Buffer.alloc(148, 8).toString("base64"),
+    });
+    expect(result.onThisDevice).toBe(false);
+    expect((await continuity().read(actor, tripId)).onThisDevice).toBe(true);
+  });
+
+  it("recovers eligible originals without rediscovering a replacement phone's old camera roll", async () => {
+    const { actor, request, version } = await replacement();
+    await continuity().change(await foreground(members[0]!), tripId, {
+      action: "APPROVE_DEVICE",
+      requestId: request.requestId,
+      expectedVersion: version,
+      wrappedKey: Buffer.alloc(148, 8).toString("base64"),
+    });
+    const policy = await createKyselyTripLifecycle(context.db, {
+      now: () => now,
+    }).read(actor, tripId);
+    expect(policy.captureFrom).toBe(now.toISOString());
+    await expect(
+      service.createUpload(actor, {
+        ...body,
+        assetId: randomUUID(),
+        capturedAt: new Date(now.getTime() - 1000).toISOString(),
+      }),
+    ).rejects.toMatchObject({ kind: "TRIP_STATE_CONFLICT" });
+  });
+
+  it("lets a declined phone request again without accepting its stale request id", async () => {
+    const { actor, request, version } = await replacement();
+    const host = await foreground(members[0]!);
+    const rejected = await continuity().change(host, tripId, {
+      action: "REJECT_DEVICE",
+      requestId: request.requestId,
+      expectedVersion: version,
+    });
+    const next = await continuity().change(actor, tripId, {
+      action: "REQUEST_DEVICE",
+      expectedVersion: rejected.version,
+    });
+    expect(next.deviceRequest?.status).toBe("PENDING");
+    expect(next.deviceRequest?.requestId).not.toBe(request.requestId);
+    await expect(
+      continuity().change(host, tripId, {
+        action: "APPROVE_DEVICE",
+        requestId: request.requestId,
+        expectedVersion: next.version,
+        wrappedKey: Buffer.alloc(148, 8).toString("base64"),
+      }),
+    ).rejects.toMatchObject({ kind: "CONFLICT" });
+  });
+  it("rejects another guest's device approval and stale approval versions", async () => {
+    const { request, version } = await replacement();
+    await expect(
+      continuity().change(await foreground(members[2]!), tripId, {
+        action: "APPROVE_DEVICE",
+        requestId: request.requestId,
+        expectedVersion: version,
+        wrappedKey: Buffer.alloc(148, 7).toString("base64"),
+      }),
+    ).rejects.toMatchObject({ kind: "TRIP_OWNER_REQUIRED" });
+    await expect(
+      continuity().change(await foreground(members[0]!), tripId, {
+        action: "APPROVE_DEVICE",
+        requestId: request.requestId,
+        expectedVersion: version - 1,
+        wrappedKey: Buffer.alloc(148, 7).toString("base64"),
+      }),
+    ).rejects.toMatchObject({ kind: "VERSION_CONFLICT" });
+  });
+  it("replaces earlier pending phone requests for the same membership", async () => {
+    const first = await replacement();
+    const second = await replacement();
+    const host = await foreground(members[0]!);
+    const state = await continuity().read(host, tripId);
+    expect(state.approvalRequests.map((request) => request.requestId)).toEqual([
+      second.request.requestId,
+    ]);
+    expect(
+      (await continuity().read(first.actor, tripId)).deviceRequest?.status,
+    ).toBe("CANCELLED");
+    await expect(
+      continuity().change(host, tripId, {
+        action: "APPROVE_DEVICE",
+        requestId: first.request.requestId,
+        expectedVersion: state.version,
+        wrappedKey: Buffer.alloc(148, 8).toString("base64"),
+      }),
+    ).rejects.toMatchObject({ kind: "CONFLICT" });
+  });
+  it("recovers a pending join on a new phone without granting photo access or bypassing host approval", async () => {
+    await context.db
+      .updateTable("trip_members")
+      .set({ state: "PENDING_KEY", key_epoch: null, approved_at: null })
+      .where("participating_device_id", "=", members[1]!.deviceId)
+      .execute();
+    const newDevice = await fixtures.device(members[1]!.userId);
+    const actor = await foreground({
+      userId: members[1]!.userId,
+      deviceId: newDevice.id,
+    });
+    const state = await continuity().read(actor, tripId);
+    const recovered = await continuity().change(actor, tripId, {
+      action: "REQUEST_DEVICE",
+      expectedVersion: state.version,
+    });
+    expect(recovered.onThisDevice).toBe(true);
+    const member = await context.db
+      .selectFrom("trip_members")
+      .selectAll()
+      .where("participating_device_id", "=", actor.deviceId)
+      .executeTakeFirstOrThrow();
+    expect(member).toMatchObject({
+      state: "PENDING_KEY",
+      key_epoch: null,
+      approved_at: null,
+      full_photo_library_access: false,
+    });
+    expect((await service.pending(actor)).items).toEqual([]);
+    await expect(service.createUpload(actor, body)).rejects.toMatchObject({
+      kind: "NOT_FOUND",
+    });
+  });
+  it("keeps historical source rows valid after replacing the host device", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    const { request, version, actor } = await replacement(0);
+    await continuity().change(await foreground(members[1]!), tripId, {
+      action: "APPROVE_DEVICE",
+      requestId: request.requestId,
+      expectedVersion: version,
+      wrappedKey: Buffer.alloc(148, 7).toString("base64"),
+    });
+    const photo = await service.previewDownload(members[2]!, body.assetId);
+    expect(photo).toBeTruthy();
+    const projection = await createKyselyTripUnitOfWork(
+      context.db,
+    ).readProjection(actor, tripId);
+    expect(projection.kind).toBe("FOUND");
+    if (projection.kind === "FOUND")
+      expect(projection.projection.tripKeyEnvelope?.senderDeviceId).toBe(
+        members[1]!.deviceId,
+      );
   });
 });

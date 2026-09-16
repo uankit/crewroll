@@ -4,6 +4,9 @@ import { CrewRollThemeProvider } from "../design-system";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ActiveTripTransfers } from "./ActiveTripTransfers";
 import type { TripView } from "../domain/trips/model";
+jest.mock("./TripContinuityControls", () => ({
+  TripContinuityControls: () => null,
+}));
 jest.mock("./TripLifecycleControls", () => ({
   TripLifecycleControls: () => null,
 }));

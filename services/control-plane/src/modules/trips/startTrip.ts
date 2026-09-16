@@ -225,11 +225,7 @@ export function createStartTrip(dependencies: StartTripDependencies) {
             ) {
               return tripProblem("IDEMPOTENCY_CONFLICT");
             }
-            if (
-              trip.state === "LOBBY" ||
-              trip.startedAt === null ||
-              invite.revokedAt === null
-            ) {
+            if (trip.state === "LOBBY" || trip.startedAt === null) {
               return tripProblem("INTERNAL_ERROR");
             }
             return currentProjection(transaction, input.actor, input.tripId);
@@ -319,7 +315,7 @@ export function createStartTrip(dependencies: StartTripDependencies) {
           await transaction.updateTrip(startedTrip);
           await transaction.updateInvite({
             ...invite,
-            revokedAt: now,
+            revokedAt: null,
             updatedAt: now,
           });
           await transaction.insertIdempotency({

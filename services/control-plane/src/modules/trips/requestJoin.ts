@@ -189,7 +189,8 @@ function currentInviteIsValid(
     invite.tripId === candidate.tripId &&
     trip.tripId === candidate.tripId &&
     inviteCodeHmacMatches &&
-    trip.state === "LOBBY" &&
+    (trip.state === "LOBBY" || trip.state === "ACTIVE") &&
+    trip.endsAt > now &&
     invite.revokedAt === null &&
     invite.expiresAt.getTime() > now.getTime() &&
     invite.usesCount < invite.maxUses

@@ -143,6 +143,18 @@ function renderLobby(overrides: Partial<LobbyScreenProps> = {}) {
 }
 
 describe("LobbyScreen", () => {
+  test("makes mid-trip join and phone approvals discoverable from the gallery", async () => {
+    const onOpenInfo = jest.fn();
+    const screen = await renderLobby({
+      trip: ownerTrip({ status: "ACTIVE" }),
+      deviceRequestCount: 1,
+      onOpenInfo,
+    });
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Trip info, 2 waiting requests" }),
+    );
+    expect(onOpenInfo).toHaveBeenCalledTimes(1);
+  });
   test("copies the code from the owner sheet and approves the named request", async () => {
     const onCopy = jest.fn(async () => undefined);
     const onApproveMember = jest.fn();

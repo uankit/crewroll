@@ -1,4 +1,5 @@
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
+import { useTripContinuity } from "@/bootstrap/useTripContinuity";
 import {
   Redirect,
   useIsFocused,
@@ -61,6 +62,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const session = useAppSession();
   const actions = session.actions;
   const projection = useTripProjection(tripId, { pollLobby: focused });
+  const continuity = useTripContinuity(tripId, focused);
   const [approvingMembershipId, setApprovingMembershipId] = useState<
     string | undefined
   >(undefined);
@@ -70,6 +72,32 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [savedInvite, setSavedInvite] = useState<string | null>(null);
+  const owner =
+    projection.trip?.members.some(
+      (member) => member.isCurrentMember && member.role === "OWNER",
+    ) ?? false;
+  const inviteOpen =
+    projection.trip?.status === "LOBBY" || projection.trip?.status === "ACTIVE";
+  useEffect(() => {
+    if (!owner || !inviteOpen || !actions) return;
+    let cancelled = false;
+    void actions
+      .ensureOwnerInvite(tripId)
+      .then((state) => {
+        if (!cancelled) setSavedInvite(state.ownerInviteCode);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setActionError(
+            "Your trip is saved. Open Trip info to retry loading the invite code.",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actions, owner, inviteOpen, tripId]);
+
   const [retryingActivation, setRetryingActivation] = useState(false);
   const readinessReconciler = useRef(createPhotoReadinessReconciler());
   const [observedEntry, setObservedEntry] = useState({
@@ -175,7 +203,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     }
   }
 
-  const ownerInviteCode = session.ownerInviteCode;
+  const ownerInviteCode = savedInvite ?? session.ownerInviteCode;
   return (
     <>
       <LobbyScreen
@@ -185,6 +213,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         filterCount={galleryFilterCount(filters)}
         onOpenFilters={() => setFiltersOpen(true)}
         onOpenInfo={() => setInfoOpen(true)}
+        deviceRequestCount={continuity.data?.approvalRequests.length ?? 0}
         transferContent={
           activation?.kind === "ready" || trip.status === "ENDING" ? (
             <ActiveTripTransfers

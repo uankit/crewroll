@@ -1,6 +1,9 @@
 # Trip lifecycle acceptance and rollback
 
 Implementation checkpoint: `ed6b56f` on `codex/crewroll-greenfield`.
+The subsequent [continuity implementation checkpoint](sync-continuity-acceptance-2026-09-16.md)
+adds mid-trip joining, replacement-phone recovery and native background work.
+The evidence below remains specific to the earlier lifecycle checkpoint.
 The API and additive migration are deployed; the Android debug build passes.
 **Emulator acceptance is deferred at the user's request.** No row below is marked
 accepted by an emulator or physical device. Figma checks establish prototype
@@ -8,7 +11,7 @@ navigation and layout only.
 
 Use the Figma node map in
 `outputs/crewroll-trip-lifecycle/figma-design-state.json` for the matching screens.
-The current lifecycle section is separate from proposed joining/recovery screens.
+The lifecycle and continuity sections have separate Figma checkpoints.
 
 ## Run one path at a time
 
@@ -52,4 +55,4 @@ Keep hosted migration 006 and its data. A server/native rollback must first stop
 affected sharing sessions: an older engine does not know personal pause or final
 drain rules. Do not silently restore an older sharing policy over a user's paused
 or departing session. See `trip-lifecycle-2026-09-16.md` for deployment evidence and
-`sync-continuity-design-2026-09-16.md` for work that remains proposed.
+`sync-continuity-design-2026-09-16.md` for the implemented follow-up and its limits.

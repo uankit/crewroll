@@ -326,6 +326,10 @@ describe("canonical OpenAPI artifact", () => {
   it("contains only the canonical v1 routes and header variants", () => {
     const document = createOpenApiDocument();
     expect(Object.keys(document.paths)).toEqual([
+      "/v1/trips/{tripId}/continuity",
+      "/v1/trips/{tripId}/lifecycle",
+      "/v1/trips/{tripId}/transfer-state",
+      "/v1/trips/{tripId}/drained",
       "/v1/profile",
       "/v1/devices",
       "/v1/devices/{deviceId}/push-token",
@@ -338,14 +342,12 @@ describe("canonical OpenAPI artifact", () => {
       "/v1/trips/{tripId}/join-requests/{membershipId}",
       "/v1/trips/{tripId}/readiness",
       "/v1/trips/{tripId}/start",
-      "/v1/trips/{tripId}/end",
       "/v1/trips/{tripId}",
-      "/v1/trips/{tripId}/reconciliation",
       "/v1/assets/upload-sessions",
       "/v1/assets/{assetId}/commit",
       "/v1/assets/{assetId}/preview",
       "/v1/trips/{tripId}/previews",
-      "/v1/sync",
+      "/v1/deliveries/pending",
       "/v1/deliveries/{deliveryId}/download-session",
       "/v1/deliveries/{deliveryId}/saved-receipt",
     ]);
@@ -459,6 +461,13 @@ describe("canonical OpenAPI artifact", () => {
       );
     }
     expect(operationSecurity(document)).toEqual({
+      "GET /v1/trips": "ClerkBearer",
+      "GET /v1/trips/{tripId}/continuity": "ClerkBearer",
+      "POST /v1/trips/{tripId}/continuity": "ClerkBearer",
+      "GET /v1/trips/{tripId}/lifecycle": "ClerkBearer",
+      "POST /v1/trips/{tripId}/lifecycle": "ClerkBearer",
+      "GET /v1/trips/{tripId}/transfer-state": "BackgroundDeviceBearer",
+      "POST /v1/trips/{tripId}/drained": "BackgroundDeviceBearer",
       "PUT /v1/profile": "ClerkBearer",
       "POST /v1/devices": "ClerkBearer",
       "PATCH /v1/devices/{deviceId}/push-token": "ClerkBearer",
@@ -472,18 +481,17 @@ describe("canonical OpenAPI artifact", () => {
       "DELETE /v1/trips/{tripId}/join-requests/{membershipId}": "ClerkBearer",
       "PUT /v1/trips/{tripId}/readiness": "ClerkBearer",
       "POST /v1/trips/{tripId}/start": "ClerkBearer",
-      "POST /v1/trips/{tripId}/end": "ClerkBearer",
       "GET /v1/trips/{tripId}": "ClerkBearer",
-      "GET /v1/trips/{tripId}/reconciliation": "BackgroundDeviceBearer",
       "POST /v1/assets/upload-sessions": "BackgroundDeviceBearer",
       "POST /v1/assets/{assetId}/commit": "BackgroundDeviceBearer",
       "POST /v1/assets/{assetId}/preview": "BackgroundDeviceBearer",
       "GET /v1/assets/{assetId}/preview": "BackgroundDeviceBearer",
       "GET /v1/trips/{tripId}/previews": "BackgroundDeviceBearer",
-      "GET /v1/sync": "BackgroundDeviceBearer",
+      "GET /v1/deliveries/pending": "BackgroundDeviceBearer",
       "POST /v1/deliveries/{deliveryId}/download-session":
         "BackgroundDeviceBearer",
-      "PUT /v1/deliveries/{deliveryId}/saved-receipt": "BackgroundDeviceBearer",
+      "POST /v1/deliveries/{deliveryId}/saved-receipt":
+        "BackgroundDeviceBearer",
     });
   });
 

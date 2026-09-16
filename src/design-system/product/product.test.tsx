@@ -16,7 +16,7 @@ import {
   TransferHealthCard,
   TripSummaryCard,
 } from "./index";
-import { AppText, CrewRollThemeProvider, darkColors, spacing } from "../index";
+import { CrewRollThemeProvider, darkColors, spacing } from "../index";
 
 type ThemeHarnessProps = PropsWithChildren<{
   readonly scheme?: "light" | "dark";
@@ -154,50 +154,18 @@ describe("CrewRoll product composites", () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
-  test("InviteCard always exposes readable code and URL alongside an optional visual QR", async () => {
-    const onOpenLink = jest.fn();
-    const onShare = jest.fn();
+  test("InviteCard copies a readable code without a competing invite link", async () => {
+    const onCopy = jest.fn(async () => {});
     const screen = await render(
       <ThemeHarness>
-        <InviteCard
-          code="ABCD2345"
-          inviteUrl="airmesh://join/ABCD2345"
-          onOpenLink={onOpenLink}
-          shareAction={{ label: "Share invite", onPress: onShare }}
-          visualQr={
-            <View
-              accessibilityLabel="Invite QR"
-              accessibilityRole="image"
-              accessible
-            >
-              <AppText aria-hidden>QR</AppText>
-            </View>
-          }
-        />
+        <InviteCard code="ABCD2345" onCopy={onCopy} />
       </ThemeHarness>,
     );
-
-    const code = screen.getByText("ABCD2345");
-    const link = screen.getByRole("link", {
-      name: "airmesh://join/ABCD2345",
-    });
-    const share = screen.getByRole("button", { name: "Share invite" });
-
-    expect(code.props.maxFontSizeMultiplier).toBe(2);
-    expect(screen.getByRole("image", { name: "Invite QR" })).toBeTruthy();
-    for (const action of [link, share]) {
-      expect(
-        StyleSheet.flatten(action.props.style).minHeight,
-      ).toBeGreaterThanOrEqual(48);
-      expect(
-        StyleSheet.flatten(action.props.style).minWidth,
-      ).toBeGreaterThanOrEqual(48);
-    }
-
-    await fireEvent.press(link);
-    await fireEvent.press(share);
-    expect(onOpenLink).toHaveBeenCalledTimes(1);
-    expect(onShare).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("ABCD2345")).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Copy code" }));
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
   });
 
   test("PhotoGrid exposes one positioned native listitem focus unit per photo", async () => {

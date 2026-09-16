@@ -67,7 +67,7 @@ export function JoinTripScreen({
         failure.code === "INVITE_INVALID";
       setError(
         invalid
-          ? "That code is invalid, expired, or the trip has already started. Check with your host."
+          ? "That code is invalid, expired, or the trip has ended. Check with your host."
           : "The trip couldn’t load. Check your connection and try again.",
       );
     } finally {
@@ -125,11 +125,11 @@ export function JoinTripScreen({
         label="Your invitation"
         onBack={backToCode}
         title={preview.name}
-        description={`Until ${dates}`}
+        description={`${preview.startsAt ? "LIVE · " : ""}Until ${dates}`}
         footer={
           <>
             <Button
-              label="Ask to join trip"
+              label="Request to join"
               loading={submitting}
               onPress={() => {
                 if (joining.current) return;
@@ -184,8 +184,8 @@ export function JoinTripScreen({
           </Stack>
         </View>
         <AppText tone="secondary">
-          {preview.hostDisplayName} approves each request before photos are
-          shared.
+          Your roll starts when {preview.hostDisplayName.split(" ")[0]}{" "}
+          approves. Photos from before that moment stay private.
         </AppText>
       </FlowScreen>
     );

@@ -52,6 +52,9 @@ export function projectTrip(projection: TripProjection): TripResponse {
       projection.tripKeyEnvelope === null
         ? null
         : {
+            ...(projection.tripKeyEnvelope.senderDeviceId
+              ? { senderDeviceId: projection.tripKeyEnvelope.senderDeviceId }
+              : {}),
             algorithmVersion: projection.tripKeyEnvelope.algorithmVersion,
             keyEpoch: projection.tripKeyEnvelope.keyEpoch,
             wrappedKey: Buffer.from(

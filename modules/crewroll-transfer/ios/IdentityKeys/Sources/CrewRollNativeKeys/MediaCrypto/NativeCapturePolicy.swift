@@ -5,6 +5,7 @@ struct NativeCapturePolicy: Decodable {
     let tripId: String
     let version: Int
     let participation: String
+    var captureFrom: String? = nil
     let captureUntil: String
     let excludedCaptureWindows: [Window]
     var left: Bool { participation == "LEFT" }
@@ -19,9 +20,9 @@ struct NativeCapturePolicy: Decodable {
             return value
         }
         guard tripId == tripID, version > 0, ["JOINED", "JOINING", "LEAVING", "LEFT"].contains(participation) else { throw NativeKeyError.invalidCommand }
-        if left { return [] }
+        if left || participation == "JOINING" { return [] }
         let bound = min(end, try date(captureUntil))
-        var cursor = start
+        var cursor = max(start, try captureFrom.map(date) ?? start)
         var result: [(Date, Date)] = []
         for window in excludedCaptureWindows.sorted(by: { $0.from < $1.from }) {
             let from = try date(window.from)

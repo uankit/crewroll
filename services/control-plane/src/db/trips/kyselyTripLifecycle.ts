@@ -242,12 +242,26 @@ export function createKyselyTripLifecycle(
         member.leaving_at?.getTime() ?? Infinity,
       ),
     );
+    const replacement = await tx
+      .selectFrom("trip_device_requests")
+      .select("resolved_at")
+      .where("trip_id", "=", tripId)
+      .where("device_id", "=", actor.deviceId)
+      .where("state", "=", "APPROVED")
+      .executeTakeFirst();
     return {
       tripId,
       version: trip.version,
       status: trip.state,
       participation: participation(member),
       sharingPaused: member.sharing_paused_at !== null,
+      captureFrom: new Date(
+        Math.max(
+          trip.started_at?.getTime() ?? 0,
+          member.approved_at?.getTime() ?? clock.now().getTime(),
+          replacement?.resolved_at?.getTime() ?? 0,
+        ),
+      ).toISOString(),
       captureUntil: cutoff.toISOString(),
       excludedCaptureWindows: [
         ...member.sharing_pauses,

@@ -6,7 +6,11 @@ import {
   validStartTripBody,
   validTripResponse,
 } from "@crewroll/contracts/fixtures/http";
-import type { CreateTripBody, MembershipResponse } from "@crewroll/contracts";
+import type {
+  CreateTripBody,
+  MembershipResponse,
+  TripContinuity,
+} from "@crewroll/contracts";
 import {
   afterEach,
   beforeEach,
@@ -245,6 +249,71 @@ describe("Trip routes", () => {
       ...overrides,
     };
   }
+
+  it("exposes continuity only through the account-authenticated device and disables caching", async () => {
+    const harness = routeHarness();
+    const value: TripContinuity = {
+      tripId,
+      version: 4,
+      tripName: "Goa weekend",
+      status: "ACTIVE",
+      hostDisplayName: "Asha",
+      onThisDevice: true,
+      syncFrom: "2030-01-01T10:00:00.000Z",
+      ownerInviteCode: "ABCD2345",
+      deviceRequest: null,
+      approvalRequests: [],
+    };
+    const read = vi.fn().mockResolvedValue(value);
+    const change = vi.fn().mockResolvedValue(value);
+    const { instance } = app({
+      ...harness,
+      dependencies: { ...harness.dependencies, continuity: { read, change } },
+    });
+    const response = await instance.inject({
+      method: "GET",
+      url: `/v1/trips/${tripId}/continuity`,
+      headers: { authorization, "x-crewroll-device-id": deviceId },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(value);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(read).toHaveBeenCalledWith(actor, tripId);
+    const denied = await instance.inject({
+      method: "GET",
+      url: `/v1/trips/${tripId}/continuity`,
+      headers: {
+        "x-crewroll-device-id": deviceId,
+        authorization: `Bearer crb_${"A".repeat(43)}`,
+      },
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(read).toHaveBeenCalledTimes(1);
+    const mutation = await instance.inject({
+      method: "POST",
+      url: `/v1/trips/${tripId}/continuity`,
+      headers: commandHeaders(),
+      payload: { action: "REQUEST_DEVICE", expectedVersion: 4 },
+    });
+    expect(mutation.statusCode).toBe(200);
+    expect(mutation.headers["cache-control"]).toBe("no-store");
+    expect(change).toHaveBeenCalledWith(actor, tripId, {
+      action: "REQUEST_DEVICE",
+      expectedVersion: 4,
+    });
+    const invalid = await instance.inject({
+      method: "POST",
+      url: `/v1/trips/${tripId}/continuity`,
+      headers: commandHeaders(),
+      payload: {
+        action: "REQUEST_DEVICE",
+        expectedVersion: 4,
+        autoApprove: true,
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(change).toHaveBeenCalledTimes(1);
+  });
 
   function queryHeaders(overrides: Record<string, string> = {}) {
     return {

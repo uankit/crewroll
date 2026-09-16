@@ -225,7 +225,15 @@ function isKeyEnvelope(
 ): value is Exclude<TripResponse["tripKeyEnvelope"], null> {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ["keyEpoch", "algorithmVersion", "wrappedKey"]) &&
+    (hasExactKeys(value, ["keyEpoch", "algorithmVersion", "wrappedKey"]) ||
+      (hasExactKeys(value, [
+        "keyEpoch",
+        "algorithmVersion",
+        "wrappedKey",
+        "senderDeviceId",
+      ]) &&
+        typeof value.senderDeviceId === "string" &&
+        UUID_PATTERN.test(value.senderDeviceId))) &&
     value.keyEpoch === 1 &&
     value.algorithmVersion === 1 &&
     typeof value.wrappedKey === "string" &&

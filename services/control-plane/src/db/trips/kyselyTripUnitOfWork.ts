@@ -331,6 +331,7 @@ interface ProjectionSqlRow {
   readonly release_local_time: string | null;
   readonly release_mode: "IMMEDIATE" | "NIGHTLY";
   readonly release_timezone: string | null;
+  readonly self_envelope_sender_device_id: string | null;
   readonly self_envelope_algorithm_version: number | null;
   readonly self_envelope_key_epoch: number | null;
   readonly self_envelope_wrapped_key: string | null;
@@ -436,6 +437,7 @@ async function readProjection(
         owner.participating_device_id as owner_device_id,
         owner.device_id as valid_owner_device_id,
         owner.device_revoked_at as owner_device_revoked_at,
+        envelope.sender_device_id as self_envelope_sender_device_id,
         envelope.key_epoch as self_envelope_key_epoch,
         envelope.algorithm_version as self_envelope_algorithm_version,
         encode(envelope.wrapped_key, 'base64') as self_envelope_wrapped_key
@@ -487,6 +489,7 @@ async function readProjection(
       base.version,
       base.current_membership_id,
       base.owner_device_id,
+      base.self_envelope_sender_device_id,
       base.self_envelope_key_epoch,
       base.self_envelope_algorithm_version,
       base.self_envelope_wrapped_key,
@@ -543,6 +546,7 @@ async function readProjection(
       base.owner_device_id,
       base.valid_owner_device_id,
       base.owner_device_revoked_at,
+      base.self_envelope_sender_device_id,
       base.self_envelope_key_epoch,
       base.self_envelope_algorithm_version,
       base.self_envelope_wrapped_key
@@ -590,6 +594,10 @@ async function readProjection(
     tripKeyEnvelope: {
       algorithmVersion: 1,
       keyEpoch: 1,
+      ...(row.self_envelope_sender_device_id &&
+      row.self_envelope_sender_device_id !== row.owner_device_id
+        ? { senderDeviceId: row.self_envelope_sender_device_id }
+        : {}),
       wrappedKey: Buffer.from(row.self_envelope_wrapped_key, "base64"),
     },
     version: row.version,
@@ -1117,12 +1125,12 @@ export function createKyselyTripUnitOfWork(
           and caller.clerk_subject = ${actor.clerkSubject} and caller.deleted_at is null
         join devices as caller_device on caller_device.id = ${actor.deviceId}::uuid
           and caller_device.user_id = caller.id and caller_device.revoked_at is null
-        join trip_members as member on member.trip_id = trip.id and member.state = 'ACTIVE'
+        join trip_members as member on member.trip_id = trip.id and member.state = 'ACTIVE' and member.left_at is null
         join users as member_user on member_user.id = member.user_id and member_user.deleted_at is null
         where invite.invite_code_hmac = ${Buffer.from(inviteCodeHmac)}
           and invite.revoked_at is null and invite.expires_at > statement_timestamp()
           and invite.uses_count < invite.max_uses
-          and trip.state = 'LOBBY' and trip.ends_at > statement_timestamp()
+          and trip.state in ('LOBBY', 'ACTIVE') and trip.ends_at > statement_timestamp()
           and trip.member_count < 10
         group by trip.id, trip.name, trip.started_at, trip.ends_at
       `.execute(database);
@@ -1152,13 +1160,19 @@ export function createKyselyTripUnitOfWork(
     ): Promise<TripInviteCandidateForTripRead> {
       const rows = await database
         .selectFrom("trip_invites")
-        .select(["id", "trip_id"])
+        .select(["id", "trip_id", "revoked_at"])
         .where("trip_id", "=", tripId)
-        .orderBy("id")
+        .orderBy(sql`revoked_at is null`, "desc")
+        .orderBy("created_at", "desc")
         .limit(2)
         .execute();
       if (rows.length === 0) return { kind: "NOT_FOUND" };
-      if (rows.length !== 1) return { kind: "INVARIANT_ERROR" };
+      if (
+        rows.length > 1 &&
+        rows[0]?.revoked_at === null &&
+        rows[1]?.revoked_at === null
+      )
+        return { kind: "INVARIANT_ERROR" };
       const row = rows[0];
       if (row === undefined) return { kind: "INVARIANT_ERROR" };
       return {

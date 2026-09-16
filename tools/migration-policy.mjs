@@ -698,6 +698,21 @@ function validateAlterTable(chain, context, mode) {
       ? null
       : { code: opaqueCode, node: alteration.node };
   }
+  if (alteration.name === "addForeignKeyConstraint") {
+    if (
+      (alteration.args.length !== 4 && alteration.args.length !== 5) ||
+      !isDirectString(alteration.args[0]) ||
+      !isDirectStringArray(alteration.args[1]) ||
+      !isDirectString(alteration.args[2]) ||
+      !isDirectStringArray(alteration.args[3]) ||
+      alteration.args[1].elements.length !== alteration.args[3].elements.length
+    ) {
+      return { code: opaqueCode, node: alteration.node };
+    }
+    return alteration.args.length === 5
+      ? validateForeignKeyCallback(alteration.args[4], context)
+      : null;
+  }
   if (alteration.name === "addCheckConstraint") {
     if (alteration.args.length !== 2 || !isDirectString(alteration.args[0])) {
       return { code: opaqueCode, node: alteration.node };

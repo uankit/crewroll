@@ -146,7 +146,15 @@ function isKeyEnvelope(
 ): value is Exclude<TripResponse["tripKeyEnvelope"], null> {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ["keyEpoch", "algorithmVersion", "wrappedKey"]) &&
+    (hasExactKeys(value, ["keyEpoch", "algorithmVersion", "wrappedKey"]) ||
+      (hasExactKeys(value, [
+        "keyEpoch",
+        "algorithmVersion",
+        "wrappedKey",
+        "senderDeviceId",
+      ]) &&
+        typeof value.senderDeviceId === "string" &&
+        UUID_PATTERN.test(value.senderDeviceId))) &&
     value.keyEpoch === 1 &&
     value.algorithmVersion === 1 &&
     typeof value.wrappedKey === "string" &&
@@ -369,7 +377,7 @@ export function createApproveMember(dependencies: ApproveMemberDependencies) {
       currentMembers.length !== 1 ||
       targetMembers.length !== 1 ||
       targetMembershipId === tripCandidate.currentMembershipId ||
-      tripCandidate.status !== "LOBBY" ||
+      (tripCandidate.status !== "LOBBY" && tripCandidate.status !== "ACTIVE") ||
       tripCandidate.ownerDeviceId !== device.deviceId ||
       currentMember?.role !== "OWNER" ||
       currentMember.status !== "ACTIVE" ||

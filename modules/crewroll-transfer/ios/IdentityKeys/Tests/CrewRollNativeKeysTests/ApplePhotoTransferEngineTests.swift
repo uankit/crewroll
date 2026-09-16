@@ -5,6 +5,17 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testReplacementJournalVerifiesExistingLibraryOriginalWithoutDuplicatingIt() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        fixture.photos.bytes = fixture.plaintext
+        let engine = fixture.engine {}
+        await engine.activate()
+        try await eventually { fixture.network.receipts == 1 }
+        await engine.stop()
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.downloads, 0)
+        XCTAssertEqual(try fixture.ledger().snapshot().works.first?.complete, true)
+    }
     func testCaptureRejectedAfterPauseRaceStaysPrivateWithoutBlockingJournal() async throws {
         let fixture = try TransferFixture()
         defer { fixture.cleanup() }
@@ -12,7 +23,9 @@ final class ApplePhotoTransferEngineTests: XCTestCase {
         fixture.network.outgoing = true; fixture.network.rejectCapture = true
         let engine = fixture.engine {}
         await engine.activate()
-        try await eventually { (try? fixture.ledger().snapshot().works.first?.ignored) == true }
+        // Reading a live journal must not construct another writer: its crash
+        // cleanup would erase the first writer's not-yet-published staging file.
+        try await eventually { (try? fixture.readWorks().first?.ignored) == true }
         await engine.stop()
         XCTAssertEqual(fixture.network.uploads, 0)
         XCTAssertEqual(fixture.network.commits, 0)
@@ -215,6 +228,11 @@ private final class TransferFixture {
         ApplePhotoTransferEngine(root: root, contextProvider: { self.context }, invalidated: { _ in invalidated() }, library: photos, transportFactory: { _ in self.network })
     }
     func ledger() throws -> NativeTransferJournal { try NativeTransferJournal(directory: root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID)) }
+    func readWorks() throws -> [NativePhotoWork] {
+        struct Stored: Decodable { let works: [String: NativePhotoWork] }
+        let path = root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID).appendingPathComponent("journal.json")
+        return Array(try JSONDecoder().decode(Stored.self, from: Data(contentsOf: path)).works.values)
+    }
     func cleanup() { try? FileManager.default.removeItem(at: root) }
 }
 
@@ -229,6 +247,7 @@ private final class MemoryPhotoLibrary: NativePhotoLibraryPort {
         sourceBytes != nil && !excluding.contains("camera-source") ? [DiscoveredPhoto(localID: "camera-source", capturedAt: startsAt.addingTimeInterval(1))] : []
     }
     func exists(_ localID: String) throws -> Bool { bytes != nil }
+    func findSaved(assetID: String, capturedAt: Date?) throws -> String? { bytes == nil ? nil : "saved-placeholder" }
     func exportOriginal(localID: String, destination: URL) async throws -> (mime: String, width: UInt32, height: UInt32) {
         guard let sourceBytes else { throw PhotoLibraryFailure.missing }
         try sourceBytes.write(to: destination); return ("image/jpeg", 1, 1)

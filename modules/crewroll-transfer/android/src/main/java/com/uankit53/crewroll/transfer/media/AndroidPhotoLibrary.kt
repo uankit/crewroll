@@ -123,7 +123,7 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     override fun findSaved(assetId: String): String? {
         permission()
         require(assetId.matches(Regex("[0-9a-f-]{36}")))
-        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? AND ${MediaStore.Images.Media.RELATIVE_PATH} = ? AND ${MediaStore.Images.Media.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 0", arrayOf("crewroll-$assetId.%", savedPath, context.packageName), null)?.use { cursor ->
+        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? AND ${MediaStore.Images.Media.RELATIVE_PATH} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 0", arrayOf("crewroll-$assetId.%", savedPath), null)?.use { cursor ->
             if (cursor.moveToFirst()) return ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
         }
         return null

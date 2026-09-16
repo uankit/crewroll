@@ -1,3 +1,9 @@
+import type { TripContinuityService } from "./ports/tripContinuityService.js";
+import {
+  TripContinuitySchema,
+  TripContinuityBodySchema,
+  type TripContinuityBody,
+} from "@crewroll/contracts";
 import type { TripLifecycleService } from "../trips/ports/tripLifecycleService.js";
 import {
   TripListResponseSchema,
@@ -57,6 +63,7 @@ interface TripCommand<Input, Output> {
 }
 
 export interface TripRouteDependencies {
+  readonly continuity?: TripContinuityService;
   readonly lifecycle?: TripLifecycleService;
   readonly approveJoinRequest: TripCommand<
     ApproveJoinRequestInput,
@@ -152,6 +159,52 @@ export function tripRoutes(
   };
   const idempotencyKeyFor = (request: FastifyRequest): string =>
     canonicalUuid(request.headers["idempotency-key"]);
+
+  if (dependencies.continuity) {
+    const continuity = dependencies.continuity;
+    app.get<{ Params: { tripId: string } }>(
+      "/v1/trips/:tripId/continuity",
+      {
+        preHandler: resolveActor,
+        preValidation: authenticate,
+        schema: {
+          headers: QueryTransportHeadersSchema,
+          params: TripPathSchema,
+          response: { 200: TripContinuitySchema, ...errorResponses },
+          security: [{ ClerkBearer: [] }],
+        },
+      },
+      async (request, reply) => {
+        reply.header("Cache-Control", "no-store");
+        return continuity.read(
+          actorFor(request),
+          request.params.tripId.toLowerCase(),
+        );
+      },
+    );
+    app.post<{ Params: { tripId: string }; Body: TripContinuityBody }>(
+      "/v1/trips/:tripId/continuity",
+      {
+        preHandler: resolveActor,
+        preValidation: authenticate,
+        schema: {
+          headers: CommandTransportHeadersSchema,
+          params: TripPathSchema,
+          body: TripContinuityBodySchema,
+          response: { 200: TripContinuitySchema, ...errorResponses },
+          security: [{ ClerkBearer: [] }],
+        },
+      },
+      async (request, reply) => {
+        reply.header("Cache-Control", "no-store");
+        return continuity.change(
+          actorFor(request),
+          request.params.tripId.toLowerCase(),
+          request.body,
+        );
+      },
+    );
+  }
 
   if (dependencies.lifecycle) {
     const lifecycle = dependencies.lifecycle;

@@ -43,7 +43,7 @@ describe("JoinTripScreen", () => {
     screen.getByText("Arjun");
     screen.getByText("Host");
     screen.getByText("Crew · 2 joined");
-    const submit = screen.getByRole("button", { name: "Ask to join trip" });
+    const submit = screen.getByRole("button", { name: "Request to join" });
     await fireEvent.press(submit);
     await fireEvent.press(submit);
     expect(onJoin).toHaveBeenCalledTimes(1);

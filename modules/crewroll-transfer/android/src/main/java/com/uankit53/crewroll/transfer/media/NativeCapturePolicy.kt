@@ -9,6 +9,7 @@ internal class NativeCapturePolicy(json: JSONObject, tripId: String) {
     val participation = json.getString("participation")
     val left = participation == "LEFT"
     val leaving = participation == "LEAVING"
+    private val from = if (json.has("captureFrom")) Instant.parse(json.getString("captureFrom")) else Instant.MIN
     private val until = Instant.parse(json.getString("captureUntil"))
     private val excluded = json.getJSONArray("excludedCaptureWindows").let { rows ->
         (0 until rows.length()).map { index ->
@@ -22,9 +23,9 @@ internal class NativeCapturePolicy(json: JSONObject, tripId: String) {
         require(excluded.all { it.second == null || !it.second!!.isBefore(it.first) })
     }
     fun windows(start: Instant, end: Instant): List<Pair<Instant, Instant>> {
-        if (left) return emptyList()
+        if (left || participation == "JOINING") return emptyList()
         val bound = minOf(end, until)
-        var cursor = start
+        var cursor = maxOf(start, from)
         val result = mutableListOf<Pair<Instant, Instant>>()
         for ((from, to) in excluded) {
             if (to != null && to <= cursor) continue

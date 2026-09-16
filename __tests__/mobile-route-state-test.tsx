@@ -12,6 +12,16 @@ import type { AppSessionSnapshot } from "../src/bootstrap/AppSessionProvider";
 import { sessionUiStore } from "../src/bootstrap/state/sessionUiStore";
 import type { TripView } from "../src/domain/trips/model";
 
+jest.mock("@clerk/expo", () => ({
+  useUser: () => ({ user: { fullName: "Test Member", firstName: "Test" } }),
+}));
+jest.mock("../src/bootstrap/useTripContinuity", () => ({
+  useTripContinuity: () => ({
+    data: { approvalRequests: [] },
+    refetch: jest.fn(),
+  }),
+}));
+
 const tripId = "018f22c4-6e80-7000-8000-000000000001";
 const deviceId = "10000000-0000-4000-8000-000000000001";
 const ownerMembershipId = "20000000-0000-4000-8000-000000000001";
@@ -107,6 +117,7 @@ jest.mock("../src/infrastructure/auth/useAccountAuthentication", () => ({
 }));
 
 const mockActions = {
+  ensureOwnerInvite: jest.fn(async () => ({ ownerInviteCode: null })),
   previewInvite: jest.fn(async () => ({
     tripId,
     name: "Kyoto",
@@ -415,7 +426,7 @@ describe("Expo Router mobile journey", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
     await fireEvent.press(
-      screen.getByRole("button", { name: "Ask to join trip" }),
+      screen.getByRole("button", { name: "Request to join" }),
     );
     await waitFor(() =>
       expect(screen.getByText("Invite unavailable.")).toBeOnTheScreen(),
@@ -475,11 +486,11 @@ describe("Expo Router mobile journey", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Ask to join trip" }),
+        screen.getByRole("button", { name: "Request to join" }),
       ).toBeOnTheScreen(),
     );
     await fireEvent.press(
-      screen.getByRole("button", { name: "Ask to join trip" }),
+      screen.getByRole("button", { name: "Request to join" }),
     );
     await waitFor(() => expect(invitee.getPathname()).toBe(`/trips/${tripId}`));
     expect(screen.getByTestId("lobby-screen")).toBeOnTheScreen();

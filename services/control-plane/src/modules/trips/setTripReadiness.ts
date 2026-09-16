@@ -167,6 +167,7 @@ export function createSetTripReadiness(
               : freeze;
           }
 
+          if (trip.endsAt <= now) return tripProblem("TRIP_STATE_CONFLICT");
           const freeze = evaluateMutationFreeze({
             exactReplay: false,
             state: trip.state,

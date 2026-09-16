@@ -1028,14 +1028,14 @@ describe("join Trip command", () => {
       },
     ],
     [
-      "non-lobby",
+      "ending",
       (test: Awaited<ReturnType<typeof setupJoin>>) => {
         const trip = test.harness.state.trips.get(TRIP_ID);
         if (trip !== undefined) {
           test.harness.state.trips.set(TRIP_ID, {
             ...trip,
             startedAt: NOW,
-            state: "ACTIVE",
+            state: "ENDING",
           });
         }
       },
@@ -1601,7 +1601,7 @@ describe("approve Trip join request", () => {
     frozen.harness.state.trips.set(TRIP_ID, {
       ...frozenTrip,
       startedAt: NOW,
-      state: "ACTIVE",
+      state: "ENDING",
     });
     expect(problemCode(await executeApprove(frozen))).toBe("MEMBERSHIP_FROZEN");
 
@@ -1794,7 +1794,7 @@ describe("reject Trip join request", () => {
     frozen.harness.state.trips.set(TRIP_ID, {
       ...frozenTrip,
       startedAt: NOW,
-      state: "ACTIVE",
+      state: "ENDING",
     });
     expect(problemCode(await executeReject(frozen))).toBe("MEMBERSHIP_FROZEN");
 
@@ -2070,7 +2070,7 @@ describe("set Trip readiness", () => {
     frozen.harness.state.trips.set(TRIP_ID, {
       ...frozenTrip,
       startedAt: NOW,
-      state: "ACTIVE",
+      state: "ENDING",
     });
     expect(problemCode(await executeReadiness(frozen))).toBe(
       "MEMBERSHIP_FROZEN",
@@ -2127,7 +2127,7 @@ describe("start Trip command", () => {
     });
     expect([...test.harness.state.invites.values()]).toHaveLength(1);
     expect([...test.harness.state.invites.values()][0]).toMatchObject({
-      revokedAt: NOW,
+      revokedAt: null,
       tripId: TRIP_ID,
       updatedAt: NOW,
     });

@@ -1,60 +1,69 @@
-import type { ReactNode } from "react";
-import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
-
-import { feedbackActionButtonProps, type FeedbackAction } from "../feedback";
-import { AppText, Button, PressableRow, Stack, Surface } from "../primitives";
+import { useRef, useState } from "react";
+import { StyleSheet, View } from "react-native";
+import { AppText, Button, Stack } from "../primitives";
+import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 import { spacing } from "../tokens/spacing";
-
-export type InviteCardProps = {
-  readonly code: string;
-  readonly inviteUrl: string;
-  readonly onOpenLink: () => void;
-  readonly shareAction?: FeedbackAction;
-  readonly visualQr?: ReactNode;
-  readonly style?: StyleProp<ViewStyle>;
-  readonly testID?: string;
-};
-
-export function InviteCard({
-  code,
-  inviteUrl,
-  onOpenLink,
-  shareAction,
-  visualQr,
-  style,
-  testID,
-}: InviteCardProps) {
+import { radius } from "../tokens/radius";
+export type InviteCardProps = Readonly<{
+  code: string;
+  onCopy: () => Promise<void>;
+}>;
+export function InviteCard({ code, onCopy }: InviteCardProps) {
+  const theme = useCrewRollTheme();
+  const [state, setState] = useState<"idle" | "copying" | "copied" | "failed">(
+    "idle",
+  );
+  const busy = useRef(false);
+  async function copy() {
+    if (busy.current) return;
+    busy.current = true;
+    setState("copying");
+    try {
+      await onCopy();
+      setState("copied");
+    } catch {
+      setState("failed");
+    } finally {
+      busy.current = false;
+    }
+  }
   return (
-    <Surface style={style} testID={testID}>
-      <Stack gap="md">
-        <AppText variant="headline">Invite your crew</AppText>
-        {visualQr ? <View style={styles.qr}>{visualQr}</View> : null}
-        <Stack gap="xxs">
-          <AppText tone="secondary" variant="label">
-            Invite code
-          </AppText>
-          <AppText variant="title2">{code}</AppText>
-        </Stack>
-        <PressableRow
-          accessibilityHint="Opens this CrewRoll invitation"
-          label={inviteUrl}
-          onPress={onOpenLink}
-          role="link"
-          style={styles.action}
+    <Stack
+      gap="xs"
+      style={[styles.card, { backgroundColor: theme.accentSurface }]}
+    >
+      <AppText variant="eyebrow" tone="action">
+        INVITE CODE
+      </AppText>
+      <View style={styles.row}>
+        <AppText variant="title2" selectable style={{ flexShrink: 1 }}>
+          {code}
+        </AppText>
+        <Button
+          label={state === "copied" ? "Copied" : "Copy code"}
+          variant="text"
+          loading={state === "copying"}
+          onPress={() => void copy()}
         />
-        {shareAction ? (
-          <Button {...feedbackActionButtonProps(shareAction)} />
-        ) : null}
-      </Stack>
-    </Surface>
+      </View>
+      <AppText variant="caption" tone="secondary">
+        Only people you approve can join.
+      </AppText>
+      {state === "failed" ? (
+        <AppText tone="critical" accessibilityRole="alert">
+          The code couldn’t be copied. Try again.
+        </AppText>
+      ) : null}
+    </Stack>
   );
 }
-
 const styles = StyleSheet.create({
-  action: {
-    minWidth: spacing.xxxl,
-  },
-  qr: {
+  card: { padding: spacing.md, borderRadius: radius.md },
+  row: {
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: spacing.xs,
   },
 });

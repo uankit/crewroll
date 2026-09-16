@@ -197,11 +197,11 @@ describe.sequential("identity and trip schema", () => {
       { conname: "devices_user_id_fk", delete_action: "r" },
       { conname: "trip_invites_trip_id_fk", delete_action: "r" },
       {
-        conname: "trip_key_envelopes_recipient_member_fk",
+        conname: "trip_key_envelopes_recipient_device_fk",
         delete_action: "r",
       },
       {
-        conname: "trip_key_envelopes_sender_member_fk",
+        conname: "trip_key_envelopes_sender_device_fk",
         delete_action: "r",
       },
       { conname: "trip_key_envelopes_trip_id_fk", delete_action: "r" },
@@ -820,14 +820,12 @@ describe.sequential("identity and trip schema", () => {
     );
   });
 
-  it("enforces envelope uniqueness, membership FKs, versions, and byte bounds", async () => {
+  it("enforces envelope uniqueness, immutable device FKs, versions, and byte bounds", async () => {
     const owner = await fixture.user();
     const recipient = await fixture.user();
-    const outsider = await fixture.user();
     const trip = await fixture.trip(owner.id);
     const ownerDevice = await fixture.device(owner.id);
     const recipientDevice = await fixture.device(recipient.id);
-    const outsiderDevice = await fixture.device(outsider.id);
 
     await fixture.member(trip.id, owner.id, ownerDevice.id, { role: "OWNER" });
     await fixture.member(trip.id, recipient.id, recipientDevice.id);
@@ -838,11 +836,19 @@ describe.sequential("identity and trip schema", () => {
       "23505",
     );
     await expectPostgresError(
-      fixture.envelope(trip.id, outsiderDevice.id, ownerDevice.id),
+      fixture.envelope(
+        trip.id,
+        "950e8400-e29b-41d4-a716-000000999991",
+        ownerDevice.id,
+      ),
       "23503",
     );
     await expectPostgresError(
-      fixture.envelope(trip.id, ownerDevice.id, outsiderDevice.id),
+      fixture.envelope(
+        trip.id,
+        ownerDevice.id,
+        "950e8400-e29b-41d4-a716-000000999991",
+      ),
       "23503",
     );
     await expectPostgresError(
@@ -867,28 +873,31 @@ describe.sequential("identity and trip schema", () => {
     );
   });
 
-  it("requires envelope senders and recipients to be active in the same key epoch", async () => {
-    const owner = await fixture.user();
-    const pending = await fixture.user();
-    const trip = await fixture.trip(owner.id);
-    const ownerDevice = await fixture.device(owner.id);
-    const pendingDevice = await fixture.device(pending.id);
-
-    await fixture.member(trip.id, owner.id, ownerDevice.id, { role: "OWNER" });
-    await fixture.member(trip.id, pending.id, pendingDevice.id, {
-      approved_at: null,
-      key_epoch: null,
-      state: "PENDING_KEY",
+  it("retains historic envelopes when the membership moves to another phone", async () => {
+    const user = await fixture.user();
+    const trip = await fixture.trip(user.id);
+    const previous = await fixture.device(user.id);
+    const next = await fixture.device(user.id);
+    const membership = await fixture.member(trip.id, user.id, previous.id, {
+      role: "OWNER",
     });
-
+    await fixture.envelope(trip.id, previous.id, previous.id);
+    await db
+      .updateTable("trip_members")
+      .set({ participating_device_id: next.id })
+      .where("id", "=", membership.id)
+      .execute();
     await expectPostgresError(
-      fixture.envelope(trip.id, pendingDevice.id, ownerDevice.id),
+      db.deleteFrom("devices").where("id", "=", previous.id).execute(),
       "23503",
     );
-    await expectPostgresError(
-      fixture.envelope(trip.id, ownerDevice.id, pendingDevice.id),
-      "23503",
-    );
+    expect(
+      await db
+        .selectFrom("trip_key_envelopes")
+        .select("recipient_device_id")
+        .where("trip_id", "=", trip.id)
+        .execute(),
+    ).toEqual([{ recipient_device_id: previous.id }]);
   });
 
   it("uses RESTRICT for identity and trip references", async () => {
@@ -902,7 +911,9 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
-    await migrateDown(db);
+    await migrateDown(db); // 008
+    await migrateDown(db); // 007
+    await migrateDown(db); // 006
     const participationAfterDown = await sql<{ column_name: string }>`
       select column_name from information_schema.columns
       where table_schema = 'public' and table_name = 'trip_members'

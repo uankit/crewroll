@@ -152,6 +152,7 @@ export interface TripProjection {
   readonly state: TripDatabaseState;
   readonly tripId: string;
   readonly tripKeyEnvelope: Readonly<{
+    senderDeviceId?: string;
     algorithmVersion: 1;
     keyEpoch: 1;
     wrappedKey: Readonly<Uint8Array>;

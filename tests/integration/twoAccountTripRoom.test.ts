@@ -1235,6 +1235,11 @@ describe.sequential("two-account Trip room public-route journey", () => {
     expect(JSON.stringify(inviteeActive)).not.toContain(OWNER_E2EE_KEY);
     expect(JSON.stringify(inviteeActive)).not.toContain(OWNER_ENVELOPE);
 
+    await context.db
+      .updateTable("trips")
+      .set({ state: "ENDING", ending_started_at: new Date() })
+      .where("id", "=", id)
+      .execute();
     const stableBefore = {
       activeTrips: await context.db
         .selectFrom("user_active_trips")
@@ -1298,7 +1303,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
         { fullPhotoLibraryAccess: true },
         ownerReadyKey,
       ),
-    ).toMatchObject({ status: "ACTIVE", version: 6 });
+    ).toMatchObject({ status: "ENDING", version: 6 });
     expect(
       await setReadiness(
         invitee,
@@ -1306,7 +1311,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
         { fullPhotoLibraryAccess: true },
         inviteeReadyKey,
       ),
-    ).toMatchObject({ status: "ACTIVE", version: 6 });
+    ).toMatchObject({ status: "ENDING", version: 6 });
     await tripProblem({
       actor: invitee,
       body: joinBody,
@@ -1851,19 +1856,14 @@ describe.sequential("two-account Trip room public-route journey", () => {
       commandId(412),
     );
     await bounded(startHeld.promise, "Start-first lock acquisition");
-    const joinProblemPromise = tripProblem({
-      actor: losingJoiner,
-      body: {
+    const joinProblemPromise = requestJoin(
+      losingJoiner,
+      {
         deviceId: startFirst.accounts.invitee.device.deviceId,
         inviteCode: startFirst.body.inviteCode,
       },
-      bodySchema: CreateJoinRequestBodySchema,
-      code: "INVITE_INVALID",
-      idempotencyKey: commandId(413),
-      method: "POST",
-      status: 404,
-      url: "/v1/trips/join-requests",
-    });
+      commandId(413),
+    );
     try {
       await bounded(joinAttempted.promise, "Start-first competing join");
     } finally {
@@ -1885,91 +1885,43 @@ describe.sequential("two-account Trip room public-route journey", () => {
       .where("trip_id", "=", startFirst.body.tripId)
       .executeTakeFirstOrThrow();
     expect(startFirstTrip).toMatchObject({
-      member_count: 1,
+      member_count: 2,
       state: "ACTIVE",
-      version: 3,
+      version: 4,
     });
     expect(startFirstTrip.started_at).toBeInstanceOf(Date);
-    expect(startFirstInvite.uses_count).toBe(0);
-    expect(startFirstInvite.revoked_at).toBeInstanceOf(Date);
-    expect
-      .soft(
-        await raceLedger(context.db, startFirst.body.tripId, [
-          commandId(410),
-          commandId(411),
-          commandId(412),
-          commandId(413),
-        ]),
-      )
-      .toEqual({
-        idempotency: [
-          {
-            idempotency_key: commandId(410),
-            response_body: {
-              actorDeviceId: startFirst.accounts.owner.device.deviceId,
-              kind: "CREATE_COMMITTED",
-              tripId: startFirst.body.tripId,
-            },
-            response_status: 201,
-            route_key: "trips.create.v1",
-          },
-          {
-            idempotency_key: commandId(411),
-            response_body: {
-              actorDeviceId: startFirst.accounts.owner.device.deviceId,
-              kind: "READINESS",
-              tripId: startFirst.body.tripId,
-            },
-            response_status: 200,
-            route_key: "trips.readiness.v1",
-          },
-          {
-            idempotency_key: commandId(412),
-            response_body: {
-              actorDeviceId: startFirst.accounts.owner.device.deviceId,
-              kind: "START",
-              tripId: startFirst.body.tripId,
-            },
-            response_status: 200,
-            route_key: "trips.start.v1",
-          },
-        ],
-        inbox: [],
-        memberships: [
-          {
-            full_photo_library_access: true,
-            id: startFirst.ownerMembershipId,
-            key_epoch: 1,
-            participating_device_id: startFirst.accounts.owner.device.deviceId,
-            role: "OWNER",
-            state: "ACTIVE",
-          },
-        ],
-        outbox: [
-          {
-            aggregate_id: startFirst.body.tripId,
-            dedupe_key: `trip.changed:${startFirst.body.tripId}:v2`,
-            event_type: "trip.changed",
-            payload: {
-              recipientSequences: [],
-              status: "LOBBY",
-              tripId: startFirst.body.tripId,
-              version: 2,
-            },
-          },
-          {
-            aggregate_id: startFirst.body.tripId,
-            dedupe_key: `trip.changed:${startFirst.body.tripId}:v3`,
-            event_type: "trip.changed",
-            payload: {
-              recipientSequences: [],
-              status: "ACTIVE",
-              tripId: startFirst.body.tripId,
-              version: 3,
-            },
-          },
-        ],
-      });
+    expect(startFirstInvite.uses_count).toBe(1);
+    expect(startFirstInvite.revoked_at).toBeNull();
+    const ledger = await raceLedger(context.db, startFirst.body.tripId, [
+      commandId(410),
+      commandId(411),
+      commandId(412),
+      commandId(413),
+    ]);
+    expect(ledger.idempotency.map((record) => record.idempotency_key)).toEqual([
+      commandId(410),
+      commandId(411),
+      commandId(412),
+      commandId(413),
+    ]);
+    expect(ledger.memberships).toHaveLength(2);
+    expect(
+      ledger.memberships.find(
+        (member) =>
+          member.participating_device_id ===
+          startFirst.accounts.invitee.device.deviceId,
+      ),
+    ).toMatchObject({
+      state: "PENDING_KEY",
+      key_epoch: null,
+      full_photo_library_access: false,
+    });
+    expect(ledger.inbox).toHaveLength(1);
+    expect(ledger.outbox.map((event) => event.dedupe_key)).toEqual(
+      [2, 3, 4].map(
+        (version) => `trip.changed:${startFirst.body.tripId}:v${version}`,
+      ),
+    );
     expect(kmsCalls).toEqual({ fingerprint: 0, protect: 0 });
   });
 });

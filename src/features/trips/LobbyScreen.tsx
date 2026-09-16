@@ -48,6 +48,7 @@ export type LobbyScreenProps = Readonly<{
   actionError?: string | null;
   hasPhotos?: boolean;
   filterCount?: number;
+  deviceRequestCount?: number;
   onOpenFilters?: () => void;
   onOpenInfo?: () => void;
   onBack?: () => void;
@@ -89,6 +90,7 @@ export function LobbyScreen({
   actionError,
   hasPhotos = false,
   filterCount = 0,
+  deviceRequestCount = 0,
   onOpenFilters,
   onOpenInfo,
   onBack,
@@ -133,6 +135,7 @@ export function LobbyScreen({
     );
   const blocker = owner && lobby ? startBlockerFor(trip) : null;
   const pending = trip.members.filter((m) => m.status === "PENDING_KEY");
+  const requestCount = deviceRequestCount + (owner ? pending.length : 0);
   const full = photoPermission.kind === "FULL";
   const title = lobby && !owner ? "Waiting for your host." : trip.name;
   const description = lobby
@@ -212,11 +215,7 @@ export function LobbyScreen({
           </View>
         }
         title={title}
-        {...(lobby
-          ? { description }
-          : !hasPhotos
-            ? { description: "Photos appear here automatically." }
-            : {})}
+        {...(lobby ? { description } : {})}
         header={
           <View style={styles.navigation}>
             {onBack ? (
@@ -230,7 +229,18 @@ export function LobbyScreen({
               <View />
             )}
             {onOpenInfo ? (
-              <Button variant="text" label="Trip info" onPress={onOpenInfo} />
+              <Button
+                variant="text"
+                label={
+                  requestCount ? `Trip info · ${requestCount}` : "Trip info"
+                }
+                accessibilityLabel={
+                  requestCount
+                    ? `Trip info, ${requestCount} waiting requests`
+                    : "Trip info"
+                }
+                onPress={onOpenInfo}
+              />
             ) : (
               <AppText tone="secondary" variant="label">
                 {trip.name}

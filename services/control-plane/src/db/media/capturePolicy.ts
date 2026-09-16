@@ -2,6 +2,7 @@
 export function captureAllowed(
   capturedAt: Date,
   input: {
+    startsAt?: Date;
     endsAt: Date;
     endingAt: Date | null;
     leavingAt: Date | null;
@@ -17,6 +18,7 @@ export function captureAllowed(
   );
   if (
     !Number.isFinite(captured) ||
+    captured < (input.startsAt?.getTime() ?? -Infinity) ||
     captured > cutoff ||
     (input.pausedAt && captured >= input.pausedAt.getTime())
   )

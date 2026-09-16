@@ -9,7 +9,28 @@ import {
   UriSchema,
 } from "./common.js";
 import { DeliveryStatusSchema } from "./enums.js";
-import { AssetIdSchema, DeliveryIdSchema } from "./ids.js";
+import {
+  AssetIdSchema,
+  DeliveryIdSchema,
+  DeviceIdSchema,
+  TripIdSchema,
+} from "./ids.js";
+
+export const PendingDeliveriesResponseSchema = ClosedObject({
+  items: Type.Array(
+    ClosedObject({
+      deliveryId: DeliveryIdSchema,
+      assetId: AssetIdSchema,
+      tripId: TripIdSchema,
+      sourceDeviceId: DeviceIdSchema,
+      committedAt: DateTimeSchema,
+    }),
+    { maxItems: 100 },
+  ),
+});
+export type PendingDeliveriesResponse = Static<
+  typeof PendingDeliveriesResponseSchema
+>;
 
 export const CreateDownloadSessionBodySchema = ClosedObject({
   variants: Type.Array(

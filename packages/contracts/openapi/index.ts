@@ -1,3 +1,9 @@
+export * from "./tripContinuity.js";
+import {
+  TripContinuitySchema,
+  TripContinuityBodySchema,
+  DeviceApprovalRequestSchema,
+} from "./tripContinuity.js";
 export * from "./tripLifecycle.js";
 export * from "./assets.js";
 export * from "./common.js";
@@ -28,6 +34,7 @@ import {
 import {
   CreateDownloadSessionBodySchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesResponseSchema,
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
 } from "./deliveries.js";
@@ -89,6 +96,9 @@ import {
 } from "./tripLifecycle.js";
 
 export const publicObjectSchemas = {
+  TripContinuitySchema,
+  TripContinuityBodySchema,
+  DeviceApprovalRequestSchema,
   TripSummarySchema,
   TripListResponseSchema,
   TripLifecycleBodySchema,
@@ -132,6 +142,7 @@ export const publicObjectSchemas = {
   CommitAssetResponseSchema,
   CreateDownloadSessionBodySchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesResponseSchema,
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
   AssetCommittedEventSchema,

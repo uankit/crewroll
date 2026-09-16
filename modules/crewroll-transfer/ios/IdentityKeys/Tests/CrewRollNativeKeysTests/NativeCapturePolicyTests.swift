@@ -24,4 +24,13 @@ final class NativeCapturePolicyTests: XCTestCase {
         XCTAssertTrue(try policy("LEFT").windows(tripID: "trip", start: time(0), end: time(100)).isEmpty)
         XCTAssertThrowsError(try policy().windows(tripID: "other", start: time(0), end: time(100)))
     }
+    func testLateApprovalAndReplacementPhoneDiscoveryCutoff() throws {
+        let format = ISO8601DateFormatter()
+        let value = NativeCapturePolicy(tripId: "trip", version: 4, participation: "JOINED", captureFrom: format.string(from: time(55)),
+            captureUntil: format.string(from: time(80)), excludedCaptureWindows: [])
+        let windows = try value.windows(tripID: "trip", start: time(0), end: time(100))
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows.first?.0, time(55))
+        XCTAssertTrue(try policy("JOINING").windows(tripID: "trip", start: time(0), end: time(100)).isEmpty)
+    }
 }

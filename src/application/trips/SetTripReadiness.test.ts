@@ -13,6 +13,7 @@ import type {
   TripMutationJournalRecord,
 } from "./ports";
 import { createSetTripReadiness } from "./SetTripReadiness";
+import { projectTrip } from "./projectTrip";
 
 const tripId = "0191a203-227b-7011-9213-141516171819";
 const deviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
@@ -82,6 +83,60 @@ function harness() {
 }
 
 describe("SetTripReadiness", () => {
+  it.each(["LOBBY", "ACTIVE"] as const)(
+    "publishes newly granted access in %s, including a restored phone",
+    async (status) => {
+      const { api, service } = harness();
+      const accepted = { ...response(), status };
+      api.setTripReadiness.mockResolvedValue(accepted);
+      const current = projectTrip({ ...response(false), status }, deviceId);
+      await expect(service.reconcile(current, true)).resolves.toMatchObject({
+        status,
+        members: [expect.objectContaining({ fullPhotoLibraryAccess: true })],
+      });
+      expect(api.setTripReadiness).toHaveBeenCalledWith(
+        deviceId,
+        commandId,
+        tripId,
+        { fullPhotoLibraryAccess: true },
+      );
+    },
+  );
+
+  it("publishes revoked access during a live trip", async () => {
+    const { api, service } = harness();
+    api.setTripReadiness.mockResolvedValue({
+      ...response(false),
+      status: "ACTIVE",
+    });
+    const current = projectTrip({ ...response(), status: "ACTIVE" }, deviceId);
+    await service.reconcile(current, false);
+    expect(api.setTripReadiness).toHaveBeenCalledWith(
+      deviceId,
+      commandId,
+      tripId,
+      { fullPhotoLibraryAccess: false },
+    );
+  });
+
+  it.each(["ENDING", "COMPLETE", "INCOMPLETE_EXPIRED", "CANCELLED"] as const)(
+    "does not write permission to a closed %s membership",
+    async (status) => {
+      const { api, journal, service } = harness();
+      const current = projectTrip({ ...response(false), status }, deviceId);
+      await expect(service.reconcile(current, true)).resolves.toBe(current);
+      expect(api.setTripReadiness).not.toHaveBeenCalled();
+      expect(journal.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not send duplicate permission updates", async () => {
+    const { api, service } = harness();
+    const current = projectTrip({ ...response(), status: "ACTIVE" }, deviceId);
+    await expect(service.reconcile(current, true)).resolves.toBe(current);
+    expect(api.setTripReadiness).not.toHaveBeenCalled();
+  });
+
   it("exhaustively applies canonical server disposition to publish and replay", async () => {
     const terminal = new Set<ProblemCode>([
       "AUTH_REQUIRED",

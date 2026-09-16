@@ -1,6 +1,5 @@
 package com.uankit53.crewroll.transfer
 
-import com.uankit53.crewroll.transfer.identitykeys.AndroidNativeKeyInfrastructure
 import com.uankit53.crewroll.transfer.identitykeys.NativeKeyException
 import com.uankit53.crewroll.transfer.identitykeys.NativeKeyLifecycle
 import com.uankit53.crewroll.transfer.identitykeys.NativeCommandDecoder
@@ -10,52 +9,42 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.time.Instant
-import java.io.File
 import java.util.concurrent.CompletableFuture
-import com.goterl.lazysodium.SodiumAndroid
-import com.uankit53.crewroll.transfer.media.AndroidPhotoLibrary
-import com.uankit53.crewroll.transfer.media.NativePhotoCrypto
 import com.uankit53.crewroll.transfer.media.NativePhotoTransferEngine
-import com.uankit53.crewroll.transfer.media.NativePhotoTransport
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
-import com.uankit53.crewroll.transfer.identitykeys.NativeMediaSession
 import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
 
 class CrewRollTransferModule : Module() {
-  private var productionLifecycle: NativeKeyLifecycle? = null
-  private var photoEngine: NativePhotoTransferEngine? = null
+  private var runtimeValue: CrewRollNativeRuntime? = null
+  private val invalidation: (Long) -> Unit = { revision -> sendEvent("engineInvalidated", mapOf("protocolVersion" to 1, "type" to "ENGINE_INVALIDATED", "revision" to revision)) }
   @Volatile private var foreground = true
   private val commands = NativeOperationQueue { name, state, ms ->
     Log.i("CrewRollSession", "operation=$name state=$state durationMs=$ms")
   }
-  private val mediaSession = NativeMediaSession({ lifecycle().mediaContext() })
+  private val mediaSession get() = runtime().mediaSession
 
   override fun definition() = ModuleDefinition {
     Name("CrewRollTransfer")
     Events("engineInvalidated")
     OnCreate {
+      runtime().listen(invalidation)
+      runtime().foreground(true)
       commands.submit("startupCleanup") { runLifecycleCleanup() }
     }
     OnActivityEntersForeground {
       foreground = true
       commands.submit("foregroundCleanup") {
         runLifecycleCleanup()
-        photoEngine?.foreground(true)
+        runtime().foreground(true)
       }
     }
     OnActivityEntersBackground {
       foreground = false
-      photoEngine?.foreground(false)
+      runtime().foreground(false)
     }
     OnDestroy {
-      commands.submit("close") {
-        mediaSession.close()
-        photoEngine?.close(); photoEngine = null
-        productionLifecycle?.cancelScheduledCleanup()
-        productionLifecycle = null
-      }
+      runtimeValue?.unlisten(invalidation)
+      runtimeValue = null
       commands.close()
     }
 
@@ -104,6 +93,7 @@ class CrewRollTransferModule : Module() {
       future("clearDeviceSession", promise) {
         requireCommand(command, setOf("protocolVersion"))
         val lifecycle = lifecycle()
+        runtime().policy(false)
         engine().stop().thenApply { mediaSession.change { lifecycle.clearDeviceSession() }; null }
       }
     }
@@ -171,6 +161,7 @@ class CrewRollTransferModule : Module() {
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
         val lifecycle = lifecycle()
         lifecycle.activateTrip(NativeCommandDecoder.activation(command))
+        runtime().policy(true)
         engine().activate().thenApply { null }
       }
     }
@@ -179,6 +170,7 @@ class CrewRollTransferModule : Module() {
         NativeCommandDecoder.require(command, NativeCommandKind.DEACTIVATE_TRIP)
         val lifecycle = lifecycle()
         lifecycle.deactivateTrip(string(command, "tripId"))
+        runtime().policy(false)
         engine().stop().thenApply { null }
       }
     }
@@ -188,11 +180,12 @@ class CrewRollTransferModule : Module() {
         if (command.keys != setOf("protocolVersion", "paused", "cellularAllowed") || command["paused"] !is Boolean || command["cellularAllowed"] !is Boolean) {
           throw NativeKeyException.invalidCommand()
         }
+        runtime().policy(!(command["paused"] as Boolean), command["cellularAllowed"] as Boolean)
         engine().policy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean).thenApply { null }
       }
     }
     AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
-      future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); engine().wake().thenApply { null } }
+      future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); runtime().let { if (it.enabled && it.foreground) CrewRollSyncJobs.syncNow(it.context, it.cellular) }; engine().wake().thenApply { null } }
     }
     AsyncFunction("retry") { command: Map<String, Any?>, promise: Promise ->
       future("retry", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion", "workId")); engine().retry(string(command, "workId")).thenApply { null } }
@@ -213,24 +206,13 @@ class CrewRollTransferModule : Module() {
     }
   }
 
-  private fun lifecycle(): NativeKeyLifecycle {
-    productionLifecycle?.let { return it }
-    val context = appContext.reactContext ?: throw NativeKeyException.materialLost()
-    return AndroidNativeKeyInfrastructure.makeLifecycle(context).also { productionLifecycle = it }
-  }
-  private fun engine(): NativePhotoTransferEngine {
-    photoEngine?.let { return it }
+  private fun runtime(): CrewRollNativeRuntime {
+    runtimeValue?.let { return it }
     val context = appContext.reactContext?.applicationContext ?: throw NativeKeyException.materialLost()
-    lifecycle()
-    val connectivity = context.getSystemService(ConnectivityManager::class.java)
-    return NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() }, AndroidPhotoLibrary(context), NativePhotoCrypto(SodiumAndroid()), { cellular ->
-      NativePhotoTransport {
-        val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-        capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
-          (cellular || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
-      }
-    }, { revision -> sendEvent("engineInvalidated", mapOf("protocolVersion" to 1, "type" to "ENGINE_INVALIDATED", "revision" to revision)) }).also { photoEngine = it; it.foreground(foreground) }
+    return CrewRollNativeRuntime.get(context).also { runtimeValue = it }
   }
+  private fun lifecycle(): NativeKeyLifecycle = runtime().lifecycle
+  private fun engine(): NativePhotoTransferEngine = runtime().engine
   private fun requireCommand(command: Map<String, Any?>, keys: Set<String>) {
     if (command.keys != keys) throw NativeKeyException.invalidCommand()
     NativeCommandDecoder.requireProtocol(command)

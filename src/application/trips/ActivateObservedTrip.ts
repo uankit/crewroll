@@ -116,7 +116,8 @@ export function createActivateObservedTrip(
           tripId: response.id,
           keyEpoch: envelope.keyEpoch,
           algorithmVersion: envelope.algorithmVersion,
-          expectedSenderDeviceId: response.ownerDeviceId,
+          expectedSenderDeviceId:
+            envelope.senderDeviceId ?? response.ownerDeviceId,
           recipientDeviceId: device.deviceId,
           recipientE2eeKeyVersion: nomination.e2eeKeyVersion,
           wrappedKey: envelope.wrappedKey,

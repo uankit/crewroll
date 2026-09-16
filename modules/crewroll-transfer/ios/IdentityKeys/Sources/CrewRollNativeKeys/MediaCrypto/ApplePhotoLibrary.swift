@@ -21,7 +21,9 @@ protocol NativePhotoLibraryPort: AnyObject {
     func isCameraOriginal(_ url: URL) -> Bool
     func saveVerifiedFile(source: URL, assetID: String, capturedAt: Date?, allocated: @escaping (String) throws -> Void) async throws -> String
     func verifySaved(localID: String, expectedBytes: UInt64, expectedSHA256: Bytes) async throws
+    func findSaved(assetID: String, capturedAt: Date?) throws -> String?
 }
+extension NativePhotoLibraryPort { func findSaved(assetID: String, capturedAt: Date?) throws -> String? { nil } }
 
 public final class ApplePhotoLibrary: NSObject, PHPhotoLibraryChangeObserver, NativePhotoLibraryPort {
     private var observed: PHFetchResult<PHAsset>?
@@ -56,6 +58,22 @@ public final class ApplePhotoLibrary: NSObject, PHPhotoLibraryChangeObserver, Na
     public func exists(_ localID: String) throws -> Bool {
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { throw PhotoLibraryFailure.permission }
         return PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil).firstObject != nil
+    }
+
+    public func findSaved(assetID: String, capturedAt: Date?) throws -> String? {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { throw PhotoLibraryFailure.permission }
+        guard UUID(uuidString: assetID) != nil else { throw PhotoLibraryFailure.invalidPhoto }
+        let options = PHFetchOptions()
+        if let capturedAt { options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", capturedAt.addingTimeInterval(-1) as NSDate, capturedAt.addingTimeInterval(1) as NSDate) }
+        let assets = PHAsset.fetchAssets(with: .image, options: options)
+        var found: String?
+        assets.enumerateObjects { asset, _, stop in
+            if PHAssetResource.assetResources(for: asset).contains(where: { $0.type == .photo && $0.originalFilename.hasPrefix("crewroll-\(assetID).") }) {
+                found = asset.localIdentifier; stop.pointee = true
+            }
+        }
+        // The engine must verify these bytes against the decrypted manifest.
+        return found
     }
 
     public func exportOriginal(localID: String, destination: URL) async throws -> (mime: String, width: UInt32, height: UInt32) {

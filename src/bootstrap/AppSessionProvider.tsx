@@ -1,4 +1,5 @@
 import type {
+  TripContinuity,
   TripListResponse,
   TripLifecycleBody,
   TripTransferState,
@@ -68,7 +69,11 @@ export type AppSessionSnapshot =
       Readonly<{ phase: "READY_NO_TRIP"; creationFailed?: true }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_CREATE" }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_JOIN" }>)
-  | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_PENDING_APPROVAL" }>)
+  | (ReadyDeviceSnapshot &
+      Readonly<{
+        phase: "READY_PENDING_APPROVAL";
+        restoredPendingTripId?: string;
+      }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_LOBBY"; tripId: string }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_ACTIVE"; tripId: string }>);
 
@@ -115,6 +120,15 @@ export type AppSessionAuthSnapshot =
     }>;
 
 export type ScopedTripSession = Readonly<{
+  getTripContinuity?(tripId: string): Promise<TripContinuity>;
+  ensureOwnerInvite?(tripId: string): Promise<TripContinuity>;
+  requestDeviceRecovery?(tripId: string): Promise<TripContinuity>;
+  resolveDeviceRecovery?(
+    tripId: string,
+    requestId: string,
+    approve: boolean,
+  ): Promise<TripContinuity>;
+
   listTrips?(): Promise<TripListResponse>;
   getTripLifecycle?(tripId: string): Promise<TripTransferState>;
   changeTripLifecycle?(
@@ -175,6 +189,15 @@ export type JoinMutationResult =
   | Readonly<{ kind: "PENDING_APPROVAL" }>;
 
 export type TripSessionActions = Readonly<{
+  getTripContinuity(tripId: string): Promise<TripContinuity>;
+  ensureOwnerInvite(tripId: string): Promise<TripContinuity>;
+  requestDeviceRecovery(tripId: string): Promise<TripContinuity>;
+  resolveDeviceRecovery(
+    tripId: string,
+    requestId: string,
+    approve: boolean,
+  ): Promise<TripContinuity>;
+
   listTrips(): Promise<TripListResponse>;
   getTripLifecycle(tripId: string): Promise<TripTransferState>;
   changeTripLifecycle(
@@ -751,8 +774,63 @@ export function AppSessionProvider({
     [binding],
   );
 
+  const getTripContinuity = useCallback(
+    async (tripId: string) => {
+      const current = binding();
+      if (!current.services.getTripContinuity) throw unavailableSession();
+      const value = await current.services.getTripContinuity(tripId);
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return value;
+    },
+    [binding],
+  );
+  const ensureOwnerInvite = useCallback(
+    async (tripId: string) => {
+      const current = binding();
+      if (!current.services.ensureOwnerInvite) throw unavailableSession();
+      const value = await current.services.ensureOwnerInvite(tripId);
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      if (value.ownerInviteCode)
+        setOwnerInvite({ tripId, code: value.ownerInviteCode });
+      return value;
+    },
+    [binding],
+  );
+  const requestDeviceRecovery = useCallback(
+    async (tripId: string) => {
+      const current = binding();
+      if (!current.services.requestDeviceRecovery) throw unavailableSession();
+      const value = await current.services.requestDeviceRecovery(tripId);
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return value;
+    },
+    [binding],
+  );
+  const resolveDeviceRecovery = useCallback(
+    async (tripId: string, requestId: string, approve: boolean) => {
+      const current = binding();
+      if (!current.services.resolveDeviceRecovery) throw unavailableSession();
+      const value = await current.services.resolveDeviceRecovery(
+        tripId,
+        requestId,
+        approve,
+      );
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return value;
+    },
+    [binding],
+  );
+
   const actions = useMemo<TripSessionActions>(
     () => ({
+      getTripContinuity,
+      ensureOwnerInvite,
+      requestDeviceRecovery,
+      resolveDeviceRecovery,
       listTrips,
       getTripLifecycle,
       changeTripLifecycle,
@@ -767,6 +845,10 @@ export function AppSessionProvider({
       start: startTrip,
     }),
     [
+      getTripContinuity,
+      ensureOwnerInvite,
+      requestDeviceRecovery,
+      resolveDeviceRecovery,
       listTrips,
       getTripLifecycle,
       changeTripLifecycle,
@@ -990,6 +1072,14 @@ export function AppSessionProvider({
               scopedSession.current = services;
             }
             if (currentTrip) {
+              if (currentTrip.participation === "JOINING") {
+                setSnapshot({
+                  phase: "READY_PENDING_APPROVAL",
+                  deviceId: device.deviceId,
+                  restoredPendingTripId: currentTrip.id,
+                });
+                return;
+              }
               await observeOperation(
                 services.hydrateTrip(currentTrip.id),
                 generation,
@@ -1168,6 +1258,11 @@ export function AppSessionProvider({
     };
   }, [snapshot]);
 
+  const restoredPendingTripId =
+    snapshot.phase === "READY_PENDING_APPROVAL"
+      ? snapshot.restoredPendingTripId
+      : undefined;
+
   useEffect(() => {
     if (snapshot.phase !== "READY_PENDING_APPROVAL") return;
     const services = scopedSession.current;
@@ -1191,6 +1286,28 @@ export function AppSessionProvider({
             services!.hydrateTrip(approvedTripId),
             generation,
           );
+          return;
+        }
+        if (restoredPendingTripId !== undefined) {
+          // A replacement installation has no local join command to replay.
+          // The account's trip list can report approval without exposing keys
+          // or fetching the approval-gated projection early.
+          if (!services!.listTrips) throw unavailableSession();
+          const trips = await services!.listTrips();
+          if (!isCurrent()) return;
+          const trip = trips.items.find(
+            (item) => item.id === restoredPendingTripId && item.onThisDevice,
+          );
+          if (!trip || trip.participation === "LEFT") {
+            setSnapshot({ phase: "READY_NO_TRIP", deviceId: device!.deviceId });
+            return;
+          }
+          if (trip.participation !== "JOINING") {
+            approvedTripId = trip.id;
+            await observeOperation(services!.hydrateTrip(trip.id), generation);
+            return;
+          }
+          delay = 5_000;
           return;
         }
         const result = await services!.replayUnknownJoin();
@@ -1223,8 +1340,8 @@ export function AppSessionProvider({
       }
     }
 
-    // Replay only the persisted command, serially and only in the foreground.
-    // Approval gates projection/key access; polling does not relax that gate.
+    // Check only in the foreground, serially. A local command is replayed when
+    // present; restored pending memberships use the server's account list.
     timer = setTimeout(() => void check(), delay);
     const subscription = AppState.addEventListener("change", (state) => {
       foreground = state === "active";
@@ -1236,7 +1353,13 @@ export function AppSessionProvider({
       clearTimeout(timer);
       subscription.remove();
     };
-  }, [authBindingKey, clearAndSignOut, observeOperation, snapshot.phase]);
+  }, [
+    authBindingKey,
+    clearAndSignOut,
+    observeOperation,
+    restoredPendingTripId,
+    snapshot.phase,
+  ]);
 
   const retry = useCallback(() => {
     setRetryGeneration((generation) => generation + 1);

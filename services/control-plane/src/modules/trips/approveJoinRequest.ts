@@ -270,6 +270,7 @@ export function createApproveJoinRequest(
             return tripSuccess(response(target, envelope));
           }
 
+          if (trip.endsAt <= now) return tripProblem("TRIP_STATE_CONFLICT");
           const freeze = evaluateMutationFreeze({
             exactReplay: false,
             state: trip.state,

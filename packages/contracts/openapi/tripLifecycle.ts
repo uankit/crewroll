@@ -45,6 +45,7 @@ export const TripTransferStateSchema = ClosedObject({
   status: TripStatusSchema,
   participation: TripParticipationSchema,
   sharingPaused: Type.Boolean(),
+  captureFrom: Type.Optional(DateTimeSchema),
   captureUntil: DateTimeSchema,
   excludedCaptureWindows: Type.Array(
     ClosedObject({

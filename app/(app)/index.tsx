@@ -1,3 +1,4 @@
+import { DeviceRecoveryFlow } from "@/bootstrap/DeviceRecoveryFlow";
 import { useState } from "react";
 import type { TripSummary } from "@/features/home";
 import { useTripLibrary } from "@/bootstrap/useTripLibrary";
@@ -17,6 +18,16 @@ export default function ProtectedHomeRoute() {
     onCreateTrip: () => router.push("/trips/create"),
     onJoinTrip: () => router.push("/trips/join"),
   };
+
+  if (selected && !selected.onThisDevice && selected.participation !== "LEFT")
+    return (
+      <DeviceRecoveryFlow
+        tripId={selected.id}
+        tripName={selected.name}
+        owner={selected.role === "OWNER"}
+        onBack={() => setSelected(null)}
+      />
+    );
 
   if (
     [
@@ -51,12 +62,7 @@ export default function ProtectedHomeRoute() {
             title={selected.name}
             onDismiss={() => setSelected(null)}
           >
-            {!selected.onThisDevice && selected.participation !== "LEFT" ? (
-              <AppText tone="secondary">
-                This trip is connected to your other phone. Open CrewRoll there
-                to continue sharing or leave the trip.
-              </AppText>
-            ) : selected.participation === "JOINING" ? (
+            {selected.participation === "JOINING" ? (
               <>
                 <AppText tone="secondary">
                   Waiting for your host’s approval. No photos are shared yet.

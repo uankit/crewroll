@@ -12,9 +12,9 @@ import {
   CreateTripOutcomeBodySchema,
   CreateTripOutcomeResponseSchema,
   CreateUploadSessionBodySchema,
-  DecimalLimitSchema,
   DeviceResponseSchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesResponseSchema,
   EndTripBodySchema,
   InviteResponseSchema,
   InvitePreviewBodySchema,
@@ -145,6 +145,8 @@ function componentSchemas(): Record<string, unknown> {
     SetTripReadinessBody: SetTripReadinessBodySchema,
     StartTripBody: StartTripBodySchema,
     EndTripBody: EndTripBodySchema,
+    TripContinuity: publicObjectSchemas.TripContinuitySchema,
+    TripContinuityBody: publicObjectSchemas.TripContinuityBodySchema,
     TripListResponse: TripListResponseSchema,
     TripLifecycleBody: TripLifecycleBodySchema,
     TripTransferState: TripTransferStateSchema,
@@ -160,6 +162,7 @@ function componentSchemas(): Record<string, unknown> {
     SyncResponse: SyncResponseSchema,
     CreateDownloadSessionBody: CreateDownloadSessionBodySchema,
     DownloadSessionResponse: DownloadSessionResponseSchema,
+    PendingDeliveriesResponse: PendingDeliveriesResponseSchema,
     SavedReceiptBody: SavedReceiptBodySchema,
     SavedReceiptResponse: SavedReceiptResponseSchema,
     ReconciliationQuery: ReconciliationQuerySchema,
@@ -174,6 +177,22 @@ export function createOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: { title: "CrewRoll Control Plane", version: "1.0.0" },
     paths: {
+      "/v1/trips/{tripId}/continuity": {
+        get: operation(
+          "getTripContinuity",
+          [...queryHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripContinuity") },
+          undefined,
+          "ClerkBearer",
+        ),
+        post: operation(
+          "changeTripContinuity",
+          [...commandHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripContinuity") },
+          "TripContinuityBody",
+          "ClerkBearer",
+        ),
+      },
       "/v1/trips/{tripId}/lifecycle": {
         get: operation(
           "getTripLifecycle",
@@ -320,15 +339,6 @@ export function createOpenApiDocument(): OpenApiDocument {
           "ClerkBearer",
         ),
       },
-      "/v1/trips/{tripId}/end": {
-        post: operation(
-          "endTrip",
-          [...commandHeaders, tripPathId],
-          { "200": response("TripResponse") },
-          "EndTripBody",
-          "ClerkBearer",
-        ),
-      },
       "/v1/trips/{tripId}": {
         get: operation(
           "getTrip",
@@ -338,28 +348,6 @@ export function createOpenApiDocument(): OpenApiDocument {
           },
           undefined,
           "ClerkBearer",
-        ),
-      },
-      "/v1/trips/{tripId}/reconciliation": {
-        get: operation(
-          "getReconciliation",
-          [
-            ...queryHeaders,
-            tripPathId,
-            {
-              name: "cursor",
-              in: "query",
-              required: false,
-              schema: { type: "string", format: "opaque-cursor" },
-            },
-            {
-              name: "limit",
-              in: "query",
-              required: false,
-              schema: DecimalLimitSchema,
-            },
-          ],
-          { "200": response("ReconciliationResponse") },
         ),
       },
       "/v1/assets/upload-sessions": {
@@ -405,37 +393,21 @@ export function createOpenApiDocument(): OpenApiDocument {
           { "200": response("PreviewFeedResponse") },
         ),
       },
-      "/v1/sync": {
-        get: operation(
-          "sync",
-          [
-            ...queryHeaders,
-            {
-              name: "cursor",
-              in: "query",
-              required: false,
-              schema: { type: "string", format: "opaque-cursor" },
-            },
-            {
-              name: "limit",
-              in: "query",
-              required: false,
-              schema: DecimalLimitSchema,
-            },
-          ],
-          { "200": response("SyncResponse") },
-        ),
+      "/v1/deliveries/pending": {
+        get: operation("getPendingDeliveries", queryHeaders, {
+          "200": response("PendingDeliveriesResponse"),
+        }),
       },
       "/v1/deliveries/{deliveryId}/download-session": {
         post: operation(
           "createDownloadSession",
           [...commandHeaders, pathId("deliveryId")],
-          { "201": response("DownloadSessionResponse", "Created") },
+          { "200": response("DownloadSessionResponse") },
           "CreateDownloadSessionBody",
         ),
       },
       "/v1/deliveries/{deliveryId}/saved-receipt": {
-        put: operation(
+        post: operation(
           "saveReceipt",
           [...commandHeaders, pathId("deliveryId")],
           { "200": response("SavedReceiptResponse") },

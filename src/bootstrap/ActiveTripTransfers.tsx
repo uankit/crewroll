@@ -213,7 +213,14 @@ export function ActiveTripTransfers({
           </Stack>
         ) : photos.length > 0 ? (
           <TripPhotoGallery photos={photos} />
-        ) : null}
+        ) : (
+          <Stack gap="xs" style={{ flex: 1, justifyContent: "center" }}>
+            <AppText variant="title2">Your roll starts here.</AppText>
+            <AppText tone="secondary">
+              New photos from your crew will arrive here automatically.
+            </AppText>
+          </Stack>
+        )}
         {snapshot.paused ? (
           <AppText accessibilityLiveRegion="polite" tone="secondary">
             Photo sharing is paused.

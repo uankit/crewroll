@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import type { TripTransferState } from "@crewroll/contracts";
+import type { TripListResponse, TripTransferState } from "@crewroll/contracts";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react-native";
@@ -528,6 +528,103 @@ describe("AppSessionProvider", () => {
       jest.useRealTimers();
     }
   });
+
+  it.each(["approved", "rejected", "ended"] as const)(
+    "restores a server-only pending membership and follows %s without a local join record",
+    async (resolution) => {
+      jest.useFakeTimers();
+      const originalAppState = AppState.currentState;
+      AppState.currentState = "active";
+      let change: ((state: AppStateStatus) => void) | undefined;
+      const listener = jest
+        .spyOn(AppState, "addEventListener")
+        .mockImplementation((_event, handler) => {
+          change = handler;
+          return { remove: jest.fn() };
+        });
+      const pending: TripListResponse["items"][number] = {
+        id: tripId,
+        name: lobby.name,
+        status: "ACTIVE",
+        participation: "JOINING",
+        role: "MEMBER",
+        startsAt: "2030-01-01T00:00:00.000Z",
+        endsAt: lobby.endsAt,
+        leftAt: null,
+        sharingPaused: false,
+        onThisDevice: true,
+        memberCount: 2,
+        savedPhotoCount: 0,
+      };
+      const listTrips = jest
+        .fn<Promise<TripListResponse>, []>()
+        .mockResolvedValue({ items: [pending] });
+      const hydrate = jest.fn(async () => ({
+        ...lobby,
+        status: "ACTIVE" as const,
+      }));
+      const { runtime: base, scoped } = createRuntime({ hydrate });
+      const runtime: AppSessionRuntime = {
+        ...base,
+        createScopedTripSession: () => ({ ...scoped, listTrips }),
+      };
+      try {
+        const view = await render(
+          <Harness auth={signedIn} runtime={runtime}>
+            <SessionProbe />
+          </Harness>,
+        );
+        await waitFor(() =>
+          expect(screen.getByText("READY_PENDING_APPROVAL")).toBeOnTheScreen(),
+        );
+        expect(hydrate).not.toHaveBeenCalled();
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5_000);
+        });
+        expect(listTrips).toHaveBeenCalledTimes(2);
+        expect(hydrate).not.toHaveBeenCalled();
+        await act(async () => {
+          change!("background");
+          await jest.advanceTimersByTimeAsync(30_000);
+        });
+        expect(listTrips).toHaveBeenCalledTimes(2);
+        listTrips.mockResolvedValue({
+          items:
+            resolution === "rejected"
+              ? []
+              : [
+                  {
+                    ...pending,
+                    participation:
+                      resolution === "approved" ? "JOINED" : "LEFT",
+                  },
+                ],
+        });
+        await act(async () => change!("active"));
+        expect(
+          screen.getByText(
+            resolution === "approved"
+              ? `READY_ACTIVE:${tripId}`
+              : "READY_NO_TRIP",
+          ),
+        ).toBeOnTheScreen();
+        expect(hydrate).toHaveBeenCalledTimes(
+          resolution === "approved" ? 1 : 0,
+        );
+        expect(scoped.replayUnknownJoin).not.toHaveBeenCalled();
+        await view.unmount();
+        const lastCount = listTrips.mock.calls.length;
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(30_000);
+        });
+        expect(listTrips).toHaveBeenCalledTimes(lastCount);
+      } finally {
+        AppState.currentState = originalAppState;
+        listener.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it("lets an active native trip win without erasing or replaying a pending record", async () => {
     const recovery: TripRecoveryRecord = {

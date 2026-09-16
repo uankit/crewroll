@@ -159,6 +159,11 @@ export interface TripKeyEnvelopeTable {
 }
 
 export interface UploadSessionTable {
+  captured_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
   id: string;
   client_asset_id: string;
   trip_id: string;
@@ -184,6 +189,11 @@ export interface UploadObjectTable {
 }
 
 export interface AssetTable {
+  captured_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
   id: string;
   trip_id: string;
   source_device_id: string;
@@ -280,7 +290,25 @@ export interface ClerkWebhookEventTable {
   processed_at: Timestamp;
 }
 
+export interface TripOwnerInviteTable {
+  trip_id: string;
+  encrypted_code: Uint8Array;
+  updated_at: Timestamp;
+}
+export interface TripDeviceRequestTable {
+  id: string;
+  trip_id: string;
+  membership_id: string;
+  previous_device_id: string;
+  device_id: string;
+  state: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  requested_at: Timestamp;
+  resolved_at: NullableTimestamp;
+  approved_by_device_id: string | null;
+}
 export interface Database {
+  trip_owner_invites: TripOwnerInviteTable;
+  trip_device_requests: TripDeviceRequestTable;
   users: UserTable;
   devices: DeviceTable;
   trips: TripTable;

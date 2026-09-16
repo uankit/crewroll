@@ -193,5 +193,24 @@ export function createSetTripReadiness(
     return execute(record);
   }
 
-  return Object.freeze({ publish, replayPendingMutation });
+  async function reconcile(
+    current: TripView,
+    fullPhotoLibraryAccess: boolean,
+  ): Promise<TripView> {
+    const member = current.members.find(
+      (candidate) => candidate.membershipId === current.currentMembershipId,
+    );
+    // Approved late joiners and replacement phones also need to publish their
+    // permission. Closed trips cannot change membership readiness.
+    if (
+      (current.status !== "LOBBY" && current.status !== "ACTIVE") ||
+      member?.status !== "ACTIVE" ||
+      member.fullPhotoLibraryAccess === fullPhotoLibraryAccess
+    ) {
+      return current;
+    }
+    return publish(current.id, fullPhotoLibraryAccess);
+  }
+
+  return Object.freeze({ publish, reconcile, replayPendingMutation });
 }

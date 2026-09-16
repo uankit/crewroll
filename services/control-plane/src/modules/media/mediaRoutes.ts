@@ -11,10 +11,9 @@ import {
   CommitAssetResponseSchema,
   CreateDownloadSessionBodySchema,
   CreateUploadSessionBodySchema,
-  DateTimeSchema,
   DeliveryIdSchema,
-  DeviceIdSchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesResponseSchema,
   MobileCommandHeadersSchema,
   MobileQueryHeadersSchema,
   SavedReceiptBodySchema,
@@ -240,18 +239,7 @@ export function mediaRoutes(
       schema: {
         headers: queryHeaders,
         response: {
-          200: ClosedObject({
-            items: Type.Array(
-              ClosedObject({
-                deliveryId: DeliveryIdSchema,
-                assetId: AssetIdSchema,
-                tripId: TripIdSchema,
-                sourceDeviceId: DeviceIdSchema,
-                committedAt: DateTimeSchema,
-              }),
-              { maxItems: 100 },
-            ),
-          }),
+          200: PendingDeliveriesResponseSchema,
         },
       },
     },
