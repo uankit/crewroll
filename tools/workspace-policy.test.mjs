@@ -1002,7 +1002,10 @@ test("mobile source uses only the locked topology and public route imports", asy
   });
 
   const publicImports = [
-    ["app/index.tsx", /^import \{ Redirect \} from "expo-router";$/mu],
+    [
+      "app/index.tsx",
+      /^import \{[^}]*\bRedirect\b[^}]*\} from "expo-router";$/mu,
+    ],
     [
       "app/index.tsx",
       /^import \{[^}]*\buseAppSession\b[^}]*\} from "@\/bootstrap";$/mu,

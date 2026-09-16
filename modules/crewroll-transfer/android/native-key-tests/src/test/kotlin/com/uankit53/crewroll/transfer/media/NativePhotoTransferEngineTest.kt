@@ -45,7 +45,7 @@ class NativePhotoTransferEngineTest {
         val context = NativeMediaContext(
             NativeKeyScope("a".repeat(64), "installation-1234"),
             DeviceSessionRecord("01990000-0000-4000-8000-000000000004", "fake-native-bearer".toByteArray(), Instant.now().plusSeconds(3600), "https://crewroll.invalid"),
-            ActiveTripMetadata(trip, "01990000-0000-4000-8000-000000000005", "2026-09-01T00:00:00Z", "2026-09-30T00:00:00Z", null, 1), key,
+            ActiveTripMetadata(trip, "01990000-0000-4000-8000-000000000005", Instant.now().minusSeconds(3600).toString(), Instant.now().plusSeconds(3600).toString(), null, 1), key,
         )
         val encrypted: File
         val grant: JSONObject

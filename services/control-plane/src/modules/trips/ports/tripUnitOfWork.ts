@@ -260,7 +260,22 @@ type CallbackContainsTransaction<Result> = [Result] extends [TripTransaction]
 type CallbackResult<Result> =
   true extends CallbackContainsTransaction<Result> ? never : Result;
 
+export interface InvitePreviewRecord {
+  readonly tripId: string;
+  readonly name: string;
+  readonly startsAt: Date | null;
+  readonly endsAt: Date;
+  readonly members: readonly Readonly<{
+    displayName: string;
+    role: TripMembershipRole;
+  }>[];
+}
+
 export interface TripUnitOfWork {
+  readInvitePreview(
+    actor: ForegroundTripActor,
+    inviteCodeHmac: Readonly<Uint8Array>,
+  ): Promise<InvitePreviewRecord | null>;
   findIdempotencyTripCandidate(
     input: Readonly<{
       idempotencyKey: string;

@@ -15,6 +15,8 @@ import type {
   ReconcileNowCommand,
   RetryCommand,
   RevisionInvalidation,
+  RestoreDeviceSessionCommand,
+  RestoredDeviceSession,
   SetTransferPolicyCommand,
   WrapTripKeyCommand,
   WrapTripKeyResult,
@@ -25,6 +27,9 @@ export type CrewRollTransferEventSubscription = Readonly<{
 }>;
 
 export interface CrewRollTransferNativeModule {
+  restoreDeviceSession?(
+    command: RestoreDeviceSessionCommand,
+  ): Promise<RestoredDeviceSession>;
   ensureDeviceIdentity(
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;

@@ -88,12 +88,33 @@ function pendingMemberTrip(): TripView {
   };
 }
 
-jest.mock("@clerk/expo/native", () => ({
-  ...jest.requireActual("@clerk/expo/native"),
-  useAuthViewState: () => ({ isLoaded: true, isAuthFlowComplete: false }),
+jest.mock("../src/infrastructure/auth/useAccountAuthentication", () => ({
+  useAccountAuthentication: () => ({
+    email: "",
+    code: "",
+    verifying: false,
+    busy: false,
+    error: null,
+    resendSeconds: 0,
+    setEmail: jest.fn(),
+    setCode: jest.fn(),
+    submitEmail: jest.fn(),
+    verify: jest.fn(),
+    resend: jest.fn(),
+    editEmail: jest.fn(),
+    social: jest.fn(),
+  }),
 }));
 
 const mockActions = {
+  previewInvite: jest.fn(async () => ({
+    tripId,
+    name: "Kyoto",
+    startsAt: null,
+    endsAt: "2030-01-02T00:00:00.000Z",
+    hostDisplayName: "Owner",
+    members: [{ displayName: "Owner", role: "OWNER" }],
+  })),
   approve: jest.fn(),
   create: jest.fn(),
   invalidatePhotoReadiness: jest.fn(),
@@ -106,7 +127,7 @@ const mockActions = {
 const mockRetry = jest.fn();
 const mockConfirmPendingInvite = jest.fn();
 const mockOpenOwnerInvite = jest.fn(async () => undefined);
-const mockShareOwnerInvite = jest.fn(async () => undefined);
+const mockCopyOwnerInvite = jest.fn(async () => undefined);
 const mockRefresh = jest.fn(async () => undefined);
 
 let mockProjection = {
@@ -127,7 +148,7 @@ let mockCurrentSession = {
     canAskAgain: true,
   },
   retry: mockRetry,
-  shareOwnerInvite: mockShareOwnerInvite,
+  copyOwnerInvite: mockCopyOwnerInvite,
   snapshot: { phase: "READY_NO_TRIP", deviceId } as AppSessionSnapshot,
 };
 let mockRevision = 0;
@@ -240,7 +261,7 @@ describe("Expo Router mobile journey", () => {
         canAskAgain: true,
       },
       retry: mockRetry,
-      shareOwnerInvite: mockShareOwnerInvite,
+      copyOwnerInvite: mockCopyOwnerInvite,
       snapshot: { phase: "READY_NO_TRIP", deviceId },
     };
     sessionUiStore.getState().clear();
@@ -257,15 +278,15 @@ describe("Expo Router mobile journey", () => {
 
   it.each([
     ["LOADING_FONTS_OR_CLERK", "/"],
-    ["SIGNED_OUT", "/sign-in"],
+    ["SIGNED_OUT", "/"],
     ["PROVISIONING_DEVICE", "/provision"],
     ["RECOVERABLE_FAILURE", "/provision"],
     ["READY_NO_TRIP", "/"],
     ["READY_UNKNOWN_CREATE", "/"],
     ["READY_UNKNOWN_JOIN", "/"],
     ["READY_PENDING_APPROVAL", "/"],
-    ["READY_LOBBY", "/"],
-    ["READY_ACTIVE", "/"],
+    ["READY_LOBBY", `/trips/${tripId}`],
+    ["READY_ACTIVE", `/trips/${tripId}`],
   ] as const)(
     "keeps %s on its public or protected anchor",
     async (phase, expected) => {
@@ -279,15 +300,15 @@ describe("Expo Router mobile journey", () => {
 
   it.each([
     ["LOADING_FONTS_OR_CLERK", "/trips/create", "/"],
-    ["SIGNED_OUT", "/trips/create", "/sign-in"],
+    ["SIGNED_OUT", "/trips/create", "/"],
     ["PROVISIONING_DEVICE", "/trips/create", "/provision"],
     ["RECOVERABLE_FAILURE", "/trips/create", "/provision"],
     ["READY_NO_TRIP", "/sign-in", "/"],
     ["READY_UNKNOWN_CREATE", "/sign-in", "/"],
     ["READY_UNKNOWN_JOIN", "/sign-in", "/"],
     ["READY_PENDING_APPROVAL", "/sign-in", "/"],
-    ["READY_LOBBY", "/sign-in", "/"],
-    ["READY_ACTIVE", "/sign-in", "/"],
+    ["READY_LOBBY", "/sign-in", `/trips/${tripId}`],
+    ["READY_ACTIVE", "/sign-in", `/trips/${tripId}`],
   ] as const)(
     "falls back from a denied route in %s through the static anchor",
     async (phase, deniedUrl, expected) => {
@@ -331,16 +352,11 @@ describe("Expo Router mobile journey", () => {
     ).toBeOnTheScreen();
   });
 
-  it("keeps a ready trip on Home until the user opens it", async () => {
+  it("opens a ready trip directly without a duplicate summary screen", async () => {
     setPhase("READY_LOBBY");
     mockProjection = { ...mockProjection, trip: ownerTrip() };
     const router = await renderActualRouter("/");
 
-    await waitFor(() =>
-      expect(screen.getByTestId("home-screen")).toBeOnTheScreen(),
-    );
-    expect(router.getPathname()).toBe("/");
-    await fireEvent.press(screen.getByRole("button", { name: "Open trip" }));
     await waitFor(() => expect(router.getPathname()).toBe(`/trips/${tripId}`));
   });
 
@@ -355,12 +371,12 @@ describe("Expo Router mobile journey", () => {
       expect(screen.getByLabelText("Invite code").props.value).toBe("ABCD2345"),
     );
 
-    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
     await fireEvent.press(
-      screen.getByRole("button", { name: "Request to join" }),
+      screen.getByRole("button", { name: "Ask to join trip" }),
     );
     await waitFor(() =>
-      expect(screen.getByText("Invite unavailable")).toBeOnTheScreen(),
+      expect(screen.getByText("Invite unavailable.")).toBeOnTheScreen(),
     );
     expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
     await fireEvent.press(
@@ -384,19 +400,14 @@ describe("Expo Router mobile journey", () => {
     });
 
     const owner = await renderActualRouter("/");
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Create a trip" }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: "Start a trip" }));
     await waitFor(() => expect(owner.getPathname()).toBe("/trips/create"));
     await fireEvent.changeText(screen.getByLabelText("Trip name"), "Kyoto");
     await fireEvent.press(screen.getByRole("button", { name: "Create trip" }));
     await waitFor(() => expect(mockActions.create).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(screen.getByText("Trip created")).toBeOnTheScreen(),
-    );
-    await fireEvent.press(screen.getByRole("button", { name: "Open trip" }));
     await waitFor(() => expect(owner.getPathname()).toBe(`/trips/${tripId}`));
-    expect(screen.getByText("ABCD2345")).toBeOnTheScreen();
+    await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
+    expect(screen.getByText("ABCD 2345")).toBeOnTheScreen();
     await owner.unmount();
 
     mockProjection = { ...mockProjection, trip: null };
@@ -419,31 +430,25 @@ describe("Expo Router mobile journey", () => {
     const invitee = await renderActualRouter("/invite/ABCD2345");
     await waitFor(() => expect(invitee.getPathname()).toBe("/trips/join"));
     expect(screen.getByLabelText("Invite code").props.value).toBe("ABCD2345");
-    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Request to join" }),
+        screen.getByRole("button", { name: "Ask to join trip" }),
       ).toBeOnTheScreen(),
     );
     await fireEvent.press(
-      screen.getByRole("button", { name: "Request to join" }),
-    );
-    await waitFor(() =>
-      expect(screen.getByText("Waiting for the owner")).toBeOnTheScreen(),
-    );
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Open trip lobby" }),
+      screen.getByRole("button", { name: "Ask to join trip" }),
     );
     await waitFor(() => expect(invitee.getPathname()).toBe(`/trips/${tripId}`));
     expect(screen.getByTestId("lobby-screen")).toBeOnTheScreen();
-    expect(screen.getByText("Waiting for the owner")).toBeOnTheScreen();
+    expect(screen.getByText("Waiting for your host.")).toBeOnTheScreen();
     expect(events).toEqual(["create:Kyoto", "join:ABCD2345"]);
     expect(JSON.stringify(mockProjection.trip)).not.toMatch(
       /wrapped|envelope|commandId|authenticationPublicKey|e2eePublicKey/i,
     );
   });
 
-  it("wires owner share, approval, Start, and safe active projection updates", async () => {
+  it("wires owner copy, approval, Start, and safe active projection updates", async () => {
     setPhase("READY_LOBBY");
     mockProjection = { ...mockProjection, trip: pendingOwnerTrip() };
     mockCurrentSession = {
@@ -473,12 +478,12 @@ describe("Expo Router mobile journey", () => {
     });
     await renderActualRouter(`/trips/${tripId}`);
 
-    await fireEvent.press(screen.getByRole("button", { name: "Share invite" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Copy code" }));
+    expect(mockCopyOwnerInvite).toHaveBeenCalledTimes(1);
     await fireEvent.press(
-      screen.getByRole("link", { name: "airmesh://invite/ABCD2345" }),
+      screen.getByRole("button", { name: "Close Invite your crew" }),
     );
-    expect(mockShareOwnerInvite).toHaveBeenCalledTimes(1);
-    expect(mockOpenOwnerInvite).toHaveBeenCalledTimes(1);
 
     await fireEvent.press(
       screen.getByRole("button", { name: "Approve Grace Hopper" }),
@@ -522,15 +527,13 @@ describe("Expo Router mobile journey", () => {
     });
     await renderActualRouter(`/trips/${tripId}`);
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Try activation again" }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() =>
       expect(mockActions.retryActivation).toHaveBeenCalledWith(tripId),
     );
     expect(mockActions.start).not.toHaveBeenCalled();
     await waitFor(() =>
-      expect(screen.queryByText("Try activation again")).not.toBeOnTheScreen(),
+      expect(screen.queryByText("Try again")).not.toBeOnTheScreen(),
     );
   });
 
@@ -540,22 +543,15 @@ describe("Expo Router mobile journey", () => {
     mockCurrentSession = {
       ...mockCurrentSession,
       ownerInviteCode: "ABCD2345",
-      openOwnerInvite: jest.fn(async () => {
-        throw new Error("private open payload");
-      }),
-      shareOwnerInvite: jest.fn(async () => {
-        throw new Error("private share payload");
+      copyOwnerInvite: jest.fn(async () => {
+        throw new Error("private clipboard payload");
       }),
     };
     await renderActualRouter(`/trips/${tripId}`);
 
-    await fireEvent.press(screen.getByRole("button", { name: "Share invite" }));
-    await fireEvent.press(
-      screen.getByRole("link", { name: "airmesh://invite/ABCD2345" }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Copy code" }));
     await act(async () => undefined);
-    expect(JSON.stringify(screen.toJSON())).not.toMatch(
-      /private|payload|error/i,
-    );
+    expect(JSON.stringify(screen.toJSON())).not.toMatch(/private|payload/i);
   });
 });

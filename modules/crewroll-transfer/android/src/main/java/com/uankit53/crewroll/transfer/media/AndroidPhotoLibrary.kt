@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.Bitmap
@@ -26,6 +28,14 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     private val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     private var observer: ContentObserver? = null
     private val savedPath = "Pictures/CrewRoll/"
+    private val systemCameras: Set<String> by lazy {
+        @Suppress("DEPRECATION")
+        val cameras = listOf(MediaStore.ACTION_IMAGE_CAPTURE, MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+            .flatMap { context.packageManager.queryIntentActivities(Intent(it), PackageManager.MATCH_DEFAULT_ONLY) }
+        cameras.filter {
+            it.activityInfo.applicationInfo.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+        }.map { it.activityInfo.packageName }.filter { it != context.packageName }.toSet()
+    }
     private fun permission() {
         if (Build.VERSION.SDK_INT < 29) throw PhotoLibraryException("PHOTO_PERMISSION")
         val read = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -40,16 +50,28 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     }
     override fun discover(startsAt: Instant, endsAt: Instant, excluding: Set<String>, limit: Int): List<DiscoveredPhoto> {
         permission()
-        val columns = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_TAKEN)
         val selection = "${MediaStore.Images.Media.DATE_TAKEN} >= ? AND ${MediaStore.Images.Media.DATE_TAKEN} <= ? AND ${MediaStore.Images.Media.RELATIVE_PATH} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 0"
         val result = mutableListOf<DiscoveredPhoto>()
-        resolver.query(collection, columns, selection, arrayOf(startsAt.toEpochMilli().toString(), endsAt.toEpochMilli().toString(), "DCIM/Camera/"), "${MediaStore.Images.Media.DATE_TAKEN} ASC, ${MediaStore.Images.Media._ID} ASC")?.use { cursor ->
-            while (cursor.moveToNext() && result.size < limit) {
-                val uri = ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
-                if (uri !in excluding) result.add(DiscoveredPhoto(uri, Instant.ofEpochMilli(cursor.getLong(1))))
-            }
-        } ?: throw PhotoLibraryException("PHOTO_PERMISSION")
-        return result
+        for (path in listOf("DCIM/Camera/", "Pictures/")) {
+            if (path == "Pictures/" && systemCameras.isEmpty()) continue
+            // Query owner only for the fallback folder. On Android 14+ owner
+            // visibility must not hide legacy DCIM captures with unknown owners.
+            val columns = mutableListOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_TAKEN)
+            if (path == "Pictures/") columns.add(MediaStore.Images.Media.OWNER_PACKAGE_NAME)
+            resolver.query(collection, columns.toTypedArray(), selection, arrayOf(startsAt.toEpochMilli().toString(), endsAt.toEpochMilli().toString(), path), "${MediaStore.Images.Media.DATE_TAKEN} ASC, ${MediaStore.Images.Media._ID} ASC")?.use { cursor ->
+                var accepted = 0
+                while (cursor.moveToNext() && accepted < limit) {
+                    val owner = if (path == "Pictures/") cursor.getString(2) else null
+                    if (!isCameraSource(path, owner, systemCameras)) continue
+                    val uri = ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
+                    if (uri !in excluding) {
+                        result.add(DiscoveredPhoto(uri, Instant.ofEpochMilli(cursor.getLong(1))))
+                        accepted++
+                    }
+                }
+            } ?: throw PhotoLibraryException("PHOTO_PERMISSION")
+        }
+        return result.sortedWith(compareBy<DiscoveredPhoto> { it.capturedAt }.thenBy { it.localId }).take(limit)
     }
     override fun exportOriginal(localId: String, destination: File): PhotoMetadata {
         permission()

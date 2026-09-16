@@ -331,6 +331,7 @@ describe("canonical OpenAPI artifact", () => {
       "/v1/devices/{deviceId}",
       "/v1/trips",
       "/v1/trips/create-outcome",
+      "/v1/trips/invite-preview",
       "/v1/trips/join-requests",
       "/v1/trips/{tripId}/join-requests/{membershipId}/approval",
       "/v1/trips/{tripId}/join-requests/{membershipId}",
@@ -462,6 +463,7 @@ describe("canonical OpenAPI artifact", () => {
       "DELETE /v1/devices/{deviceId}": "ClerkBearer",
       "POST /v1/trips": "ClerkBearer",
       "POST /v1/trips/create-outcome": "ClerkBearer",
+      "POST /v1/trips/invite-preview": "ClerkBearer",
       "POST /v1/trips/join-requests": "ClerkBearer",
       "PUT /v1/trips/{tripId}/join-requests/{membershipId}/approval":
         "ClerkBearer",

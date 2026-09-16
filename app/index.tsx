@@ -1,15 +1,17 @@
-import { Redirect } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 
 import { SessionLoadingScreen, useAppSession } from "@/bootstrap";
+import { WelcomeScreen } from "@/features/auth";
 
 export default function LaunchRoute() {
   const { snapshot } = useAppSession();
+  const router = useRouter();
 
   switch (snapshot.phase) {
     case "LOADING_FONTS_OR_CLERK":
       return <SessionLoadingScreen />;
     case "SIGNED_OUT":
-      return <Redirect href="/sign-in" withAnchor />;
+      return <WelcomeScreen onContinue={() => router.push("/sign-in")} />;
     case "PROVISIONING_DEVICE":
     case "RECOVERABLE_FAILURE":
       return <Redirect href="/provision" withAnchor />;

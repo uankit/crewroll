@@ -600,6 +600,119 @@
         }
       }
     },
+    "/v1/trips/invite-preview": {
+      "post": {
+        "operationId": "previewInvite",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitePreviewBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/trips/join-requests": {
       "post": {
         "operationId": "createJoinRequest",
@@ -3554,6 +3667,98 @@
           }
         }
       },
+      "InvitePreviewBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "inviteCode"
+        ],
+        "properties": {
+          "inviteCode": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+            "type": "string"
+          }
+        }
+      },
+      "InvitePreviewResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId",
+          "name",
+          "startsAt",
+          "endsAt",
+          "hostDisplayName",
+          "members"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+            "type": "string"
+          },
+          "hostDisplayName": {
+            "minLength": 1,
+            "maxLength": 80,
+            "type": "string"
+          },
+          "members": {
+            "minItems": 1,
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "displayName",
+                "role"
+              ],
+              "properties": {
+                "displayName": {
+                  "minLength": 1,
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                "role": {
+                  "anyOf": [
+                    {
+                      "const": "OWNER",
+                      "type": "string"
+                    },
+                    {
+                      "const": "MEMBER",
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
       "CreateJoinRequestBody": {
         "additionalProperties": false,
         "type": "object",
@@ -4115,6 +4320,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "sourceMembershipId": {
+            "format": "uuid",
+            "type": "string"
+          },
           "expiresAt": {
             "format": "date-time",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
@@ -4226,6 +4435,10 @@
                   ],
                   "properties": {
                     "assetId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "sourceMembershipId": {
                       "format": "uuid",
                       "type": "string"
                     },

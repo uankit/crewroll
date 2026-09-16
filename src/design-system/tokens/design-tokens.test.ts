@@ -45,38 +45,38 @@ describe("CrewRoll design tokens", () => {
       Object.keys(lightColors).sort(),
     );
     expect(lightColors).toMatchObject({
-      background: "#F7F9FC",
+      background: "#FAF8F3",
       surface: "#FFFFFF",
-      surfaceMuted: "#EDF2F8",
-      border: "#DCE4EE",
-      textPrimary: "#07111F",
-      textSecondary: "#5F6C7D",
-      action: "#0B63CE",
-      success: "#067A5B",
-      successSurface: "#E7F8F2",
+      surfaceMuted: "#E5ECE4",
+      border: "#D7DAD2",
+      textPrimary: "#202522",
+      textSecondary: "#626861",
+      action: "#C64531",
+      success: "#32634D",
+      successSurface: "#E5ECE4",
       warning: "#8A4B00",
       warningSurface: "#FFF3D6",
-      critical: "#B42318",
-      criticalSurface: "#FDECEA",
-      info: "#075EDB",
-      infoSurface: "#EAF2FF",
+      critical: "#AE3226",
+      criticalSurface: "#F7E6DF",
+      info: "#32634D",
+      infoSurface: "#E5ECE4",
     });
     expect(darkColors).toMatchObject({
-      background: "#020A12",
-      surface: "#081421",
-      surfaceMuted: "#0E1C2B",
-      border: "#203247",
-      textPrimary: "#F7FAFF",
-      textSecondary: "#9EADBE",
-      action: "#1675FF",
-      success: "#62E8BC",
-      successSurface: "#0D362C",
+      background: "#171C19",
+      surface: "#222925",
+      surfaceMuted: "#28382D",
+      border: "#465147",
+      textPrimary: "#FAF8F3",
+      textSecondary: "#B7BEB6",
+      action: "#F3836D",
+      success: "#A2C6AB",
+      successSurface: "#28382D",
       warning: "#FFD27A",
       warningSurface: "#3B2A0A",
       critical: "#FF9B9B",
-      criticalSurface: "#40171C",
-      info: "#79B8FF",
-      infoSurface: "#0A2D5D",
+      criticalSurface: "#382821",
+      info: "#A2C6AB",
+      infoSurface: "#28382D",
     });
   });
 
@@ -124,12 +124,14 @@ describe("CrewRoll design tokens", () => {
         fontSize: 30,
         fontWeight: "800",
         lineHeight: 36,
+        letterSpacing: -0.8,
       },
       title2: {
         fontFamily: "Manrope_700Bold",
         fontSize: 24,
         fontWeight: "700",
         lineHeight: 30,
+        letterSpacing: -0.5,
       },
       headline: {
         fontFamily: "Manrope_700Bold",
@@ -159,7 +161,7 @@ describe("CrewRoll design tokens", () => {
         fontFamily: "Manrope_500Medium",
         fontSize: 12,
         fontWeight: "500",
-        lineHeight: 17,
+        lineHeight: 18,
       },
       eyebrow: {
         fontFamily: "Manrope_700Bold",
@@ -172,12 +174,12 @@ describe("CrewRoll design tokens", () => {
     });
   });
 
-  test("uses the locked four-point spacing and radius scales", () => {
+  test("uses the approved Figma spacing and radius scales", () => {
     expect(Object.values(spacing)).toEqual([
-      4, 8, 12, 16, 20, 24, 32, 40, 48, 64,
+      0, 10, 4, 8, 12, 16, 24, 24, 32, 40, 48, 64,
     ]);
-    expect(spacing.gutter).toBe(20);
-    expect(Object.values(radius)).toEqual([12, 16, 20, 28, 999]);
+    expect(spacing.gutter).toBe(24);
+    expect(Object.values(radius)).toEqual([12, 16, 18, 24, 999]);
   });
 
   test("publishes motion, reduced motion, elevation, and typed breakpoints", () => {

@@ -16,6 +16,8 @@ import {
   ReconcileNowCommandSchema,
   RetryCommandSchema,
   RevisionInvalidationSchema,
+  RestoreDeviceSessionCommandSchema,
+  RestoredDeviceSessionSchema,
   SetTransferPolicyCommandSchema,
   WrapTripKeyCommandSchema,
   WrapTripKeyResultSchema,
@@ -35,6 +37,8 @@ import {
   type ReconcileNowCommand,
   type RetryCommand,
   type RevisionInvalidation,
+  type RestoreDeviceSessionCommand,
+  type RestoredDeviceSession,
   type SetTransferPolicyCommand,
   type WrapTripKeyCommand,
   type WrapTripKeyResult,
@@ -73,6 +77,9 @@ function parse<Schema extends TSchema>(
 }
 
 export interface CrewRollTransferPort {
+  restoreDeviceSession?(
+    command: RestoreDeviceSessionCommand,
+  ): Promise<RestoredDeviceSession>;
   ensureDeviceIdentity(
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
@@ -108,6 +115,20 @@ export function createCrewRollTransferPort(
     pages.invalidate();
   };
   return {
+    async restoreDeviceSession(command) {
+      const parsed = parse(
+        RestoreDeviceSessionCommandSchema,
+        command,
+        "restoreDeviceSession command",
+      );
+      const native = getNativeModule();
+      if (!native.restoreDeviceSession) return null;
+      return parse(
+        RestoredDeviceSessionSchema,
+        await native.restoreDeviceSession(parsed),
+        "restoreDeviceSession result",
+      );
+    },
     async ensureDeviceIdentity(command) {
       changed();
       const parsed = parse(

@@ -43,6 +43,18 @@ public final class CrewRollTransferModule: Module {
         ])
       } catch { promise.reject(Self.bridgeException(error)) }
     }
+    AsyncFunction("restoreDeviceSession") { (command: [String: Any], promise: Promise) in
+      do {
+        try NativeCommandDecoder.require(command, for: .restoreDeviceSession)
+        let deviceID = try self.lifecycle().restoreDeviceSession(
+          accountID: try Self.string(command, "accountId"),
+          installationID: try Self.string(command, "installationId"),
+          apiBaseURL: try Self.string(command, "apiBaseUrl")
+        )
+        if let deviceID { promise.resolve(["protocolVersion": 1, "deviceId": deviceID]) }
+        else { promise.resolve(nil) }
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("installDeviceSession") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .installDeviceSession)
@@ -209,13 +221,17 @@ public final class CrewRollTransferModule: Module {
     }
     AsyncFunction("listAssets") { (command: [String: Any], promise: Promise) in
       do {
-        try Self.require(command, keys: ["protocolVersion", "cursor", "limit"])
+        let options: Set<String> = ["sourceMembershipId", "capturedFrom", "capturedBefore", "order"]
+        try Self.require(command, keys: Set(["protocolVersion", "cursor", "limit"]).union(options.intersection(command.keys)))
+        guard options.allSatisfy({ command[$0] == nil || command[$0] is String }) else { throw NativeKeyError.invalidCommand }
+        let query = try NativeGalleryQuery(sourceMembershipID: command["sourceMembershipId"] as? String,
+          capturedFrom: command["capturedFrom"] as? String, capturedBefore: command["capturedBefore"] as? String, order: command["order"] as? String ?? "NEWEST")
         let limit = try Self.integer(command, "limit")
         let cursor = command["cursor"] as? String
         guard cursor != nil || command["cursor"] is NSNull else { throw NativeKeyError.invalidCommand }
         let engine = try self.engine()
         Task {
-          do { promise.resolve(try await engine.listAssets(limit: limit, cursor: cursor)) }
+          do { promise.resolve(try await engine.listAssets(limit: limit, cursor: cursor, query: query)) }
           catch { promise.reject(Self.bridgeException(error)) }
         }
       } catch { promise.reject(Self.bridgeException(error)) }

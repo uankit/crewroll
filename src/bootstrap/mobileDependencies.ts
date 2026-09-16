@@ -7,7 +7,8 @@ import { createCrewRollApi } from "../infrastructure/api/crewRollApi";
 
 export type MobileDependencies = Readonly<{
   deviceRegistration: DeviceRegistrationPort;
-  tripApi: TripApiPort;
+  tripApi: TripApiPort &
+    Pick<ReturnType<typeof createCrewRollApi>, "previewInvite">;
 }>;
 
 export function createMobileDependencies(

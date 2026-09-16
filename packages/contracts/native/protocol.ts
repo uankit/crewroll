@@ -58,6 +58,25 @@ export type InstallDeviceSessionCommand = Static<
   typeof InstallDeviceSessionCommandSchema
 >;
 
+/** Reads only the public ID of a valid, account-scoped native credential. */
+export const RestoreDeviceSessionCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+  installationId: NativeDeviceIdentitySchema.properties.installationId,
+  apiBaseUrl: UriSchema,
+});
+export type RestoreDeviceSessionCommand = Static<
+  typeof RestoreDeviceSessionCommandSchema
+>;
+export const RestoredDeviceSessionSchema = Type.Union([
+  ClosedObject({
+    protocolVersion: ProtocolVersionSchema,
+    deviceId: DeviceIdSchema,
+  }),
+  Type.Null(),
+]);
+export type RestoredDeviceSession = Static<typeof RestoredDeviceSessionSchema>;
+
 export const CreateTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
@@ -200,6 +219,9 @@ export const NativeAssetProjectionSchema = ClosedObject({
   workId: UuidSchema,
   assetId: Type.Union([AssetIdSchema, Type.Null()]),
   capturedAt: DateTimeSchema,
+  sourceMembershipId: Type.Optional(
+    Type.Union([MembershipIdSchema, Type.Null()]),
+  ),
   previewStage: TransferStageSchema,
   // Only a native-verified, protected local render file. Never a remote grant,
   // content key, or photo byte array. Optional for installed v1 clients.
@@ -218,6 +240,12 @@ export const ListAssetsQuerySchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   cursor: Type.Union([OpaqueCursorSchema, Type.Null()]),
   limit: Type.Integer({ minimum: 1, maximum: 100 }),
+  sourceMembershipId: Type.Optional(MembershipIdSchema),
+  capturedFrom: Type.Optional(DateTimeSchema),
+  capturedBefore: Type.Optional(DateTimeSchema),
+  order: Type.Optional(
+    Type.Union([Type.Literal("NEWEST"), Type.Literal("OLDEST")]),
+  ),
 });
 export type ListAssetsQuery = Static<typeof ListAssetsQuerySchema>;
 

@@ -7,13 +7,15 @@ import {
   type DateTimePickerChangeEvent,
 } from "@expo/ui/community/datetime-picker";
 import { useState } from "react";
-import { Platform, View } from "react-native";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 
 import {
   AppText,
   Button,
   Stack,
-  Surface,
+  Sheet,
+  spacing,
+  radius,
   useCrewRollTheme,
 } from "../../design-system";
 
@@ -162,73 +164,6 @@ function PickerSurface({
   );
 }
 
-type AndroidControlsProps = Readonly<{
-  value: Date;
-  now: Date;
-  onChange: (value: Date) => void;
-  disabled: boolean;
-  locale?: string;
-}>;
-
-function AndroidControls({
-  disabled,
-  locale,
-  now,
-  onChange,
-  value,
-}: AndroidControlsProps) {
-  const [activePicker, setActivePicker] = useState<PickerMode | null>(null);
-
-  function chooseDate(_event: DateTimePickerChangeEvent, selectedDate: Date) {
-    setActivePicker(null);
-    onChange(combineAndroidTripEndDate(value, selectedDate));
-  }
-
-  function chooseTime(_event: DateTimePickerChangeEvent, selectedTime: Date) {
-    setActivePicker(null);
-    onChange(combineTripEndTime(value, selectedTime));
-  }
-
-  return (
-    <Stack gap="sm">
-      <Button
-        accessibilityHint="Opens the native date picker for the trip end."
-        disabled={disabled}
-        label="Change end date"
-        onPress={() => setActivePicker("date")}
-        variant="secondary"
-      />
-      <Button
-        accessibilityHint="Opens the native time picker for the trip end."
-        disabled={disabled}
-        label="Change end time"
-        onPress={() => setActivePicker("time")}
-        variant="secondary"
-      />
-      {!disabled && activePicker === "date" ? (
-        <PickerSurface
-          {...(locale === undefined ? {} : { locale })}
-          mode="date"
-          now={now}
-          onDismiss={() => setActivePicker(null)}
-          onValueChange={chooseDate}
-          value={value}
-        />
-      ) : null}
-      {!disabled && activePicker === "time" ? (
-        <PickerSurface
-          {...(locale === undefined ? {} : { locale })}
-          mode="time"
-          now={now}
-          onDismiss={() => setActivePicker(null)}
-          onValueChange={chooseTime}
-          value={value}
-        />
-      ) : null}
-    </Stack>
-  );
-}
-
 export function TripEndField({
   disabled = false,
   errorMessage,
@@ -237,55 +172,61 @@ export function TripEndField({
   onChange,
   value,
 }: TripEndFieldProps) {
-  const isAndroid = Platform.OS === "android";
+  const theme = useCrewRollTheme();
+  const [open, setOpen] = useState(false);
   const displayValue = formatTripEnd(value, locale);
-
+  if (disabled && open) setOpen(false);
+  const dateRange = Number.isFinite(value.getTime())
+    ? `${new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).format(now)} – ${new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric" }).format(value)}`
+    : "Choose trip dates";
+  const picker = (
+    <PickerSurface
+      mode="date"
+      now={now}
+      value={value}
+      {...(locale ? { locale } : {})}
+      onDismiss={() => setOpen(false)}
+      onValueChange={(_event, selected) => {
+        if (disabled) return;
+        onChange(
+          Platform.OS === "android"
+            ? combineAndroidTripEndDate(value, selected)
+            : combineTripEndDate(value, selected),
+        );
+        if (Platform.OS === "android") setOpen(false);
+      }}
+    />
+  );
   return (
-    <Stack gap="sm">
-      <Surface muted>
-        <Stack gap="xxs">
-          <AppText variant="label">Trip ends</AppText>
-          <AppText>{displayValue}</AppText>
-          <AppText tone="secondary" variant="caption">
-            Choose a future local date and time, up to 14 days from now.
-          </AppText>
-        </Stack>
-      </Surface>
-
-      {isAndroid ? (
-        <AndroidControls
-          key={disabled ? "disabled" : "enabled"}
-          disabled={disabled}
-          {...(locale === undefined ? {} : { locale })}
-          now={now}
-          onChange={onChange}
-          value={value}
-        />
-      ) : (
-        <Stack gap="sm">
-          <PickerSurface
-            disabled={disabled}
-            {...(locale === undefined ? {} : { locale })}
-            mode="date"
-            now={now}
-            onValueChange={(_event, selectedDate) =>
-              onChange(combineTripEndDate(value, selectedDate))
-            }
-            value={value}
-          />
-          <PickerSurface
-            disabled={disabled}
-            {...(locale === undefined ? {} : { locale })}
-            mode="time"
-            now={now}
-            onValueChange={(_event, selectedTime) =>
-              onChange(combineTripEndTime(value, selectedTime))
-            }
-            value={value}
-          />
-        </Stack>
-      )}
-
+    <Stack gap="xs">
+      <AppText variant="label">Trip dates</AppText>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Trip dates. Ends ${displayValue}`}
+        accessibilityHint="Choose the last day of your trip. Sharing begins when the host starts it."
+        disabled={disabled}
+        onPress={() => setOpen(true)}
+        style={[
+          styles.field,
+          {
+            backgroundColor: theme.surface,
+            borderColor: errorMessage ? theme.critical : theme.textSecondary,
+          },
+        ]}
+      >
+        <AppText>{dateRange}</AppText>
+      </Pressable>
+      {open && Platform.OS === "android" ? picker : null}
+      {Platform.OS === "ios" ? (
+        <Sheet
+          visible={open}
+          title="Trip dates"
+          onDismiss={() => setOpen(false)}
+        >
+          {picker}
+          <Button label="Done" onPress={() => setOpen(false)} />
+        </Sheet>
+      ) : null}
       {errorMessage ? (
         <AppText accessibilityRole="alert" tone="critical" variant="caption">
           {errorMessage}
@@ -294,3 +235,12 @@ export function TripEndField({
     </Stack>
   );
 }
+const styles = StyleSheet.create({
+  field: {
+    minHeight: 56,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+});

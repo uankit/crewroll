@@ -189,6 +189,7 @@ object TripKeyEnvelopeV1 {
 
 enum class NativeCommandKind(val exactKeys: Set<String>, val hasTripId: Boolean) {
   ENSURE_DEVICE_IDENTITY(setOf("protocolVersion", "accountId"), false),
+  RESTORE_DEVICE_SESSION(setOf("protocolVersion", "accountId", "installationId", "apiBaseUrl"), false),
   INSTALL_DEVICE_SESSION(setOf(
     "protocolVersion",
     "accountId",
@@ -493,6 +494,25 @@ class NativeKeyLifecycle(
       NativeCommandDecoder.validate(value.metadata)
       return value
     } catch (error: Throwable) { value.erase(); throw error }
+  }
+
+  /** Never exposes the saved bearer. A near-expiry credential must be renewed. */
+  fun restoreDeviceSession(accountId: String, installationId: String, apiBaseUrl: String): String? {
+    prepare()
+    val accountHash = hashAccountId(accountId)
+    if (!validInstallationId(installationId) || !apiBaseUrl.startsWith("https://")) {
+      throw NativeKeyException.invalidCommand()
+    }
+    val saved = store.activeSession() ?: return null
+    try {
+      if (saved.scope != NativeKeyScope(accountHash, installationId) ||
+        saved.session.apiBaseUrl != apiBaseUrl ||
+        saved.session.expiresAt <= clock.now().plusSeconds(300)
+      ) return null
+      withValidatedIdentity(saved.scope) { }
+      TripKeyEnvelopeV1.uuidBytes(saved.session.deviceId)
+      return saved.session.deviceId
+    } finally { crypto.zeroize(saved.session.backgroundBearer) }
   }
 
   fun installDeviceSession(

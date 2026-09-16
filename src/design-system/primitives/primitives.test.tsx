@@ -114,7 +114,7 @@ describe("design-system primitives", () => {
     ).toEqual(expect.objectContaining({ backgroundColor: lightColors.border }));
   });
 
-  test("Button and IconButton expose busy or disabled state and 48-point targets", async () => {
+  test("Button and IconButton expose busy or disabled state and accessible targets", async () => {
     const onSave = jest.fn();
     const onMore = jest.fn();
     const screen = await render(
@@ -132,7 +132,7 @@ describe("design-system primitives", () => {
     );
     expect(StyleSheet.flatten(save.props.style)).toEqual(
       expect.objectContaining({
-        minHeight: spacing.xxxl,
+        minHeight: 56,
         minWidth: spacing.xxxl,
       }),
     );
@@ -222,7 +222,7 @@ describe("design-system primitives", () => {
     }
   });
 
-  test("TextField binds visible help and validation copy to a scalable 48-point input", async () => {
+  test("TextField binds visible help and validation copy to a scalable 56-point input", async () => {
     const onChangeText = jest.fn();
     const screen = await render(
       <ThemeHarness>
@@ -247,7 +247,7 @@ describe("design-system primitives", () => {
     expect(field.props.maxFontSizeMultiplier).toBe(2);
     expect(field.props.editable).toBe(false);
     expect(StyleSheet.flatten(field.props.style)).toEqual(
-      expect.objectContaining({ minHeight: spacing.xxxl }),
+      expect.objectContaining({ minHeight: 56 }),
     );
     screen.getByText("Friends will see this name");
     screen.getByText("Use at least two characters");

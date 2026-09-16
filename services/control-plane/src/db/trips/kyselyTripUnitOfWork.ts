@@ -1093,6 +1093,45 @@ export function createKyselyTripUnitOfWork(
         ? null
         : mapIdempotencyTripCandidate(row.response_body);
     },
+    async readInvitePreview(actor, inviteCodeHmac) {
+      // One database snapshot validates the code, trip and caller; it returns
+      // only joined names/roles, never keys, device identifiers or pending users.
+      const result = await sql<{
+        trip_id: string;
+        name: string;
+        starts_at: Date | null;
+        ends_at: Date;
+        members: { displayName: string; role: "OWNER" | "MEMBER" }[];
+      }>`
+        select trip.id as trip_id, trip.name, trip.started_at as starts_at, trip.ends_at,
+          jsonb_agg(jsonb_build_object('displayName', member_user.display_name, 'role', member.role)
+            order by case when member.role = 'OWNER' then 0 else 1 end, member.created_at, member.id) as members
+        from trip_invites as invite
+        join trips as trip on trip.id = invite.trip_id
+        join users as caller on caller.id = ${actor.userId}::uuid
+          and caller.clerk_subject = ${actor.clerkSubject} and caller.deleted_at is null
+        join devices as caller_device on caller_device.id = ${actor.deviceId}::uuid
+          and caller_device.user_id = caller.id and caller_device.revoked_at is null
+        join trip_members as member on member.trip_id = trip.id and member.state = 'ACTIVE'
+        join users as member_user on member_user.id = member.user_id and member_user.deleted_at is null
+        where invite.invite_code_hmac = ${Buffer.from(inviteCodeHmac)}
+          and invite.revoked_at is null and invite.expires_at > statement_timestamp()
+          and invite.uses_count < invite.max_uses
+          and trip.state = 'LOBBY' and trip.ends_at > statement_timestamp()
+          and trip.member_count < 10
+        group by trip.id, trip.name, trip.started_at, trip.ends_at
+      `.execute(database);
+      const row = result.rows[0];
+      return row
+        ? {
+            tripId: row.trip_id,
+            name: row.name,
+            startsAt: row.starts_at,
+            endsAt: row.ends_at,
+            members: row.members,
+          }
+        : null;
+    },
     async findInviteCandidate(inviteCodeHmac) {
       const row = await database
         .selectFrom("trip_invites")

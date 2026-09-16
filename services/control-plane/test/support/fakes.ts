@@ -99,6 +99,7 @@ export function createTestDependencies({
       approveJoinRequest: { execute: unexpectedTripRoute },
       createTrip: { execute: unexpectedTripRoute },
       getTrip: { execute: unexpectedTripRoute },
+      previewInvite: { execute: unexpectedTripRoute },
       rejectJoinRequest: { execute: unexpectedTripRoute },
       requestJoin: { execute: unexpectedTripRoute },
       resolveCreateTripOutcome: { execute: unexpectedTripRoute },

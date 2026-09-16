@@ -75,56 +75,12 @@ function project(value: unknown): PhotoLibraryPermissionState {
 }
 
 export class ExpoPhotoLibraryPermission implements PhotoLibraryPermissionPort {
-  private automaticRequest: Promise<PhotoLibraryPermissionState> | null = null;
-  private metadataPrompted = false;
   constructor(
     private readonly dependencies: Readonly<{
       media: MediaLibraryPermissionApi;
       linking: SettingsLinkingApi;
     }> = { media: MediaLibrary, linking: Linking },
   ) {}
-
-  /** Prompt on first use only. Denial/limited access requires a deliberate retry. */
-  requestAutomatically(): Promise<PhotoLibraryPermissionState> {
-    if (this.automaticRequest) return this.automaticRequest;
-    const request = (async () => {
-      const response = await this.dependencies.media.getPermissionsAsync(
-        false,
-        ["photo"],
-      );
-      if (
-        isRecord(response) &&
-        response.status === "undetermined" &&
-        response.canAskAgain === true
-      ) {
-        this.metadataPrompted = true;
-        return this.request();
-      }
-      const permission = await this.read();
-      if (
-        Platform.OS === "android" &&
-        project(response).kind === "FULL" &&
-        permission.kind === "REQUESTABLE" &&
-        !this.metadataPrompted
-      ) {
-        this.metadataPrompted = true;
-        return this.request();
-      }
-      return permission;
-    })().catch(() => {
-      throw new PhotoLibraryPermissionError();
-    });
-    this.automaticRequest = request;
-    void request.then(
-      () => {
-        this.automaticRequest = null;
-      },
-      () => {
-        this.automaticRequest = null;
-      },
-    );
-    return request;
-  }
 
   async read(): Promise<PhotoLibraryPermissionState> {
     try {

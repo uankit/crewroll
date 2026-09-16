@@ -10,8 +10,20 @@ import {
   permissionForLobbyEntry,
   usePhotoReadinessEntryBoundary,
 } from "@/bootstrap";
-import { Button, LiveStatus, Screen, Stack } from "@/design-system";
+import {
+  BrandLoading,
+  Button,
+  LiveStatus,
+  Screen,
+  Stack,
+} from "@/design-system";
 import { LobbyScreen, type LobbyActivationState } from "@/features/trips";
+import {
+  GalleryFiltersSheet,
+  defaultGalleryFilters,
+  galleryFilterCount,
+  galleryQuery,
+} from "@/features/trips";
 
 const TRIP_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -35,6 +47,11 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     string | undefined
   >(undefined);
   const [starting, setStarting] = useState(false);
+  const [photoCount, setPhotoCount] = useState(0);
+  const [filters, setFilters] = useState(defaultGalleryFilters);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [retryingActivation, setRetryingActivation] = useState(false);
   const readinessReconciler = useRef(createPhotoReadinessReconciler());
   const [observedEntry, setObservedEntry] = useState({
@@ -106,11 +123,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   if (projection.loading || projection.trip === null) {
     return (
       <Screen scroll={false} testID="trip-loading">
-        <LiveStatus
-          icon="…"
-          label="Loading trip"
-          message="CrewRoll is safely refreshing this trip."
-        />
+        <BrandLoading />
       </Screen>
     );
   }
@@ -141,69 +154,98 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
 
   const ownerInviteCode = session.ownerInviteCode;
   return (
-    <LobbyScreen
-      transferContent={
-        activation?.kind === "ready" || trip.status === "ENDING" ? (
-          <ActiveTripTransfers key={trip.id} tripId={trip.id} />
-        ) : undefined
-      }
-      {...(activation === undefined ? {} : { activation })}
-      {...(approvingMembershipId === undefined
-        ? {}
-        : { approvingMembershipId })}
-      endsLabel={endsLabel(trip.endsAt)}
-      {...(ownerInviteCode === null
-        ? {}
-        : {
-            invite: {
-              code: ownerInviteCode,
-              onOpenLink: () => {
-                void session.openOwnerInvite().catch(() => undefined);
-              },
-              onShare: () => {
-                void session.shareOwnerInvite().catch(() => undefined);
-              },
-              url: `airmesh://invite/${ownerInviteCode}`,
-            },
-          })}
-      onApproveMember={async (membershipId) => {
-        if (actions === null) return;
-        setApprovingMembershipId(membershipId);
-        try {
-          await actions.approve(trip.id, membershipId);
-        } catch {
-          // The safe cached projection remains retryable after a failed mutation.
-        } finally {
-          setApprovingMembershipId(undefined);
+    <>
+      <LobbyScreen
+        actionError={actionError}
+        hasPhotos={photoCount > 0}
+        filterCount={galleryFilterCount(filters)}
+        onOpenFilters={() => setFiltersOpen(true)}
+        {...(activation?.kind === "ready" || trip.status === "ENDING"
+          ? { onOpenInfo: () => setInfoOpen(true) }
+          : {})}
+        transferContent={
+          activation?.kind === "ready" || trip.status === "ENDING" ? (
+            <ActiveTripTransfers
+              key={`${trip.id}:${JSON.stringify(galleryQuery(filters))}`}
+              tripId={trip.id}
+              filters={filters}
+              onClearFilters={() => setFilters(defaultGalleryFilters)}
+              onPhotoCountChange={setPhotoCount}
+              tripInfo={trip}
+              infoOpen={infoOpen}
+              onCloseInfo={() => setInfoOpen(false)}
+            />
+          ) : undefined
         }
-      }}
-      onStart={async () => {
-        if (actions === null) return;
-        setStarting(true);
-        try {
-          await actions.start(trip.id);
-        } catch {
-          // Keep the safe lobby projection available for a deliberate retry.
-        } finally {
-          setStarting(false);
-        }
-      }}
-      onOpenPhotoSettings={() => {
-        void actions?.openPhotoSettings().catch(() => undefined);
-      }}
-      onRequestPhotoAccess={() => {
-        void actions
-          ?.publishPhotoReadiness(trip.id, true)
-          .catch(() => undefined);
-      }}
-      photoPermission={permissionForLobbyEntry(
-        focused && observedEntry.focused && observedEntry.tripId === tripId,
-        entryReconciled,
-        session.photoPermission,
-      )}
-      starting={starting}
-      trip={trip}
-    />
+        {...(activation === undefined ? {} : { activation })}
+        {...(approvingMembershipId === undefined
+          ? {}
+          : { approvingMembershipId })}
+        endsLabel={endsLabel(trip.endsAt)}
+        {...(ownerInviteCode === null
+          ? {}
+          : {
+              invite: {
+                code: ownerInviteCode,
+                onCopy: session.copyOwnerInvite,
+              },
+            })}
+        onApproveMember={async (membershipId) => {
+          if (actions === null) return;
+          setActionError(null);
+          setApprovingMembershipId(membershipId);
+          try {
+            await actions.approve(trip.id, membershipId);
+          } catch {
+            setActionError("Approval could not be confirmed. Try again.");
+          } finally {
+            setApprovingMembershipId(undefined);
+          }
+        }}
+        onStart={async () => {
+          if (actions === null) return;
+          setActionError(null);
+          setStarting(true);
+          try {
+            await actions.start(trip.id);
+          } catch {
+            setActionError(
+              "The trip could not be started yet. Check your connection and try again.",
+            );
+          } finally {
+            setStarting(false);
+          }
+        }}
+        onOpenPhotoSettings={() => {
+          void actions?.openPhotoSettings().catch(() => undefined);
+        }}
+        onRequestPhotoAccess={() => {
+          if (actions !== null)
+            void readinessReconciler.current
+              .reconcile(actions, trip.id, true)
+              .catch(() => undefined);
+        }}
+        photoPermission={permissionForLobbyEntry(
+          focused && observedEntry.focused && observedEntry.tripId === tripId,
+          entryReconciled,
+          session.photoPermission,
+        )}
+        starting={starting}
+        trip={trip}
+      />
+      {filtersOpen ? (
+        <GalleryFiltersSheet
+          value={filters}
+          members={trip.members}
+          endsAt={trip.endsAt}
+          onDismiss={() => setFiltersOpen(false)}
+          onApply={(next) => {
+            setFilters(next);
+            setFiltersOpen(false);
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -221,5 +263,5 @@ export default function TripRoute() {
     return <Redirect href="/(app)" withAnchor />;
   }
 
-  return <TripLobby tripId={routeTripId} />;
+  return <TripLobby key={routeTripId} tripId={routeTripId} />;
 }

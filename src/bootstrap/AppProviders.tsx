@@ -74,7 +74,7 @@ function createProductionComposition(
   let provisionCurrentDevice: ReturnType<typeof createProvisionCurrentDevice>;
 
   const runtime: AppSessionRuntime = Object.freeze({
-    async pauseTransfers() {
+    async pauseTransfers(options) {
       nativeSessions.invalidate();
       const generation = nativeSessions.generation;
       await crewRollTransfer.setTransferPolicy({
@@ -82,7 +82,10 @@ function createProductionComposition(
         paused: true,
         cellularAllowed: false,
       });
-      if (generation === nativeSessions.generation) {
+      if (
+        generation === nativeSessions.generation &&
+        !options?.preserveDeviceSession
+      ) {
         await crewRollTransfer.clearDeviceSession({ protocolVersion: 1 });
       }
     },
@@ -171,6 +174,8 @@ function createProductionComposition(
         reconcileUnknownCreate: createTrip.reconcileUnknownCreate,
         replayUnknownJoin: joinTrip.replayUnknownJoin,
         requestJoin: joinTrip.request,
+        previewInvite: (inviteCode: string) =>
+          mobileDependencies.tripApi.previewInvite(device.deviceId, inviteCode),
         hydrateTrip: hydrateTrip.hydrate,
         async openPhotoSettings() {
           await photoPermission.openSettings();
@@ -182,16 +187,10 @@ function createProductionComposition(
             ? readiness.replayPendingMutation()
             : startTrip.replayPendingMutation();
         },
-        async setPhotoReadiness(
-          tripId: string,
-          requestPermission: boolean | "automatic",
-        ) {
-          const permission =
-            requestPermission === "automatic"
-              ? await photoPermission.requestAutomatically()
-              : requestPermission
-                ? await photoPermission.request()
-                : await photoPermission.read();
+        async setPhotoReadiness(tripId: string, requestPermission: boolean) {
+          const permission = requestPermission
+            ? await photoPermission.request()
+            : await photoPermission.read();
           const current = await hydrateTrip.hydrate(tripId);
           // Membership readiness is only mutable in the lobby. Active-trip
           // permission checks stay local and must not produce failing writes.

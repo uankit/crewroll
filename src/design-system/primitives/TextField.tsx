@@ -86,7 +86,9 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(
             typography.body,
             {
               backgroundColor: disabled ? colors.surfaceMuted : colors.surface,
-              borderColor: errorMessage ? colors.critical : colors.border,
+              borderColor: errorMessage
+                ? colors.critical
+                : colors.textSecondary,
               color: colors.textPrimary,
             },
             inputStyle,
@@ -116,7 +118,7 @@ const styles = StyleSheet.create({
   input: {
     borderRadius: radius.md,
     borderWidth: 1,
-    minHeight: spacing.xxxl,
+    minHeight: 56,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs,
   },

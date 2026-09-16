@@ -196,6 +196,7 @@ export function createKyselyMediaService(
 
   async function previewGrant(row: {
     assetId: string;
+    sourceMembershipId: string;
     encryptedManifest: Uint8Array;
     key: string;
     bytes: string;
@@ -207,6 +208,7 @@ export function createKyselyMediaService(
     );
     return {
       assetId: row.assetId,
+      sourceMembershipId: row.sourceMembershipId,
       expiresAt: expiresAt.toISOString(),
       encryptedManifest: b64(row.encryptedManifest),
       object: {
@@ -220,6 +222,7 @@ export function createKyselyMediaService(
 
   const previewColumns = [
     "u.client_asset_id as assetId",
+    "source_member.id as sourceMembershipId",
     "u.source_device_id as sourceDeviceId",
     "u.encrypted_manifest as encryptedManifest",
     "o.s3_key as key",
@@ -323,6 +326,15 @@ export function createKyselyMediaService(
           .innerJoin("upload_objects as o", "o.upload_session_id", "u.id")
           .innerJoin("trips as t", "t.id", "u.trip_id")
           .leftJoin("assets as a", "a.id", "u.client_asset_id")
+          .innerJoin("trip_members as source_member", (join) =>
+            join
+              .onRef("source_member.trip_id", "=", "u.trip_id")
+              .onRef(
+                "source_member.participating_device_id",
+                "=",
+                "u.source_device_id",
+              ),
+          )
           .select([
             ...previewColumns,
             "e.sequence",
@@ -372,6 +384,15 @@ export function createKyselyMediaService(
           .innerJoin("upload_objects as o", "o.upload_session_id", "u.id")
           .innerJoin("trips as t", "t.id", "u.trip_id")
           .leftJoin("assets as a", "a.id", "u.client_asset_id")
+          .innerJoin("trip_members as source_member", (join) =>
+            join
+              .onRef("source_member.trip_id", "=", "u.trip_id")
+              .onRef(
+                "source_member.participating_device_id",
+                "=",
+                "u.source_device_id",
+              ),
+          )
           .select(previewColumns)
           .where("u.client_asset_id", "=", assetId)
           .where("o.variant", "=", "PREVIEW")

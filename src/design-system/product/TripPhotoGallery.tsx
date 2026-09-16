@@ -59,15 +59,60 @@ const Photo = memo(function Photo({
 /** A bounded page of private, native-verified renders; never remote media URLs. */
 export function TripPhotoGallery({
   photos,
-}: Readonly<{ photos: readonly TripPhoto[] }>) {
+  fillEmpty = false,
+  emptyState = "ready",
+}: Readonly<{
+  photos: readonly TripPhoto[];
+  fillEmpty?: boolean;
+  emptyState?: "ready" | "waiting";
+}>) {
   const [selected, setSelected] = useState<string | null>(null);
+  const colors = useCrewRollTheme();
   const selectedPhoto = photos.find((photo) => photo.id === selected);
   const uri = selectedPhoto?.previewUri?.startsWith("file:///")
     ? selectedPhoto.previewUri
     : null;
   return (
     <>
-      <View style={styles.grid} testID="trip-photo-gallery">
+      <View
+        style={[styles.grid, fillEmpty && photos.length === 0 && styles.fill]}
+        testID="trip-photo-gallery"
+      >
+        {photos.length === 0 ? (
+          <View style={[styles.emptyArea, fillEmpty && styles.fill]}>
+            <View
+              accessible
+              style={[
+                styles.emptyCard,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View
+                style={[
+                  styles.emptyMark,
+                  { backgroundColor: colors.accentSurface },
+                ]}
+              >
+                <Image
+                  source={require("../../../assets/onboarding/empty-moment.svg")}
+                  tintColor={colors.action}
+                  style={{ width: 32, height: 32 }}
+                  accessible={false}
+                />
+              </View>
+              <AppText variant="headline" style={styles.center}>
+                {emptyState === "ready"
+                  ? "Your first photo goes here"
+                  : "Your shared roll starts here"}
+              </AppText>
+              <AppText variant="label" tone="secondary" style={styles.hint}>
+                {emptyState === "ready"
+                  ? "Use your phone’s camera. Photos appear here automatically."
+                  : "Photos appear automatically after the trip starts."}
+              </AppText>
+            </View>
+          </View>
+        ) : null}
         {photos.map((photo) => (
           <Photo key={photo.id} photo={photo} onOpen={setSelected} />
         ))}
@@ -107,8 +152,28 @@ export function TripPhotoGallery({
 }
 
 const styles = StyleSheet.create({
+  fill: { flex: 1 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   tile: { width: "48%", gap: spacing.xs },
+  emptyArea: { width: "100%", justifyContent: "center" },
+  emptyCard: {
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+  },
+  emptyMark: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.xs,
+  },
+  center: { textAlign: "center" },
+  hint: { maxWidth: 280, textAlign: "center" },
   preview: {
     aspectRatio: 1,
     borderRadius: radius.md,

@@ -2,6 +2,7 @@ import Foundation
 
 struct NativePreviewGrant: Codable {
     struct Object: Codable { let variant: String; let url: String; let ciphertextBytes: String; let checksumSha256: String }
+    var sourceMembershipId: String? = nil
     let assetId: String; let expiresAt: String; let encryptedManifest: String; let object: Object
 }
 struct NativePreviewFeed: Decodable {
@@ -12,10 +13,11 @@ struct NativePreviewFeed: Decodable {
     let items: [Item]; let nextCursor: String; let hasMore: Bool
 }
 struct NativePreviewRecord: Codable {
-    let assetID: String; let tripID: String; let capturedAt: Date; let retainUntil: Date
+    let assetID: String; let tripID: String; var capturedAt: Date; let retainUntil: Date
     var grant: NativePreviewGrant
     var readyAt: Date?
     var blocker: String?
+    var galleryMetadataVersion: Int?
 }
 private struct PreviewState: Codable {
     var revision = 0

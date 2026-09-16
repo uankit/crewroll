@@ -1,6 +1,11 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { Base64MaxSchema, ClosedObject, DateTimeSchema } from "./common.js";
-import { AssetIdSchema, DeviceIdSchema, UploadSessionIdSchema } from "./ids.js";
+import {
+  AssetIdSchema,
+  DeviceIdSchema,
+  MembershipIdSchema,
+  UploadSessionIdSchema,
+} from "./ids.js";
 import { PreviewDownloadObjectSchema } from "./deliveries.js";
 
 export const PublishPreviewBodySchema = ClosedObject({
@@ -17,6 +22,7 @@ export type PublishPreviewResponse = Static<
 >;
 export const PreviewDownloadResponseSchema = ClosedObject({
   assetId: AssetIdSchema,
+  sourceMembershipId: Type.Optional(MembershipIdSchema),
   expiresAt: DateTimeSchema,
   encryptedManifest: Base64MaxSchema(65_536),
   object: PreviewDownloadObjectSchema,

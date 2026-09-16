@@ -77,6 +77,42 @@ const input = {
 } as const;
 
 describe("provisionCurrentDevice", () => {
+  it("reuses a validated native session across new app compositions without a registration request", async () => {
+    const { native, random, registration } = harness();
+    const persistedNative = {
+      ...native,
+      restoreDeviceSession: jest
+        .fn()
+        .mockResolvedValue({ protocolVersion: 1, deviceId }),
+    };
+    for (let launch = 0; launch < 3; launch++) {
+      const provision = createProvisionCurrentDevice({
+        native: persistedNative,
+        random,
+        registration,
+      });
+      await expect(provision(input)).resolves.toEqual({ deviceId, identity });
+    }
+    expect(registration.registerDevice).not.toHaveBeenCalled();
+    expect(native.installDeviceSession).not.toHaveBeenCalled();
+    expect(persistedNative.restoreDeviceSession).toHaveBeenCalledWith({
+      protocolVersion: 1,
+      accountId,
+      installationId: identity.installationId,
+      apiBaseUrl,
+    });
+  });
+
+  it("coalesces concurrent cold-start requests into one device registration", async () => {
+    const { provisionCurrentDevice, native, registration } = harness();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => provisionCurrentDevice(input)),
+    );
+    expect(results.every((result) => result.deviceId === deviceId)).toBe(true);
+    expect(native.ensureDeviceIdentity).toHaveBeenCalledTimes(1);
+    expect(registration.registerDevice).toHaveBeenCalledTimes(1);
+    expect(native.installDeviceSession).toHaveBeenCalledTimes(1);
+  });
   it("registers the public identity, installs the exact background session, and returns no secret", async () => {
     const { native, provisionCurrentDevice, random, registration } = harness();
 
@@ -143,10 +179,7 @@ describe("provisionCurrentDevice", () => {
 
     expect(random.getBytes).toHaveBeenCalledTimes(1);
     expect(native.ensureDeviceIdentity).toHaveBeenCalledTimes(1);
-    expect(registration.registerDevice).toHaveBeenCalledTimes(2);
-    expect(registration.registerDevice.mock.calls[1]).toEqual(
-      registration.registerDevice.mock.calls[0],
-    );
+    expect(registration.registerDevice).toHaveBeenCalledTimes(1);
     expect(native.installDeviceSession).toHaveBeenCalledTimes(2);
     expect(native.installDeviceSession).toHaveBeenNthCalledWith(
       1,

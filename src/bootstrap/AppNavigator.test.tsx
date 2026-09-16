@@ -1,6 +1,12 @@
 import { render, screen } from "@testing-library/react-native";
 import type { AppSessionPhase } from "./AppSessionProvider";
 import { AppNavigator } from "./AppNavigator";
+jest.mock("../features/auth/AccountScreen", () => ({
+  AccountScreen: () => null,
+}));
+jest.mock("../infrastructure/auth/useAccountAuthentication", () => ({
+  useAccountAuthentication: jest.fn(),
+}));
 
 const mockUseAppSession = jest.fn();
 const mockProtectedGuards: boolean[] = [];

@@ -13,6 +13,7 @@ export const requiredOperations = [
   "createJoinRequest",
   "createTrip",
   "getTrip",
+  "previewInvite",
   "registerDevice",
   "resolveCreateTripOutcome",
   "setTripReadiness",
@@ -57,6 +58,15 @@ const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
 const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
 
 const operationExpectations = [
+  {
+    method: "post",
+    operationId: "previewInvite",
+    parameters: [deviceHeader()],
+    path: "/v1/trips/invite-preview",
+    request: "InvitePreviewBody",
+    response: "InvitePreviewResponse",
+    successStatus: "200",
+  },
   {
     method: "put",
     operationId: "approveJoinRequest",
@@ -452,6 +462,8 @@ function renderGeneratedTypes() {
     "CreateTripOutcomeResponse",
     "DeviceResponse",
     "MembershipResponse",
+    "InvitePreviewBody",
+    "InvitePreviewResponse",
     "ProblemDetails",
     "RegisterDeviceBody",
     "SetTripReadinessBody",

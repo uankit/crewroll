@@ -119,6 +119,7 @@ describe("CrewRoll native transfer boundary", () => {
       "installDeviceSession",
       "listAssets",
       "reconcileNow",
+      "restoreDeviceSession",
       "retry",
       "setTransferPolicy",
       "subscribeToInvalidations",

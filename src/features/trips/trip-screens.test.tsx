@@ -22,6 +22,10 @@ import {
   type CreateTripScreenProps,
   type LobbyScreenProps,
 } from "./index";
+jest.mock(
+  "react-native-safe-area-context",
+  () => jest.requireActual("react-native-safe-area-context/jest/mock").default,
+);
 
 jest.mock("@expo/ui/community/datetime-picker", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -122,9 +126,7 @@ function invite(
 ) {
   return {
     code: "ABCD2345",
-    url: "airmesh://invite/ABCD2345",
-    onOpenLink: jest.fn(),
-    onShare: jest.fn(),
+    onCopy: jest.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -141,38 +143,50 @@ function renderLobby(overrides: Partial<LobbyScreenProps> = {}) {
 }
 
 describe("LobbyScreen", () => {
-  test("lets only the owner share the readable invite and approve the nominated pending member", async () => {
-    const onOpenLink = jest.fn();
-    const onShare = jest.fn();
+  test("copies the code from the owner sheet and approves the named request", async () => {
+    const onCopy = jest.fn(async () => undefined);
     const onApproveMember = jest.fn();
     const screen = await renderLobby({
-      invite: invite({ onOpenLink, onShare }),
+      invite: invite({ onCopy }),
       onApproveMember,
     });
-
-    screen.getByRole("header", { name: "Weekend in Goa" });
-    screen.getByText("ABCD2345");
-    const link = screen.getByRole("link", {
-      name: "airmesh://invite/ABCD2345",
-    });
-    const share = screen.getByRole("button", { name: "Share invite" });
-    const approve = screen.getByRole("button", {
-      name: "Approve Grace Hopper",
-    });
-
-    await fireEvent.press(link);
-    await fireEvent.press(share);
-    await fireEvent.press(approve);
-
-    expect(onOpenLink).toHaveBeenCalledTimes(1);
-    expect(onShare).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("ABCD 2345")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
+    screen.getByText("ABCD 2345");
+    expect(screen.queryByRole("link")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Copy code" }));
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    screen.getByRole("button", { name: "Code copied" });
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Close Invite your crew" }),
+    );
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Approve Grace Hopper" }),
+    );
     expect(onApproveMember).toHaveBeenCalledWith(memberMembershipId);
-    expect(screen.getByLabelText("Status: Waiting for approval")).toBeTruthy();
-    screen.getByText("Approve every waiting member before starting.");
     expect(
       screen.getByRole("button", { name: "Start trip" }).props
-        .accessibilityState,
-    ).toEqual({ busy: false, disabled: true });
+        .accessibilityState.disabled,
+    ).toBe(true);
+  });
+
+  test("shows photo access before the gallery and lets a deferral return to it", async () => {
+    const request = jest.fn();
+    const screen = await renderLobby({
+      photoPermission: { kind: "REQUESTABLE" },
+      onRequestPhotoAccess: request,
+      onStart: jest.fn(),
+    });
+    expect(request).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    expect(request).toHaveBeenCalledTimes(1);
+    await fireEvent.press(screen.getByRole("button", { name: "Set up later" }));
+    screen.getByTestId("trip-photo-gallery");
+    expect(screen.queryByRole("button", { name: "Start trip" })).toBeNull();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Set up photo access" }),
+    );
+    screen.getByTestId("photo-access-screen");
   });
 
   test("keeps invite, approval, and Start controls owner-only before inspecting redacted devices", async () => {
@@ -203,10 +217,7 @@ describe("LobbyScreen", () => {
       onStart,
     });
 
-    screen.getByText("Waiting for the owner");
-    screen.getByText(
-      "Your request is in. You can join once the owner approves this phone.",
-    );
+    screen.getByText("Waiting for your host.");
     expect(screen.queryByText("ABCD2345")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
@@ -246,7 +257,7 @@ describe("LobbyScreen", () => {
     ],
   ] as const)(
     "maps exact readiness to a disabled Start blocker",
-    async (memberState, readinessLabel, blockerCopy) => {
+    async (memberState, _readinessLabel, blockerCopy) => {
       const base = ownerTrip();
       const screen = await renderLobby({
         trip: ownerTrip({
@@ -255,7 +266,6 @@ describe("LobbyScreen", () => {
         onStart: jest.fn(),
       });
 
-      screen.getByLabelText(readinessLabel);
       screen.getByText(blockerCopy);
       expect(
         screen.getByRole("button", { name: "Start trip" }).props
@@ -271,7 +281,6 @@ describe("LobbyScreen", () => {
       onStart,
     });
 
-    screen.getByText("Everyone is approved and has full photo access.");
     const start = screen.getByRole("button", { name: "Start trip" });
     expect(start.props.accessibilityState).toEqual({
       busy: false,
@@ -334,16 +343,13 @@ describe("LobbyScreen", () => {
       activation,
     });
 
-    screen.getByText("Trip started, but this phone needs attention");
-    screen.getByText(
-      "CrewRoll could not activate automatic photo delivery on this phone. Try again.",
-    );
+    screen.getByText("Photo sharing needs to reconnect on this phone.");
     expect(
       screen.queryByText(/wrappedKey|native stack|trip-id-private/i),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Start trip" })).toBeNull();
     const retry = screen.getByRole("button", {
-      name: "Try activation again",
+      name: "Try again",
     });
     expect(retry.props.accessibilityState).toEqual({
       busy: true,
@@ -373,7 +379,7 @@ describe("LobbyScreen", () => {
     const heading = screen.getByRole("header", {
       name: "A very long family and friends weekend by the sea",
     });
-    const share = screen.getByRole("button", { name: "Share invite" });
+    const share = screen.getByRole("button", { name: "Invite crew" });
     const start = screen.getByRole("button", { name: "Start trip" });
     expect(heading.props.allowFontScaling).toBe(true);
     expect(heading.props.maxFontSizeMultiplier).toBe(2);
@@ -385,7 +391,7 @@ describe("LobbyScreen", () => {
     );
     expect(StyleSheet.flatten(start.props.style)).toEqual(
       expect.objectContaining({
-        minHeight: spacing.xxxl,
+        minHeight: 56,
         minWidth: spacing.xxxl,
       }),
     );
@@ -394,7 +400,6 @@ describe("LobbyScreen", () => {
     ).toEqual(
       expect.objectContaining({ backgroundColor: darkColors.background }),
     );
-    expect(screen.getAllByLabelText("Status: Ready")).toHaveLength(2);
   });
 });
 
@@ -486,7 +491,7 @@ describe("TripEndField", () => {
     );
   });
 
-  test("shows a localized value and exposes separate accessible controls", async () => {
+  test("shows a localized date range with one accessible field", async () => {
     setPlatform("android");
     const value = new Date(2026, 8, 2, 17, 30);
     const screen = await render(
@@ -497,16 +502,8 @@ describe("TripEndField", () => {
         value={value}
       />,
     );
-
-    const display = new Intl.DateTimeFormat("en-GB", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(value);
-    screen.getByText(display);
-    screen.getByRole("button", { name: "Change end date" });
-    screen.getByRole("button", { name: "Change end time" });
+    screen.getByRole("button", { name: /^Trip dates\. Ends/ });
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
-    expect(screen.queryByTestId("mock-native-time-picker")).toBeNull();
   });
 
   test("mounts one Android dialog at a time, recombines in JS, and unmounts on choose or cancel", async () => {
@@ -518,7 +515,7 @@ describe("TripEndField", () => {
     );
 
     await fireEvent.press(
-      screen.getByRole("button", { name: "Change end date" }),
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
     const datePicker = screen.getByTestId("mock-native-date-picker");
     screen.getByTestId("trip-end-date-picker");
@@ -536,18 +533,16 @@ describe("TripEndField", () => {
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
 
     await fireEvent.press(
-      screen.getByRole("button", { name: "Change end time" }),
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
-    const timePicker = screen.getByTestId("mock-native-time-picker");
-    screen.getByTestId("trip-end-time-picker");
     await fireEvent(
-      timePicker,
+      screen.getByTestId("mock-native-date-picker"),
       "valueChange",
       { nativeEvent: { timestamp: 0, utcOffset: 0 } },
-      new Date(2020, 0, 1, 8, 45),
+      new Date(Date.UTC(2026, 8, 4)),
     );
-    expect(onChange).toHaveBeenCalledWith(new Date(2026, 8, 2, 8, 45));
-    expect(screen.queryByTestId("mock-native-time-picker")).toBeNull();
+    expect(onChange).toHaveBeenCalledWith(new Date(2026, 8, 4, 17, 30));
+    expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
   });
 
   test("keeps the intended Android calendar day in a negative UTC offset", async () => {
@@ -569,7 +564,7 @@ describe("TripEndField", () => {
     );
 
     await fireEvent.press(
-      screen.getByRole("button", { name: "Change end date" }),
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
     const datePicker = screen.getByTestId("mock-native-date-picker");
     expect(datePicker.props.value).toEqual(new Date(Date.UTC(2026, 8, 2)));
@@ -607,16 +602,11 @@ describe("TripEndField", () => {
       />,
     );
 
-    const date = screen.getByRole("button", { name: "Change end date" });
-    const time = screen.getByRole("button", { name: "Change end time" });
+    const date = screen.getByRole("button", { name: /^Trip dates\./ });
     expect(date.props.accessibilityState).toEqual(
       expect.objectContaining({ disabled: true }),
     );
-    expect(time.props.accessibilityState).toEqual(
-      expect.objectContaining({ disabled: true }),
-    );
     await fireEvent.press(date);
-    await fireEvent.press(time);
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
     expect(screen.queryByTestId("mock-native-time-picker")).toBeNull();
   });
@@ -630,7 +620,7 @@ describe("TripEndField", () => {
     );
 
     await fireEvent.press(
-      screen.getByRole("button", { name: "Change end date" }),
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
     screen.getByTestId("mock-native-date-picker");
     await screen.rerender(
@@ -648,7 +638,7 @@ describe("TripEndField", () => {
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
   });
 
-  test("keeps both iOS controls inline and passes the platform-supported disabled state", async () => {
+  test("does not open the iOS sheet while disabled", async () => {
     setPlatform("ios");
     const screen = await render(
       <TripEndField
@@ -658,17 +648,10 @@ describe("TripEndField", () => {
         value={createDefaultTripEnd(fixedNow)}
       />,
     );
-
-    expect(screen.getByTestId("mock-native-date-picker").props).toEqual(
-      expect.objectContaining({ disabled: true, mode: "date" }),
+    await fireEvent.press(
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
-    expect(screen.getByTestId("mock-native-time-picker").props).toEqual(
-      expect.objectContaining({ disabled: true, mode: "time" }),
-    );
-    screen.getByTestId("trip-end-date-picker");
-    screen.getByTestId("trip-end-time-picker");
-    screen.getByText("End date");
-    screen.getByText("End time");
+    expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
   });
 
   test("keeps the iOS date value and local-field recombination unchanged", async () => {
@@ -687,6 +670,9 @@ describe("TripEndField", () => {
     const onChange = jest.fn();
     const screen = await render(
       <TripEndField now={now} onChange={onChange} value={value} />,
+    );
+    await fireEvent.press(
+      screen.getByRole("button", { name: /^Trip dates\./ }),
     );
     const datePicker = screen.getByTestId("mock-native-date-picker");
 
@@ -728,22 +714,12 @@ describe("CreateTripScreen", () => {
     });
   });
 
-  test("defaults to the contract window and explains the read-only Immediate release", async () => {
+  test("uses the default window and takes the user directly to photo access next", async () => {
     const screen = await renderCreate({ locale: "en-GB" });
-    const expectedEnd = createDefaultTripEnd(fixedNow);
-    const display = new Intl.DateTimeFormat("en-GB", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(expectedEnd);
-
-    screen.getByRole("header", { name: "Create an Immediate trip" });
-    screen.getByText(display);
-    screen.getByLabelText("Status: Immediate release");
-    screen.getByText(
-      "Eligible photos can arrive automatically after the owner starts the trip.",
-    );
-    expect(screen.queryByDisplayValue(expectedEnd.toISOString())).toBeNull();
-    expect(screen.queryByText("Nightly")).toBeNull();
+    screen.getByRole("header", { name: "Name your trip." });
+    screen.getByRole("button", { name: /^Trip dates\. Ends/ });
+    screen.getByText("Photo access comes next.");
+    expect(screen.queryByText("Trip created")).toBeNull();
   });
 
   test("validates the name and safe future bounds before creating", async () => {
@@ -790,7 +766,7 @@ describe("CreateTripScreen", () => {
     const onCancel = jest.fn();
     const onCreate = jest.fn();
     const editing = await renderCreate({ onCancel, onCreate });
-    await fireEvent.press(editing.getByRole("button", { name: "Cancel" }));
+    await fireEvent.press(editing.getByRole("button", { name: "Back" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onCreate).not.toHaveBeenCalled();
     await editing.unmount();
@@ -805,15 +781,11 @@ describe("CreateTripScreen", () => {
       submitting.getByLabelText("Trip name").props.accessibilityState,
     ).toEqual(expect.objectContaining({ disabled: true }));
     const create = submitting.getByRole("button", { name: "Create trip" });
-    const cancel = submitting.getByRole("button", { name: "Cancel" });
+    expect(submitting.queryByRole("button", { name: "Back" })).toBeNull();
     expect(create.props.accessibilityState).toEqual(
       expect.objectContaining({ busy: true, disabled: true }),
     );
-    expect(cancel.props.accessibilityState).toEqual(
-      expect.objectContaining({ disabled: true }),
-    );
     await fireEvent.press(create);
-    await fireEvent.press(cancel);
     expect(onCreate).not.toHaveBeenCalled();
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
@@ -828,13 +800,13 @@ describe("CreateTripScreen", () => {
     } as const;
     const screen = await renderCreate({ state });
 
-    screen.getByRole("header", { name: "Checking your new trip" });
+    screen.getByRole("header", { name: "Checking your trip." });
     screen.getByText(
-      "CrewRoll is checking whether your trip was created. Keep this phone connected and check again.",
+      "Your trip may already be created. Check the same request to continue.",
     );
     expect(screen.queryByText("do-not-render")).toBeNull();
     expect(screen.queryByRole("button", { name: "Create trip" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Start over" })).toBeNull();
     await fireEvent.press(
       screen.getByRole("button", { name: "Check trip status" }),
@@ -856,18 +828,6 @@ describe("CreateTripScreen", () => {
     expect(onCheck).toHaveBeenCalledTimes(1);
   });
 
-  test("navigates from the terminal success state", async () => {
-    const onOpenTrip = jest.fn();
-    const screen = await renderCreate({
-      state: { kind: "success", onOpenTrip },
-    });
-
-    screen.getByRole("header", { name: "Trip created" });
-    screen.getByText("Your Immediate trip is ready for its crew.");
-    await fireEvent.press(screen.getByRole("button", { name: "Open trip" }));
-    expect(onOpenTrip).toHaveBeenCalledTimes(1);
-  });
-
   test("keeps the primary action reachable at 200 percent under RTL, dark, and reduced motion", async () => {
     const screen = await render(
       <CrewRollThemeProvider reduceMotion scheme="dark">
@@ -883,7 +843,7 @@ describe("CreateTripScreen", () => {
     );
 
     const heading = screen.getByRole("header", {
-      name: "Create an Immediate trip",
+      name: "Name your trip.",
     });
     const create = screen.getByRole("button", { name: "Create trip" });
     expect(heading.props.allowFontScaling).toBe(true);
@@ -893,7 +853,7 @@ describe("CreateTripScreen", () => {
     );
     expect(StyleSheet.flatten(create.props.style)).toEqual(
       expect.objectContaining({
-        minHeight: spacing.xxxl,
+        minHeight: 56,
         minWidth: spacing.xxxl,
       }),
     );

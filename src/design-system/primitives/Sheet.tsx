@@ -1,4 +1,5 @@
 import type { PropsWithChildren } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Modal,
   Pressable,
@@ -25,6 +26,7 @@ export type SheetProps = PropsWithChildren<{
   readonly dismissOnBackdropPress?: boolean;
   readonly contentStyle?: StyleProp<ViewStyle>;
   readonly testID?: string;
+  readonly showCloseButton?: boolean;
 }>;
 
 export function Sheet({
@@ -36,8 +38,10 @@ export function Sheet({
   dismissOnBackdropPress = true,
   contentStyle,
   testID = "sheet-modal",
+  showCloseButton = true,
 }: SheetProps) {
   const theme = useCrewRollTheme();
+  const insets = useSafeAreaInsets();
   const resolvedCloseLabel = closeLabel ?? `Close ${title}`;
 
   return (
@@ -57,7 +61,7 @@ export function Sheet({
           onPress={onDismiss}
           style={[
             StyleSheet.absoluteFill,
-            { backgroundColor: theme.background, opacity: 0.72 },
+            { backgroundColor: theme.fixedInk, opacity: 0.28 },
           ]}
         />
         <Stack
@@ -69,11 +73,24 @@ export function Sheet({
             {
               backgroundColor: theme.surface,
               borderColor: theme.border,
+              paddingBottom: Math.max(spacing.lg, insets.bottom),
             },
             contentStyle,
           ]}
           testID="sheet-content"
         >
+          {!showCloseButton ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={resolvedCloseLabel}
+              onPress={onDismiss}
+              style={styles.handleTarget}
+            >
+              <View
+                style={[styles.handle, { backgroundColor: theme.border }]}
+              />
+            </Pressable>
+          ) : null}
           <Inline align="start" justify="space-between">
             <AppText
               accessibilityRole="header"
@@ -82,15 +99,17 @@ export function Sheet({
             >
               {title}
             </AppText>
-            <IconButton
-              icon={
-                <AppText aria-hidden tone="secondary" variant="title2">
-                  ×
-                </AppText>
-              }
-              label={resolvedCloseLabel}
-              onPress={onDismiss}
-            />
+            {showCloseButton ? (
+              <IconButton
+                icon={
+                  <AppText aria-hidden tone="secondary" variant="title2">
+                    ×
+                  </AppText>
+                }
+                label={resolvedCloseLabel}
+                onPress={onDismiss}
+              />
+            ) : null}
           </Inline>
           <ScrollView
             contentContainerStyle={styles.scrollContent}
@@ -123,6 +142,16 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
   },
+  handleTarget: {
+    alignSelf: "center",
+    width: 80,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    marginTop: -spacing.xs,
+    marginBottom: -spacing.xl,
+  },
+  handle: { width: 40, height: 5, borderRadius: radius.pill },
   scrollBody: {
     flexGrow: 0,
     flexShrink: 1,

@@ -1,5 +1,9 @@
-import type { RegisterDeviceBody } from "@crewroll/contracts";
-import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
+import type { DeviceResponse, RegisterDeviceBody } from "@crewroll/contracts";
+import type {
+  NativeDeviceIdentity,
+  RestoreDeviceSessionCommand,
+  RestoredDeviceSession,
+} from "@crewroll/contracts/native/protocol";
 
 import { createUuidV4 } from "../../domain/ids/random";
 import type { RandomBytesPort } from "../../domain/ids/random";
@@ -39,6 +43,9 @@ type InstallDeviceSessionCommand = Readonly<{
 }>;
 
 export interface ProvisioningNativePort {
+  restoreDeviceSession?(
+    command: RestoreDeviceSessionCommand,
+  ): Promise<RestoredDeviceSession>;
   ensureDeviceIdentity(
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
@@ -59,10 +66,11 @@ type ProvisioningContext = Readonly<{
 }>;
 
 type PendingAttempt = {
-  readonly commandId: string;
+  commandId: string;
   readonly context: ProvisioningContext;
   identity?: NativeDeviceIdentity;
   registrationBody?: RegisterDeviceBody;
+  response?: DeviceResponse;
 };
 
 function invalidRequest(): CrewRollApiProblem {
@@ -138,11 +146,11 @@ export function createProvisionCurrentDevice({
   registration,
 }: ProvisionCurrentDeviceDependencies) {
   let pendingAttempt: PendingAttempt | undefined;
+  const inFlight = new Map<string, Promise<ProvisionedDevice>>();
 
-  return async function provisionCurrentDevice(
-    input: ProvisionCurrentDeviceInput,
+  async function provision(
+    context: ProvisioningContext,
   ): Promise<ProvisionedDevice> {
-    const context = parseContext(input);
     let attempt = pendingAttempt;
 
     if (attempt === undefined || !sameContext(attempt.context, context)) {
@@ -161,11 +169,31 @@ export function createProvisionCurrentDevice({
     }
 
     const identity = attempt.identity;
+    const restored = await native.restoreDeviceSession?.({
+      protocolVersion: 1,
+      accountId: context.accountId,
+      installationId: identity.installationId,
+      apiBaseUrl: context.apiBaseUrl,
+    });
+    if (restored) {
+      if (pendingAttempt === attempt) pendingAttempt = undefined;
+      return { deviceId: restored.deviceId, identity };
+    }
     attempt.registrationBody ??= registrationBody(identity, context);
-    const response = await registration.registerDevice(
+    if (
+      attempt.response &&
+      new Date(attempt.response.backgroundBearerExpiresAt).getTime() <=
+        Date.now() + 300_000
+    ) {
+      // A long-delayed native install retry must obtain a fresh credential,
+      // rather than replaying the old idempotency response indefinitely.
+      attempt.commandId = await createUuidV4(random);
+      delete attempt.response;
+    }
+    const response = (attempt.response ??= await registration.registerDevice(
       attempt.commandId,
       attempt.registrationBody,
-    );
+    ));
 
     await native.installDeviceSession({
       protocolVersion: 1,
@@ -179,5 +207,21 @@ export function createProvisionCurrentDevice({
 
     if (pendingAttempt === attempt) pendingAttempt = undefined;
     return { deviceId: response.deviceId, identity };
+  }
+
+  return async function provisionCurrentDevice(
+    input: ProvisionCurrentDeviceInput,
+  ): Promise<ProvisionedDevice> {
+    const context = parseContext(input);
+    const key = JSON.stringify(context);
+    const pending = inFlight.get(key);
+    if (pending) return pending;
+    const operation = provision(context);
+    inFlight.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (inFlight.get(key) === operation) inFlight.delete(key);
+    }
   };
 }

@@ -2,7 +2,15 @@ import { reloadAppAsync } from "expo";
 import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
-import { AppText, Button, LiveStatus, Screen, Stack } from "../design-system";
+import {
+  AppText,
+  BrandLoading,
+  CrewRollWordmark,
+  Button,
+  LiveStatus,
+  Screen,
+  Stack,
+} from "../design-system";
 
 /** A failed offline auth bootstrap must not leave a permanent, unactionable spinner. */
 export function SessionLoadingScreen() {
@@ -31,16 +39,16 @@ export function SessionLoadingScreen() {
     }
   }
 
+  if (!slow)
+    return (
+      <Screen scroll={false} testID="launch-busy">
+        <BrandLoading />
+      </Screen>
+    );
   return (
     <Screen scroll={false} testID="launch-busy">
       <Stack gap="lg" justify="center" style={{ flex: 1 }}>
-        <AppText
-          style={{ textAlign: "center" }}
-          tone="action"
-          variant="eyebrow"
-        >
-          CrewRoll
-        </AppText>
+        <CrewRollWordmark />
         <LiveStatus
           icon="…"
           label={slow ? "Waiting for a connection" : "Getting ready"}

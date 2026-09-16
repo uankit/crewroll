@@ -1,15 +1,6 @@
 import { useRef, useState } from "react";
 
-import {
-  AppText,
-  Button,
-  InlineBanner,
-  Screen,
-  Stack,
-  StatusBadge,
-  Surface,
-  TextField,
-} from "../../design-system";
+import { AppText, Button, FlowScreen, TextField } from "../../design-system";
 import {
   createDefaultTripEnd,
   TripEndField,
@@ -23,10 +14,6 @@ export type CreateTripScreenState =
       kind: "unknown";
       onCheck: () => void;
       checking?: boolean;
-    }>
-  | Readonly<{
-      kind: "success";
-      onOpenTrip: () => void;
     }>;
 
 export type CreateTripInput = Readonly<{
@@ -55,20 +42,6 @@ function tripNameValidationMessage(value: string): string | undefined {
 
 type CreateTripFormProps = Omit<CreateTripScreenProps, "state"> &
   Readonly<{ submitting: boolean }>;
-
-function ImmediateReleaseExplanation() {
-  return (
-    <Surface muted>
-      <Stack gap="xs">
-        <StatusBadge icon="✓" label="Immediate release" tone="info" />
-        <AppText tone="secondary">
-          Eligible photos can arrive automatically after the owner starts the
-          trip.
-        </AppText>
-      </Stack>
-    </Surface>
-  );
-}
 
 function CreateTripForm({
   initialEndsAt,
@@ -106,127 +79,56 @@ function CreateTripForm({
   }
 
   return (
-    <Screen keyboardShouldPersistTaps="handled" testID="create-trip-screen">
-      <Stack gap="xl">
-        <Stack gap="sm">
-          <AppText tone="action" variant="eyebrow">
-            New trip
-          </AppText>
-          <AppText accessibilityRole="header" variant="display">
-            Create an Immediate trip
-          </AppText>
-          <AppText tone="secondary">
-            Name your trip and choose when automatic delivery should stop.
-          </AppText>
-        </Stack>
-
-        <TextField
-          {...(nameError === undefined ? {} : { errorMessage: nameError })}
-          accessibilityHint="Enter a name of 80 characters or fewer."
-          autoCapitalize="sentences"
-          disabled={submitting}
-          label="Trip name"
-          onChangeText={(value) => {
-            createRequested.current = false;
-            setName(value);
-            setAttempted(false);
-          }}
-          value={name}
-        />
-
-        <TripEndField
-          {...(endError === undefined ? {} : { errorMessage: endError })}
-          disabled={submitting}
-          {...(locale === undefined ? {} : { locale })}
-          now={now}
-          onChange={(value) => {
-            createRequested.current = false;
-            setEndsAt(value);
-            setAttempted(false);
-          }}
-          value={endsAt}
-        />
-
-        <ImmediateReleaseExplanation />
-
-        <Stack gap="sm">
+    <FlowScreen
+      testID="create-trip-screen"
+      label="Create trip"
+      title="Name your trip."
+      description="Give it a name and choose the dates."
+      {...(submitting ? {} : { onBack: onCancel })}
+      footer={
+        <>
           <Button
-            accessibilityHint="Creates this Immediate trip once."
             label="Create trip"
             loading={submitting}
             onPress={createTrip}
           />
-          <Button
-            accessibilityHint="Returns without creating a trip."
-            disabled={submitting}
-            label="Cancel"
-            onPress={onCancel}
-            variant="secondary"
-          />
-        </Stack>
-      </Stack>
-    </Screen>
-  );
-}
-
-function UnknownCreateResult({
-  checking = false,
-  onCheck,
-}: Extract<CreateTripScreenState, { kind: "unknown" }>) {
-  return (
-    <Screen testID="create-trip-screen">
-      <Stack gap="xl">
-        <Stack gap="sm">
-          <AppText tone="action" variant="eyebrow">
-            Create recovery
+          <AppText
+            tone="secondary"
+            variant="caption"
+            style={{ textAlign: "center" }}
+          >
+            Photo access comes next.
           </AppText>
-          <AppText accessibilityRole="header" variant="display">
-            Checking your new trip
-          </AppText>
-          <StatusBadge icon="…" label="Checking safely" tone="info" />
-          <AppText tone="secondary">
-            CrewRoll is checking whether your trip was created. Keep this phone
-            connected and check again.
-          </AppText>
-        </Stack>
-        <Button
-          accessibilityHint="Safely checks the original request without creating another trip."
-          label="Check trip status"
-          loading={checking}
-          onPress={onCheck}
-        />
-      </Stack>
-    </Screen>
-  );
-}
-
-function CreateSuccessResult({
-  onOpenTrip,
-}: Extract<CreateTripScreenState, { kind: "success" }>) {
-  return (
-    <Screen testID="create-trip-screen">
-      <Stack gap="xl">
-        <Stack gap="sm">
-          <AppText tone="action" variant="eyebrow">
-            Immediate trip
-          </AppText>
-          <AppText accessibilityRole="header" variant="display">
-            Trip created
-          </AppText>
-          <InlineBanner
-            body="Your Immediate trip is ready for its crew."
-            icon="✓"
-            title="Ready to invite"
-            tone="success"
-          />
-        </Stack>
-        <Button
-          accessibilityHint="Opens the new trip lobby."
-          label="Open trip"
-          onPress={onOpenTrip}
-        />
-      </Stack>
-    </Screen>
+        </>
+      }
+    >
+      <TextField
+        {...(nameError === undefined ? {} : { errorMessage: nameError })}
+        accessibilityHint="Enter a name of 80 characters or fewer."
+        autoCapitalize="sentences"
+        disabled={submitting}
+        label="Trip name"
+        placeholder="Goa weekend"
+        onChangeText={(value) => {
+          createRequested.current = false;
+          setName(value);
+          setAttempted(false);
+        }}
+        value={name}
+      />
+      <TripEndField
+        {...(endError === undefined ? {} : { errorMessage: endError })}
+        disabled={submitting}
+        {...(locale === undefined ? {} : { locale })}
+        now={now}
+        onChange={(value) => {
+          createRequested.current = false;
+          setEndsAt(value);
+          setAttempted(false);
+        }}
+        value={endsAt}
+      />
+    </FlowScreen>
   );
 }
 
@@ -234,13 +136,20 @@ export function CreateTripScreen({
   state = { kind: "editing" },
   ...props
 }: CreateTripScreenProps) {
-  if (state.kind === "unknown") {
-    return <UnknownCreateResult {...state} />;
-  }
-
-  if (state.kind === "success") {
-    return <CreateSuccessResult {...state} />;
-  }
-
+  if (state.kind === "unknown")
+    return (
+      <FlowScreen
+        testID="create-trip-screen"
+        title="Checking your trip."
+        description="Your trip may already be created. Check the same request to continue."
+        footer={
+          <Button
+            label="Check trip status"
+            loading={state.checking ?? false}
+            onPress={state.onCheck}
+          />
+        }
+      />
+    );
   return <CreateTripForm {...props} submitting={state.kind === "submitting"} />;
 }

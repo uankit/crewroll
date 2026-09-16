@@ -24,6 +24,7 @@ import type {
   CreateTripDependencies,
   ForegroundActorSnapshotReader,
   GetTripDependencies,
+  PreviewInviteDependencies,
   InviteCodeCryptography,
   RejectJoinRequestDependencies,
   RequestJoinDependencies,
@@ -92,6 +93,9 @@ export interface ApiRuntimeFactories {
   directory(environment: Environment): ClerkUserDirectory;
   environment(): Environment;
   foregroundTripSnapshots(database: unknown): ForegroundActorSnapshotReader;
+  previewInvite(
+    dependencies: PreviewInviteDependencies,
+  ): TripRouteDependencies["previewInvite"];
   getTrip(dependencies: GetTripDependencies): TripRouteDependencies["getTrip"];
   ids(): IdGenerator;
   identityUnitOfWork(database: unknown): IdentityUnitOfWork;
@@ -247,6 +251,10 @@ export async function createApiRuntime(
     );
     const startTrip = factories.startTrip(tripServiceDependencies);
     const getTrip = factories.getTrip({ unitOfWork: tripUnitOfWork });
+    const previewInvite = factories.previewInvite({
+      unitOfWork: tripUnitOfWork,
+      hasher: inviteCodeCryptography,
+    });
     const media = await factories.media?.({
       database: databaseHandle.database,
       environment,
@@ -284,6 +292,7 @@ export async function createApiRuntime(
         approveJoinRequest,
         createTrip,
         getTrip,
+        previewInvite,
         rejectJoinRequest,
         requestJoin,
         resolveCreateTripOutcome,

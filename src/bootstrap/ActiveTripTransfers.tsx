@@ -7,15 +7,22 @@ import type {
 
 import {
   AppText,
+  BrandLoading,
   Button,
-  InlineBanner,
+  Sheet,
   Stack,
-  TransferHealthCard,
   TripPhotoGallery,
 } from "../design-system";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
+import {
+  defaultGalleryFilters,
+  galleryFilterCount,
+  galleryQuery,
+  type GalleryFilters,
+} from "../domain/trips/galleryFilters";
 
 import { createObservedRead } from "./observedRead";
+import type { TripView } from "../domain/trips/model";
 
 const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
   PHOTO_PERMISSION:
@@ -31,26 +38,47 @@ const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
 };
 
 /** Read-only native projections. Photo bytes and decryption keys never enter JS. */
-export function ActiveTripTransfers({ tripId }: Readonly<{ tripId: string }>) {
+export function ActiveTripTransfers({
+  tripId,
+  onPhotoCountChange,
+  filters = defaultGalleryFilters,
+  onClearFilters,
+  tripInfo,
+  infoOpen = false,
+  onCloseInfo,
+}: Readonly<{
+  tripId: string;
+  onPhotoCountChange?: (count: number) => void;
+  filters?: GalleryFilters;
+  onClearFilters?: () => void;
+  tripInfo?: TripView;
+  infoOpen?: boolean;
+  onCloseInfo?: () => void;
+}>) {
   const [state, setState] = useState<Readonly<{
     snapshot: DurableEngineSnapshot;
     assets: AssetPage;
   }> | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [policyFailed, setPolicyFailed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [cursor, setCursor] = useState<string | null>(null);
+  const query = useMemo(() => galleryQuery(filters), [filters]);
 
   useEffect(() => {
     const reader = createObservedRead({
       active: () => AppState.currentState !== "background",
       read: async () => {
-        const snapshot = await crewRollTransfer.getSnapshot();
-        const assets = await crewRollTransfer.listAssets({
-          protocolVersion: 1,
-          cursor,
-          limit: 24,
-        });
+        const [snapshot, assets] = await Promise.all([
+          crewRollTransfer.getSnapshot(),
+          crewRollTransfer.listAssets({
+            protocolVersion: 1,
+            cursor,
+            limit: 24,
+            ...query,
+          }),
+        ]);
         return { snapshot, assets };
       },
       ready: ({ snapshot, assets }) => {
@@ -106,7 +134,7 @@ export function ActiveTripTransfers({ tripId }: Readonly<{ tripId: string }>) {
       subscription?.remove();
       foreground.remove();
     };
-  }, [tripId, refreshKey, cursor]);
+  }, [tripId, refreshKey, cursor, query]);
 
   const reconcile = useCallback(
     async (workId?: string) => {
@@ -115,7 +143,15 @@ export function ActiveTripTransfers({ tripId }: Readonly<{ tripId: string }>) {
       try {
         if (workId)
           await crewRollTransfer.retry({ protocolVersion: 1, workId });
-        else await crewRollTransfer.reconcileNow({ protocolVersion: 1 });
+        else {
+          const blockedIds =
+            state?.assets.items
+              .filter((asset) => asset.blocker)
+              .map((asset) => asset.workId) ?? [];
+          for (const id of blockedIds)
+            await crewRollTransfer.retry({ protocolVersion: 1, workId: id });
+          await crewRollTransfer.reconcileNow({ protocolVersion: 1 });
+        }
       } catch {
         setFailed(true);
       } finally {
@@ -123,7 +159,7 @@ export function ActiveTripTransfers({ tripId }: Readonly<{ tripId: string }>) {
         setRefreshKey((value) => value + 1);
       }
     },
-    [busy],
+    [busy, state],
   );
 
   const snapshot =
@@ -147,127 +183,172 @@ export function ActiveTripTransfers({ tripId }: Readonly<{ tripId: string }>) {
         : [],
     [snapshot, state],
   );
+  const discoveredCount = snapshot?.counts.discovered;
+  useEffect(() => {
+    if (discoveredCount !== undefined) onPhotoCountChange?.(discoveredCount);
+  }, [onPhotoCountChange, discoveredCount]);
+  const infoSheet =
+    tripInfo && infoOpen ? (
+      <Sheet
+        visible
+        title="Trip info"
+        showCloseButton={false}
+        onDismiss={onCloseInfo ?? (() => {})}
+      >
+        <Stack gap="xs">
+          <AppText variant="title2">{tripInfo.name}</AppText>
+          <AppText variant="label" tone="secondary">
+            Sharing until{" "}
+            {new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(new Date(tripInfo.endsAt))}
+          </AppText>
+        </Stack>
+        <Stack gap="sm">
+          <AppText variant="label" tone="secondary">
+            Crew ·{" "}
+            {tripInfo.members.filter((m) => m.status === "ACTIVE").length}{" "}
+            people
+          </AppText>
+          {tripInfo.members
+            .filter((m) => m.status === "ACTIVE")
+            .map((member) => (
+              <AppText key={member.membershipId}>
+                {member.isCurrentMember ? "You" : member.displayName}
+                {member.role === "OWNER" ? " · Host" : ""}
+              </AppText>
+            ))}
+        </Stack>
+        {snapshot?.cellularAllowed !== undefined ? (
+          <AppText variant="label" tone="secondary">
+            {snapshot.cellularAllowed
+              ? "Sharing over Wi-Fi or mobile data"
+              : "Sharing over Wi-Fi"}
+          </AppText>
+        ) : null}
+        <AppText variant="label" tone="secondary">
+          Take photos with your phone’s camera, then return here to finish
+          syncing.
+        </AppText>
+        {snapshot?.cellularAllowed !== undefined ? (
+          <Button
+            variant="text"
+            label={
+              snapshot.cellularAllowed ? "Use Wi-Fi only" : "Allow mobile data"
+            }
+            accessibilityHint="Mobile data uses your data plan."
+            loading={busy}
+            disabled={snapshot.paused}
+            onPress={() => {
+              if (busy) return;
+              setBusy(true);
+              setPolicyFailed(false);
+              void crewRollTransfer
+                .setTransferPolicy({
+                  protocolVersion: 1,
+                  paused: snapshot.paused,
+                  cellularAllowed: !snapshot.cellularAllowed,
+                })
+                .catch(() => setPolicyFailed(true))
+                .finally(() => {
+                  setBusy(false);
+                  setRefreshKey((value) => value + 1);
+                });
+            }}
+          />
+        ) : null}
+        {policyFailed ? (
+          <AppText accessibilityRole="alert" tone="critical">
+            The connection setting couldn’t change. Try again.
+          </AppText>
+        ) : null}
+      </Sheet>
+    ) : null;
   if (failed || snapshot === null)
     return (
-      <Stack gap="sm">
-        <InlineBanner
-          title={
-            failed
-              ? "Photo delivery needs attention"
-              : "Checking photo delivery"
-          }
-          body={
-            failed
-              ? "This phone's transfer status is unavailable. No delivery is being claimed as complete."
-              : "Reading this phone's saved-photo and transfer progress."
-          }
-          icon={failed ? "!" : "…"}
-          tone={failed ? "warning" : "info"}
-        />
-        {failed ? (
+      <>
+        <Stack gap="sm" style={{ flex: 1 }}>
+          {!failed ? <BrandLoading /> : null}
+          {failed ? (
+            <AppText accessibilityRole="alert" tone="critical">
+              Photos couldn’t refresh. Check your connection and try again.
+            </AppText>
+          ) : null}
+          {failed ? (
+            <Button
+              label="Try again"
+              onPress={() => setRefreshKey((value) => value + 1)}
+            />
+          ) : null}
+        </Stack>
+        {infoSheet}
+      </>
+    );
+  const blocked = snapshot.blockers.length > 0;
+  return (
+    <>
+      <Stack gap="sm" style={photos.length === 0 ? { flex: 1 } : undefined}>
+        {photos.length === 0 && galleryFilterCount(filters) > 0 ? (
+          <Stack gap="sm" style={{ flex: 1, justifyContent: "center" }}>
+            <AppText variant="headline">No photos for these filters</AppText>
+            <AppText tone="secondary">Try another person or date.</AppText>
+            <Button
+              variant="text"
+              label="Clear filters"
+              onPress={onClearFilters ?? (() => {})}
+            />
+          </Stack>
+        ) : photos.length > 0 ? (
+          <TripPhotoGallery photos={photos} />
+        ) : null}
+        {snapshot.paused ? (
+          <AppText accessibilityLiveRegion="polite" tone="secondary">
+            Photo sharing is paused.
+          </AppText>
+        ) : null}
+        {blocked ? (
+          <Stack gap="xs">
+            {snapshot.blockers.map((blocker) => (
+              <AppText accessibilityRole="alert" key={blocker} tone="critical">
+                {blockerCopy[blocker]}
+              </AppText>
+            ))}
+            <Button
+              label="Retry photo sharing"
+              loading={busy}
+              onPress={() => void reconcile()}
+            />
+          </Stack>
+        ) : null}
+        {photos.length > 0 ? (
+          <AppText
+            testID="active-photo-progress"
+            accessibilityLiveRegion="polite"
+            variant="caption"
+            tone="secondary"
+          >
+            {snapshot.counts.originalsSaved}{" "}
+            {snapshot.counts.originalsSaved === 1 ? "original" : "originals"}{" "}
+            saved on this phone
+          </AppText>
+        ) : null}
+        {cursor !== null ? (
           <Button
-            label="Refresh photo status"
-            onPress={() => setRefreshKey((value) => value + 1)}
+            label="First photos"
+            variant="text"
+            onPress={() => setCursor(null)}
+          />
+        ) : null}
+        {state?.assets.nextCursor ? (
+          <Button
+            label="More photos"
+            variant="text"
+            onPress={() => setCursor(state.assets.nextCursor)}
           />
         ) : null}
       </Stack>
-    );
-  const { discovered, originalsSaved, previewReady } = snapshot.counts;
-  const connection = snapshot.cellularAllowed
-    ? "Wi-Fi or mobile data"
-    : "Wi-Fi";
-  const blocked = snapshot.blockers.length > 0;
-  return (
-    <Stack gap="sm">
-      <TransferHealthCard
-        title="Trip photos"
-        testID="active-photo-progress"
-        status={{
-          icon: blocked ? "!" : "…",
-          label: blocked
-            ? "Needs attention"
-            : snapshot.paused
-              ? "Paused"
-              : "Sharing active",
-          tone: blocked ? "warning" : "info",
-        }}
-        summary={
-          discovered === 0
-            ? `Take a photo with your phone's Camera during the trip. Use ${connection} and keep CrewRoll open to sync; reopen it after taking photos.`
-            : `${previewReady} previews ready · ${originalsSaved} of ${discovered} originals saved on this phone. Keep CrewRoll open on ${connection} to finish sharing.`
-        }
-        progress={{
-          label: `${originalsSaved} of ${discovered} saved on this phone`,
-          value: discovered === 0 ? 0 : originalsSaved / discovered,
-        }}
-        action={{
-          label: busy ? "Checking photos…" : "Check for photos now",
-          disabled: busy || snapshot.paused,
-          onPress: () => void reconcile(),
-        }}
-      />
-      {photos.length > 0 ? <TripPhotoGallery photos={photos} /> : null}
-      <AppText tone="secondary" variant="caption">
-        Take photos with Camera, then return here. Previews arrive first;
-        full-quality photos save automatically. Each phone shows its own
-        progress.
-      </AppText>
-      {snapshot.cellularAllowed !== undefined ? (
-        <Button
-          label={
-            snapshot.cellularAllowed
-              ? "Use Wi-Fi only"
-              : "Allow mobile data (uses your data plan)"
-          }
-          variant="secondary"
-          disabled={busy || snapshot.paused}
-          onPress={() => {
-            setBusy(true);
-            void crewRollTransfer
-              .setTransferPolicy({
-                protocolVersion: 1,
-                paused: snapshot.paused,
-                cellularAllowed: !snapshot.cellularAllowed,
-              })
-              .catch(() => setFailed(true))
-              .finally(() => {
-                setBusy(false);
-                setRefreshKey((value) => value + 1);
-              });
-          }}
-        />
-      ) : null}
-      {cursor !== null ? (
-        <Button
-          label="Latest photos"
-          variant="secondary"
-          onPress={() => setCursor(null)}
-        />
-      ) : null}
-      {state?.assets.nextCursor ? (
-        <Button
-          label="Older photos"
-          variant="secondary"
-          onPress={() => setCursor(state.assets.nextCursor)}
-        />
-      ) : null}
-      {snapshot.blockers.map((blocker) => (
-        <AppText key={blocker} tone="secondary">
-          {blockerCopy[blocker]}
-        </AppText>
-      ))}
-      {state?.assets.items
-        .filter((asset) => asset.blocker !== null)
-        .slice(0, 10)
-        .map((asset, index) => (
-          <Button
-            key={asset.workId}
-            label={`Retry blocked photo ${index + 1}`}
-            variant="secondary"
-            disabled={busy}
-            onPress={() => void reconcile(asset.workId)}
-          />
-        ))}
-    </Stack>
+      {infoSheet}
+    </>
   );
 }

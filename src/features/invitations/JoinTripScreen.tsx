@@ -1,35 +1,23 @@
-import { useState } from "react";
-
+import { useRef, useState } from "react";
+import { StyleSheet, View } from "react-native";
+import type { TripInvitePreview } from "../../domain/trips/model";
 import {
   AppText,
   Button,
-  InlineBanner,
-  Screen,
+  FlowScreen,
+  MemberAvatar,
   Stack,
-  StatusBadge,
-  Surface,
   TextField,
+  radius,
+  spacing,
+  useCrewRollTheme,
 } from "../../design-system";
 
 export type JoinTripScreenState =
-  | Readonly<{ kind: "editing" }>
-  | Readonly<{ kind: "submitting" }>
-  | Readonly<{ kind: "pending"; onOpenTrip: () => void }>
+  | Readonly<{ kind: "editing" | "submitting" }>
+  | Readonly<{ kind: "invalid" | "rejected"; onUseAnotherCode: () => void }>
   | Readonly<{
-      kind: "invalid";
-      onUseAnotherCode: () => void;
-    }>
-  | Readonly<{
-      kind: "rejected";
-      onUseAnotherCode: () => void;
-    }>
-  | Readonly<{
-      kind: "failed";
-      onRetry: () => void;
-      retrying?: boolean;
-    }>
-  | Readonly<{
-      kind: "unknown";
+      kind: "failed" | "unknown";
       onRetry: () => void;
       retrying?: boolean;
     }>;
@@ -37,279 +25,220 @@ export type JoinTripScreenState =
 export type JoinTripScreenProps = Readonly<{
   initialCode?: string;
   onCancel: () => void;
+  onLookup: (inviteCode: string) => Promise<TripInvitePreview>;
   onJoin: (inviteCode: string) => void;
   state?: JoinTripScreenState;
 }>;
-
 const inviteCodePattern = /^[0-9A-HJKMNP-TV-Z]{8}$/;
-const invalidLocalCode = "Enter the complete 8-character invite code.";
-
-function normalizeCode(value: string): string {
-  return value.trim().toUpperCase();
-}
-
-type ResultState = Exclude<
-  JoinTripScreenState,
-  { kind: "editing" | "submitting" }
->;
-
-function ResultScreen({ state }: { readonly state: ResultState }) {
-  if (state.kind === "pending") {
-    return (
-      <Screen testID="join-trip-screen">
-        <Stack gap="xl">
-          <Stack gap="sm">
-            <AppText tone="action" variant="eyebrow">
-              Join request
-            </AppText>
-            <AppText accessibilityRole="header" variant="display">
-              Waiting for the owner
-            </AppText>
-            <StatusBadge icon="…" label="Waiting for approval" tone="warning" />
-            <AppText tone="secondary">
-              Your request is in. You can join once the owner approves this
-              phone.
-            </AppText>
-          </Stack>
-          <Button
-            accessibilityHint="Opens the trip lobby to check your request."
-            label="Open trip lobby"
-            onPress={state.onOpenTrip}
-          />
-        </Stack>
-      </Screen>
-    );
-  }
-
-  if (state.kind === "invalid" || state.kind === "rejected") {
-    const invalid = state.kind === "invalid";
-    return (
-      <Screen testID="join-trip-screen">
-        <Stack gap="xl">
-          <Stack gap="sm">
-            <AppText tone="action" variant="eyebrow">
-              Join a trip
-            </AppText>
-            <AppText accessibilityRole="header" variant="display">
-              {invalid ? "Invite unavailable" : "Request not approved"}
-            </AppText>
-            <StatusBadge
-              icon="!"
-              label={invalid ? "Invalid or expired" : "Not approved"}
-              tone="warning"
-            />
-            <AppText tone="secondary">
-              {invalid
-                ? "That invite is invalid or has expired."
-                : "This join request was not approved. You can use a different invite."}
-            </AppText>
-          </Stack>
-          <Button
-            accessibilityHint="Returns to invite code entry."
-            label="Use another code"
-            onPress={state.onUseAnotherCode}
-          />
-        </Stack>
-      </Screen>
-    );
-  }
-
-  if (state.kind === "failed") {
-    return (
-      <Screen testID="join-trip-screen">
-        <Stack gap="xl">
-          <InlineBanner
-            body="Your request may already have reached the owner. Check again to recover it safely."
-            icon="!"
-            title="CrewRoll could not check this invite"
-            tone="warning"
-          />
-          <Button
-            accessibilityHint="Safely retries the same join action."
-            label="Try again"
-            loading={state.retrying ?? false}
-            onPress={state.onRetry}
-          />
-        </Stack>
-      </Screen>
-    );
-  }
-
-  return (
-    <Screen testID="join-trip-screen">
-      <Stack gap="xl">
-        <Stack gap="sm">
-          <AppText tone="action" variant="eyebrow">
-            Join recovery
-          </AppText>
-          <AppText accessibilityRole="header" variant="display">
-            Checking your join request
-          </AppText>
-          <StatusBadge icon="…" label="Checking safely" tone="info" />
-          <AppText tone="secondary">
-            CrewRoll is checking whether your request was received. Keep this
-            phone connected and check again.
-          </AppText>
-        </Stack>
-        <Button
-          accessibilityHint="Replays the original request without creating another membership."
-          label="Check join request"
-          loading={state.retrying ?? false}
-          onPress={state.onRetry}
-        />
-      </Stack>
-    </Screen>
-  );
-}
-
-type JoinRequestFormProps = Readonly<{
-  initialCode: string;
-  onCancel: () => void;
-  onJoin: (inviteCode: string) => void;
-  submitting: boolean;
-}>;
-
-function JoinRequestForm({
-  initialCode,
-  onCancel,
-  onJoin,
-  submitting,
-}: JoinRequestFormProps) {
-  const [code, setCode] = useState(() => normalizeCode(initialCode));
-  const [confirming, setConfirming] = useState(false);
-  const [localError, setLocalError] = useState<string | undefined>();
-  const normalizedCode = normalizeCode(code);
-  const showConfirmation = confirming || submitting;
-
-  function continueToConfirmation() {
-    if (!inviteCodePattern.test(normalizedCode)) {
-      setLocalError(invalidLocalCode);
-      return;
-    }
-
-    setCode(normalizedCode);
-    setLocalError(undefined);
-    setConfirming(true);
-  }
-
-  if (showConfirmation) {
-    return (
-      <Screen testID="join-trip-screen">
-        <Stack gap="xl">
-          <Stack gap="sm">
-            <AppText tone="action" variant="eyebrow">
-              Confirm invite
-            </AppText>
-            <AppText accessibilityRole="header" variant="display">
-              Join this trip?
-            </AppText>
-            <StatusBadge
-              icon={submitting ? "…" : "✓"}
-              label={submitting ? "Requesting access" : "Code ready"}
-              tone={submitting ? "info" : "success"}
-            />
-          </Stack>
-
-          <Surface muted>
-            <Stack gap="xs">
-              <AppText variant="bodyStrong">
-                Request access with invite code {normalizedCode}.
-              </AppText>
-              <AppText tone="secondary">
-                The trip owner will approve this phone before photos can arrive.
-              </AppText>
-            </Stack>
-          </Surface>
-
-          <Stack gap="sm">
-            <Button
-              accessibilityHint="Sends this join request once."
-              label="Request to join"
-              loading={submitting}
-              onPress={() => onJoin(normalizedCode)}
-            />
-            {submitting ? null : (
-              <Button
-                accessibilityHint="Returns to invite code entry without sending a request."
-                label="Back"
-                onPress={() => setConfirming(false)}
-                variant="secondary"
-              />
-            )}
-          </Stack>
-        </Stack>
-      </Screen>
-    );
-  }
-
-  return (
-    <Screen keyboardShouldPersistTaps="handled" testID="join-trip-screen">
-      <Stack gap="xl">
-        <Stack gap="sm">
-          <AppText tone="action" variant="eyebrow">
-            Your crew is waiting
-          </AppText>
-          <AppText accessibilityRole="header" variant="display">
-            Join a trip
-          </AppText>
-          <AppText tone="secondary">
-            Enter the readable code from the trip owner. You will confirm it
-            before CrewRoll sends a request.
-          </AppText>
-        </Stack>
-
-        <TextField
-          {...(localError === undefined ? {} : { errorMessage: localError })}
-          accessibilityHint="Enter the 8-character CrewRoll invite code."
-          autoCapitalize="characters"
-          autoCorrect={false}
-          label="Invite code"
-          maxLength={8}
-          onChangeText={(value) => {
-            setCode(value.toUpperCase());
-            setLocalError(undefined);
-          }}
-          placeholder="ABCD2345"
-          returnKeyType="done"
-          supportingText="Eight letters or numbers"
-          value={code}
-        />
-
-        <Stack gap="sm">
-          <Button
-            accessibilityHint="Checks this code locally before confirmation."
-            label="Continue"
-            onPress={continueToConfirmation}
-          />
-          <Button
-            accessibilityHint="Leaves without sending a join request."
-            label="Cancel"
-            onPress={onCancel}
-            variant="secondary"
-          />
-        </Stack>
-      </Stack>
-    </Screen>
-  );
-}
+const normalizeCode = (value: string) => value.replace(/\s/g, "").toUpperCase();
 
 export function JoinTripScreen({
   initialCode = "",
   onCancel,
+  onLookup,
   onJoin,
   state = { kind: "editing" },
 }: JoinTripScreenProps) {
-  if (state.kind !== "editing" && state.kind !== "submitting") {
-    return <ResultScreen state={state} />;
+  const colors = useCrewRollTheme();
+  const [code, setCode] = useState(() => normalizeCode(initialCode));
+  const [preview, setPreview] = useState<TripInvitePreview | null>(null);
+  const [finding, setFinding] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const inFlight = useRef(false);
+  const joining = useRef(false);
+  async function findTrip() {
+    if (inFlight.current) return;
+    const normalized = normalizeCode(code);
+    if (!inviteCodePattern.test(normalized)) {
+      setError("Enter the complete 8-character invite code.");
+      return;
+    }
+    inFlight.current = true;
+    setFinding(true);
+    setError(undefined);
+    try {
+      setPreview(await onLookup(normalized));
+      setCode(normalized);
+    } catch (failure) {
+      const invalid =
+        typeof failure === "object" &&
+        failure !== null &&
+        "code" in failure &&
+        failure.code === "INVITE_INVALID";
+      setError(
+        invalid
+          ? "That code is invalid, expired, or the trip has already started. Check with your host."
+          : "The trip couldn’t load. Check your connection and try again.",
+      );
+    } finally {
+      inFlight.current = false;
+      setFinding(false);
+    }
   }
-
+  if (state.kind === "failed" || state.kind === "unknown")
+    return (
+      <FlowScreen
+        testID="join-trip-screen"
+        title="Checking your request."
+        description="Your request may already have reached your host. Check the same request to continue."
+        footer={
+          <Button
+            label="Check join request"
+            loading={state.retrying ?? false}
+            onPress={state.onRetry}
+          />
+        }
+      />
+    );
+  if (state.kind === "invalid" || state.kind === "rejected")
+    return (
+      <FlowScreen
+        testID="join-trip-screen"
+        title={
+          state.kind === "invalid"
+            ? "Invite unavailable."
+            : "Request not approved."
+        }
+        description={
+          state.kind === "invalid"
+            ? "That invite is invalid or has expired."
+            : "Your host hasn’t approved this request. You can use another invite."
+        }
+        footer={
+          <Button label="Use another code" onPress={state.onUseAnotherCode} />
+        }
+      />
+    );
+  const submitting = state.kind === "submitting";
+  function backToCode() {
+    if (submitting) return;
+    setPreview(null);
+    joining.current = false;
+  }
+  if (preview) {
+    const dates = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "long",
+    }).format(new Date(preview.endsAt));
+    return (
+      <FlowScreen
+        testID="join-trip-screen"
+        label="Your invitation"
+        onBack={backToCode}
+        title={preview.name}
+        description={`Until ${dates}`}
+        footer={
+          <>
+            <Button
+              label="Ask to join trip"
+              loading={submitting}
+              onPress={() => {
+                if (joining.current) return;
+                joining.current = true;
+                onJoin(code);
+              }}
+            />
+            <Button
+              label="Not this trip"
+              variant="text"
+              disabled={submitting}
+              onPress={backToCode}
+            />
+          </>
+        }
+      >
+        <View
+          style={[
+            styles.crew,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <AppText tone="action" variant="eyebrow">
+            Hosted by
+          </AppText>
+          <AppText variant="bodyStrong">{preview.hostDisplayName}</AppText>
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <AppText variant="eyebrow" tone="secondary">
+            Crew · {preview.members.length} joined
+          </AppText>
+          <Stack gap="none">
+            {preview.members.map((member, index) => (
+              <View
+                key={`${index}-${member.displayName}`}
+                style={[
+                  styles.member,
+                  index > 0 && {
+                    borderTopWidth: 1,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <MemberAvatar displayName={member.displayName} />
+                <View style={styles.identity}>
+                  <AppText variant="bodyStrong">{member.displayName}</AppText>
+                  <AppText tone="secondary" variant="caption">
+                    {member.role === "OWNER" ? "Host" : "Joined"}
+                  </AppText>
+                </View>
+              </View>
+            ))}
+          </Stack>
+        </View>
+        <AppText tone="secondary">
+          {preview.hostDisplayName} approves each request before photos are
+          shared.
+        </AppText>
+      </FlowScreen>
+    );
+  }
   return (
-    <JoinRequestForm
-      initialCode={initialCode}
-      key={initialCode}
-      onCancel={onCancel}
-      onJoin={onJoin}
-      submitting={state.kind === "submitting"}
-    />
+    <FlowScreen
+      testID="join-trip-screen"
+      label="Join a trip"
+      onBack={onCancel}
+      title="Enter your code."
+      description="Paste the 8-character code from your host."
+      footer={
+        <Button
+          label="Find trip"
+          loading={finding}
+          onPress={() => void findTrip()}
+        />
+      }
+    >
+      <TextField
+        label="Invite code"
+        accessibilityHint="Enter the 8-character code from your host."
+        value={code}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        disabled={finding}
+        maxLength={32}
+        onChangeText={(value) => {
+          setCode(normalizeCode(value).slice(0, 8));
+          setError(undefined);
+        }}
+        placeholder="XXXXXXXX"
+        returnKeyType="go"
+        onSubmitEditing={() => void findTrip()}
+        {...(error === undefined ? {} : { errorMessage: error })}
+      />
+    </FlowScreen>
   );
 }
+const styles = StyleSheet.create({
+  crew: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  divider: { height: 1 },
+  member: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: 56,
+    paddingVertical: spacing.xs,
+  },
+  identity: { flex: 1, gap: spacing.xxs },
+});

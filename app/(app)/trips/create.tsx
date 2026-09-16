@@ -29,10 +29,7 @@ export default function CreateTripRoute() {
         void actions
           .create(input)
           .then((result) => {
-            setState({
-              kind: "success",
-              onOpenTrip: () => router.replace(`/trips/${result.tripId}`),
-            });
+            router.replace(`/trips/${result.tripId}`);
           })
           .catch(() => {
             setState({

@@ -158,6 +158,9 @@ describe("Trip routes", () => {
         approveJoinRequest: { execute: approve },
         createTrip: { execute: create },
         getTrip: { execute: get },
+        previewInvite: {
+          execute: vi.fn().mockResolvedValue(problem("INVITE_INVALID")),
+        },
         rejectJoinRequest: { execute: reject },
         requestJoin: { execute: join },
         resolveCreateTripOutcome: { execute: outcome },
@@ -189,6 +192,50 @@ describe("Trip routes", () => {
     apps.push(instance);
     return { fixture, harness, instance };
   }
+
+  it("previews an invite without an idempotency header or a join mutation", async () => {
+    const { instance, harness } = app();
+    const value = {
+      tripId,
+      name: "Goa",
+      startsAt: null,
+      endsAt: "2030-01-02T00:00:00Z",
+      hostDisplayName: "Riya",
+      members: [{ displayName: "Riya", role: "OWNER" as const }],
+    };
+    const preview = vi
+      .spyOn(harness.dependencies.previewInvite, "execute")
+      .mockResolvedValue(success(value));
+    const response = await instance.inject({
+      method: "POST",
+      url: "/v1/trips/invite-preview",
+      headers: { authorization, "x-crewroll-device-id": deviceId },
+      payload: { inviteCode: "ABCD2345" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(value);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(harness.execute.join).not.toHaveBeenCalled();
+    expect(preview).toHaveBeenCalledWith({
+      actor,
+      inviteCode: "ABCD2345",
+    });
+    const unauthenticated = await instance.inject({
+      method: "POST",
+      url: "/v1/trips/invite-preview",
+      headers: { "x-crewroll-device-id": deviceId },
+      payload: { inviteCode: "ABCD2345" },
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    const invalid = await instance.inject({
+      method: "POST",
+      url: "/v1/trips/invite-preview",
+      headers: { authorization, "x-crewroll-device-id": deviceId },
+      payload: { inviteCode: "ABCD2345", includeKeys: true },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(preview).toHaveBeenCalledTimes(1);
+  });
 
   function commandHeaders(overrides: Record<string, string> = {}) {
     return {

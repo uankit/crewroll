@@ -1,3 +1,5 @@
+import type { TripInvitePreview, TripView } from "../domain/trips/model";
+import * as Clipboard from "expo-clipboard";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 import {
@@ -11,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { AppState, type AppStateStatus, Linking, Share } from "react-native";
+import { AppState, type AppStateStatus } from "react-native";
 
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
@@ -21,7 +23,6 @@ import type {
   TripRecoveryRecord,
   TripRecoveryScope,
 } from "../application/trips/ports";
-import type { TripView } from "../domain/trips/model";
 import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
 import {
   clearForegroundQueryState,
@@ -105,6 +106,7 @@ export type AppSessionAuthSnapshot =
     }>;
 
 export type ScopedTripSession = Readonly<{
+  previewInvite(inviteCode: string): Promise<TripInvitePreview>;
   createTrip(input: CreateImmediateTripInput): Promise<TripView>;
   reconcileUnknownCreate(): Promise<TripView | "STILL_UNKNOWN">;
   replayUnknownJoin(): Promise<JoinTripResult | null>;
@@ -113,7 +115,7 @@ export type ScopedTripSession = Readonly<{
   approveMember(tripId: string, membershipId: string): Promise<TripView>;
   setPhotoReadiness(
     tripId: string,
-    requestPermission: boolean | "automatic",
+    requestPermission: boolean,
   ): Promise<
     Readonly<{
       permission: PhotoLibraryPermissionState;
@@ -126,7 +128,9 @@ export type ScopedTripSession = Readonly<{
 }>;
 
 export type AppSessionRuntime = Readonly<{
-  pauseTransfers?(): Promise<void>;
+  pauseTransfers?(
+    options?: Readonly<{ preserveDeviceSession: boolean }>,
+  ): Promise<void>;
   provisionCurrentDevice(input: {
     accountId: string;
     apiBaseUrl: string;
@@ -155,13 +159,14 @@ export type JoinMutationResult =
   | Readonly<{ kind: "PENDING_APPROVAL" }>;
 
 export type TripSessionActions = Readonly<{
+  previewInvite(inviteCode: string): Promise<TripInvitePreview>;
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
   join(inviteCode: string): Promise<JoinMutationResult>;
   approve(tripId: string, membershipId: string): Promise<TripMutationResult>;
   invalidatePhotoReadiness(): void;
   publishPhotoReadiness(
     tripId: string,
-    requestPermission: boolean | "automatic",
+    requestPermission: boolean,
   ): Promise<TripMutationResult>;
   openPhotoSettings(): Promise<void>;
   start(tripId: string): Promise<TripMutationResult>;
@@ -176,6 +181,7 @@ type QueryScope = Readonly<{
 type AppSessionContextValue = Readonly<{
   snapshot: AppSessionSnapshot;
   ownerInviteCode: string | null;
+  pendingTripPreview: TripInvitePreview | null;
   activationFailureTripId: string | null;
   photoPermission:
     | PhotoLibraryPermissionState
@@ -184,8 +190,7 @@ type AppSessionContextValue = Readonly<{
   retry(): void;
   signOut(): Promise<void>;
   confirmPendingInvite(): Promise<void>;
-  openOwnerInvite(): Promise<void>;
-  shareOwnerInvite(): Promise<void>;
+  copyOwnerInvite(): Promise<void>;
   loadTripProjection(tripId: string): Promise<TripView>;
   queryScope: QueryScope | null;
 }>;
@@ -335,6 +340,8 @@ export function AppSessionProvider({
   const [activationFailureTripId, setActivationFailureTripId] = useState<
     string | null
   >(null);
+  const [pendingTripPreview, setPendingTripPreview] =
+    useState<TripInvitePreview | null>(null);
   const [photoPermission, setPhotoPermission] = useState<
     PhotoLibraryPermissionState | Readonly<{ kind: "CHECKING" | "UNAVAILABLE" }>
   >({ kind: "CHECKING" });
@@ -373,6 +380,7 @@ export function AppSessionProvider({
     setPublicSessionKey(null);
     setPublishedQueryScope(null);
     setOwnerInvite(null);
+    setPendingTripPreview(null);
     setActivationFailureTripId(null);
     setPhotoPermission({ kind: "CHECKING" });
     setPhotoPermissionTripId(null);
@@ -503,6 +511,25 @@ export function AppSessionProvider({
     [binding, observeOperation],
   );
 
+  const previewInvite = useCallback(
+    async (inviteCode: string): Promise<TripInvitePreview> => {
+      const current = binding();
+      try {
+        const preview = await current.services.previewInvite(inviteCode);
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        setPendingTripPreview(preview);
+        return preview;
+      } catch (error) {
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        if (isAuthFailure(error)) await clearAndSignOut();
+        throw error;
+      }
+    },
+    [binding, clearAndSignOut],
+  );
+
   const joinTrip = useCallback(
     async (inviteCode: string): Promise<JoinMutationResult> => {
       const current = binding();
@@ -569,7 +596,7 @@ export function AppSessionProvider({
   const publishPhotoReadiness = useCallback(
     async (
       tripId: string,
-      requestPermission: boolean | "automatic",
+      requestPermission: boolean,
     ): Promise<TripMutationResult> => {
       const current = binding();
       const expectedPublicOperationScope = publicOperationScope.current;
@@ -675,6 +702,7 @@ export function AppSessionProvider({
       create: createTrip,
       invalidatePhotoReadiness,
       join: joinTrip,
+      previewInvite,
       openPhotoSettings,
       publishPhotoReadiness,
       retryActivation,
@@ -685,6 +713,7 @@ export function AppSessionProvider({
       createTrip,
       invalidatePhotoReadiness,
       joinTrip,
+      previewInvite,
       openPhotoSettings,
       publishPhotoReadiness,
       retryActivation,
@@ -745,6 +774,7 @@ export function AppSessionProvider({
 
     const sessionKey = JSON.stringify([authUserId, authSessionId]);
     const sessionChanged = previousSessionKey.current !== sessionKey;
+    const coldLaunch = previousSessionKey.current === null;
     const accountChanged =
       previousAccountId.current !== null &&
       previousAccountId.current !== authUserId;
@@ -778,12 +808,16 @@ export function AppSessionProvider({
         // Bind setup failures to this session before native teardown can fail.
         setSnapshot({ phase: "PROVISIONING_DEVICE" });
         setPublicSessionKey(sessionKey);
-        if (sessionChanged) await runtime.pauseTransfers?.();
+        if (sessionChanged)
+          await runtime.pauseTransfers?.({
+            preserveDeviceSession: coldLaunch && !accountChanged,
+          });
         if (sessionChanged) await clearForegroundQueryState(queryClient);
         if (!isCurrent()) return;
         previousSessionKey.current = sessionKey;
         setPublishedQueryScope(null);
         setOwnerInvite(null);
+        setPendingTripPreview(null);
         setActivationFailureTripId(null);
         setPhotoPermission({ kind: "CHECKING" });
         setPhotoPermissionTripId(null);
@@ -830,10 +864,13 @@ export function AppSessionProvider({
         let activeTripId: string | null;
         let recovery: TripRecoveryRecord | null;
         try {
-          const nativeSnapshot = await runtime.getNativeSnapshot();
+          const [nativeSnapshot, savedRecovery] = await Promise.all([
+            runtime.getNativeSnapshot(),
+            runtime.loadRecovery(scope),
+          ]);
           if (!isCurrent()) return;
           activeTripId = nativeSnapshot.activeTripId;
-          recovery = await runtime.loadRecovery(scope);
+          recovery = savedRecovery;
         } catch (error) {
           await fail(error, "RECOVERY");
           return;
@@ -1084,23 +1121,10 @@ export function AppSessionProvider({
       ? ownerInvite.code
       : null;
   const ready = resolvedSnapshot.phase.startsWith("READY_");
-  const openOwnerInvite = useCallback(async (): Promise<void> => {
-    if (visibleOwnerInviteCode === null) return;
-    try {
-      await Linking.openURL(`airmesh://invite/${visibleOwnerInviteCode}`);
-    } catch {
-      // Native handoff failures stay inside this fixed, privacy-safe action.
-    }
-  }, [visibleOwnerInviteCode]);
-  const shareOwnerInvite = useCallback(async (): Promise<void> => {
-    if (visibleOwnerInviteCode === null) return;
-    try {
-      await Share.share({
-        message: `Join my CrewRoll trip: airmesh://invite/${visibleOwnerInviteCode}`,
-      });
-    } catch {
-      // Native handoff failures stay inside this fixed, privacy-safe action.
-    }
+  const copyOwnerInvite = useCallback(async (): Promise<void> => {
+    if (visibleOwnerInviteCode === null) throw new Error("Invite unavailable");
+    const copied = await Clipboard.setStringAsync(visibleOwnerInviteCode);
+    if (!copied) throw new Error("Clipboard unavailable");
   }, [visibleOwnerInviteCode]);
 
   const value = useMemo<AppSessionContextValue>(
@@ -1110,7 +1134,11 @@ export function AppSessionProvider({
       confirmPendingInvite,
       loadTripProjection,
       ownerInviteCode: visibleOwnerInviteCode,
-      openOwnerInvite,
+      pendingTripPreview:
+        resolvedSnapshot.phase === "READY_PENDING_APPROVAL"
+          ? pendingTripPreview
+          : null,
+      copyOwnerInvite,
       photoPermission: permissionForVisibleTrip(
         resolvedSnapshot,
         photoPermissionTripId,
@@ -1119,7 +1147,6 @@ export function AppSessionProvider({
       queryScope: ready ? publishedQueryScope : null,
       retry,
       snapshot: resolvedSnapshot,
-      shareOwnerInvite,
       signOut: clearAndSignOut,
     }),
     [
@@ -1128,15 +1155,15 @@ export function AppSessionProvider({
       activationFailureTripId,
       confirmPendingInvite,
       loadTripProjection,
-      openOwnerInvite,
+      copyOwnerInvite,
       photoPermission,
       photoPermissionTripId,
       publishedQueryScope,
       ready,
       resolvedSnapshot,
       retry,
-      shareOwnerInvite,
       visibleOwnerInviteCode,
+      pendingTripPreview,
     ],
   );
 

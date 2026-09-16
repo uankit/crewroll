@@ -59,6 +59,7 @@ const stages = [
   "setTripReadiness",
   "startTrip",
   "getTrip",
+  "previewInvite",
   "buildApp",
 ] as const;
 type Stage = (typeof stages)[number];
@@ -103,6 +104,7 @@ function createRuntimeHarness(
   const setTripReadiness = { slot: "setTripReadiness" };
   const startTrip = { slot: "startTrip" };
   const getTrip = { slot: "getTrip" };
+  const previewInvite = { slot: "previewInvite" };
   const close = vi.fn(() =>
     options.appCloseFailure
       ? Promise.reject(new Error("app close canary"))
@@ -286,6 +288,13 @@ function createRuntimeHarness(
         unitOfWork: tripUnitOfWork,
       });
       return step("startTrip", startTrip);
+    },
+    previewInvite: (actual: Record<string, unknown>) => {
+      expect(actual).toEqual({
+        unitOfWork: tripUnitOfWork,
+        hasher: inviteCodeCryptography,
+      });
+      return step("previewInvite", previewInvite);
     },
     getTrip: (actual: Record<string, unknown>) => {
       expect(actual).toEqual({ unitOfWork: tripUnitOfWork });

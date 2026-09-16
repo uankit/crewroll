@@ -20,6 +20,7 @@ import {
   createApproveJoinRequest,
   createCreateTrip,
   createGetTrip,
+  createPreviewInvite,
   createRejectJoinRequest,
   createRequestJoin,
   createResolveCreateTripOutcome,
@@ -94,6 +95,7 @@ export const productionApiFactories: ApiRuntimeFactories = {
       >[0],
     ),
   getTrip: createGetTrip,
+  previewInvite: createPreviewInvite,
   ids: () => ({ uuid: () => crypto.randomUUID() }),
   identityUnitOfWork: (database) =>
     createKyselyIdentityUnitOfWork(

@@ -263,6 +263,7 @@ public enum TripKeyEnvelopeV1 {
 
 public enum NativeCommandKind: CaseIterable, Sendable {
     case ensureDeviceIdentity
+    case restoreDeviceSession
     case installDeviceSession
     case createTripKey
     case discardProvisionalTripKey
@@ -275,6 +276,8 @@ public enum NativeCommandKind: CaseIterable, Sendable {
         switch self {
         case .ensureDeviceIdentity:
             return ["protocolVersion", "accountId"]
+        case .restoreDeviceSession:
+            return ["protocolVersion", "accountId", "installationId", "apiBaseUrl"]
         case .installDeviceSession:
             return [
                 "protocolVersion",
@@ -323,7 +326,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     }
 
     fileprivate var hasTripID: Bool {
-        self != .ensureDeviceIdentity && self != .installDeviceSession
+        self != .ensureDeviceIdentity && self != .installDeviceSession && self != .restoreDeviceSession
     }
 }
 
@@ -686,6 +689,23 @@ public final class NativeKeyLifecycle {
             throw NativeKeyError.materialLost
         }
         return try publicIdentity(validating: persisted, scope: scope)
+    }
+
+    /// Reads only the public device ID; bearer and key material stay native.
+    public func restoreDeviceSession(accountID: String, installationID: String, apiBaseURL: String) throws -> String? {
+        try prepare()
+        let accountHash = try hashAccountID(accountID)
+        guard validInstallationID(installationID), URL(string: apiBaseURL)?.scheme == "https" else {
+            throw NativeKeyError.invalidCommand
+        }
+        guard var saved = try store.activeSession() else { return nil }
+        defer { crypto.zeroize(&saved.session.backgroundBearer) }
+        guard saved.scope == NativeKeyScope(accountHash: accountHash, installationID: installationID),
+              saved.session.apiBaseURL == apiBaseURL,
+              saved.session.expiresAt > clock.now.addingTimeInterval(300) else { return nil }
+        try withValidatedIdentity(scope: saved.scope) { _ in () }
+        _ = try TripKeyEnvelopeV1.encodeUUID(saved.session.deviceID)
+        return saved.session.deviceID
     }
 
     public func installDeviceSession(

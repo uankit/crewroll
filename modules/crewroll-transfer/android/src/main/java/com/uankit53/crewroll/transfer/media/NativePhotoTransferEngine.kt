@@ -197,7 +197,7 @@ class NativePhotoTransferEngine(
             val cipher = File(directory, "preview.ciphertext")
             if (!cipher.exists()) File(File(ledger.directory, work.getString("directory")), "preview.ciphertext").copyTo(cipher)
             val descriptor = JSONObject(body.getJSONArray("objects").getJSONObject(0).toString()).put("url", "")
-            val previewGrant = JSONObject().put("assetId", assetId).put("expiresAt", Instant.now().plusSeconds(300).toString()).put("encryptedManifest", body.getString("encryptedManifest")).put("object", descriptor)
+            val previewGrant = JSONObject().put("sourceMembershipId", c.metadata.membershipId).put("assetId", assetId).put("expiresAt", Instant.now().plusSeconds(300).toString()).put("encryptedManifest", body.getString("encryptedManifest")).put("object", descriptor)
             cache.put(previewRecord(assetId, work.getString("capturedAt"), previewGrant, c))
             work.put("previewPublished", true); ledger.put(work)
             return
@@ -296,6 +296,19 @@ class NativePhotoTransferEngine(
                     require(grant.getString("assetId") == id)
                     cache.put(previewRecord(id, work.getString("capturedAt"), grant, c))
                 }
+                // Upgrade already-rendered entries once. Opening the gallery never
+                // triggers a network request for metadata that is already durable.
+                for (record in cache.records(c.metadata.tripId).filter { it.optInt("galleryMetadataVersion") < 1 && it.optionalString("readyAt") != null }.take(8)) {
+                    val id = record.getString("assetId")
+                    if (record.getJSONObject("grant").optionalString("sourceMembershipId") == null) {
+                        val grant = n.json("/v1/assets/$id/preview", "GET", null, c, uuid()); current(c, epoch)
+                        require(grant.getString("assetId") == id); record.put("grant", grant)
+                    }
+                    val manifest = crypto.openManifest(Base64.getDecoder().decode(record.getJSONObject("grant").getString("encryptedManifest")), c.tripKey, c.metadata.tripId, id)
+                    try { manifest.capturedAtMilliseconds?.let { record.put("capturedAt", Instant.ofEpochMilli(it.toLong()).toString()) } }
+                    finally { manifest.erase() }
+                    record.put("galleryMetadataVersion", 1); cache.put(record)
+                }
                 for (record in cache.records(c.metadata.tripId).filter { cache.render(it.getString("assetId")) == null && it.isNull("blocker") }.sortedByDescending { it.getString("capturedAt") }.take(8)) {
                     try { materializePreview(record, c, epoch, cache, n); invalidated(ledger.revision() + cache.revision()) }
                     catch (error: Throwable) { current(c, epoch); blocker(error)?.let { cache.put(record.put("blocker", it)) } }
@@ -323,7 +336,8 @@ class NativePhotoTransferEngine(
                 crypto.decrypt(ciphertext, pending, manifest.preview, manifest.contentRoot, c.metadata.tripId, id); current(c, epoch)
                 java.nio.file.Files.move(pending.toPath(), plaintext.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
             } catch (error: Throwable) { pending.delete(); throw error }
-            record.put("readyAt", Instant.now().toString()); cache.put(record)
+            manifest.capturedAtMilliseconds?.let { record.put("capturedAt", Instant.ofEpochMilli(it.toLong()).toString()) }
+            record.put("galleryMetadataVersion", 1).put("readyAt", Instant.now().toString()); cache.put(record)
         } finally { manifest.erase() }
     }
     private fun <T> projection(action: () -> T): CompletableFuture<T> {
@@ -340,7 +354,8 @@ class NativePhotoTransferEngine(
         val rows = (works.keys + images.keys).map { id ->
             val work = works[id]; val image = images[id]
             val uri = if (paused) null else cache.render(id)?.toURI()?.toASCIIString()?.replaceFirst("file:/", "file:///")
-            mapOf("workId" to (work?.getString("workId") ?: id), "assetId" to id, "capturedAt" to (work ?: image)!!.getString("capturedAt"),
+            mapOf("workId" to (work?.getString("workId") ?: id), "assetId" to id, "capturedAt" to (if (image?.optionalString("readyAt") != null) image else work ?: image)!!.getString("capturedAt"),
+                "sourceMembershipId" to (if (work?.optionalString("sourceLocalId") != null) c.metadata.membershipId else image?.getJSONObject("grant")?.optionalString("sourceMembershipId")),
                 "previewStage" to if (uri != null) "SAVED" else "PENDING", "previewUri" to uri,
                 "originalStage" to if (work?.optBoolean("complete") == true) "SAVED" else "PENDING", "blocker" to (work?.optionalString("blocker") ?: image?.optionalString("blocker")))
         }.sortedWith(compareByDescending<Map<String, Any?>> { it["capturedAt"] as String }.thenByDescending { it["assetId"] as String })
@@ -363,17 +378,15 @@ class NativePhotoTransferEngine(
                 "counts" to mapOf("discovered" to rows.size, "previewReady" to rows.count { it["previewUri"] != null }, "originalsSaved" to rows.count { it["originalStage"] == "SAVED" }, "blocked" to rows.count { it["blocker"] != null }), "blockers" to blockers)
         } finally { c?.erase() }
     }
-    fun assets(limit: Int, cursor: String?): CompletableFuture<Map<String, Any?>> = projection {
+    fun assets(limit: Int, cursor: String?, query: NativeGalleryQuery = NativeGalleryQuery()): CompletableFuture<Map<String, Any?>> = projection {
         require(limit in 1..100)
         val epoch = generation.get()
         val c = contextProvider()
         try {
             val (revision, records) = projectedAssets(c)
-            val offset = if (cursor == null) 0 else { val p = cursor.split('_'); require(p.size == 3 && p[0] == "page" && p[1].toLong() == revision); p[2].toInt() }
-            require(offset in 0..records.size)
-            val page = records.drop(offset).take(limit)
+            val (page, nextCursor) = query.page(records, revision, limit, cursor)
             projectionFence(c, epoch)
-            mapOf("protocolVersion" to 1, "revision" to revision, "activeTripId" to c?.metadata?.tripId, "items" to page, "nextCursor" to if (offset + page.size < records.size) "page_${revision}_${offset + page.size}" else null)
+            mapOf("protocolVersion" to 1, "revision" to revision, "activeTripId" to c?.metadata?.tripId, "items" to page, "nextCursor" to nextCursor)
         } finally { c?.erase() }
     }
     private fun blocker(error: Throwable): String? = when (error) {

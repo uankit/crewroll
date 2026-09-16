@@ -10,6 +10,7 @@ import type {
 import {
   installCrewRollFormats,
   TripResponseSchema,
+  InvitePreviewResponseSchema,
 } from "@crewroll/contracts";
 import createClient from "openapi-fetch";
 import type { Client } from "openapi-fetch";
@@ -38,7 +39,13 @@ export class CrewRollTransportProblem extends Error {
   }
 }
 
-export type CrewRollApi = DeviceRegistrationPort & TripApiPort;
+export type CrewRollApi = DeviceRegistrationPort &
+  TripApiPort & {
+    previewInvite(
+      deviceId: string,
+      inviteCode: string,
+    ): Promise<GeneratedResponse<"previewInvite">>;
+  };
 
 type GeneratedResponse<Operation extends MobileOperationId> =
   MobileOperationMap[Operation]["response"];
@@ -318,6 +325,33 @@ class OpenApiCrewRollApi implements CrewRollApi {
       }),
     );
     return parseCreateTripOutcome(outcome);
+  }
+
+  async previewInvite(
+    deviceId: string,
+    inviteCode: string,
+  ): Promise<GeneratedResponse<"previewInvite">> {
+    const preview = await this.request<GeneratedResponse<"previewInvite">>(() =>
+      this.client.POST("/v1/trips/invite-preview", {
+        body: { inviteCode },
+        params: { header: { "X-CrewRoll-Device-Id": deviceId } },
+      }),
+    );
+    if (
+      !matchesRuntimeSchema(
+        InvitePreviewResponseSchema as RuntimeSchema,
+        preview,
+      ) ||
+      preview.members.filter((member) => member.role === "OWNER").length !==
+        1 ||
+      !preview.members.some(
+        (member) =>
+          member.role === "OWNER" &&
+          member.displayName === preview.hostDisplayName,
+      )
+    )
+      throw new CrewRollApiProblem("INTERNAL_ERROR");
+    return preview;
   }
 
   async requestJoin(

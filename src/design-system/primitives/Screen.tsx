@@ -54,6 +54,9 @@ export function Screen({
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         contentInsetAdjustmentBehavior="automatic"
+        automaticallyAdjustKeyboardInsets
+        keyboardDismissMode="on-drag"
+        showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
       >
         {content}
@@ -70,5 +73,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.gutter,
     paddingTop: spacing.xl,
     paddingBottom: spacing.xl,
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
   },
 });

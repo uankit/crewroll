@@ -1,6 +1,10 @@
 import {
   ApproveJoinRequestBodySchema,
   ClosedObject,
+  InvitePreviewBodySchema,
+  InvitePreviewResponseSchema,
+  type InvitePreviewBody,
+  type InvitePreviewResponse,
   CreateJoinRequestBodySchema,
   CreateTripBodySchema,
   CreateTripOutcomeBodySchema,
@@ -31,6 +35,7 @@ import type { ClerkActor } from "../../shared/auth/actor.js";
 import { DomainError } from "../../shared/errors/domainError.js";
 import type { ApproveJoinRequestInput } from "./approveJoinRequest.js";
 import type { CreateTripInput } from "./createTrip.js";
+import type { PreviewInviteInput } from "./previewInvite.js";
 import type { GetTripInput } from "./getTrip.js";
 import type { RejectJoinRequestInput } from "./rejectJoinRequest.js";
 import type { RequestJoinInput } from "./requestJoin.js";
@@ -50,6 +55,10 @@ export interface TripRouteDependencies {
     MembershipResponse
   >;
   readonly createTrip: TripCommand<CreateTripInput, TripResponse>;
+  readonly previewInvite: TripCommand<
+    PreviewInviteInput,
+    InvitePreviewResponse
+  >;
   readonly getTrip: TripCommand<GetTripInput, TripResponse>;
   readonly rejectJoinRequest: TripCommand<RejectJoinRequestInput, void>;
   readonly requestJoin: TripCommand<RequestJoinInput, MembershipResponse>;
@@ -185,6 +194,29 @@ export function tripRoutes(
           tripId: request.body.tripId.toLowerCase(),
         }),
       ),
+  );
+
+  app.post<{ Body: InvitePreviewBody }>(
+    "/v1/trips/invite-preview",
+    {
+      preHandler: resolveActor,
+      preValidation: authenticate,
+      schema: {
+        body: InvitePreviewBodySchema,
+        headers: QueryTransportHeadersSchema,
+        response: { 200: InvitePreviewResponseSchema, ...errorResponses },
+        security: [{ ClerkBearer: [] }],
+      },
+    },
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return unwrap(
+        await dependencies.previewInvite.execute({
+          actor: actorFor(request),
+          inviteCode: request.body.inviteCode,
+        }),
+      );
+    },
   );
 
   app.post<{ Body: CreateJoinRequestBody }>(

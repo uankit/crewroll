@@ -1,39 +1,27 @@
+import type { TripInvitePreview } from "../../domain/trips/model";
+import { Image } from "expo-image";
 import { StyleSheet, View } from "react-native";
 
 import {
   AppText,
   Button,
-  InlineBanner,
-  Screen,
-  Skeleton,
-  spacing,
-  Stack,
-  StatusBadge,
-  Surface,
-  TripSummaryCard,
+  CrewRollWordmark,
   useCrewRollTheme,
+  FlowScreen,
+  spacing,
+  radius,
+  onboardingGeometry,
 } from "../../design-system";
 
 export type HomeScreenState =
   | Readonly<{ kind: "no-trip" }>
   | Readonly<{ kind: "loading" }>
-  | Readonly<{
-      kind: "trip";
-      tripStatus: "ACTIVE" | "LOBBY";
-      name: string;
-      endsLabel: string;
-      memberSummary: string;
-      onOpenTrip: () => void;
-    }>
-  | Readonly<{
-      kind: "failed";
-      onRetry: () => void;
-      retrying?: boolean;
-    }>
+  | Readonly<{ kind: "failed"; onRetry: () => void; retrying?: boolean }>
   | Readonly<{
       kind: "unknown-create" | "unknown-join" | "pending-approval";
       onRecover: () => void;
       recovering?: boolean;
+      preview?: TripInvitePreview | null;
     }>;
 
 export type HomeScreenProps = Readonly<{
@@ -42,151 +30,54 @@ export type HomeScreenProps = Readonly<{
   state?: HomeScreenState;
 }>;
 
-function LoadingTrip() {
+function CrewConstellation() {
+  const colors = useCrewRollTheme();
   return (
-    <Surface
-      accessibilityLabel="Loading your CrewRoll trip"
-      accessibilityRole="summary"
-      accessibilityState={{ busy: true }}
+    <View
       accessible
-      style={styles.statusCard}
+      accessibilityLabel="Everyone’s view. One shared roll."
+      style={styles.constellation}
     >
-      <Stack
-        accessibilityElementsHidden
-        gap="sm"
-        importantForAccessibility="no-hide-descendants"
-      >
-        <Skeleton width="half" />
-        <Skeleton />
-        <Skeleton width="half" />
-      </Stack>
-    </Surface>
-  );
-}
-
-function SafeFailure({
-  onRetry,
-  retrying = false,
-}: Extract<HomeScreenState, { kind: "failed" }>) {
-  return (
-    <Stack gap="sm" style={styles.statusCard}>
-      <InlineBanner
-        body="Check your connection and try again. Your trip has not been changed."
-        icon="!"
-        title="CrewRoll could not load your trip"
-        tone="warning"
+      <Image
+        source={require("../../../assets/onboarding/crew-connections.svg")}
+        style={styles.connections}
+        contentFit="fill"
       />
-      <Button
-        accessibilityHint="Attempts to load your trip again."
-        label="Try again"
-        loading={retrying}
-        onPress={onRetry}
-      />
-    </Stack>
-  );
-}
-
-function UnknownRecovery(
-  state: Extract<
-    HomeScreenState,
-    { kind: "unknown-create" | "unknown-join" | "pending-approval" }
-  >,
-) {
-  const isCreate = state.kind === "unknown-create";
-  const isPending = state.kind === "pending-approval";
-
-  return (
-    <Stack gap="sm" style={styles.statusCard}>
-      <InlineBanner
-        body={
-          isPending
-            ? "Your request is in. Ask the owner to approve this phone. This screen updates automatically while CrewRoll is open."
-            : isCreate
-              ? "CrewRoll is checking whether your trip was created. Keep this phone connected and check again."
-              : "CrewRoll is checking whether your join request was received. Keep this phone connected and check again."
-        }
-        icon="…"
-        title={
-          isPending
-            ? "Waiting for the owner"
-            : isCreate
-              ? "Checking your new trip"
-              : "Checking your join request"
-        }
-        tone="info"
-      />
-      <Button
-        accessibilityHint="Safely checks the original request without creating another one."
-        label="Check again"
-        loading={state.recovering ?? false}
-        onPress={state.onRecover}
-      />
-    </Stack>
-  );
-}
-
-function HomeTrip({
-  endsLabel,
-  memberSummary,
-  name,
-  onOpenTrip,
-  tripStatus,
-}: Extract<HomeScreenState, { kind: "trip" }>) {
-  const active = tripStatus === "ACTIVE";
-
-  return (
-    <TripSummaryCard
-      action={{
-        accessibilityHint: "Opens this trip.",
-        label: "Open trip",
-        onPress: onOpenTrip,
-      }}
-      details={[
-        { label: "Ends", value: endsLabel },
-        { label: "Members", value: memberSummary },
-      ]}
-      name={name}
-      status={{
-        icon: active ? "✓" : "…",
-        label: active ? "Active" : "Lobby",
-        tone: active ? "success" : "info",
-      }}
-      style={styles.statusCard}
-    />
-  );
-}
-
-function NoTripActions({
-  onCreateTrip,
-  onJoinTrip,
-}: Pick<HomeScreenProps, "onCreateTrip" | "onJoinTrip">) {
-  return (
-    <>
-      <Surface style={styles.statusCard}>
-        <StatusBadge icon="○" label="Ready" />
-        <View style={styles.statusCopy}>
-          <AppText variant="title2">No active trip</AppText>
-          <AppText tone="secondary">
-            Create a roll or join your friends. Once the trip starts, CrewRoll
-            watches for new photos automatically.
-          </AppText>
-        </View>
-      </Surface>
-
-      <View style={styles.actions}>
-        <Button
-          accessibilityHint="Opens trip creation."
-          label="Create a trip"
-          onPress={onCreateTrip}
-        />
-        <Button
-          accessibilityHint="Opens invite code entry."
-          label="Join a trip"
-          onPress={onJoinTrip}
-          variant="secondary"
+      <View style={[styles.center, { backgroundColor: colors.accentSurface }]}>
+        <Image
+          source={require("../../../assets/onboarding/crew-center.svg")}
+          style={{ width: 52, height: 52 }}
         />
       </View>
-    </>
+      {(
+        [
+          { label: "A", left: "7.5%", top: 32 },
+          { label: "R", left: "77.4%", top: 32 },
+          { label: "M", left: "19.7%", top: 180 },
+          { label: "+2", left: "65.2%", top: 180 },
+        ] as const
+      ).map(({ label, left, top }) => (
+        <View
+          key={label}
+          style={[
+            styles.avatar,
+            {
+              left,
+              top,
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
+          ]}
+        >
+          <AppText variant="label" tone="action">
+            {label}
+          </AppText>
+        </View>
+      ))}
+      <AppText variant="bodyStrong" style={styles.caption}>
+        Everyone’s view. One shared roll.
+      </AppText>
+    </View>
   );
 }
 
@@ -196,59 +87,129 @@ export function HomeScreen({
   state = { kind: "no-trip" },
 }: HomeScreenProps) {
   const colors = useCrewRollTheme();
-
-  const tripContent = (() => {
-    switch (state.kind) {
-      case "no-trip":
-        return (
-          <NoTripActions onCreateTrip={onCreateTrip} onJoinTrip={onJoinTrip} />
-        );
-      case "loading":
-        return <LoadingTrip />;
-      case "trip":
-        return <HomeTrip {...state} />;
-      case "failed":
-        return <SafeFailure {...state} />;
-      case "unknown-create":
-      case "unknown-join":
-      case "pending-approval":
-        return <UnknownRecovery {...state} />;
-    }
-  })();
-
+  if (state.kind !== "no-trip") {
+    const pending = state.kind === "pending-approval";
+    return (
+      <FlowScreen
+        testID="home-screen"
+        header={
+          pending ? (
+            <AppText
+              tone="secondary"
+              variant="label"
+              style={{ textAlign: "right" }}
+            >
+              {state.preview?.name ?? "Your invitation"}
+            </AppText>
+          ) : (
+            <CrewRollWordmark />
+          )
+        }
+        title={
+          pending
+            ? `Waiting for ${state.preview?.hostDisplayName ?? "your host"}.`
+            : state.kind === "failed"
+              ? "Let’s reconnect."
+              : "Opening your trip."
+        }
+        description={
+          pending
+            ? `We’ll bring you into ${state.preview?.name ?? "the trip"} as soon as ${state.preview?.hostDisplayName ?? "your host"} approves you.`
+            : state.kind === "failed"
+              ? "Check your connection and try again."
+              : "Your trip will appear here in a moment."
+        }
+        footer={
+          state.kind === "failed" ? (
+            <Button
+              label="Try again"
+              onPress={state.onRetry}
+              loading={state.retrying ?? false}
+            />
+          ) : pending ? (
+            <AppText
+              tone="secondary"
+              variant="caption"
+              style={{ textAlign: "center" }}
+            >
+              No photos are shared until you’re approved.
+            </AppText>
+          ) : state.kind === "unknown-create" ||
+            state.kind === "unknown-join" ? (
+            <Button
+              label="Check request"
+              loading={state.recovering ?? false}
+              onPress={state.onRecover}
+            />
+          ) : undefined
+        }
+      >
+        <View
+          style={[styles.automatic, { backgroundColor: colors.surfaceMuted }]}
+        >
+          <AppText variant="label" style={{ color: colors.success }}>
+            {pending ? "Checking automatically" : "Connecting to your trip"}
+          </AppText>
+        </View>
+        {pending ? (
+          <AppText tone="secondary">
+            You can leave this screen. We’ll update it when your host responds.
+          </AppText>
+        ) : null}
+      </FlowScreen>
+    );
+  }
   return (
-    <Screen testID="home-screen">
-      <View style={styles.hero}>
-        <AppText variant="eyebrow" tone="action">
-          CrewRoll
-        </AppText>
-        <AppText accessibilityRole="header" variant="display">
-          Every trip photo. On every phone.
-        </AppText>
-        <AppText tone="secondary">
-          Keep using your normal camera. CrewRoll privately delivers each
-          eligible photo to everyone in the trip.
-        </AppText>
-      </View>
-
-      {tripContent}
-
-      <Surface muted style={styles.privacyCard}>
-        <AppText variant="bodyStrong" style={{ color: colors.info }}>
-          Private by design
-        </AppText>
-        <AppText tone="secondary">
-          Photos stay on your phones. Temporary encrypted copies are deleted.
-        </AppText>
-      </Surface>
-    </Screen>
+    <FlowScreen
+      testID="home-screen"
+      header={<CrewRollWordmark />}
+      title="Start your first trip."
+      centerContent
+      description="Create one, or join your crew with a code."
+      footer={
+        <>
+          <Button label="Start a trip" onPress={onCreateTrip} />
+          <Button
+            label="Enter invite code"
+            variant="text"
+            onPress={onJoinTrip}
+          />
+        </>
+      }
+    >
+      <CrewConstellation />
+    </FlowScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  hero: { gap: spacing.sm },
-  statusCard: { gap: spacing.lg, marginTop: spacing.xxl },
-  statusCopy: { gap: spacing.xs },
-  actions: { gap: spacing.sm, marginTop: spacing.lg },
-  privacyCard: { gap: spacing.xs, marginTop: spacing.lg },
+  constellation: { height: 300, width: "100%" },
+  connections: { position: "absolute", top: 0, width: "100%", height: 230 },
+  center: {
+    position: "absolute",
+    top: 76,
+    left: "50%",
+    marginLeft: -onboardingGeometry.sharedCenterSize / 2,
+    width: 112,
+    height: 112,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatar: {
+    position: "absolute",
+    width: 52,
+    height: 52,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  caption: {
+    position: "absolute",
+    top: 254,
+    width: "100%",
+    textAlign: "center",
+  },
+  automatic: { borderRadius: radius.md, padding: spacing.md },
 });

@@ -10,12 +10,14 @@ export const typography = {
     fontSize: 30,
     fontWeight: "800",
     lineHeight: 36,
+    letterSpacing: -0.8,
   },
   title2: {
     fontFamily: "Manrope_700Bold",
     fontSize: 24,
     fontWeight: "700",
     lineHeight: 30,
+    letterSpacing: -0.5,
   },
   headline: {
     fontFamily: "Manrope_700Bold",
@@ -45,7 +47,7 @@ export const typography = {
     fontFamily: "Manrope_500Medium",
     fontSize: 12,
     fontWeight: "500",
-    lineHeight: 17,
+    lineHeight: 18,
   },
   eyebrow: {
     fontFamily: "Manrope_700Bold",

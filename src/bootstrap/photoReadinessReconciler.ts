@@ -27,7 +27,11 @@ export function permissionForLobbyEntry(
 }
 
 export function createPhotoReadinessReconciler() {
-  type Request = Readonly<{ actions: TripSessionActions; tripId: string }>;
+  type Request = Readonly<{
+    actions: TripSessionActions;
+    tripId: string;
+    requestPermission: boolean;
+  }>;
   let active: Request | null = null;
   let pending: Request | null = null;
   let drain: Promise<void> = Promise.resolve();
@@ -35,6 +39,7 @@ export function createPhotoReadinessReconciler() {
   function reconcile(
     actions: TripSessionActions,
     tripId: string,
+    requestPermission = false,
   ): Promise<void> {
     // Opening the system permission dialog produces foreground events. They
     // must not invalidate or repeat the very permission request in progress.
@@ -45,7 +50,7 @@ export function createPhotoReadinessReconciler() {
     )
       return drain;
     actions.invalidatePhotoReadiness();
-    pending = { actions, tripId };
+    pending = { actions, tripId, requestPermission };
     if (active !== null) return drain;
     drain = (async () => {
       let failure: unknown;
@@ -55,7 +60,7 @@ export function createPhotoReadinessReconciler() {
         try {
           await active.actions.publishPhotoReadiness(
             active.tripId,
-            "automatic",
+            active.requestPermission,
           );
           failure = undefined;
         } catch (error) {

@@ -101,6 +101,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
   );
   const keyMethodNames = [
     "ensureDeviceIdentity",
+    "restoreDeviceSession",
     "installDeviceSession",
     "clearDeviceSession",
     "createTripKey",
@@ -136,7 +137,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
       1,
     );
     for (const method of keyMethodNames) {
-      assert.match(source, new RegExp(`lifecycle\\.${method}`));
+      assert.match(source, new RegExp(`lifecycle(?:\\(\\))?\\.${method}`));
     }
   }
   assert.doesNotMatch(swift, /pendingScopeException|inactiveSnapshot/);

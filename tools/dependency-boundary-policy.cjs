@@ -235,6 +235,9 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
     allowModules(feature, featurePackages),
     allowModules(application, ["@crewroll/contracts", "zod"]),
     allowModules(infrastructure, infrastructurePackages),
+    allowModules(element("infrastructure", { captured: { adapter: "auth" } }), [
+      "react",
+    ]),
     // Android requires an additional runtime grant for byte-exact originals.
     allowModules(
       element("infrastructure", {

@@ -30,30 +30,14 @@ describe("Expo 57 full-photo permission adapter", () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it("automatically opens the first photo permission prompt and coalesces focus events", async () => {
-    media.getPermissionsAsync.mockResolvedValue(
-      response({ status: "undetermined" }),
-    );
-    media.requestPermissionsAsync.mockResolvedValue(
-      response({ status: "granted", accessPrivileges: "all" }),
-    );
-    const adapter = new ExpoPhotoLibraryPermission({ linking, media });
-    const results = await Promise.all(
-      Array.from({ length: 30 }, () => adapter.requestAutomatically()),
-    );
-    expect(results.every((value) => value.kind === "FULL")).toBe(true);
-    expect(media.requestPermissionsAsync).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(["denied", "granted"])(
-    "does not automatically nag after a %s limited or denied decision",
+  it.each(["undetermined", "denied", "granted"])(
+    "reads %s access without opening a prompt before Continue",
     async (status) => {
       media.getPermissionsAsync.mockResolvedValue(
         response({ status, accessPrivileges: "limited" }),
       );
       const adapter = new ExpoPhotoLibraryPermission({ linking, media });
-      await adapter.requestAutomatically();
-      await adapter.requestAutomatically();
+      await adapter.read();
       expect(media.requestPermissionsAsync).not.toHaveBeenCalled();
     },
   );

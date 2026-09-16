@@ -61,6 +61,9 @@ export const workerApp = buildApp(
       createTrip: {
         execute: (...args) => current().trips.createTrip.execute(...args),
       },
+      previewInvite: {
+        execute: (...args) => current().trips.previewInvite.execute(...args),
+      },
       getTrip: {
         execute: (...args) => current().trips.getTrip.execute(...args),
       },

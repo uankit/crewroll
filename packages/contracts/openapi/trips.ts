@@ -114,6 +114,26 @@ export const InviteResponseSchema = ClosedObject({
 });
 export type InviteResponse = Static<typeof InviteResponseSchema>;
 
+export const InvitePreviewBodySchema = ClosedObject({
+  inviteCode: InviteCodeSchema,
+});
+export type InvitePreviewBody = Static<typeof InvitePreviewBodySchema>;
+export const InvitePreviewResponseSchema = ClosedObject({
+  tripId: TripIdSchema,
+  name: TripNameSchema,
+  startsAt: Type.Union([DateTimeSchema, Type.Null()]),
+  endsAt: DateTimeSchema,
+  hostDisplayName: Type.String({ minLength: 1, maxLength: 80 }),
+  members: Type.Array(
+    ClosedObject({
+      displayName: Type.String({ minLength: 1, maxLength: 80 }),
+      role: Type.Union([Type.Literal("OWNER"), Type.Literal("MEMBER")]),
+    }),
+    { minItems: 1, maxItems: 10 },
+  ),
+});
+export type InvitePreviewResponse = Static<typeof InvitePreviewResponseSchema>;
+
 export const CreateJoinRequestBodySchema = ClosedObject({
   inviteCode: InviteCodeSchema,
   deviceId: DeviceIdSchema,

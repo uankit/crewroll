@@ -14,12 +14,13 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "supportsTablet": false
+      "supportsTablet": false,
+      "usesAppleSignIn": true
     },
     "android": {
       "allowBackup": false,
       "adaptiveIcon": {
-        "backgroundColor": "#020A12",
+        "backgroundColor": "#C64531",
         "foregroundImage": "./assets/brand/app-icon.png"
       },
       "predictiveBackGestureEnabled": false,
@@ -38,9 +39,13 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#020A12",
-          "image": "./assets/brand/app-icon.png",
-          "imageWidth": 112
+          "backgroundColor": "#FAF8F3",
+          "image": "./assets/brand/splash-mark.png",
+          "imageWidth": 112,
+          "dark": {
+            "backgroundColor": "#171C19",
+            "image": "./assets/brand/splash-mark-dark.png"
+          }
         }
       ],
       [
@@ -60,7 +65,9 @@
         }
       ],
       "@clerk/expo",
-      "./modules/crewroll-transfer/plugin/withCrewRollTransfer"
+      "./modules/crewroll-transfer/plugin/withCrewRollTransfer",
+      "expo-web-browser",
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": true,

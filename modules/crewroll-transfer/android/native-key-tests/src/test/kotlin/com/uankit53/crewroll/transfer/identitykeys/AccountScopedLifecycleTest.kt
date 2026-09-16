@@ -17,6 +17,31 @@ class AccountScopedLifecycleTest {
   private val deviceA = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150"
   private val deviceB = "018f0d98-76fa-7d1a-b4b4-1f742c2e3160"
 
+  @Test fun `restart restores only valid credentials for the same account installation and server`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
+    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    val restarted = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
+    assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+    assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+    assertNull(restarted.restoreDeviceSession(accountB, scope.installationId, "https://api.crewroll.app"))
+    assertNull(restarted.restoreDeviceSession(accountA, "another_installation", "https://api.crewroll.app"))
+    assertNull(restarted.restoreDeviceSession(accountA, scope.installationId, "https://other.crewroll.app"))
+    fixture.clock.now = Instant.ofEpochSecond(600)
+    assertNull(restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+    fixture.clock.now = Instant.ofEpochSecond(100)
+    restarted.clearDeviceSession()
+    assertNull(restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+  }
+
+  @Test fun `restore fails closed if persisted private keys are damaged`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA))
+    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    fixture.store.corruptPrivateKey(scope)
+    assertThrows(NativeKeyException::class.java) {
+      fixture.subject.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app")
+    }
+  }
+
   @Test fun `identity is account scoped and rejects orphaned or mismatched material`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
     val identityA = fixture.subject.ensureDeviceIdentity(accountA)

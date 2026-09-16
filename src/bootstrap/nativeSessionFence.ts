@@ -1,4 +1,5 @@
 import type { CrewRollTransferPort } from "../infrastructure/native/crewRollTransfer";
+import type { RestoreDeviceSessionCommand } from "@crewroll/contracts/native/protocol";
 import { createPreparedTripNative } from "../application/trips/preparedTripNative";
 
 /** Invalidates old workflow continuations before they can dispatch native writes. */
@@ -32,6 +33,10 @@ export function createNativeSessionFence(native: CrewRollTransferPort) {
         activateTrip: guard(native.activateTrip.bind(native)),
       });
       return Object.freeze({
+        restoreDeviceSession: guard(
+          async (command: RestoreDeviceSessionCommand) =>
+            native.restoreDeviceSession?.(command) ?? null,
+        ),
         ensureDeviceIdentity: guard(native.ensureDeviceIdentity.bind(native)),
         installDeviceSession: guard(native.installDeviceSession.bind(native)),
         clearDeviceSession: guard(native.clearDeviceSession.bind(native)),

@@ -231,5 +231,7 @@ test("app config registers only installed, required greenfield plugins", () => {
     "expo-secure-store",
     "@clerk/expo",
     "./modules/crewroll-transfer/plugin/withCrewRollTransfer",
+    "expo-web-browser",
+    "expo-apple-authentication",
   ]);
 });

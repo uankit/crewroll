@@ -2,9 +2,11 @@ import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { CrewRollThemeProvider } from "../design-system";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ActiveTripTransfers } from "./ActiveTripTransfers";
+import type { TripView } from "../domain/trips/model";
 
-jest.mock("react-native-safe-area-context", () =>
-  jest.requireActual("react-native-safe-area-context/jest/mock").default,
+jest.mock(
+  "react-native-safe-area-context",
+  () => jest.requireActual("react-native-safe-area-context/jest/mock").default,
 );
 
 jest.mock("../infrastructure/native/crewRollTransfer", () => ({
@@ -27,6 +29,18 @@ const snapshot = {
   counts: { discovered: 4, previewReady: 3, originalsSaved: 2, blocked: 0 },
   blockers: [],
 };
+const tripInfo: TripView = {
+  id: tripId,
+  version: 1,
+  name: "Goa weekend",
+  status: "ACTIVE",
+  release: { mode: "IMMEDIATE" },
+  startsAt: "2026-09-16T05:00:00.000Z",
+  endsAt: "2026-09-18T05:00:00.000Z",
+  ownerDeviceId: "01990000-0000-7000-8000-000000000003",
+  currentMembershipId: "01990000-0000-7000-8000-000000000004",
+  members: [],
+};
 beforeEach(() => {
   jest.clearAllMocks();
   jest.mocked(crewRollTransfer.getSnapshot).mockResolvedValue(snapshot);
@@ -44,20 +58,12 @@ const screen = () =>
     </CrewRollThemeProvider>,
   );
 
-it("shows verified local progress without claiming all-member delivery", async () => {
+it("does not treat an empty roll as loading or as a saved photo", async () => {
   const view = await screen();
-  expect(
-    await view.findByText(/2 of 4 originals saved on this phone/),
-  ).toBeTruthy();
-  expect(view.getByText(/Each phone shows its own progress/)).toBeTruthy();
-  await fireEvent.press(
-    view.getByRole("button", { name: "Check for photos now" }),
-  );
-  await waitFor(() =>
-    expect(crewRollTransfer.reconcileNow).toHaveBeenCalledWith({
-      protocolVersion: 1,
-    }),
-  );
+  await waitFor(() => expect(crewRollTransfer.listAssets).toHaveBeenCalled());
+  expect(view.queryByTestId("active-photo-progress")).toBeNull();
+  expect(view.queryByTestId("trip-photo-gallery")).toBeNull();
+  expect(crewRollTransfer.setTransferPolicy).not.toHaveBeenCalled();
 });
 it("renders a native preview while the original is pending and limits each page", async () => {
   jest.mocked(crewRollTransfer.listAssets).mockResolvedValue({
@@ -80,6 +86,7 @@ it("renders a native preview while the original is pending and limits each page"
   const view = await screen();
   expect(await view.findByTestId("trip-photo-gallery")).toBeTruthy();
   expect(view.getByText("Saving original…")).toBeTruthy();
+  expect(view.getByText("2 originals saved on this phone")).toBeTruthy();
   expect(crewRollTransfer.listAssets).toHaveBeenCalledWith({
     protocolVersion: 1,
     cursor: null,
@@ -98,27 +105,12 @@ it("does not render another trip's progress", async () => {
     activeTripId: "01990000-0000-7000-8000-000000000099",
   });
   const view = await screen();
-  expect(await view.findByText("Photo delivery needs attention")).toBeTruthy();
+  expect(
+    await view.findByText(
+      "Photos couldn’t refresh. Check your connection and try again.",
+    ),
+  ).toBeTruthy();
   expect(view.queryByTestId("active-photo-progress")).toBeNull();
-});
-it("uses mobile data only after explicit consent on this phone", async () => {
-  jest
-    .mocked(crewRollTransfer.getSnapshot)
-    .mockResolvedValue({ ...snapshot, cellularAllowed: false });
-  const view = await screen();
-  expect(crewRollTransfer.setTransferPolicy).not.toHaveBeenCalled();
-  await fireEvent.press(
-    await view.findByRole("button", {
-      name: "Allow mobile data (uses your data plan)",
-    }),
-  );
-  await waitFor(() =>
-    expect(crewRollTransfer.setTransferPolicy).toHaveBeenCalledWith({
-      protocolVersion: 1,
-      paused: false,
-      cellularAllowed: true,
-    }),
-  );
 });
 it("rejects a photo page when the active trip changes between native reads", async () => {
   jest.mocked(crewRollTransfer.listAssets).mockResolvedValue({
@@ -139,7 +131,11 @@ it("rejects a photo page when the active trip changes between native reads", asy
     ],
   });
   const view = await screen();
-  expect(await view.findByText("Photo delivery needs attention")).toBeTruthy();
+  expect(
+    await view.findByText(
+      "Photos couldn’t refresh. Check your connection and try again.",
+    ),
+  ).toBeTruthy();
   expect(view.queryByTestId("trip-photo-gallery")).toBeNull();
 });
 it("fails visibly when the native engine is unavailable", async () => {
@@ -147,9 +143,7 @@ it("fails visibly when the native engine is unavailable", async () => {
     .mocked(crewRollTransfer.getSnapshot)
     .mockRejectedValue(new Error("native unavailable"));
   const view = await screen();
-  expect(
-    await view.findByRole("button", { name: "Refresh photo status" }),
-  ).toBeTruthy();
+  expect(await view.findByRole("button", { name: "Try again" })).toBeTruthy();
   expect(view.queryByText("Sharing active")).toBeNull();
 });
 it("keeps the trip route alive when the native event bridge is missing", async () => {
@@ -162,9 +156,7 @@ it("keeps the trip route alive when the native event bridge is missing", async (
       throw new Error("native unavailable");
     });
   const view = await screen();
-  expect(
-    await view.findByRole("button", { name: "Refresh photo status" }),
-  ).toBeTruthy();
+  expect(await view.findByRole("button", { name: "Try again" })).toBeTruthy();
 });
 it("retries a blocked photo using its durable work identifier", async () => {
   jest
@@ -187,7 +179,7 @@ it("retries a blocked photo using its durable work identifier", async () => {
   });
   const view = await screen();
   await fireEvent.press(
-    await view.findByRole("button", { name: "Retry blocked photo 1" }),
+    await view.findByRole("button", { name: "Retry photo sharing" }),
   );
   await waitFor(() =>
     expect(crewRollTransfer.retry).toHaveBeenCalledWith({
@@ -195,4 +187,53 @@ it("retries a blocked photo using its durable work identifier", async () => {
       workId,
     }),
   );
+});
+
+it("changes connection policy only after a deliberate choice in trip info", async () => {
+  jest.mocked(crewRollTransfer.getSnapshot).mockResolvedValue({
+    ...snapshot,
+    cellularAllowed: false,
+  });
+  const view = await render(
+    <CrewRollThemeProvider>
+      <ActiveTripTransfers tripId={tripId} tripInfo={tripInfo} infoOpen />
+    </CrewRollThemeProvider>,
+  );
+  const button = await view.findByRole("button", { name: "Allow mobile data" });
+  expect(crewRollTransfer.setTransferPolicy).not.toHaveBeenCalled();
+  await fireEvent.press(button);
+  await waitFor(() =>
+    expect(crewRollTransfer.setTransferPolicy).toHaveBeenCalledWith({
+      protocolVersion: 1,
+      paused: false,
+      cellularAllowed: true,
+    }),
+  );
+});
+
+it("passes photographer and sort filters to native and exposes a clear empty result", async () => {
+  const onClearFilters = jest.fn();
+  const view = await render(
+    <CrewRollThemeProvider>
+      <ActiveTripTransfers
+        tripId={tripId}
+        filters={{
+          sourceMembershipId: tripInfo.currentMembershipId,
+          day: null,
+          order: "OLDEST",
+        }}
+        onClearFilters={onClearFilters}
+      />
+    </CrewRollThemeProvider>,
+  );
+  expect(await view.findByText("No photos for these filters")).toBeTruthy();
+  expect(crewRollTransfer.listAssets).toHaveBeenCalledWith({
+    protocolVersion: 1,
+    cursor: null,
+    limit: 24,
+    sourceMembershipId: tripInfo.currentMembershipId,
+    order: "OLDEST",
+  });
+  await fireEvent.press(view.getByRole("button", { name: "Clear filters" }));
+  expect(onClearFilters).toHaveBeenCalledTimes(1);
 });

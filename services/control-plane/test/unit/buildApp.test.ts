@@ -407,7 +407,7 @@ describe("buildApp", () => {
     expect(openapi).not.toContain("/health/ready");
   });
 
-  it("publishes exactly the eight registered Trip operations and success statuses", async () => {
+  it("publishes exactly the nine registered Trip operations and success statuses", async () => {
     const fixture = createTestDependencies();
     const app = track(buildApp(fixture.dependencies));
     await app.ready();
@@ -420,6 +420,7 @@ describe("buildApp", () => {
     const expected = [
       ["/v1/trips", "post", "201"],
       ["/v1/trips/create-outcome", "post", "200"],
+      ["/v1/trips/invite-preview", "post", "200"],
       ["/v1/trips/join-requests", "post", "201"],
       [
         "/v1/trips/{tripId}/join-requests/{membershipId}/approval",

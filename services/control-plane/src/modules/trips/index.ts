@@ -23,3 +23,8 @@ export type { ForegroundActorSnapshotReader } from "./ports/foregroundActorSnaps
 export type { InviteCodeCryptography } from "./ports/inviteCodeHasher.js";
 export type { TripUnitOfWork } from "./ports/tripUnitOfWork.js";
 export type { ForegroundTripActor } from "./types.js";
+
+export {
+  createPreviewInvite,
+  type PreviewInviteDependencies,
+} from "./previewInvite.js";

@@ -55,10 +55,7 @@ export default function JoinTripRoute() {
           });
           return;
         }
-        setState({
-          kind: "pending",
-          onOpenTrip: () => router.replace(`/trips/${result.tripId}`),
-        });
+        router.replace(`/trips/${result.tripId}`);
       })
       .catch((error: unknown) => {
         switch (safeFailureKind(error)) {
@@ -92,7 +89,12 @@ export default function JoinTripRoute() {
 
   return (
     <JoinTripScreen
+      key={initialCode}
       initialCode={initialCode}
+      onLookup={async (code) => {
+        if (actions === null) throw new Error("Session unavailable");
+        return actions.previewInvite(code);
+      }}
       onCancel={() => router.back()}
       onJoin={requestJoin}
       state={state}

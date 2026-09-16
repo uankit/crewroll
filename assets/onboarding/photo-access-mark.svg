@@ -1,0 +1,9 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="CrewRoll / Mark">
+<rect id="Rear frame" x="4" y="4" width="28" height="30" rx="8" fill="#C64531"/>
+<rect id="Rear frame cutout" x="8" y="8" width="20" height="22" rx="4" fill="#E5ECE4"/>
+<rect id="Front frame" x="16" y="16" width="28" height="30" rx="8" fill="#C64531"/>
+<rect id="Front frame cutout" x="20" y="20" width="20" height="22" rx="4" fill="#E5ECE4"/>
+<circle id="Moment" cx="25.5" cy="25.5" r="2.5" fill="#C64531"/>
+</g>
+</svg>

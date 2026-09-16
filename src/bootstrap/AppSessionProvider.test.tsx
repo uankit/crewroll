@@ -1,14 +1,9 @@
+import * as Clipboard from "expo-clipboard";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react-native";
 import { useLayoutEffect, type PropsWithChildren } from "react";
-import {
-  AppState,
-  Linking,
-  Share,
-  Text,
-  type AppStateStatus,
-} from "react-native";
+import { AppState, Text, type AppStateStatus } from "react-native";
 
 import { CrewRollApiProblem } from "../application/problems/crewRollApiProblem";
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
@@ -127,6 +122,7 @@ type RuntimeOptions = Readonly<{
 function createRuntime(options: RuntimeOptions = {}) {
   const calls: string[] = [];
   const scoped: ScopedTripSession = {
+    previewInvite: jest.fn(),
     approveMember: jest.fn(async () => lobby),
     openPhotoSettings: jest.fn(async () => undefined),
     replayPendingMutation:
@@ -1388,14 +1384,10 @@ describe("AppSessionProvider", () => {
     expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen();
   });
 
-  it("contains native invite action failures without exposing their payload", async () => {
-    const privateNativeError = new Error("private native share payload");
-    const openURL = jest
-      .spyOn(Linking, "openURL")
-      .mockRejectedValue(privateNativeError);
-    const share = jest
-      .spyOn(Share, "share")
-      .mockRejectedValue(privateNativeError);
+  it("copies only the invite code and reports a clipboard failure to its caller", async () => {
+    const copy = jest
+      .spyOn(Clipboard, "setStringAsync")
+      .mockResolvedValue(true);
     const { runtime } = createRuntime({
       recovery: {
         state: "CONFIRMED",
@@ -1404,41 +1396,31 @@ describe("AppSessionProvider", () => {
         ownerInviteCode: "ABCD2345",
       },
     });
-    function InviteActionsProbe() {
+    function InviteProbe() {
       const session = useAppSession();
       return (
-        <>
-          <Text onPress={session.openOwnerInvite} testID="open-invite">
-            open
-          </Text>
-          <Text onPress={session.shareOwnerInvite} testID="share-invite">
-            share
-          </Text>
-        </>
+        <Text testID="copy-invite" onPress={session.copyOwnerInvite}>
+          {session.snapshot.phase}
+        </Text>
       );
     }
-
     await render(
       <Harness auth={signedIn} runtime={runtime}>
-        <InviteActionsProbe />
+        <InviteProbe />
       </Harness>,
     );
-    await waitFor(() => expect(screen.getByText("open")).toBeOnTheScreen());
-
-    await expect(
-      screen.getByTestId("open-invite").props.onPress(),
-    ).resolves.toBeUndefined();
-    await expect(
-      screen.getByTestId("share-invite").props.onPress(),
-    ).resolves.toBeUndefined();
-    expect(openURL).toHaveBeenCalledWith("airmesh://invite/ABCD2345");
-    expect(share).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(screen.toJSON())).not.toMatch(
-      /private|native|error/i,
+    await waitFor(() =>
+      expect(screen.getByText("READY_LOBBY")).toBeOnTheScreen(),
     );
-
-    openURL.mockRestore();
-    share.mockRestore();
+    await expect(
+      screen.getByTestId("copy-invite").props.onPress(),
+    ).resolves.toBeUndefined();
+    expect(copy).toHaveBeenCalledWith("ABCD2345");
+    copy.mockResolvedValue(false);
+    await expect(
+      screen.getByTestId("copy-invite").props.onPress(),
+    ).rejects.toThrow("Clipboard unavailable");
+    copy.mockRestore();
   });
 
   it("routes readiness AUTH_INVALID through shared sign-out teardown", async () => {

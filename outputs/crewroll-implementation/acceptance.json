@@ -1,0 +1,82 @@
+{
+  "date": "2026-09-16",
+  "environment": {
+    "kind": "Android emulator",
+    "avd": "CrewRoll_Startup_20260910",
+    "package": "com.uankit53.airmesh.development",
+    "hostAndroidUser": 0,
+    "guestAndroidUser": 10,
+    "concurrentPhysicalDevices": false
+  },
+  "source": {
+    "cameraPackage": "com.android.camera2",
+    "mediaStoreId": 24,
+    "path": "Pictures/IMG_20260916_110005.jpg",
+    "bytes": 38257,
+    "sha256": "c22ad0b17d4987d5cfb5c0166c266f47939fc907c120cdc866e31a99115b0b1c"
+  },
+  "recipient": {
+    "mediaStoreId": 19,
+    "path": "Pictures/CrewRoll/crewroll-8dcc1d81-965a-43dc-85f3-61b0a3ab2c69.jpg",
+    "bytes": 38257,
+    "sha256": "c22ad0b17d4987d5cfb5c0166c266f47939fc907c120cdc866e31a99115b0b1c",
+    "libraryCountAfterColdLaunch": 1
+  },
+  "sameOriginalBytes": true,
+  "filters": {
+    "host": 1,
+    "guestSelf": 0,
+    "date20260915": 0,
+    "date20260916": 1
+  },
+  "observedDeviceRegistrationResponses": [
+    {
+      "at": "2026-09-16T05:11:21.878Z",
+      "connection": 1,
+      "id": "6042913",
+      "method": "POST",
+      "path": "/v1/devices",
+      "completed": true,
+      "event": "response",
+      "status": 201
+    },
+    {
+      "at": "2026-09-16T05:17:28.185Z",
+      "connection": 2,
+      "id": "75109343",
+      "method": "POST",
+      "path": "/v1/devices",
+      "completed": true,
+      "event": "response",
+      "status": 201
+    }
+  ],
+  "networkLimitations": [
+    "JS requests only; native photo transport excluded",
+    "Detached observer interval during an earlier Android user switch"
+  ],
+  "nativeTests": {
+    "swiftPassed": 37,
+    "androidSuite": "passed"
+  },
+  "physicalDeviceAcceptance": "pending",
+  "repositoryChecks": {
+    "command": "npm run check",
+    "exitCode": 1,
+    "identity": "passed",
+    "format": "passed",
+    "lint": "passed",
+    "typecheck": "passed",
+    "migrationPolicy": "passed",
+    "productionResolution": "passed",
+    "toolTestsPassed": 1381,
+    "uiTestsPassed": 680,
+    "uiTestsSkipped": 1,
+    "vitestTestsPassed": 761,
+    "expoDoctor": {
+      "passed": 20,
+      "total": 21,
+      "failure": "16 SDK 57 package patch mismatches"
+    }
+  }
+}

@@ -80,7 +80,7 @@ describe("CrewRoll product composites", () => {
       </ThemeHarness>,
     );
 
-    const wordmark = screen.getByText("CrewRoll");
+    const wordmark = screen.getByText("crewroll");
     expect(wordmark.props.allowFontScaling).toBe(true);
     expect(wordmark.props.maxFontSizeMultiplier).toBe(2);
     expect(screen.getByText("Photos find everyone")).toBeTruthy();
@@ -146,7 +146,7 @@ describe("CrewRoll product composites", () => {
     const open = screen.getByRole("button", { name: "Open trip" });
     expect(StyleSheet.flatten(open.props.style)).toEqual(
       expect.objectContaining({
-        minHeight: spacing.xxxl,
+        minHeight: 56,
         minWidth: spacing.xxxl,
       }),
     );
@@ -186,12 +186,12 @@ describe("CrewRoll product composites", () => {
     expect(code.props.maxFontSizeMultiplier).toBe(2);
     expect(screen.getByRole("image", { name: "Invite QR" })).toBeTruthy();
     for (const action of [link, share]) {
-      expect(StyleSheet.flatten(action.props.style)).toEqual(
-        expect.objectContaining({
-          minHeight: spacing.xxxl,
-          minWidth: spacing.xxxl,
-        }),
-      );
+      expect(
+        StyleSheet.flatten(action.props.style).minHeight,
+      ).toBeGreaterThanOrEqual(48);
+      expect(
+        StyleSheet.flatten(action.props.style).minWidth,
+      ).toBeGreaterThanOrEqual(48);
     }
 
     await fireEvent.press(link);
@@ -312,7 +312,7 @@ describe("CrewRoll product composites", () => {
       name: "Resolve permission",
     });
     expect(StyleSheet.flatten(resolve.props.style)).toEqual(
-      expect.objectContaining({ minHeight: spacing.xxxl }),
+      expect.objectContaining({ minHeight: 56 }),
     );
     await fireEvent.press(resolve);
     expect(onResolve).toHaveBeenCalledTimes(1);

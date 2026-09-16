@@ -180,7 +180,7 @@ private final class TransferFixture {
         let tripKey = try NativePhotoCrypto.randomKey()
         context = NativeMediaContext(scope: NativeKeyScope(accountHash: String(repeating: "a", count: 64), installationID: "installation_test"),
             session: DeviceSessionRecord(deviceID: "01990000-0000-4000-8000-000000000004", backgroundBearer: Data("test-bearer".utf8), expiresAt: Date().addingTimeInterval(3600), apiBaseURL: "https://api.example"),
-            metadata: ActiveTripMetadata(tripID: tripID, membershipID: "01990000-0000-4000-8000-000000000005", startsAt: "2026-09-08T10:00:00Z", endsAt: "2026-09-08T20:00:00Z", releaseAt: nil, keyEpoch: 1), tripKey: Data(tripKey))
+            metadata: ActiveTripMetadata(tripID: tripID, membershipID: "01990000-0000-4000-8000-000000000005", startsAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3600)), endsAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600)), releaseAt: nil, keyEpoch: 1), tripKey: Data(tripKey))
         let source = root.appendingPathComponent("fixture-original")
         let encrypted = root.appendingPathComponent("fixture-ciphertext")
         try plaintext.write(to: source)

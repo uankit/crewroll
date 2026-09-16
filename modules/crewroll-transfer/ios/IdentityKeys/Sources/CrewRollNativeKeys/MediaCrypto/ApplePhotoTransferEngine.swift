@@ -313,27 +313,20 @@ public actor ApplePhotoTransferEngine {
         defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
         let state = try currentJournal(context).snapshot()
         let cached = previews?.snapshot(tripID: context.metadata.tripID)
-        return projection(context.metadata.tripID, items: projectedAssets(tripID: context.metadata.tripID, works: state.works, cached: cached?.records ?? []), revision: state.revision + (cached?.revision ?? 0))
+        return projection(context.metadata.tripID, items: projectedAssets(tripID: context.metadata.tripID, membershipID: context.metadata.membershipID, works: state.works, cached: cached?.records ?? []), revision: state.revision + (cached?.revision ?? 0))
     }
-    public func listAssets(limit: Int, cursor: String?) throws -> [String: Any] {
-        guard (1...100).contains(limit) else { throw NativeKeyError.invalidCommand }
+    public func listAssets(limit: Int, cursor: String?, query: NativeGalleryQuery? = nil) throws -> [String: Any] {
         let current = try snapshot()
         let tripID = current["activeTripId"] as? String
         let revision = current["revision"] as? Int ?? 0
-        let works = projectedAssets(tripID: tripID, works: journal?.snapshot().works ?? [], cached: tripID.flatMap { previews?.snapshot(tripID: $0).records } ?? [])
-        var offset = 0
-        if let cursor {
-            let parts = cursor.split(separator: "_")
-            guard parts.count == 3, parts[0] == "page", let requestedRevision = Int(parts[1]),
-                  requestedRevision == revision, let value = Int(parts[2]) else { throw NativeKeyError.invalidCommand }
-            offset = value
-        }
-        guard offset >= 0, offset <= works.count else { throw NativeKeyError.invalidCommand }
-        let page = Array(works.dropFirst(offset).prefix(limit))
-        return ["protocolVersion": 1, "revision": revision, "activeTripId": tripID as Any? ?? NSNull(), "items": page,
-            "nextCursor": offset + page.count < works.count ? "page_\(revision)_\(offset + page.count)" as Any : NSNull()]
+        var context = try contextProvider()
+        defer { if context != nil { context!.tripKey.resetBytes(in: 0..<context!.tripKey.count); context!.session.backgroundBearer.resetBytes(in: 0..<context!.session.backgroundBearer.count) } }
+        let works = projectedAssets(tripID: tripID, membershipID: context?.metadata.membershipID, works: journal?.snapshot().works ?? [], cached: tripID.flatMap { previews?.snapshot(tripID: $0).records } ?? [])
+        let page = try (query ?? NativeGalleryQuery()).page(works, revision: revision, limit: limit, cursor: cursor)
+        return ["protocolVersion": 1, "revision": revision, "activeTripId": tripID as Any? ?? NSNull(), "items": page.items,
+            "nextCursor": page.nextCursor as Any? ?? NSNull()]
     }
-    private func projectedAssets(tripID: String?, works: [NativePhotoWork], cached: [NativePreviewRecord]) -> [[String: Any]] {
+    private func projectedAssets(tripID: String?, membershipID: String?, works: [NativePhotoWork], cached: [NativePreviewRecord]) -> [[String: Any]] {
         let active = works.filter { $0.tripID == tripID && $0.ignored != true }
         let records = Dictionary(active.map { ($0.assetID, $0) }, uniquingKeysWith: { first, _ in first })
         let images = Dictionary(cached.map { ($0.assetID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -341,7 +334,8 @@ public actor ApplePhotoTransferEngine {
             let work = records[id]; let preview = images[id]
             let uri = paused ? nil : previews?.render(id)?.absoluteString
             return ["workId": work?.workID ?? id, "assetId": id,
-                "capturedAt": iso(work?.capturedAt ?? preview!.capturedAt),
+                "capturedAt": iso(preview?.readyAt != nil ? preview!.capturedAt : work?.capturedAt ?? preview!.capturedAt),
+                "sourceMembershipId": (work?.sourceLocalID != nil ? membershipID : preview?.grant.sourceMembershipId) as Any? ?? NSNull(),
                 "previewStage": uri != nil ? "SAVED" : "PENDING", "previewUri": uri as Any? ?? NSNull(),
                 "originalStage": work?.complete == true ? "SAVED" : "PENDING",
                 "blocker": (work?.blocker ?? preview?.blocker) as Any? ?? NSNull()]
@@ -426,6 +420,22 @@ public actor ApplePhotoTransferEngine {
                 guard grant.assetId == work.assetID else { throw NativeKeyError.invalidEnvelope }
                 try cache.put(NativePreviewRecord(assetID: work.assetID, tripID: work.tripID, capturedAt: work.capturedAt, retainUntil: endsAt.addingTimeInterval(7 * 86_400), grant: grant))
             }
+            // Existing protected renders gain author/capture metadata once, then
+            // reuse the durable index for every subsequent gallery query.
+            for var record in cache.snapshot(tripID: context.metadata.tripID).records.filter({ ($0.galleryMetadataVersion ?? 0) < 1 && $0.readyAt != nil }).prefix(8) {
+                if record.grant.sourceMembershipId == nil {
+                    let bytes = try await network.json(path: "/v1/assets/\(record.assetID)/preview", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
+                    try assertCurrent(context, epoch)
+                    let grant = try JSONDecoder().decode(NativePreviewGrant.self, from: bytes)
+                    guard grant.assetId == record.assetID else { throw NativeKeyError.invalidEnvelope }
+                    record.grant = grant
+                }
+                guard let sealed = Data(base64Encoded: record.grant.encryptedManifest) else { throw NativeKeyError.invalidEnvelope }
+                var manifest = try ManifestReader.open(encryptedManifest: Bytes(sealed), tripKey: Bytes(context.tripKey), aad: CrewRollAAD.manifest(tripID: record.tripID, assetID: record.assetID))
+                defer { manifest.eraseSecrets() }
+                if let milliseconds = manifest.capturedAtMilliseconds { record.capturedAt = Date(timeIntervalSince1970: Double(milliseconds) / 1000) }
+                record.galleryMetadataVersion = 1; try cache.put(record)
+            }
             for record in cache.snapshot(tripID: context.metadata.tripID).records.filter({ cache.render($0.assetID) == nil && $0.blocker == nil }).prefix(8) {
                 do { try await materializePreview(record, context: context, epoch: epoch, cache: cache, network: network) }
                 catch {
@@ -443,7 +453,7 @@ public actor ApplePhotoTransferEngine {
               let objects = object["objects"] as? [[String: Any]], let preview = objects.first,
               let bytes = preview["ciphertextBytes"] as? String, let checksum = preview["checksumSha256"] as? String,
               let endsAt = date(context.metadata.endsAt) else { throw NativeKeyError.invalidState }
-        let grant = NativePreviewGrant(assetId: record.assetID, expiresAt: iso(Date().addingTimeInterval(300)), encryptedManifest: encryptedManifest,
+        let grant = NativePreviewGrant(sourceMembershipId: context.metadata.membershipID, assetId: record.assetID, expiresAt: iso(Date().addingTimeInterval(300)), encryptedManifest: encryptedManifest,
             object: .init(variant: "PREVIEW", url: "", ciphertextBytes: bytes, checksumSha256: checksum))
         let directory = try cache.directory(record.assetID)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -481,7 +491,8 @@ public actor ApplePhotoTransferEngine {
             try assertCurrent(context, epoch)
             try FileManager.default.moveItem(at: pending, to: plaintext)
         } catch { try? FileManager.default.removeItem(at: pending); throw error }
-        record.readyAt = Date(); try cache.put(record)
+        if let milliseconds = manifest.capturedAtMilliseconds { record.capturedAt = Date(timeIntervalSince1970: Double(milliseconds) / 1000) }
+        record.galleryMetadataVersion = 1; record.readyAt = Date(); try cache.put(record)
         invalidated((journal?.snapshot().revision ?? 0) + cache.snapshot(tripID: record.tripID).revision)
     }
     private func assertCurrent(_ context: NativeMediaContext, _ epoch: Int) throws {

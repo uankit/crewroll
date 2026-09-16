@@ -51,9 +51,9 @@ describe("CrewRoll theme", () => {
 
     expect(theme).toMatchObject({
       scheme: "dark",
-      action: "#1675FF",
-      colors: { action: "#1675FF" },
-      spacing: { gutter: 20 },
+      action: "#F3836D",
+      colors: { action: "#F3836D" },
+      spacing: { gutter: 24 },
       motion: { navigation: 320 },
     });
   });
@@ -86,6 +86,6 @@ describe("CrewRoll theme", () => {
       </Provider>,
     );
 
-    expect(view.getByText("dark|#1675FF|#1675FF|20|0")).toBeTruthy();
+    expect(view.getByText("dark|#F3836D|#F3836D|24|0")).toBeTruthy();
   });
 });

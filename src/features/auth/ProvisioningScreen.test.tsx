@@ -27,15 +27,7 @@ describe("ProvisioningScreen", () => {
   it("presents scalable, accessible progress without a retry action", async () => {
     const screen = await renderScreen({ status: "working" });
 
-    const heading = screen.getByRole("header", {
-      name: "Connecting this phone",
-    });
-    const progress = screen.getByRole("summary", {
-      name: "Connecting this phone. Secure phone setup is in progress.",
-    });
-
-    expect(heading.props.allowFontScaling).toBe(true);
-    expect(heading.props.maxFontSizeMultiplier).toBe(2);
+    const progress = screen.getByRole("summary", { name: "Getting ready" });
     expect(progress.props.accessibilityState).toEqual({ busy: true });
     expect(screen.queryByRole("button")).toBeNull();
   });
@@ -55,7 +47,7 @@ describe("ProvisioningScreen", () => {
     expect(failureCopy.props.maxFontSizeMultiplier).toBe(2);
     expect(StyleSheet.flatten(retry.props.style)).toEqual(
       expect.objectContaining({
-        minHeight: spacing.xxxl,
+        minHeight: 56,
         minWidth: spacing.xxxl,
       }),
     );

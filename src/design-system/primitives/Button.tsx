@@ -14,7 +14,8 @@ import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 import { AppText } from "./AppText";
 
-export type ButtonVariant = "primary" | "secondary" | "critical";
+export type ButtonVariant =
+  "primary" | "secondary" | "critical" | "text" | "google" | "apple";
 
 export type ButtonProps = {
   readonly label: string;
@@ -44,11 +45,17 @@ export function Button({
   const colors = useCrewRollTheme();
   const isUnavailable = disabled || loading;
   const contentColor =
-    variant === "primary"
-      ? colors.onAction
-      : variant === "critical"
-        ? colors.critical
-        : colors.action;
+    variant === "google"
+      ? colors.fixedInk
+      : variant === "apple"
+        ? colors.fixedWhite
+        : variant === "text"
+          ? colors.textSecondary
+          : variant === "primary"
+            ? colors.onAction
+            : variant === "critical"
+              ? colors.critical
+              : colors.action;
 
   return (
     <Pressable
@@ -61,23 +68,35 @@ export function Button({
       testID={testID}
       style={({ pressed }) => {
         const backgroundColor =
-          variant === "primary"
-            ? pressed
-              ? colors.actionPressed
-              : colors.action
-            : variant === "critical"
-              ? pressed
-                ? colors.surfaceMuted
-                : colors.criticalSurface
-              : pressed
-                ? colors.surfaceMuted
-                : colors.surface;
+          variant === "text"
+            ? colors.transparent
+            : variant === "google"
+              ? colors.fixedWhite
+              : variant === "apple"
+                ? colors.fixedInk
+                : variant === "primary"
+                  ? pressed
+                    ? colors.actionPressed
+                    : colors.action
+                  : variant === "critical"
+                    ? pressed
+                      ? colors.surfaceMuted
+                      : colors.criticalSurface
+                    : pressed
+                      ? colors.surfaceMuted
+                      : colors.surface;
         const borderColor =
-          variant === "critical"
-            ? colors.critical
-            : variant === "primary"
-              ? colors.action
-              : colors.border;
+          variant === "text"
+            ? colors.transparent
+            : variant === "google"
+              ? colors.providerBorder
+              : variant === "apple"
+                ? colors.fixedInk
+                : variant === "critical"
+                  ? colors.critical
+                  : variant === "primary"
+                    ? colors.action
+                    : colors.border;
 
         return [
           styles.base,
@@ -85,6 +104,7 @@ export function Button({
             backgroundColor,
             borderColor,
             opacity: isUnavailable ? 0.5 : 1,
+            minHeight: variant === "text" ? 48 : 56,
           },
           style,
         ];
@@ -117,9 +137,9 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     flexDirection: "row",
-    gap: spacing.xs,
+    gap: spacing.sm,
     justifyContent: "center",
-    minHeight: spacing.xxxl,
+    minHeight: 56,
     minWidth: spacing.xxxl,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,

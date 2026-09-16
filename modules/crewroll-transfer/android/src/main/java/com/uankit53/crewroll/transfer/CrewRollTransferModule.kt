@@ -76,6 +76,15 @@ class CrewRollTransferModule : Module() {
         )
       }
     }
+    AsyncFunction("restoreDeviceSession") { command: Map<String, Any?>, promise: Promise ->
+      bridge("restoreDeviceSession", promise) {
+        NativeCommandDecoder.require(command, NativeCommandKind.RESTORE_DEVICE_SESSION)
+        val deviceId = lifecycle().restoreDeviceSession(
+          string(command, "accountId"), string(command, "installationId"), string(command, "apiBaseUrl"),
+        )
+        deviceId?.let { mapOf("protocolVersion" to 1, "deviceId" to it) }
+      }
+    }
     AsyncFunction("installDeviceSession") { command: Map<String, Any?>, promise: Promise ->
       bridge("installDeviceSession", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.INSTALL_DEVICE_SESSION)
@@ -193,9 +202,13 @@ class CrewRollTransferModule : Module() {
     }
     AsyncFunction("listAssets") { command: Map<String, Any?>, promise: Promise ->
       future("listAssets", promise, changesSession = false) {
-        requireCommand(command, setOf("protocolVersion", "limit", "cursor"))
+        val options = setOf("sourceMembershipId", "capturedFrom", "capturedBefore", "order")
+        requireCommand(command, setOf("protocolVersion", "limit", "cursor") + options.filter { command.containsKey(it) })
         if (command["cursor"] != null && command["cursor"] !is String) throw NativeKeyException.invalidCommand()
-        engine().assets(integer(command, "limit"), command["cursor"] as? String)
+        if (options.any { command.containsKey(it) && command[it] !is String }) throw NativeKeyException.invalidCommand()
+        val query = com.uankit53.crewroll.transfer.media.NativeGalleryQuery(command["sourceMembershipId"] as? String,
+          command["capturedFrom"] as? String, command["capturedBefore"] as? String, command["order"] as? String ?: "NEWEST")
+        engine().assets(integer(command, "limit"), command["cursor"] as? String, query)
       }
     }
   }

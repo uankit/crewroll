@@ -291,7 +291,7 @@ describe("design-system feedback", () => {
     for (const action of [retry, settings, create]) {
       expect(StyleSheet.flatten(action.props.style)).toEqual(
         expect.objectContaining({
-          minHeight: spacing.xxxl,
+          minHeight: 56,
           minWidth: spacing.xxxl,
         }),
       );

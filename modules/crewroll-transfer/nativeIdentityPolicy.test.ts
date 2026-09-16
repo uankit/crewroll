@@ -219,7 +219,7 @@ describe("native identity and trip-key production policy", () => {
     }
   });
 
-  it("routes all eight shells through closed-object decoders and lowercase UUIDv7 trip validation", () => {
+  it("routes all nine shells through closed-object decoders and lowercase UUIDv7 trip validation", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
     );
@@ -228,7 +228,7 @@ describe("native identity and trip-key production policy", () => {
     );
     expect(
       swift.match(/NativeCommandDecoder\.require\(command, for:/g),
-    ).toHaveLength(8);
+    ).toHaveLength(9);
     expect(swift).toContain("NativeCommandDecoder.activation");
     expect(
       swift.slice(0, swift.indexOf('AsyncFunction("setTransferPolicy")')),
@@ -238,7 +238,7 @@ describe("native identity and trip-key production policy", () => {
       kotlin.match(
         /NativeCommandDecoder\.require\(command, NativeCommandKind\./g,
       ),
-    ).toHaveLength(8);
+    ).toHaveLength(9);
     expect(kotlin).toContain("NativeCommandDecoder.activation");
     expect(
       kotlin.slice(0, kotlin.indexOf('AsyncFunction("setTransferPolicy")')),

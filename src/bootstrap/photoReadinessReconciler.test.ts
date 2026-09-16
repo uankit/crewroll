@@ -50,10 +50,7 @@ describe("photo readiness reconciliation sequencing", () => {
     expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
     first.resolve();
     await drained;
-    expect(actions.publishPhotoReadiness).toHaveBeenLastCalledWith(
-      "B",
-      "automatic",
-    );
+    expect(actions.publishPhotoReadiness).toHaveBeenLastCalledWith("B", false);
   });
 
   it("coalesces a foreground event while the same trip is in flight", async () => {
@@ -72,5 +69,19 @@ describe("photo readiness reconciliation sequencing", () => {
     await drained;
     expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
     expect(actions.invalidatePhotoReadiness).toHaveBeenCalledTimes(1);
+  });
+  it("opens a permission prompt only for Continue and coalesces its foreground event", async () => {
+    const first = deferred();
+    const actions = {
+      invalidatePhotoReadiness: jest.fn(),
+      publishPhotoReadiness: jest.fn(async () => first.promise),
+    } as unknown as TripSessionActions;
+    const reconciler = createPhotoReadinessReconciler();
+    reconciler.reconcile(actions, "A", true);
+    const drained = reconciler.reconcile(actions, "A");
+    first.resolve();
+    await drained;
+    expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
+    expect(actions.publishPhotoReadiness).toHaveBeenCalledWith("A", true);
   });
 });

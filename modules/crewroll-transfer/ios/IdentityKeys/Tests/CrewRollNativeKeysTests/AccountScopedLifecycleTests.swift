@@ -12,6 +12,32 @@ final class AccountScopedLifecycleTests: XCTestCase {
     private let deviceA = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150"
     private let deviceB = "018f0d98-76fa-7d1a-b4b4-1f742c2e3160"
 
+    func testRestartRestoresOnlyValidCredentialsForSameAccountInstallationAndServer() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let restarted = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store, crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
+        func restore(_ account: String = "user_A-1", _ installation: String? = nil, _ server: String = "https://api.crewroll.app") throws -> String? {
+            try restarted.restoreDeviceSession(accountID: account, installationID: installation ?? scope.installationID, apiBaseURL: server)
+        }
+        XCTAssertEqual(try restore(), deviceA)
+        XCTAssertEqual(try restore(), deviceA)
+        XCTAssertNil(try restore(accountB))
+        XCTAssertNil(try restore(accountA, "another_installation"))
+        XCTAssertNil(try restore(accountA, nil, "https://other.crewroll.app"))
+        fixture.clock.now = Date(timeIntervalSince1970: 600)
+        XCTAssertNil(try restore())
+        fixture.clock.now = Date(timeIntervalSince1970: 100)
+        try restarted.clearDeviceSession()
+        XCTAssertNil(try restore())
+    }
+
+    func testRestoreFailsClosedForDamagedPrivateKeys() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        fixture.store.corruptPrivateKey(in: scope)
+        XCTAssertThrowsError(try fixture.subject.restoreDeviceSession(accountID: accountA, installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"))
+    }
+
     func testIdentityIsAccountScopedAndRejectsOrphanedOrMismatchedKeyMaterial() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
         let identityA = try fixture.subject.ensureDeviceIdentity(accountID: accountA)

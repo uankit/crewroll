@@ -19,3 +19,10 @@ export {
   tripEndValidationMessage,
   type TripEndFieldProps,
 } from "./TripEndField";
+
+export { GalleryFiltersSheet } from "./GalleryFiltersSheet";
+export {
+  defaultGalleryFilters,
+  galleryFilterCount,
+  galleryQuery,
+} from "../../domain/trips/galleryFilters";

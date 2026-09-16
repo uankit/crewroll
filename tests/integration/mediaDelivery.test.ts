@@ -153,6 +153,13 @@ describe.sequential("durable encrypted photo delivery", () => {
       const feed = await service.previewFeed(member, tripId, "0");
       expect(feed.items).toHaveLength(1);
       expect(feed.items[0]?.download.object.variant).toBe("PREVIEW");
+      const source = await context.db
+        .selectFrom("trip_members")
+        .select("id")
+        .where("trip_id", "=", tripId)
+        .where("participating_device_id", "=", members[0]!.deviceId)
+        .executeTakeFirstOrThrow();
+      expect(feed.items[0]?.download.sourceMembershipId).toBe(source.id);
       expect(feed.items[0]?.download.encryptedManifest).toBe(
         body.encryptedManifest,
       );
