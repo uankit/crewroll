@@ -9,6 +9,7 @@ import type {
   TripResponse,
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
+import type { SessionTokenSource } from "../../application/auth/ports";
 
 import { CrewRollApiProblem as ApplicationCrewRollApiProblem } from "../../application/problems/crewRollApiProblem";
 import {
@@ -122,7 +123,7 @@ function requestFrom(call: unknown[] | undefined): Request {
 
 function apiWith(
   fetchMock: jest.Mock,
-  getToken: () => Promise<string> = async () => "clerk-session",
+  getToken: SessionTokenSource["getToken"] = async () => "clerk-session",
 ) {
   return createCrewRollApi({
     apiBaseUrl: "https://api.crewroll.app",
@@ -132,6 +133,127 @@ function apiWith(
 }
 
 describe("CrewRoll API boundary", () => {
+  it("refreshes an expired token once without changing the trip command or body", async () => {
+    const requests: {
+      authorization: string | null;
+      command: string | null;
+      body: unknown;
+    }[] = [];
+    const fetchMock = jest.fn(async (request: Request) => {
+      requests.push({
+        authorization: request.headers.get("Authorization"),
+        command: request.headers.get("Idempotency-Key"),
+        body: await request.json(),
+      });
+      return requests.length === 1
+        ? problemResponse("AUTH_INVALID", 401)
+        : response(tripResponse);
+    });
+    const getToken = jest.fn(async (options?: { skipCache: boolean }) =>
+      options?.skipCache ? "fresh-token" : "expired-token",
+    );
+    await expect(
+      apiWith(fetchMock, getToken).createTrip(deviceId, commandId, createBody),
+    ).resolves.toEqual(tripResponse);
+    expect(requests).toEqual([
+      {
+        authorization: "Bearer expired-token",
+        command: commandId,
+        body: createBody,
+      },
+      {
+        authorization: "Bearer fresh-token",
+        command: commandId,
+        body: createBody,
+      },
+    ]);
+    expect(getToken.mock.calls).toEqual([[], [{ skipCache: true }]]);
+  });
+
+  it("stops after one refreshed token is rejected", async () => {
+    const fetchMock = jest.fn(async () => problemResponse("AUTH_INVALID", 401));
+    const getToken = jest.fn(async () => "revoked-token");
+    await expect(
+      apiWith(fetchMock, getToken).getTrip(deviceId, tripId),
+    ).rejects.toMatchObject({ code: "AUTH_INVALID", serverStatus: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(getToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps refresh network failures retryable instead of treating them as signed out", async () => {
+    const fetchMock = jest.fn(async () => problemResponse("AUTH_INVALID", 401));
+    const getToken = jest.fn(async (options?: { skipCache: boolean }) => {
+      if (options?.skipCache) throw new Error("offline");
+      return "expired-token";
+    });
+    await expect(
+      apiWith(fetchMock, getToken).getTrip(deviceId, tripId),
+    ).rejects.toBeInstanceOf(CrewRollTransportProblem);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh for non-authentication failures", async () => {
+    const fetchMock = jest.fn(async () => problemResponse("NOT_FOUND", 404));
+    const getToken = jest.fn(async () => "valid-token");
+    await expect(
+      apiWith(fetchMock, getToken).getTrip(deviceId, tripId),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares an outstanding refresh across concurrent expired requests", async () => {
+    let finishRefresh!: (token: string) => void;
+    const freshToken = new Promise<string>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const getToken = jest.fn(async (options?: { skipCache: boolean }) =>
+      options?.skipCache ? freshToken : "expired-token",
+    );
+    const fetchMock = jest.fn(async (request: Request) =>
+      request.headers.get("Authorization") === "Bearer expired-token"
+        ? problemResponse("AUTH_INVALID", 401)
+        : response(tripResponse, 200),
+    );
+    const api = apiWith(fetchMock, getToken);
+    const requests = Promise.all([
+      api.getTrip(deviceId, tripId),
+      api.getTrip(deviceId, tripId),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      getToken.mock.calls.filter(([options]) => options?.skipCache),
+    ).toHaveLength(1);
+    finishRefresh("fresh-token");
+    await expect(requests).resolves.toEqual([tripResponse, tripResponse]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not share a pending refresh with a different session token", async () => {
+    const completions: ((token: string) => void)[] = [];
+    let session = 0;
+    const getToken = jest.fn(async (options?: { skipCache: boolean }) => {
+      if (!options?.skipCache) return `expired-session-${++session}`;
+      return new Promise<string>((resolve) => completions.push(resolve));
+    });
+    const fetchMock = jest.fn(async (request: Request) =>
+      request.headers.get("Authorization")?.includes("expired-session")
+        ? problemResponse("AUTH_INVALID", 401)
+        : response(tripResponse, 200),
+    );
+    const api = apiWith(fetchMock, getToken);
+    const requests = Promise.all([
+      api.getTrip(deviceId, tripId),
+      api.getTrip(deviceId, tripId),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completions).toHaveLength(2);
+    completions.forEach((complete, index) =>
+      complete(`fresh-session-${index}`),
+    );
+    await expect(requests).resolves.toEqual([tripResponse, tripResponse]);
+  });
+
   it("uses the exact authoritative readiness request contract", async () => {
     const fetchMock = jest.fn(async () => response(tripResponse, 200));
     const api = apiWith(fetchMock);

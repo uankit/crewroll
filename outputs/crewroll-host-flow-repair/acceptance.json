@@ -1,0 +1,60 @@
+{
+  "date": "2026-09-16",
+  "emulator": "CrewRoll_Startup_20260910",
+  "androidApi": 36,
+  "androidUsers": {
+    "host": 11,
+    "guest": 12
+  },
+  "trip": "Coastal test trip",
+  "hostName": "Ankit",
+  "guestName": "Maya",
+  "endLocal": "2026-09-18T18:00:00+05:30",
+  "flow": [
+    "email verification",
+    "profile name",
+    "recover previous failed create",
+    "create with independent end date and time",
+    "photo access explanation",
+    "Android full permission",
+    "invite code and copy",
+    "guest lookup with server host and member names",
+    "join request",
+    "host approval",
+    "guest photo access",
+    "host starts",
+    "stock-camera photo saved on host",
+    "matching original saved on guest",
+    "guest cold launch retains account, trip and original"
+  ],
+  "checks": {
+    "jestSuites": 8,
+    "jestTestsPassed": 167,
+    "appTypeScript": "passed",
+    "scopedEslint": "passed",
+    "figmaPrototypeDestinations": 31,
+    "figmaMissingDestinations": 0
+  },
+  "photos": [
+    {
+      "role": "host",
+      "androidUser": 11,
+      "mediaStoreId": 18,
+      "bytes": 37820,
+      "sha256": "609d033eee7fe5f1e5e761e897320a1e7b991b89f1762296dac1125067b4f002"
+    },
+    {
+      "role": "guest",
+      "androidUser": 12,
+      "mediaStoreId": 19,
+      "bytes": 37820,
+      "sha256": "609d033eee7fe5f1e5e761e897320a1e7b991b89f1762296dac1125067b4f002"
+    }
+  ],
+  "limits": [
+    "Android emulator only; no physical-phone acceptance",
+    "Google/Apple provider sign-in not exercised",
+    "New social-profile fields and server-side model/OS storage are recommendations, not implemented",
+    "Scheduled starts and optional end date remain out of this repair"
+  ]
+}

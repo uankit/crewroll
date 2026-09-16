@@ -1,7 +1,7 @@
 import type { DeviceResponse, RegisterDeviceBody } from "@crewroll/contracts";
 
 export interface SessionTokenSource {
-  getToken(): Promise<string>;
+  getToken(options?: Readonly<{ skipCache: boolean }>): Promise<string>;
 }
 
 export interface DeviceRegistrationPort {

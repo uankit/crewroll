@@ -1,0 +1,16 @@
+[
+  {
+    "role": "host",
+    "androidUser": 11,
+    "mediaStoreId": 18,
+    "bytes": 37820,
+    "sha256": "609d033eee7fe5f1e5e761e897320a1e7b991b89f1762296dac1125067b4f002"
+  },
+  {
+    "role": "guest",
+    "androidUser": 12,
+    "mediaStoreId": 19,
+    "bytes": 37820,
+    "sha256": "609d033eee7fe5f1e5e761e897320a1e7b991b89f1762296dac1125067b4f002"
+  }
+]

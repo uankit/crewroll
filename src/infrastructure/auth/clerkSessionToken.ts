@@ -1,20 +1,34 @@
 import type { SessionTokenSource } from "../../application/auth/ports";
 import { CrewRollApiProblem } from "../../application/problems/crewRollApiProblem";
 
-export type ClerkGetToken = () => Promise<string | null>;
+export type ClerkGetToken = (
+  options?: Readonly<{ skipCache: boolean }>,
+) => Promise<string | null>;
+
+export class SessionTokenUnavailableError extends Error {
+  readonly kind = "TRANSPORT_UNAVAILABLE";
+
+  constructor() {
+    super("SESSION_TOKEN_UNAVAILABLE");
+    this.name = "SessionTokenUnavailableError";
+  }
+}
 
 export class ClerkSessionTokenSource implements SessionTokenSource {
   constructor(private readonly clerkGetToken: ClerkGetToken) {}
 
-  async getToken(): Promise<string> {
+  async getToken(options?: Readonly<{ skipCache: boolean }>): Promise<string> {
+    let token: string | null;
     try {
-      const token = await this.clerkGetToken();
-      if (token === null || token.trim().length === 0) {
-        throw new CrewRollApiProblem("AUTH_REQUIRED");
-      }
-      return token;
+      token = options
+        ? await this.clerkGetToken(options)
+        : await this.clerkGetToken();
     } catch {
-      throw new CrewRollApiProblem("AUTH_REQUIRED");
+      // Offline/refresh failures do not prove the account has signed out.
+      throw new SessionTokenUnavailableError();
     }
+    if (token === null || token.trim().length === 0)
+      throw new CrewRollApiProblem("AUTH_REQUIRED");
+    return token;
   }
 }

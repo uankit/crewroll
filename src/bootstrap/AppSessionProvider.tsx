@@ -17,7 +17,10 @@ import { AppState, type AppStateStatus } from "react-native";
 
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
-import type { CreateImmediateTripInput } from "../application/trips/CreateImmediateTrip";
+import {
+  CreateTripTerminalProblem,
+  type CreateImmediateTripInput,
+} from "../application/trips/CreateImmediateTrip";
 import type { JoinTripResult } from "../application/trips/JoinTrip";
 import type {
   TripRecoveryRecord,
@@ -56,7 +59,8 @@ export type AppSessionSnapshot =
       phase: "RECOVERABLE_FAILURE";
       publicErrorCode: AppSessionPublicErrorCode;
     }>
-  | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_NO_TRIP" }>)
+  | (ReadyDeviceSnapshot &
+      Readonly<{ phase: "READY_NO_TRIP"; creationFailed?: true }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_CREATE" }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_JOIN" }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_PENDING_APPROVAL" }>)
@@ -919,7 +923,21 @@ export function AppSessionProvider({
               phase: "READY_UNKNOWN_CREATE",
               deviceId: device.deviceId,
             });
-            const result = await services.reconcileUnknownCreate();
+            let result: TripView | "STILL_UNKNOWN";
+            try {
+              result = await services.reconcileUnknownCreate();
+            } catch (error) {
+              if (!isCurrent()) return;
+              if (!(error instanceof CreateTripTerminalProblem)) throw error;
+              // The server confirmed no trip was committed and the workflow
+              // cleared its provisional key/journal. The device is still ready.
+              setSnapshot({
+                phase: "READY_NO_TRIP",
+                deviceId: device.deviceId,
+                creationFailed: true,
+              });
+              return;
+            }
             if (!isCurrent()) return;
             if (result === "STILL_UNKNOWN") {
               setSnapshot({

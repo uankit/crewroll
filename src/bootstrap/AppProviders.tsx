@@ -23,7 +23,10 @@ import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvi
 import { BrandLoading, Screen } from "../design-system";
 import { ProfileScreen } from "../features/auth/ProfileScreen";
 import { useProfileCompletion } from "../infrastructure/auth/useProfileCompletion";
-import { ClerkSessionTokenSource } from "../infrastructure/auth/clerkSessionToken";
+import {
+  ClerkSessionTokenSource,
+  type ClerkGetToken,
+} from "../infrastructure/auth/clerkSessionToken";
 import { ExpoPhotoLibraryPermission } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ExpoRandomBytesPort } from "../infrastructure/random/expoRandomBytes";
@@ -53,11 +56,10 @@ function publicEnv(): PublicEnv {
   });
 }
 
-function createProductionComposition(
-  env: PublicEnv,
-  getToken: () => Promise<string | null>,
-) {
-  const sessionTokenSource = new ClerkSessionTokenSource(() => getToken());
+function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
+  const sessionTokenSource = new ClerkSessionTokenSource((options) =>
+    options ? getToken(options) : getToken(),
+  );
   const mobileDependencies = createMobileDependencies({
     apiBaseUrl: env.apiUrl,
     fetch: globalThis.fetch,

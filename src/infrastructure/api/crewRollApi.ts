@@ -480,16 +480,41 @@ export function createCrewRollApi(
     sessionTokenSource: SessionTokenSource;
   }>,
 ): CrewRollApi {
+  const refreshingTokens = new Map<string, Promise<string>>();
+  const refreshToken = (rejectedToken: string): Promise<string> => {
+    const pending = refreshingTokens.get(rejectedToken);
+    if (pending) return pending;
+    // A different session must not inherit another account's pending refresh.
+    const refresh = input.sessionTokenSource
+      .getToken({ skipCache: true })
+      .finally(() => refreshingTokens.delete(rejectedToken));
+    refreshingTokens.set(rejectedToken, refresh);
+    return refresh;
+  };
   const client = createClient<MobilePaths>({
     baseUrl: input.apiBaseUrl,
-    fetch: input.fetch,
-  });
-  client.use({
-    onRequest: async ({ request }) => {
+    fetch: async (originalRequest) => {
+      const request = new Request(originalRequest);
       const token = await input.sessionTokenSource.getToken();
       if (!token.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
       request.headers.set("Authorization", `Bearer ${token}`);
-      return request;
+      // Preserve the body and idempotency key before fetch consumes the request.
+      const retry = request.clone();
+      const response = await input.fetch(request);
+      if (response.status !== 401) return response;
+      let problem: CrewRollApiProblem;
+      try {
+        problem = problemFrom(await response.clone().json(), response.status);
+      } catch {
+        return response;
+      }
+      if (problem.code !== "AUTH_INVALID" && problem.code !== "AUTH_REQUIRED")
+        return response;
+      const freshToken = await refreshToken(token);
+      if (!freshToken.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
+      retry.headers.set("Authorization", `Bearer ${freshToken}`);
+      // A rejected fresh token is returned to normal auth handling; never loop.
+      return input.fetch(retry);
     },
   });
 

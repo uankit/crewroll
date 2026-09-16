@@ -41,7 +41,15 @@ export default function ProtectedHomeRoute() {
         />
       );
     case "READY_NO_TRIP":
-      return <HomeScreen {...actions} />;
+      return (
+        <HomeScreen
+          {...actions}
+          state={{
+            kind: "no-trip",
+            creationFailed: snapshot.creationFailed ?? false,
+          }}
+        />
+      );
     case "LOADING_FONTS_OR_CLERK":
     case "SIGNED_OUT":
     case "PROVISIONING_DEVICE":

@@ -26,6 +26,7 @@ export function WelcomeScreen({
   return (
     <FlowScreen
       testID="welcome-screen"
+      centerContent
       header={<CrewRollWordmark />}
       footer={
         <>

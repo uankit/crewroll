@@ -83,7 +83,7 @@ function CreateTripForm({
       testID="create-trip-screen"
       label="Create trip"
       title="Name your trip."
-      description="Give it a name and choose the dates."
+      description="Start when you’re ready. Choose when sharing ends."
       {...(submitting ? {} : { onBack: onCancel })}
       footer={
         <>

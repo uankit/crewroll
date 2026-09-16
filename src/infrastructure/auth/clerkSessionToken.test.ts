@@ -1,6 +1,9 @@
 import { CrewRollApiProblem } from "../../application/problems/crewRollApiProblem";
 
-import { ClerkSessionTokenSource } from "./clerkSessionToken";
+import {
+  ClerkSessionTokenSource,
+  SessionTokenUnavailableError,
+} from "./clerkSessionToken";
 
 describe("ClerkSessionTokenSource", () => {
   it("requests the ordinary Clerk session token with no options", async () => {
@@ -26,6 +29,14 @@ describe("ClerkSessionTokenSource", () => {
     },
   );
 
+  it("bypasses Clerk's cached token when the API rejects it", async () => {
+    const getToken = jest.fn(async () => "fresh-session-token");
+    await expect(
+      new ClerkSessionTokenSource(getToken).getToken({ skipCache: true }),
+    ).resolves.toBe("fresh-session-token");
+    expect(getToken).toHaveBeenCalledWith({ skipCache: true });
+  });
+
   it("does not expose provider errors or attach them as a cause", async () => {
     const providerError = new Error("provider secret detail");
     const getToken = jest.fn<Promise<string | null>, []>();
@@ -38,7 +49,7 @@ describe("ClerkSessionTokenSource", () => {
       rejection = error;
     }
 
-    expect(rejection).toEqual(new CrewRollApiProblem("AUTH_REQUIRED"));
+    expect(rejection).toEqual(new SessionTokenUnavailableError());
     expect(rejection).not.toBe(providerError);
     expect(rejection).not.toHaveProperty("cause");
     expect(String(rejection)).not.toContain("provider secret detail");

@@ -491,7 +491,7 @@ describe("TripEndField", () => {
     );
   });
 
-  test("shows a localized date range with one accessible field", async () => {
+  test("shows separate localized end date and time fields", async () => {
     setPlatform("android");
     const value = new Date(2026, 8, 2, 17, 30);
     const screen = await render(
@@ -502,7 +502,8 @@ describe("TripEndField", () => {
         value={value}
       />,
     );
-    screen.getByRole("button", { name: /^Trip dates\. Ends/ });
+    screen.getByRole("button", { name: /^End date\./ });
+    screen.getByRole("button", { name: /^End time\./ });
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
   });
 
@@ -514,9 +515,7 @@ describe("TripEndField", () => {
       <TripEndField now={fixedNow} onChange={onChange} value={value} />,
     );
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     const datePicker = screen.getByTestId("mock-native-date-picker");
     screen.getByTestId("trip-end-date-picker");
     expect(datePicker.props).toEqual(
@@ -532,9 +531,7 @@ describe("TripEndField", () => {
     await fireEvent(datePicker, "dismiss");
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     await fireEvent(
       screen.getByTestId("mock-native-date-picker"),
       "valueChange",
@@ -563,9 +560,7 @@ describe("TripEndField", () => {
       <TripEndField now={now} onChange={onChange} value={value} />,
     );
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     const datePicker = screen.getByTestId("mock-native-date-picker");
     expect(datePicker.props.value).toEqual(new Date(Date.UTC(2026, 8, 2)));
 
@@ -591,6 +586,25 @@ describe("TripEndField", () => {
     );
   });
 
+  test("edits end time without changing the selected calendar date", async () => {
+    setPlatform("android");
+    const onChange = jest.fn();
+    const value = new Date(2026, 8, 2, 17, 30);
+    const screen = await render(
+      <TripEndField now={fixedNow} value={value} onChange={onChange} />,
+    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End time\./ }));
+    expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
+    await fireEvent(
+      screen.getByTestId("mock-native-time-picker"),
+      "valueChange",
+      { nativeEvent: { timestamp: 0, utcOffset: 0 } },
+      new Date(2026, 8, 1, 19, 45),
+    );
+    expect(onChange).toHaveBeenCalledWith(new Date(2026, 8, 2, 19, 45));
+    expect(screen.queryByTestId("mock-native-time-picker")).toBeNull();
+  });
+
   test("never mounts an Android dialog while disabled", async () => {
     setPlatform("android");
     const screen = await render(
@@ -602,7 +616,7 @@ describe("TripEndField", () => {
       />,
     );
 
-    const date = screen.getByRole("button", { name: /^Trip dates\./ });
+    const date = screen.getByRole("button", { name: /^End date\./ });
     expect(date.props.accessibilityState).toEqual(
       expect.objectContaining({ disabled: true }),
     );
@@ -619,9 +633,7 @@ describe("TripEndField", () => {
       <TripEndField now={fixedNow} onChange={onChange} value={value} />,
     );
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     screen.getByTestId("mock-native-date-picker");
     await screen.rerender(
       <TripEndField
@@ -648,9 +660,7 @@ describe("TripEndField", () => {
         value={createDefaultTripEnd(fixedNow)}
       />,
     );
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     expect(screen.queryByTestId("mock-native-date-picker")).toBeNull();
   });
 
@@ -671,9 +681,7 @@ describe("TripEndField", () => {
     const screen = await render(
       <TripEndField now={now} onChange={onChange} value={value} />,
     );
-    await fireEvent.press(
-      screen.getByRole("button", { name: /^Trip dates\./ }),
-    );
+    await fireEvent.press(screen.getByRole("button", { name: /^End date\./ }));
     const datePicker = screen.getByTestId("mock-native-date-picker");
 
     expect(datePicker.props.value).toBe(value);
@@ -717,7 +725,7 @@ describe("CreateTripScreen", () => {
   test("uses the default window and takes the user directly to photo access next", async () => {
     const screen = await renderCreate({ locale: "en-GB" });
     screen.getByRole("header", { name: "Name your trip." });
-    screen.getByRole("button", { name: /^Trip dates\. Ends/ });
+    screen.getByRole("button", { name: /^End date\./ });
     screen.getByText("Photo access comes next.");
     expect(screen.queryByText("Trip created")).toBeNull();
   });

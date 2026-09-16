@@ -14,7 +14,7 @@ import {
 } from "../../design-system";
 
 export type HomeScreenState =
-  | Readonly<{ kind: "no-trip" }>
+  | Readonly<{ kind: "no-trip"; creationFailed?: boolean }>
   | Readonly<{ kind: "loading" }>
   | Readonly<{ kind: "failed"; onRetry: () => void; retrying?: boolean }>
   | Readonly<{
@@ -165,7 +165,11 @@ export function HomeScreen({
       header={<CrewRollWordmark />}
       title="Start your first trip."
       centerContent
-      description="Create one, or join your crew with a code."
+      description={
+        state.creationFailed
+          ? "Your trip wasn’t created. Give it another try."
+          : "Create one, or join your crew with a code."
+      }
       footer={
         <>
           <Button label="Start a trip" onPress={onCreateTrip} />

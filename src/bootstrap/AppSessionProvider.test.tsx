@@ -9,6 +9,7 @@ import { CrewRollApiProblem } from "../application/problems/crewRollApiProblem";
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
 import type { JoinTripResult } from "../application/trips/JoinTrip";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
+import { CreateTripTerminalProblem } from "../application/trips/CreateImmediateTrip";
 import type {
   TripRecoveryRecord,
   TripRecoveryScope,
@@ -388,6 +389,40 @@ describe("AppSessionProvider", () => {
     expect(reconcileUnknownCreate).toHaveBeenCalledTimes(1);
     expect(scoped.replayUnknownJoin).not.toHaveBeenCalled();
     expect(scoped.hydrateTrip).not.toHaveBeenCalled();
+  });
+
+  it("returns a confirmed failed create to home without reconnecting or signing out", async () => {
+    const onAuthInvalid = jest.fn();
+    const { runtime, scoped } = createRuntime({
+      recovery: {
+        state: "UNKNOWN_CREATE",
+        tripId,
+        commandId: "40000000-0000-4000-8000-000000000001",
+        ownerInviteCode: "ABCD2345",
+      },
+      reconcileCreate: async () => {
+        throw new CreateTripTerminalProblem();
+      },
+    });
+    await render(
+      <Harness auth={signedIn} runtime={runtime} onAuthInvalid={onAuthInvalid}>
+        <SnapshotProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(screen.getByTestId("snapshot-probe").props.children).snapshot
+          .phase,
+      ).toBe("READY_NO_TRIP"),
+    );
+    expect(
+      JSON.parse(screen.getByTestId("snapshot-probe").props.children).snapshot
+        .creationFailed,
+    ).toBe(true);
+    expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(scoped.reconcileUnknownCreate).toBeDefined();
+    expect(scoped.hydrateTrip).not.toHaveBeenCalled();
+    expect(onAuthInvalid).not.toHaveBeenCalled();
   });
 
   it("restores a pending join without fetching the approval-gated trip projection", async () => {

@@ -86,7 +86,7 @@ export function AccountScreen({
               pointerEvents="none"
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
-              style={styles.digits}
+              style={[styles.digits, { backgroundColor: theme.background }]}
             >
               {Array.from({ length: 6 }, (_, i) => (
                 <View
@@ -240,6 +240,7 @@ const styles = StyleSheet.create({
   },
   code: { height: 64 },
   digits: {
+    zIndex: 1,
     flexDirection: "row",
     gap: onboardingGeometry.codeGap,
     width: "100%",
@@ -252,6 +253,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  codeInput: { fontSize: 24 },
+  // Keep the real input tappable and accessible below the opaque digit row.
+  // Android IME composing spans can ignore a transparent text color.
+  codeInput: { fontSize: 24, zIndex: 0 },
   resend: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
 });
