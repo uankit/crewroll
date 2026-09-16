@@ -294,6 +294,31 @@
       "condition": "Only when the signed-in account has no usable display name",
       "verifiedNavigationEdges": 3,
       "invalidDestinations": 0
+    },
+    "galleryRefinement": {
+      "date": "2026-09-16",
+      "frame": "31:220",
+      "brandLockup": "102:174",
+      "photoGrid": "31:284",
+      "photoNodes": [
+        "103:179",
+        "103:180",
+        "103:181",
+        "103:182",
+        "103:183",
+        "103:184"
+      ],
+      "nativeColumns": {
+        "compact": 2,
+        "standard": 3,
+        "wide": 4
+      },
+      "gap": 8,
+      "cornerRadius": 12,
+      "captionsRemoved": true,
+      "savedCountFooterRemoved": true,
+      "qaReport": "design-qa.md",
+      "qaResult": "passed"
     }
   }
 }

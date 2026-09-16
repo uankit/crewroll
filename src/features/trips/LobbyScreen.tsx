@@ -5,6 +5,7 @@ import { startBlockerFor } from "../../domain/trips/startEligibility";
 import {
   AppText,
   Button,
+  CrewRollWordmark,
   FlowScreen,
   MemberAvatar,
   Sheet,
@@ -158,6 +159,7 @@ export function LobbyScreen({
     <>
       <FlowScreen
         testID="lobby-screen"
+        compact={!lobby}
         centerContent={lobby}
         fillContent={!lobby && !hasPhotos}
         topContent={
@@ -192,7 +194,16 @@ export function LobbyScreen({
               >{`1 host · ${joined} joined`}</AppText>
             ) : (
               <Button
-                variant="text"
+                variant={lobby ? "text" : "secondary"}
+                style={
+                  !lobby
+                    ? {
+                        backgroundColor: theme.accentSurface,
+                        borderWidth: 0,
+                        minHeight: 48,
+                      }
+                    : undefined
+                }
                 label={filterCount ? `Filters · ${filterCount}` : "Filters"}
                 onPress={onOpenFilters ?? (() => {})}
                 disabled={!onOpenFilters}
@@ -208,7 +219,7 @@ export function LobbyScreen({
             : {})}
         header={
           <View style={styles.navigation}>
-            <View />
+            {!lobby ? <CrewRollWordmark /> : <View />}
             {owner && lobby && invite ? (
               <Pressable
                 accessibilityRole="button"
@@ -362,6 +373,8 @@ const styles = StyleSheet.create({
   navigation: {
     minHeight: 48,
     flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
     alignItems: "center",
     justifyContent: "space-between",
   },

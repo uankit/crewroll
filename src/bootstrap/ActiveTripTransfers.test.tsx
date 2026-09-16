@@ -85,8 +85,8 @@ it("renders a native preview while the original is pending and limits each page"
   });
   const view = await screen();
   expect(await view.findByTestId("trip-photo-gallery")).toBeTruthy();
-  expect(view.getByText("Saving original…")).toBeTruthy();
-  expect(view.getByText("2 originals saved on this phone")).toBeTruthy();
+  expect(view.queryByText("Saving original…")).toBeNull();
+  expect(view.queryByTestId("active-photo-progress")).toBeNull();
   expect(crewRollTransfer.listAssets).toHaveBeenCalledWith({
     protocolVersion: 1,
     cursor: null,

@@ -321,18 +321,6 @@ export function ActiveTripTransfers({
             />
           </Stack>
         ) : null}
-        {photos.length > 0 ? (
-          <AppText
-            testID="active-photo-progress"
-            accessibilityLiveRegion="polite"
-            variant="caption"
-            tone="secondary"
-          >
-            {snapshot.counts.originalsSaved}{" "}
-            {snapshot.counts.originalsSaved === 1 ? "original" : "originals"}{" "}
-            saved on this phone
-          </AppText>
-        ) : null}
         {cursor !== null ? (
           <Button
             label="First photos"

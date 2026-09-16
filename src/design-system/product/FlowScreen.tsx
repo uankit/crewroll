@@ -19,6 +19,7 @@ export function FlowScreen({
   testID,
   centerContent = false,
   fillContent = false,
+  compact = false,
 }: Readonly<{
   children?: ReactNode;
   footer?: ReactNode;
@@ -31,13 +32,18 @@ export function FlowScreen({
   testID?: string;
   centerContent?: boolean;
   fillContent?: boolean;
+  compact?: boolean;
 }>) {
   const theme = useCrewRollTheme();
   const { width } = useWindowDimensions();
   return (
     <Screen {...(testID ? { testID } : {})} contentStyle={styles.content}>
       <View
-        style={[styles.main, (centerContent || fillContent) && styles.grow]}
+        style={[
+          styles.main,
+          compact && styles.compact,
+          (centerContent || fillContent) && styles.grow,
+        ]}
       >
         {header ??
           (onBack || label ? (
@@ -103,6 +109,7 @@ const styles = StyleSheet.create({
     gap: spacing.xl,
   },
   main: { gap: spacing.lg, width: "100%" },
+  compact: { gap: spacing.md },
   grow: { flexGrow: 1 },
   filled: { flex: 1, width: "100%", minHeight: 300 },
   centered: {

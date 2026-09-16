@@ -1,6 +1,12 @@
 import { memo, useState } from "react";
 import { Image } from "expo-image";
-import { Modal, Pressable, StyleSheet, View } from "react-native";
+import {
+  Modal,
+  Pressable,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AppText, Button, Screen, Stack } from "../primitives";
 import { radius } from "../tokens/radius";
@@ -16,9 +22,11 @@ export type TripPhoto = Readonly<{
 const Photo = memo(function Photo({
   photo,
   onOpen,
+  size,
 }: Readonly<{
   photo: TripPhoto;
   onOpen: (id: string) => void;
+  size: number;
 }>) {
   const colors = useCrewRollTheme();
   const uri = photo.previewUri?.startsWith("file:///")
@@ -33,7 +41,7 @@ const Photo = memo(function Photo({
       }
       disabled={uri === null}
       onPress={() => onOpen(photo.id)}
-      style={styles.tile}
+      style={[styles.tile, { width: size }]}
     >
       <View style={[styles.preview, { backgroundColor: colors.surfaceMuted }]}>
         {uri ? (
@@ -49,9 +57,6 @@ const Photo = memo(function Photo({
           <AppText tone="secondary">Getting preview…</AppText>
         )}
       </View>
-      <AppText tone="secondary" variant="caption">
-        {photo.status}
-      </AppText>
     </Pressable>
   );
 });
@@ -67,6 +72,11 @@ export function TripPhotoGallery({
   emptyState?: "ready" | "waiting";
 }>) {
   const [selected, setSelected] = useState<string | null>(null);
+  const { width } = useWindowDimensions();
+  const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+  const gridWidth = measuredWidth ?? Math.min(width, 520) - spacing.gutter * 2;
+  const columns = gridWidth >= 440 ? 4 : gridWidth >= 340 ? 3 : 2;
+  const tileSize = (gridWidth - spacing.xs * (columns - 1)) / columns;
   const colors = useCrewRollTheme();
   const selectedPhoto = photos.find((photo) => photo.id === selected);
   const uri = selectedPhoto?.previewUri?.startsWith("file:///")
@@ -77,6 +87,10 @@ export function TripPhotoGallery({
       <View
         style={[styles.grid, fillEmpty && photos.length === 0 && styles.fill]}
         testID="trip-photo-gallery"
+        onLayout={(event) => {
+          const nextWidth = event.nativeEvent.layout.width;
+          if (nextWidth > 0) setMeasuredWidth(nextWidth);
+        }}
       >
         {photos.length === 0 ? (
           <View style={[styles.emptyArea, fillEmpty && styles.fill]}>
@@ -114,7 +128,12 @@ export function TripPhotoGallery({
           </View>
         ) : null}
         {photos.map((photo) => (
-          <Photo key={photo.id} photo={photo} onOpen={setSelected} />
+          <Photo
+            key={photo.id}
+            photo={photo}
+            onOpen={setSelected}
+            size={tileSize}
+          />
         ))}
       </View>
       <Modal
@@ -153,8 +172,8 @@ export function TripPhotoGallery({
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  tile: { width: "48%", gap: spacing.xs },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  tile: { aspectRatio: 1 },
   emptyArea: { width: "100%", justifyContent: "center" },
   emptyCard: {
     padding: spacing.lg,
@@ -176,7 +195,7 @@ const styles = StyleSheet.create({
   hint: { maxWidth: 280, textAlign: "center" },
   preview: {
     aspectRatio: 1,
-    borderRadius: radius.md,
+    borderRadius: radius.sm,
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
