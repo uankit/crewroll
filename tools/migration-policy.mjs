@@ -227,11 +227,20 @@ function validateCallbackParameter(
 }
 
 function validateAlterTableAddColumn(alteration, context, opaqueCode) {
+  // Additive nullable timestamps cannot rewrite existing rows. Keep the
+  // accepted grammar literal and narrow, just like the existing boolean form.
+  if (
+    alteration.args.length === 2 &&
+    isDirectString(alteration.args[0]) &&
+    isDirectString(alteration.args[1]) &&
+    alteration.args[1].text === "timestamptz"
+  )
+    return null;
   if (
     alteration.args.length !== 3 ||
     !isDirectString(alteration.args[0]) ||
     !isDirectString(alteration.args[1]) ||
-    alteration.args[1].text !== "boolean"
+    !["boolean", "jsonb"].includes(alteration.args[1].text)
   ) {
     return { code: opaqueCode, node: alteration.node };
   }
@@ -260,7 +269,11 @@ function validateAlterTableAddColumn(alteration, context, opaqueCode) {
     notNull.hasTypeArgumentList ||
     defaultTo.name !== "defaultTo" ||
     defaultTo.args.length !== 1 ||
-    defaultTo.args[0].kind !== ts.SyntaxKind.FalseKeyword ||
+    !(alteration.args[1].text === "boolean"
+      ? defaultTo.args[0].kind === ts.SyntaxKind.FalseKeyword
+      : isBoundedSql(defaultTo.args[0], context) &&
+        ts.isNoSubstitutionTemplateLiteral(defaultTo.args[0].template) &&
+        defaultTo.args[0].template.text === "'[]'::jsonb") ||
     defaultTo.hasTypeArgumentList
   ) {
     return { code: opaqueCode, node: callback.body };

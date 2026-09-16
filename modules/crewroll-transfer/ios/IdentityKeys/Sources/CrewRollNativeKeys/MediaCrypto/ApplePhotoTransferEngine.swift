@@ -128,6 +128,11 @@ public actor ApplePhotoTransferEngine {
             globalBlocker = nil
             // Receivers go first so one large outgoing photo doesn't starve
             // already-available originals from the other trip members.
+            let policyData = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/transfer-state", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
+            try assertCurrent(context, epoch)
+            let policy = try JSONDecoder().decode(NativeCapturePolicy.self, from: policyData)
+            guard policy.tripId == context.metadata.tripID else { throw NativeKeyError.invalidEnvelope }
+            if policy.left { return }
             let pageData = try await network.json(path: "/v1/deliveries/pending", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
             try assertCurrent(context, epoch)
             let page = try JSONDecoder().decode(PendingPhotoPage.self, from: pageData)
@@ -383,12 +388,22 @@ public actor ApplePhotoTransferEngine {
             previewTransport = network
             defer { network.cancel(); previewTransport = nil }
             try assertCurrent(context, epoch)
+            let policyData = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/transfer-state", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
+            try assertCurrent(context, epoch)
+            let policy = try JSONDecoder().decode(NativeCapturePolicy.self, from: policyData)
             let existing = ledger.snapshot().works
-            let excluded = Set(existing.flatMap { [$0.sourceLocalID, $0.savedLocalID].compactMap { $0 } })
+            var excluded = Set(existing.flatMap { [$0.sourceLocalID, $0.savedLocalID].compactMap { $0 } })
             guard let startsAt = date(context.metadata.startsAt), let endsAt = date(context.metadata.endsAt) else { throw NativeKeyError.invalidState }
-            for photo in try library.discover(startsAt: startsAt, endsAt: endsAt, excluding: excluded, limit: 4) {
-                let id = UUID().uuidString.lowercased()
-                try ledger.put(NativePhotoWork(workID: id, assetID: id, tripID: context.metadata.tripID, capturedAt: photo.capturedAt, sourceLocalID: photo.localID, deliveryID: nil))
+            let windows = try policy.windows(tripID: context.metadata.tripID, start: startsAt, end: endsAt)
+            if policy.left { previewBlocker = nil; return }
+            var discovered = 0
+            for (start, end) in windows {
+                if discovered >= 4 { break }
+                for photo in try library.discover(startsAt: start, endsAt: end, excluding: excluded, limit: 4 - discovered) {
+                    let id = UUID().uuidString.lowercased()
+                    try ledger.put(NativePhotoWork(workID: id, assetID: id, tripID: context.metadata.tripID, capturedAt: photo.capturedAt, sourceLocalID: photo.localID, deliveryID: nil))
+                    excluded.insert(photo.localID); discovered += 1
+                }
             }
             previewBlocker = nil
             let outgoing = ledger.snapshot().works.filter { $0.tripID == context.metadata.tripID && $0.sourceLocalID != nil && !$0.complete && $0.ignored != true && $0.previewPublished != true && $0.blocker == nil }.sorted { $0.capturedAt < $1.capturedAt }
@@ -399,6 +414,24 @@ public actor ApplePhotoTransferEngine {
                     Task { await self.wake() }
                 } catch {
                     try assertCurrent(context, epoch)
+                    // Reconcile captures discovered just before a pause/departure
+                    // response. Never treat a rejected private capture as saved.
+                    if let failure = error as? NativeTransferHTTPError, failure.status == 409,
+                       ledger.record(work.workID)?.etags.isEmpty == true {
+                        let bytes = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/transfer-state", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
+                        try assertCurrent(context, epoch)
+                        let fresh = try JSONDecoder().decode(NativeCapturePolicy.self, from: bytes)
+                        let windows = try fresh.windows(tripID: context.metadata.tripID, start: startsAt, end: endsAt)
+                        if !fresh.left && !windows.contains(where: { work.capturedAt >= $0.0 && work.capturedAt <= $0.1 }),
+                           var skipped = ledger.record(work.workID) {
+                            if let directory = skipped.directory {
+                                try FileManager.default.removeItem(at: ledger.directory.appendingPathComponent(directory))
+                            }
+                            skipped.directory = nil; skipped.ignored = true; skipped.complete = true; skipped.blocker = nil
+                            try ledger.put(skipped)
+                            continue
+                        }
+                    }
                     if var failed = ledger.record(work.workID), let code = blocker(error) { failed.blocker = code; try ledger.put(failed) }
                 }
             }
@@ -442,6 +475,11 @@ public actor ApplePhotoTransferEngine {
                     try assertCurrent(context, epoch)
                     if var failed = cache.record(record.assetID), let code = blocker(error) { failed.blocker = code; try cache.put(failed) }
                 }
+            }
+            if policy.leaving && discovered == 0 && !ledger.snapshot().works.contains(where: { $0.tripID == context.metadata.tripID && $0.sourceLocalID != nil && !$0.complete && $0.ignored != true }) {
+                try assertCurrent(context, epoch)
+                _ = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/drained", method: "POST", body: JSONSerialization.data(withJSONObject: ["observedVersion": policy.version]), context: context, commandID: UUID().uuidString)
+                try assertCurrent(context, epoch)
             }
         } catch { if generation == epoch { previewBlocker = blocker(error) } }
     }

@@ -1,3 +1,4 @@
+import { createKyselyTripLifecycle } from "../db/trips/kyselyTripLifecycle.js";
 import { buildApp } from "../app/buildApp.js";
 import { loadEnvironment, type Environment } from "../config/env.js";
 import { createDatabase } from "../db/database.js";
@@ -55,6 +56,11 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  tripLifecycle: (database, clock) =>
+    createKyselyTripLifecycle(
+      database as Parameters<typeof createKyselyTripLifecycle>[0],
+      clock,
+    ),
   syncProfile: createSyncProfile,
   async media({ database, environment, clock, authenticator }) {
     if (!environment.localMediaOrigin) return undefined;

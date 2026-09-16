@@ -1,3 +1,5 @@
+import { createUuidV4 } from "../domain/ids/random";
+import type { TripLifecycleBody } from "@crewroll/contracts";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -167,6 +169,31 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
       });
 
       return Object.freeze({
+        listTrips: () => mobileDependencies.tripApi.listTrips(device.deviceId),
+        getTripLifecycle: (tripId: string) =>
+          mobileDependencies.tripApi.getTripLifecycle(device.deviceId, tripId),
+        changeTripLifecycle: async (tripId: string, body: TripLifecycleBody) =>
+          mobileDependencies.tripApi.changeTripLifecycle(
+            device.deviceId,
+            await createUuidV4(random),
+            tripId,
+            body,
+          ),
+        async retireTrip(tripId: string) {
+          const snapshot = await native.getSnapshot();
+          // A projection fetched before departure must not reactivate this trip
+          // after teardown. The next scoped session captures a fresh fence.
+          nativeSessions.invalidate();
+          const retirementNative = nativeSessions.capture();
+          if (snapshot.activeTripId === tripId)
+            await retirementNative.deactivateTrip({
+              protocolVersion: 1,
+              tripId,
+            });
+          const recovery = await recoveryStore.load(scope);
+          if (recovery?.state === "CONFIRMED" && recovery.tripId === tripId)
+            await recoveryStore.clear(scope);
+        },
         async approveMember(tripId: string, membershipId: string) {
           const candidate = await mobileDependencies.tripApi.getTrip(
             device.deviceId,

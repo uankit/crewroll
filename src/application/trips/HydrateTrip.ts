@@ -116,7 +116,7 @@ export function createHydrateTrip(dependencies: HydrateTripDependencies) {
     if (!isClosedTripResponse(response) || response.id !== tripId) {
       throw internalProblem();
     }
-    if (response.status === "ACTIVE") {
+    if (response.status === "ACTIVE" || response.status === "ENDING") {
       try {
         return await activeTrip.activateObserved(response);
       } catch (error) {

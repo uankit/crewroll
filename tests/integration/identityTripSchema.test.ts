@@ -151,6 +151,7 @@ describe.sequential("identity and trip schema", () => {
       "trip_invites_uses_check",
       "trip_key_envelopes_version_check",
       "trip_key_envelopes_wrapped_key_check",
+      "trip_members_departure_order_check",
       "trip_members_lifecycle_check",
       "trip_members_lifecycle_order_check",
       "trip_members_role_check",
@@ -901,6 +902,13 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
+    await migrateDown(db);
+    const participationAfterDown = await sql<{ column_name: string }>`
+      select column_name from information_schema.columns
+      where table_schema = 'public' and table_name = 'trip_members'
+      and column_name in ('leaving_at', 'left_at', 'left_incomplete', 'sharing_paused_at', 'sharing_pauses', 'drained_at')
+    `.execute(db);
+    expect(participationAfterDown.rows).toEqual([]);
     await migrateDown(db);
 
     const readinessAfterFifthDown = await sql<{ column_name: string }>`

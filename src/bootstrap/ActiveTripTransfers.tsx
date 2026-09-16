@@ -9,7 +9,6 @@ import {
   AppText,
   BrandLoading,
   Button,
-  Sheet,
   Stack,
   TripPhotoGallery,
 } from "../design-system";
@@ -22,7 +21,6 @@ import {
 } from "../domain/trips/galleryFilters";
 
 import { createObservedRead } from "./observedRead";
-import type { TripView } from "../domain/trips/model";
 
 const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
   PHOTO_PERMISSION:
@@ -43,17 +41,11 @@ export function ActiveTripTransfers({
   onPhotoCountChange,
   filters = defaultGalleryFilters,
   onClearFilters,
-  tripInfo,
-  infoOpen = false,
-  onCloseInfo,
 }: Readonly<{
   tripId: string;
   onPhotoCountChange?: (count: number) => void;
   filters?: GalleryFilters;
   onClearFilters?: () => void;
-  tripInfo?: TripView;
-  infoOpen?: boolean;
-  onCloseInfo?: () => void;
 }>) {
   const [state, setState] = useState<Readonly<{
     snapshot: DurableEngineSnapshot;
@@ -61,7 +53,6 @@ export function ActiveTripTransfers({
   }> | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [policyFailed, setPolicyFailed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [cursor, setCursor] = useState<string | null>(null);
   const query = useMemo(() => galleryQuery(filters), [filters]);
@@ -187,84 +178,6 @@ export function ActiveTripTransfers({
   useEffect(() => {
     if (discoveredCount !== undefined) onPhotoCountChange?.(discoveredCount);
   }, [onPhotoCountChange, discoveredCount]);
-  const infoSheet =
-    tripInfo && infoOpen ? (
-      <Sheet
-        visible
-        title="Trip info"
-        showCloseButton={false}
-        onDismiss={onCloseInfo ?? (() => {})}
-      >
-        <Stack gap="xs">
-          <AppText variant="title2">{tripInfo.name}</AppText>
-          <AppText variant="label" tone="secondary">
-            Sharing until{" "}
-            {new Intl.DateTimeFormat(undefined, {
-              dateStyle: "medium",
-              timeStyle: "short",
-            }).format(new Date(tripInfo.endsAt))}
-          </AppText>
-        </Stack>
-        <Stack gap="sm">
-          <AppText variant="label" tone="secondary">
-            Crew ·{" "}
-            {tripInfo.members.filter((m) => m.status === "ACTIVE").length}{" "}
-            people
-          </AppText>
-          {tripInfo.members
-            .filter((m) => m.status === "ACTIVE")
-            .map((member) => (
-              <AppText key={member.membershipId}>
-                {member.isCurrentMember ? "You" : member.displayName}
-                {member.role === "OWNER" ? " · Host" : ""}
-              </AppText>
-            ))}
-        </Stack>
-        {snapshot?.cellularAllowed !== undefined ? (
-          <AppText variant="label" tone="secondary">
-            {snapshot.cellularAllowed
-              ? "Sharing over Wi-Fi or mobile data"
-              : "Sharing over Wi-Fi"}
-          </AppText>
-        ) : null}
-        <AppText variant="label" tone="secondary">
-          Take photos with your phone’s camera, then return here to finish
-          syncing.
-        </AppText>
-        {snapshot?.cellularAllowed !== undefined ? (
-          <Button
-            variant="text"
-            label={
-              snapshot.cellularAllowed ? "Use Wi-Fi only" : "Allow mobile data"
-            }
-            accessibilityHint="Mobile data uses your data plan."
-            loading={busy}
-            disabled={snapshot.paused}
-            onPress={() => {
-              if (busy) return;
-              setBusy(true);
-              setPolicyFailed(false);
-              void crewRollTransfer
-                .setTransferPolicy({
-                  protocolVersion: 1,
-                  paused: snapshot.paused,
-                  cellularAllowed: !snapshot.cellularAllowed,
-                })
-                .catch(() => setPolicyFailed(true))
-                .finally(() => {
-                  setBusy(false);
-                  setRefreshKey((value) => value + 1);
-                });
-            }}
-          />
-        ) : null}
-        {policyFailed ? (
-          <AppText accessibilityRole="alert" tone="critical">
-            The connection setting couldn’t change. Try again.
-          </AppText>
-        ) : null}
-      </Sheet>
-    ) : null;
   if (failed || snapshot === null)
     return (
       <>
@@ -282,7 +195,6 @@ export function ActiveTripTransfers({
             />
           ) : null}
         </Stack>
-        {infoSheet}
       </>
     );
   const blocked = snapshot.blockers.length > 0;
@@ -336,7 +248,6 @@ export function ActiveTripTransfers({
           />
         ) : null}
       </Stack>
-      {infoSheet}
     </>
   );
 }

@@ -29,7 +29,7 @@ function assertGeneratedClientContract(
 
   void client.GET(
     // @ts-expect-error Generated GET paths must reject POST-only paths.
-    "/v1/trips",
+    "/v1/trips/create-outcome",
     { params: { header: { "X-CrewRoll-Device-Id": deviceId } } },
   );
   void client.GET(

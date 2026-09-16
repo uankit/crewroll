@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import type { StartBlocker, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import {
   AppText,
   Button,
-  CrewRollWordmark,
   FlowScreen,
   MemberAvatar,
   Sheet,
@@ -51,6 +50,7 @@ export type LobbyScreenProps = Readonly<{
   filterCount?: number;
   onOpenFilters?: () => void;
   onOpenInfo?: () => void;
+  onBack?: () => void;
   activation?: LobbyActivationState;
   transferContent?: ReactNode;
   photoPermission: LobbyPhotoPermissionState;
@@ -91,6 +91,7 @@ export function LobbyScreen({
   filterCount = 0,
   onOpenFilters,
   onOpenInfo,
+  onBack,
 }: LobbyScreenProps) {
   const theme = useCrewRollTheme();
   const [deferred, setDeferred] = useState(false);
@@ -132,9 +133,6 @@ export function LobbyScreen({
     );
   const blocker = owner && lobby ? startBlockerFor(trip) : null;
   const pending = trip.members.filter((m) => m.status === "PENDING_KEY");
-  const joined = trip.members.filter(
-    (m) => m.role !== "OWNER" && m.status === "ACTIVE",
-  ).length;
   const full = photoPermission.kind === "FULL";
   const title = lobby && !owner ? "Waiting for your host." : trip.name;
   const description = lobby
@@ -188,10 +186,12 @@ export function LobbyScreen({
               </AppText>
             </View>
             {owner && lobby ? (
-              <AppText
-                variant="label"
-                tone="secondary"
-              >{`1 host · ${joined} joined`}</AppText>
+              <Button
+                variant="text"
+                label="Invite crew"
+                onPress={() => setInviteOpen(true)}
+                disabled={!invite}
+              />
             ) : (
               <Button
                 variant={lobby ? "text" : "secondary"}
@@ -219,22 +219,21 @@ export function LobbyScreen({
             : {})}
         header={
           <View style={styles.navigation}>
-            {!lobby ? <CrewRollWordmark /> : <View />}
-            {owner && lobby && invite ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setInviteOpen(true)}
-                style={styles.inviteAction}
-              >
-                <AppText tone="action" variant="label">
-                  Invite crew
-                </AppText>
-              </Pressable>
-            ) : !lobby && onOpenInfo ? (
+            {onBack ? (
+              <Button
+                variant="text"
+                label="‹ Home"
+                accessibilityLabel="Back to Home"
+                onPress={onBack}
+              />
+            ) : (
+              <View />
+            )}
+            {onOpenInfo ? (
               <Button variant="text" label="Trip info" onPress={onOpenInfo} />
             ) : (
               <AppText tone="secondary" variant="label">
-                {lobby ? trip.name : "Your shared roll"}
+                {trip.name}
               </AppText>
             )}
           </View>

@@ -5,6 +5,21 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testCaptureRejectedAfterPauseRaceStaysPrivateWithoutBlockingJournal() async throws {
+        let fixture = try TransferFixture()
+        defer { fixture.cleanup() }
+        fixture.photos.sourceBytes = fixture.plaintext
+        fixture.network.outgoing = true; fixture.network.rejectCapture = true
+        let engine = fixture.engine {}
+        await engine.activate()
+        try await eventually { (try? fixture.ledger().snapshot().works.first?.ignored) == true }
+        await engine.stop()
+        XCTAssertEqual(fixture.network.uploads, 0)
+        XCTAssertEqual(fixture.network.commits, 0)
+        let snapshot = try await engine.snapshot()
+        XCTAssertEqual((snapshot["counts"] as? [String: Int])?["originalsSaved"], 0)
+    }
+
     func testDelayedActivationCannotUndoANewerSignOutPause() async throws {
         let fixture = try TransferFixture()
         defer { fixture.cleanup() }
@@ -241,6 +256,8 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
     var receipts = 0
     var downloads = 0
     var loseReceiptOnce = false
+    var rejectCapture = false
+    var rejectedCaptures = 0
     var outgoing = false
     var loseCommitOnce = false
     var uploads = 0
@@ -255,6 +272,7 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
     init(ciphertext: Data, pending: Data, grant: Data) { self.ciphertext = ciphertext; self.pending = pending; self.grant = grant }
     func cancel() {}
     func json(path: String, method: String, body: Data?, context: NativeMediaContext, commandID: String) async throws -> Data {
+        if path.hasSuffix("/transfer-state") { return try JSONSerialization.data(withJSONObject: ["tripId": context.metadata.tripID, "version": 1, "participation": "JOINED", "captureUntil": context.metadata.endsAt, "excludedCaptureWindows": rejectedCaptures > 0 ? [["from": "2000-01-01T00:00:00Z", "until": NSNull()]] : []]) }
         if path.contains("/previews?after=") {
             let grant = try XCTUnwrap(previewGrant)
             let download = try JSONSerialization.jsonObject(with: JSONEncoder().encode(grant))
@@ -264,6 +282,7 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
         if path.hasSuffix("/preview") && previewEnabled { return try JSONEncoder().encode(previewGrant) }
         if path == "/v1/deliveries/pending" { return outgoing || receipts > 0 ? Data("{\"items\":[]}".utf8) : pending }
         if path == "/v1/assets/upload-sessions" {
+            if rejectCapture { rejectedCaptures += 1; throw NativeTransferHTTPError(status: 409, authenticated: true) }
             uploadBody = body
             let request = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(body)) as? [String: Any])
             let objects = try XCTUnwrap(request["objects"] as? [[String: String]])

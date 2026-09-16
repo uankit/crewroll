@@ -108,6 +108,32 @@ export interface TripInviteTable {
 }
 
 export interface TripMemberTable {
+  left_incomplete: Generated<boolean>;
+  leaving_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+  left_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+  sharing_paused_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+  drained_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+  sharing_pauses: ColumnType<
+    readonly { from: string; until: string | null }[],
+    readonly { from: string; until: string | null }[] | undefined,
+    readonly { from: string; until: string | null }[]
+  >;
   id: string;
   trip_id: string;
   user_id: string;

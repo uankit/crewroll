@@ -77,7 +77,8 @@ class NativePhotoTransferEngine(
             }
         }
     }
-    fun activate() = policy(false, cellular)
+    // Projection refreshes must not cancel an original already being transferred.
+    fun activate(): CompletableFuture<Unit> = if (!paused) CompletableFuture.completedFuture(Unit) else policy(false, cellular)
     fun stop() = policy(true, cellular)
     fun close() { stop().whenComplete { _, _ -> executor.shutdown(); previewExecutor.shutdown(); projectionExecutor.shutdown() } }
     fun wake(): CompletableFuture<Unit> {
@@ -125,6 +126,9 @@ class NativePhotoTransferEngine(
             val c = contextProvider() ?: return; context = c
             current(c, epoch)
             val ledger = ledger(c); val n = networkFactory(cellular); transport = n; network = n
+            val policy = NativeCapturePolicy(n.json("/v1/trips/${c.metadata.tripId}/transfer-state", "GET", null, c, uuid()), c.metadata.tripId)
+            current(c, epoch)
+            if (policy.left) { globalBlocker = null; return }
             val page = n.json("/v1/deliveries/pending", "GET", null, c, uuid()).getJSONArray("items")
             current(c, epoch); require(page.length() <= 100)
             for (index in 0 until page.length()) {
@@ -264,10 +268,18 @@ class NativePhotoTransferEngine(
             try {
                 cache.purgeExpired(Instant.now())
                 val n = networkFactory(cellular); transport = n; previewNetwork = n
-                val exclusions = ledger.records().flatMap { listOfNotNull(it.optionalString("sourceLocalId"), it.optionalString("savedLocalId")) }.toSet()
-                photos.discover(Instant.parse(c.metadata.startsAt), Instant.parse(c.metadata.endsAt), exclusions, 4).forEach { photo ->
-                    current(c, epoch)
-                    val id = uuid(); ledger.put(newWork(id, id, c.metadata.tripId, photo.capturedAt.toString()).put("sourceLocalId", photo.localId))
+                val policy = NativeCapturePolicy(n.json("/v1/trips/${c.metadata.tripId}/transfer-state", "GET", null, c, uuid()), c.metadata.tripId)
+                current(c, epoch)
+                if (policy.left) { previewBlocker = null; return }
+                val exclusions = ledger.records().flatMap { listOfNotNull(it.optionalString("sourceLocalId"), it.optionalString("savedLocalId")) }.toMutableSet()
+                var discovered = 0
+                for ((start, end) in policy.windows(Instant.parse(c.metadata.startsAt), Instant.parse(c.metadata.endsAt))) {
+                    if (discovered >= 4) break
+                    photos.discover(start, end, exclusions, 4 - discovered).forEach { photo ->
+                        current(c, epoch)
+                        val id = uuid(); ledger.put(newWork(id, id, c.metadata.tripId, photo.capturedAt.toString()).put("sourceLocalId", photo.localId))
+                        exclusions.add(photo.localId); discovered += 1
+                    }
                 }
                 previewBlocker = null
                 val outgoing = ledger.records().filter { it.getString("tripId") == c.metadata.tripId && !it.isNull("sourceLocalId") && !it.getBoolean("complete") && !it.optBoolean("previewPublished") && it.isNull("blocker") }.sortedBy { it.getString("capturedAt") }.take(4)
@@ -275,6 +287,22 @@ class NativePhotoTransferEngine(
                     try { publish(work, c, epoch, ledger, n, previewOnly = true); invalidated(ledger.revision() + cache.revision()); wake() }
                     catch (error: Throwable) {
                         current(c, epoch)
+                        // Pause/leave can race an earlier discovery response. A
+                        // rejected, never-uploaded capture stays private and must
+                        // not hold the final drain open forever.
+                        if (error is TransferHttpException && error.status == 409 && work.getJSONObject("etags").length() == 0) {
+                            val fresh = NativeCapturePolicy(n.json("/v1/trips/${c.metadata.tripId}/transfer-state", "GET", null, c, uuid()), c.metadata.tripId)
+                            current(c, epoch)
+                            val captured = Instant.parse(work.getString("capturedAt"))
+                            if (!fresh.left && fresh.windows(Instant.parse(c.metadata.startsAt), Instant.parse(c.metadata.endsAt)).none { captured >= it.first && captured <= it.second }) {
+                                ledger.record(work.getString("workId"))?.let { skipped ->
+                                    skipped.optionalString("directory")?.let { check(File(ledger.directory, it).deleteRecursively()) }
+                                    skipped.remove("directory")
+                                    ledger.put(skipped.put("ignored", true).put("complete", true).put("blocker", JSONObject.NULL))
+                                }
+                                continue
+                            }
+                        }
                         blocker(error)?.let { code -> ledger.record(work.getString("workId"))?.let { ledger.put(it.put("blocker", code)) } }
                     }
                 }
@@ -313,6 +341,11 @@ class NativePhotoTransferEngine(
                     try { materializePreview(record, c, epoch, cache, n); invalidated(ledger.revision() + cache.revision()) }
                     catch (error: Throwable) { current(c, epoch); blocker(error)?.let { cache.put(record.put("blocker", it)) } }
                 }
+                if (policy.leaving && discovered == 0 && ledger.records().none { it.getString("tripId") == c.metadata.tripId && !it.isNull("sourceLocalId") && !it.getBoolean("complete") }) {
+                    current(c, epoch)
+                    n.json("/v1/trips/${c.metadata.tripId}/drained", "POST", JSONObject().put("observedVersion", policy.version), c, uuid())
+                    current(c, epoch)
+                }
             } finally { if (revision != ledger.revision() + cache.revision()) invalidated(ledger.revision() + cache.revision()) }
         } catch (error: Throwable) { if (epoch == generation.get()) previewBlocker = blocker(error) }
         finally { context?.erase(); transport?.cancel(); previewNetwork = null }
@@ -349,7 +382,7 @@ class NativePhotoTransferEngine(
     private fun projectedAssets(c: NativeMediaContext?): Pair<Long, List<Map<String, Any?>>> {
         if (c == null) return 0L to emptyList()
         val l = ledger(c); val cache = previews!!
-        val works = l.records().filter { it.getString("tripId") == c.metadata.tripId }.associateBy { it.getString("assetId") }
+        val works = l.records().filter { it.getString("tripId") == c.metadata.tripId && !it.optBoolean("ignored") }.associateBy { it.getString("assetId") }
         val images = cache.records(c.metadata.tripId).associateBy { it.getString("assetId") }
         val rows = (works.keys + images.keys).map { id ->
             val work = works[id]; val image = images[id]

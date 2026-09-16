@@ -40,6 +40,9 @@ test("generates the exact bounded current mobile operations deterministically", 
     async () => undefined,
     async ({ inputPath, outputPath }) => {
       assert.deepEqual(requiredOperations, [
+        "listTrips",
+        "getTripLifecycle",
+        "changeTripLifecycle",
         "approveJoinRequest",
         "createJoinRequest",
         "createTrip",
@@ -67,6 +70,17 @@ test("generates the exact bounded current mobile operations deterministically", 
       assert.match(first, /resolveCreateTripOutcome/);
       assert.match(first, /setTripReadiness/);
       assert.match(first, /"\/v1\/trips\/\{tripId\}\/readiness"/);
+      assert.equal(
+        [...first.matchAll(/^  "\/v1\/trips\/\{tripId\}\/lifecycle": \{$/gm)]
+          .length,
+        1,
+        "shared lifecycle methods must use one path declaration",
+      );
+      const lifecycle = first
+        .split('  "/v1/trips/{tripId}/lifecycle": {')[1]
+        ?.split(/^  };/m)[0];
+      assert.match(lifecycle, /    get: \{/);
+      assert.match(lifecycle, /    post: \{/);
     },
   );
 });

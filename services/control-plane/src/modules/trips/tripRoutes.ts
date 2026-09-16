@@ -1,3 +1,10 @@
+import type { TripLifecycleService } from "../trips/ports/tripLifecycleService.js";
+import {
+  TripListResponseSchema,
+  TripLifecycleBodySchema,
+  TripTransferStateSchema,
+  type TripLifecycleBody,
+} from "@crewroll/contracts";
 import {
   ApproveJoinRequestBodySchema,
   ClosedObject,
@@ -50,6 +57,7 @@ interface TripCommand<Input, Output> {
 }
 
 export interface TripRouteDependencies {
+  readonly lifecycle?: TripLifecycleService;
   readonly approveJoinRequest: TripCommand<
     ApproveJoinRequestInput,
     MembershipResponse
@@ -144,6 +152,66 @@ export function tripRoutes(
   };
   const idempotencyKeyFor = (request: FastifyRequest): string =>
     canonicalUuid(request.headers["idempotency-key"]);
+
+  if (dependencies.lifecycle) {
+    const lifecycle = dependencies.lifecycle;
+    app.get(
+      "/v1/trips",
+      {
+        preHandler: resolveActor,
+        preValidation: authenticate,
+        schema: {
+          headers: QueryTransportHeadersSchema,
+          response: { 200: TripListResponseSchema, ...errorResponses },
+          security: [{ ClerkBearer: [] }],
+        },
+      },
+      async (request, reply) => {
+        reply.header("Cache-Control", "no-store");
+        return lifecycle.list(actorFor(request));
+      },
+    );
+    app.get<{ Params: { tripId: string } }>(
+      "/v1/trips/:tripId/lifecycle",
+      {
+        preHandler: resolveActor,
+        preValidation: authenticate,
+        schema: {
+          headers: QueryTransportHeadersSchema,
+          params: TripPathSchema,
+          response: { 200: TripTransferStateSchema, ...errorResponses },
+          security: [{ ClerkBearer: [] }],
+        },
+      },
+      async (request, reply) => {
+        reply.header("Cache-Control", "no-store");
+        return lifecycle.read(
+          actorFor(request),
+          request.params.tripId.toLowerCase(),
+        );
+      },
+    );
+    app.post<{ Params: { tripId: string }; Body: TripLifecycleBody }>(
+      "/v1/trips/:tripId/lifecycle",
+      {
+        preHandler: resolveActor,
+        preValidation: authenticate,
+        schema: {
+          headers: CommandTransportHeadersSchema,
+          params: TripPathSchema,
+          body: TripLifecycleBodySchema,
+          response: { 200: TripTransferStateSchema, ...errorResponses },
+          security: [{ ClerkBearer: [] }],
+        },
+      },
+      (request) =>
+        lifecycle.change(
+          actorFor(request),
+          request.params.tripId.toLowerCase(),
+          request.body,
+        ),
+    );
+  }
 
   app.post<{ Body: CreateTripBody }>(
     "/v1/trips",

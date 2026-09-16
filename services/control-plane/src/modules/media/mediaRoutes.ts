@@ -1,4 +1,10 @@
 import {
+  TripTransferStateSchema,
+  TripDrainBodySchema,
+  type TripDrainBody,
+  type TripTransferState,
+} from "@crewroll/contracts";
+import {
   AssetIdSchema,
   ClosedObject,
   CommitAssetBodySchema,
@@ -32,6 +38,14 @@ import type { MediaActor, MediaService } from "./index.js";
 import type { LocalCiphertextGateway } from "./ports/localCiphertextGateway.js";
 
 export interface MediaRouteDependencies {
+  readonly lifecycle?: {
+    read(actor: MediaActor, tripId: string): Promise<TripTransferState>;
+    drained(
+      actor: MediaActor,
+      tripId: string,
+      observedVersion: number,
+    ): Promise<TripTransferState>;
+  };
   readonly localObjects?: LocalCiphertextGateway;
   readonly service: MediaService;
   readonly authenticator: {
@@ -95,6 +109,40 @@ export function mediaRoutes(
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("Cache-Control", "no-store");
   });
+  if (dependencies.lifecycle) {
+    const lifecycle = dependencies.lifecycle;
+    app.get<{ Params: { tripId: string } }>(
+      "/v1/trips/:tripId/transfer-state",
+      {
+        preValidation: authenticate,
+        schema: {
+          headers: queryHeaders,
+          params: ClosedObject({ tripId: TripIdSchema }),
+          response: { 200: TripTransferStateSchema },
+        },
+      },
+      (request) =>
+        lifecycle.read(actor(request), request.params.tripId.toLowerCase()),
+    );
+    app.post<{ Params: { tripId: string }; Body: TripDrainBody }>(
+      "/v1/trips/:tripId/drained",
+      {
+        preValidation: authenticate,
+        schema: {
+          headers: commandHeaders,
+          params: ClosedObject({ tripId: TripIdSchema }),
+          body: TripDrainBodySchema,
+          response: { 200: TripTransferStateSchema },
+        },
+      },
+      (request) =>
+        lifecycle.drained(
+          actor(request),
+          request.params.tripId.toLowerCase(),
+          request.body.observedVersion,
+        ),
+    );
+  }
   app.post<{ Body: CreateUploadSessionBody }>(
     "/v1/assets/upload-sessions",
     {

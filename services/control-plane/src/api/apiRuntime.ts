@@ -76,6 +76,10 @@ export class ApiConfigurationError extends Error {
 }
 
 export interface ApiRuntimeFactories {
+  tripLifecycle?(
+    database: unknown,
+    clock: Clock,
+  ): NonNullable<TripRouteDependencies["lifecycle"]>;
   syncProfile(
     dependencies: SyncProfileDependencies,
   ): ProfileRouteDependencies["syncProfile"];
@@ -267,8 +271,11 @@ export async function createApiRuntime(
       clock,
       authenticator: createBackgroundDeviceAuthenticator({ clock, unitOfWork }),
     });
+    const lifecycle = factories.tripLifecycle?.(databaseHandle.database, clock);
     app = factories.buildApp({
-      ...(media ? { media } : {}),
+      ...(media
+        ? { media: { ...media, ...(lifecycle ? { lifecycle } : {}) } }
+        : {}),
       clock,
       devices: {
         registerDevice,
@@ -304,6 +311,7 @@ export async function createApiRuntime(
         },
       },
       trips: {
+        ...(lifecycle ? { lifecycle } : {}),
         approveJoinRequest,
         createTrip,
         getTrip,

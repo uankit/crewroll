@@ -5,6 +5,494 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/v1/trips/{tripId}/lifecycle": {
+      "get": {
+        "operationId": "getTripLifecycle",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripTransferState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "changeTripLifecycle",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TripLifecycleBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripTransferState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/transfer-state": {
+      "get": {
+        "operationId": "getTripTransferState",
+        "security": [
+          {
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripTransferState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/trips/{tripId}/drained": {
+      "post": {
+        "operationId": "acknowledgeTripDrain",
+        "security": [
+          {
+            "BackgroundDeviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tripId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TripDrainBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripTransferState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/profile": {
       "put": {
         "operationId": "syncProfile",
@@ -460,6 +948,107 @@
       }
     },
     "/v1/trips": {
+      "get": {
+        "operationId": "listTrips",
+        "security": [
+          {
+            "ClerkBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CrewRoll-Device-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "operationId": "createTrip",
         "security": [
@@ -4040,6 +4629,328 @@
         ],
         "properties": {
           "expectedVersion": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        }
+      },
+      "TripListResponse": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "status",
+                "participation",
+                "role",
+                "startsAt",
+                "endsAt",
+                "leftAt",
+                "sharingPaused",
+                "onThisDevice",
+                "memberCount",
+                "savedPhotoCount"
+              ],
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "name": {
+                  "minLength": 1,
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "LOBBY",
+                      "type": "string"
+                    },
+                    {
+                      "const": "ACTIVE",
+                      "type": "string"
+                    },
+                    {
+                      "const": "ENDING",
+                      "type": "string"
+                    },
+                    {
+                      "const": "COMPLETE",
+                      "type": "string"
+                    },
+                    {
+                      "const": "INCOMPLETE_EXPIRED",
+                      "type": "string"
+                    },
+                    {
+                      "const": "CANCELLED",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "participation": {
+                  "anyOf": [
+                    {
+                      "const": "JOINING",
+                      "type": "string"
+                    },
+                    {
+                      "const": "JOINED",
+                      "type": "string"
+                    },
+                    {
+                      "const": "LEAVING",
+                      "type": "string"
+                    },
+                    {
+                      "const": "LEFT",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "role": {
+                  "anyOf": [
+                    {
+                      "const": "OWNER",
+                      "type": "string"
+                    },
+                    {
+                      "const": "MEMBER",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "startsAt": {
+                  "anyOf": [
+                    {
+                      "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "endsAt": {
+                  "format": "date-time",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                "leftAt": {
+                  "anyOf": [
+                    {
+                      "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sharingPaused": {
+                  "type": "boolean"
+                },
+                "onThisDevice": {
+                  "type": "boolean"
+                },
+                "memberCount": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "savedPhotoCount": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "TripLifecycleBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "expectedVersion"
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "const": "PAUSE",
+                "type": "string"
+              },
+              {
+                "const": "RESUME",
+                "type": "string"
+              },
+              {
+                "const": "LEAVE",
+                "type": "string"
+              },
+              {
+                "const": "LEAVE_NOW",
+                "type": "string"
+              },
+              {
+                "const": "END",
+                "type": "string"
+              }
+            ]
+          },
+          "expectedVersion": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        }
+      },
+      "TripTransferState": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tripId",
+          "version",
+          "status",
+          "participation",
+          "sharingPaused",
+          "captureUntil",
+          "excludedCaptureWindows",
+          "pendingUploads",
+          "pendingDownloads",
+          "deliveryDeadline"
+        ],
+        "properties": {
+          "tripId": {
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "const": "LOBBY",
+                "type": "string"
+              },
+              {
+                "const": "ACTIVE",
+                "type": "string"
+              },
+              {
+                "const": "ENDING",
+                "type": "string"
+              },
+              {
+                "const": "COMPLETE",
+                "type": "string"
+              },
+              {
+                "const": "INCOMPLETE_EXPIRED",
+                "type": "string"
+              },
+              {
+                "const": "CANCELLED",
+                "type": "string"
+              }
+            ]
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "const": "JOINING",
+                "type": "string"
+              },
+              {
+                "const": "JOINED",
+                "type": "string"
+              },
+              {
+                "const": "LEAVING",
+                "type": "string"
+              },
+              {
+                "const": "LEFT",
+                "type": "string"
+              }
+            ]
+          },
+          "sharingPaused": {
+            "type": "boolean"
+          },
+          "captureUntil": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+            "type": "string"
+          },
+          "excludedCaptureWindows": {
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "from",
+                "until"
+              ],
+              "properties": {
+                "from": {
+                  "format": "date-time",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                "until": {
+                  "anyOf": [
+                    {
+                      "format": "date-time",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "pendingUploads": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pendingDownloads": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deliveryDeadline": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
+            "type": "string"
+          }
+        }
+      },
+      "TripDrainBody": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "observedVersion"
+        ],
+        "properties": {
+          "observedVersion": {
             "minimum": 1,
             "type": "integer"
           }

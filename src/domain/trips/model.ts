@@ -58,3 +58,19 @@ export type TripInvitePreview = Readonly<{
     role: "OWNER" | "MEMBER";
   }>[];
 }>;
+
+/** Read-only trip library metadata; never contains keys or photo bytes. */
+export type TripSummary = Readonly<{
+  id: string;
+  name: string;
+  status: TripView["status"];
+  participation: "JOINING" | "JOINED" | "LEAVING" | "LEFT";
+  role: "OWNER" | "MEMBER";
+  startsAt: string | null;
+  endsAt: string;
+  leftAt: string | null;
+  sharingPaused: boolean;
+  onThisDevice: boolean;
+  memberCount: number;
+  savedPhotoCount: number;
+}>;

@@ -1,4 +1,5 @@
 import * as Clipboard from "expo-clipboard";
+import type { TripTransferState } from "@crewroll/contracts";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react-native";
@@ -770,7 +771,7 @@ describe("AppSessionProvider", () => {
     },
   );
 
-  it("polls only the focused foreground lobby and stops for every closed condition", async () => {
+  it("polls focused foreground trips through ending and stops when hidden", async () => {
     jest.useFakeTimers();
     const originalAppState = AppState.currentState;
     AppState.currentState = "active";
@@ -897,7 +898,7 @@ describe("AppSessionProvider", () => {
       await act(async () => {
         await jest.advanceTimersByTimeAsync(10_000);
       });
-      expect(hydrateTrip).toHaveBeenCalledTimes(activeCalls);
+      expect(hydrateTrip).toHaveBeenCalledTimes(activeCalls + 2);
 
       await act(async () => {
         queryClient.setQueryData(queryKey, { ...lobby, version: 4 });
@@ -959,6 +960,118 @@ describe("AppSessionProvider", () => {
     expect(screen.getByTestId("snapshot-probe")).not.toHaveTextContent(
       "ABCD2345",
     );
+  });
+
+  it("fences an in-flight projection before retiring a departed trip", async () => {
+    const active: TripView = {
+      ...lobby,
+      status: "ACTIVE",
+      startsAt: "2030-01-01T00:00:00.000Z",
+    };
+    let confirmDeparture!: (value: TripTransferState) => void;
+    const departure = new Promise<TripTransferState>((resolve) => {
+      confirmDeparture = resolve;
+    });
+    let finishRetirement!: () => void;
+    const retirement = new Promise<void>((resolve) => {
+      finishRetirement = resolve;
+    });
+    let finishProjection!: (value: TripView) => void;
+    const lateProjection = new Promise<TripView>((resolve) => {
+      finishProjection = resolve;
+    });
+    const hydrate = jest
+      .fn()
+      .mockResolvedValueOnce(active)
+      .mockReturnValue(lateProjection);
+    const { runtime: baseRuntime, scoped } = createRuntime({ hydrate });
+    const retireTrip = jest.fn(() => retirement);
+    const services: ScopedTripSession = {
+      ...scoped,
+      retireTrip,
+      getTripLifecycle: jest.fn(() => departure),
+      listTrips: jest
+        .fn()
+        .mockResolvedValueOnce({
+          items: [
+            {
+              id: tripId,
+              name: active.name,
+              status: "ACTIVE",
+              participation: "JOINED",
+              role: "OWNER",
+              startsAt: active.startsAt,
+              endsAt: active.endsAt,
+              leftAt: null,
+              sharingPaused: false,
+              onThisDevice: true,
+              memberCount: 1,
+              savedPhotoCount: 0,
+            },
+          ],
+        })
+        .mockResolvedValue({ items: [] }),
+    };
+    const runtime: AppSessionRuntime = {
+      ...baseRuntime,
+      createScopedTripSession: () => services,
+    };
+    let projectionFailure: unknown;
+    let pending: Promise<void> | undefined;
+    function ProjectionProbe() {
+      const session = useAppSession();
+      return (
+        <Text
+          testID="projection-probe"
+          onPress={() => {
+            pending = session
+              .loadTripProjection(tripId)
+              .then(() => undefined)
+              .catch((error) => {
+                projectionFailure = error;
+              });
+          }}
+        >
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <ProjectionProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("READY_ACTIVE")).toBeOnTheScreen(),
+    );
+    await act(async () =>
+      screen.getByTestId("projection-probe").props.onPress(),
+    );
+    await act(async () =>
+      confirmDeparture({
+        tripId,
+        version: 4,
+        status: "COMPLETE",
+        participation: "LEFT",
+        sharingPaused: false,
+        captureUntil: active.endsAt,
+        excludedCaptureWindows: [],
+        pendingUploads: 0,
+        pendingDownloads: 0,
+        deliveryDeadline: active.endsAt,
+      }),
+    );
+    await waitFor(() => expect(retireTrip).toHaveBeenCalledWith(tripId));
+    await act(async () => {
+      finishProjection(active);
+      await pending;
+    });
+    expect(projectionFailure).toEqual(new Error("TRIP_SESSION_UNAVAILABLE"));
+    await act(async () => finishRetirement());
+    await waitFor(() =>
+      expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen(),
+    );
+    expect(baseRuntime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
   });
 
   it("preserves an explicit invite while signed out and through provisioning", async () => {

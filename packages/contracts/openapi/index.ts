@@ -1,3 +1,4 @@
+export * from "./tripLifecycle.js";
 export * from "./assets.js";
 export * from "./common.js";
 export * from "./deliveries.js";
@@ -79,7 +80,20 @@ import {
   TripResponseSchema,
 } from "./trips.js";
 
+import {
+  TripSummarySchema,
+  TripListResponseSchema,
+  TripLifecycleBodySchema,
+  TripTransferStateSchema,
+  TripDrainBodySchema,
+} from "./tripLifecycle.js";
+
 export const publicObjectSchemas = {
+  TripSummarySchema,
+  TripListResponseSchema,
+  TripLifecycleBodySchema,
+  TripTransferStateSchema,
+  TripDrainBodySchema,
   ProfileResponseSchema,
   SyncProfileBodySchema,
   PublishPreviewBodySchema,

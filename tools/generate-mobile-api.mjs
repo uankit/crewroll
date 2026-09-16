@@ -9,6 +9,9 @@ const root = path.dirname(
 );
 
 export const requiredOperations = [
+  "listTrips",
+  "getTripLifecycle",
+  "changeTripLifecycle",
   "approveJoinRequest",
   "createJoinRequest",
   "createTrip",
@@ -59,6 +62,33 @@ const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
 const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
 
 const operationExpectations = [
+  {
+    method: "get",
+    operationId: "listTrips",
+    parameters: [deviceHeader()],
+    path: "/v1/trips",
+    request: null,
+    response: "TripListResponse",
+    successStatus: "200",
+  },
+  {
+    method: "get",
+    operationId: "getTripLifecycle",
+    parameters: [deviceHeader(), tripPath()],
+    path: "/v1/trips/{tripId}/lifecycle",
+    request: null,
+    response: "TripTransferState",
+    successStatus: "200",
+  },
+  {
+    method: "post",
+    operationId: "changeTripLifecycle",
+    parameters: [deviceHeader(), commandHeader(), tripPath()],
+    path: "/v1/trips/{tripId}/lifecycle",
+    request: "TripLifecycleBody",
+    response: "TripTransferState",
+    successStatus: "200",
+  },
   {
     method: "put",
     operationId: "syncProfile",
@@ -445,19 +475,25 @@ function renderResponses(operation, lines) {
 
 function renderPaths(lines) {
   lines.push("export type MobilePaths = {");
-  for (const operation of operationExpectations) {
-    lines.push(`  ${JSON.stringify(operation.path)}: {`);
-    lines.push(`    ${operation.method}: {`);
-    renderParameters(operation, lines);
-    if (operation.request !== null) {
-      lines.push("      requestBody: {");
-      lines.push("        content: {");
-      lines.push(`          "application/json": ${operation.request};`);
-      lines.push("        };");
-      lines.push("      };");
+  for (const routePath of new Set(
+    operationExpectations.map((operation) => operation.path),
+  )) {
+    lines.push(`  ${JSON.stringify(routePath)}: {`);
+    for (const operation of operationExpectations.filter(
+      (operation) => operation.path === routePath,
+    )) {
+      lines.push(`    ${operation.method}: {`);
+      renderParameters(operation, lines);
+      if (operation.request !== null) {
+        lines.push("      requestBody: {");
+        lines.push("        content: {");
+        lines.push(`          "application/json": ${operation.request};`);
+        lines.push("        };");
+        lines.push("      };");
+      }
+      renderResponses(operation, lines);
+      lines.push("    };");
     }
-    renderResponses(operation, lines);
-    lines.push("    };");
     lines.push("  };");
   }
   lines.push("};", "");
@@ -465,6 +501,9 @@ function renderPaths(lines) {
 
 function renderGeneratedTypes() {
   const importedTypes = [
+    "TripListResponse",
+    "TripLifecycleBody",
+    "TripTransferState",
     "ApproveJoinRequestBody",
     "CreateJoinRequestBody",
     "CreateTripBody",

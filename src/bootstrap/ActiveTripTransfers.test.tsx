@@ -1,8 +1,12 @@
+import { TripInfoSheet } from "./TripInfoSheet";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import { CrewRollThemeProvider } from "../design-system";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import { ActiveTripTransfers } from "./ActiveTripTransfers";
 import type { TripView } from "../domain/trips/model";
+jest.mock("./TripLifecycleControls", () => ({
+  TripLifecycleControls: () => null,
+}));
 
 jest.mock(
   "react-native-safe-area-context",
@@ -196,7 +200,11 @@ it("changes connection policy only after a deliberate choice in trip info", asyn
   });
   const view = await render(
     <CrewRollThemeProvider>
-      <ActiveTripTransfers tripId={tripId} tripInfo={tripInfo} infoOpen />
+      <TripInfoSheet
+        trip={tripInfo}
+        onDismiss={() => {}}
+        onChanged={() => {}}
+      />
     </CrewRollThemeProvider>,
   );
   const button = await view.findByRole("button", { name: "Allow mobile data" });

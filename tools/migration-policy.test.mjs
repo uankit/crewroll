@@ -2033,3 +2033,33 @@ test("parsing is static, deterministic, frozen, and never evaluates target modul
     parseResult.findings.some(({ code }) => code === "MIGRATION_PARSE"),
   );
 });
+
+for (const [column, accepted] of [
+  ['.addColumn("left_at", "timestamptz")', true],
+  ['.addColumn("left_at", "text")', false],
+  [
+    '.addColumn("pauses", "jsonb", c => c.notNull().defaultTo(sql`\'[]\'::jsonb`))',
+    true,
+  ],
+  [
+    '.addColumn("pauses", "jsonb", c => c.notNull().defaultTo(sql`now()`))',
+    false,
+  ],
+  [
+    '.addColumn("pauses", "jsonb", c => c.notNull().defaultTo(sql`\'[]\'::jsonb`).unique())',
+    false,
+  ],
+]) {
+  test(`additive participation grammar ${column}`, async (t) => {
+    const result = await analyzeSource(
+      t,
+      migrationSource({
+        imports: sqlImports,
+        upBody: `await db.schema.alterTable("trip_members")${column}.execute();`,
+        downBody:
+          'await db.schema.alterTable("trip_members").dropColumn("left_at").execute();',
+      }),
+    );
+    assert.equal(result.findings.length === 0, accepted);
+  });
+}

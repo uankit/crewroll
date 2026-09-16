@@ -77,7 +77,7 @@ export function createActivateObservedTrip(
     if (
       !hasValidLocalKeyContext(device.deviceId, device.identity) ||
       !isClosedTripResponse(response) ||
-      response.status !== "ACTIVE" ||
+      (response.status !== "ACTIVE" && response.status !== "ENDING") ||
       response.release.mode !== "IMMEDIATE" ||
       response.startsAt === null
     ) {

@@ -1,3 +1,5 @@
+import { captureAllowed } from "./capturePolicy.js";
+import { createKyselyTripLifecycle } from "../trips/kyselyTripLifecycle.js";
 import {
   CommitAssetBodySchema,
   CreateDownloadSessionBodySchema,
@@ -75,6 +77,7 @@ export function createKyselyMediaService(
       .where("participating_device_id", "=", actor.deviceId)
       .where("user_id", "=", actor.userId)
       .where("state", "=", "ACTIVE")
+      .where("left_at", "is", null)
       .executeTakeFirst();
     if (!trip || !member || member.key_epoch !== 1)
       throw new DomainError("NOT_FOUND");
@@ -287,6 +290,16 @@ export function createKyselyMediaService(
           .select("participating_device_id")
           .where("trip_id", "=", trip.id)
           .where("state", "=", "ACTIVE")
+          .where("left_at", "is", null)
+          .where((eb) =>
+            eb.or([
+              eb("leaving_at", "is", null),
+              eb("leaving_at", ">=", session.created_at),
+              ...(trip.state === "ENDING" && trip.ending_started_at
+                ? [eb("leaving_at", ">=", trip.ending_started_at)]
+                : []),
+            ]),
+          )
           .execute();
         // Trip serialization makes these per-trip sequence cursors commit ordered.
         // Preview availability is NOT an asset commit, receipt, or cleanup signal.
@@ -374,11 +387,28 @@ export function createKyselyMediaService(
         await authorize(tx, actor);
         const session = await tx
           .selectFrom("upload_sessions")
-          .select(["trip_id", "state"])
+          .select(["trip_id", "state", "created_at", "source_device_id"])
           .where("client_asset_id", "=", assetId)
           .executeTakeFirst();
         if (!session) throw new DomainError("NOT_FOUND");
-        await tripFor(tx, actor, session.trip_id);
+        const trip = await tripFor(tx, actor, session.trip_id);
+        const viewer = await tx
+          .selectFrom("trip_members")
+          .select("leaving_at")
+          .where("trip_id", "=", trip.id)
+          .where("participating_device_id", "=", actor.deviceId)
+          .executeTakeFirstOrThrow();
+        if (
+          viewer.leaving_at &&
+          !(
+            trip.state === "ENDING" &&
+            trip.ending_started_at &&
+            viewer.leaving_at >= trip.ending_started_at
+          ) &&
+          session.created_at > viewer.leaving_at &&
+          session.source_device_id !== actor.deviceId
+        )
+          throw new DomainError("NOT_FOUND");
         const row = await tx
           .selectFrom("upload_sessions as u")
           .innerJoin("upload_objects as o", "o.upload_session_id", "u.id")
@@ -486,6 +516,28 @@ export function createKyselyMediaService(
               .execute();
           return uploadResponse(tx, existing.id);
         }
+        const member = await tx
+          .selectFrom("trip_members")
+          .selectAll()
+          .where("trip_id", "=", trip.id)
+          .where("participating_device_id", "=", actor.deviceId)
+          .executeTakeFirstOrThrow();
+        if (
+          !captureAllowed(capturedAt, {
+            endsAt: trip.ends_at,
+            endingAt: trip.ending_started_at,
+            leavingAt: member.leaving_at,
+            pausedAt: member.sharing_paused_at,
+            pauses: member.sharing_pauses,
+          })
+        )
+          throw new DomainError("TRIP_STATE_CONFLICT");
+        if (member.drained_at)
+          await tx
+            .updateTable("trip_members")
+            .set({ drained_at: null })
+            .where("id", "=", member.id)
+            .execute();
         const sessionId = randomUUID();
         const expiresAt = new Date(
           Math.min(now.getTime() + 900_000, trip.hard_delete_at.getTime()),
@@ -619,8 +671,18 @@ export function createKyselyMediaService(
           .selectAll()
           .where("trip_id", "=", trip.id)
           .where("state", "=", "ACTIVE")
+          .where("left_at", "is", null)
+          .where((eb) =>
+            eb.or([
+              eb("leaving_at", "is", null),
+              eb("leaving_at", ">=", session.created_at),
+              ...(trip.state === "ENDING" && trip.ending_started_at
+                ? [eb("leaving_at", ">=", trip.ending_started_at)]
+                : []),
+            ]),
+          )
           .execute();
-        // Membership is frozen when the trip starts. Fan-out is atomic with the
+        // Departing recipients have a fixed queue. Fan-out is atomic with the
         // commit, including the source receipt; a lost response is safe to retry.
         for (const member of members) {
           const source = member.participating_device_id === actor.deviceId;
@@ -695,6 +757,7 @@ export function createKyselyMediaService(
           .where("d.state", "=", "READY")
           .where("a.state", "=", "COMMITTED")
           .where("m.state", "=", "ACTIVE")
+          .where("m.left_at", "is", null)
           .where("t.hard_delete_at", ">", clock.now())
           .where("d.available_at", "<=", clock.now())
           .orderBy("d.available_at")
@@ -823,6 +886,7 @@ export function createKyselyMediaService(
       });
     },
     async cleanup() {
+      await createKyselyTripLifecycle(db, clock).expire();
       // Delete only committed ciphertext whose recipients all acknowledged, or
       // whose trip's explicit hard retention deadline has passed. Retry safely.
       const candidates = await db

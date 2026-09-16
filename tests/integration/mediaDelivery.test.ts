@@ -1,3 +1,4 @@
+import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -122,6 +123,218 @@ describe.sequential("durable encrypted photo delivery", () => {
       ],
     };
   }
+  const lifecycle = () =>
+    createKyselyTripLifecycle(context.db, { now: () => now });
+  async function command(
+    index: number,
+    action: "PAUSE" | "RESUME" | "LEAVE" | "LEAVE_NOW" | "END",
+  ) {
+    const state = await lifecycle().read(members[index]!, tripId);
+    return lifecycle().change(members[index]!, tripId, {
+      action,
+      expectedVersion: state.version,
+    });
+  }
+  it("pauses only the sender and never backfills paused captures after resume", async () => {
+    await command(0, "PAUSE");
+    await expect(service.createUpload(members[0]!, body)).rejects.toMatchObject(
+      { kind: "TRIP_STATE_CONFLICT" },
+    );
+    await expect(
+      service.createUpload(members[1]!, body),
+    ).resolves.toMatchObject({ assetId: body.assetId });
+    now = new Date(now.getTime() + 5000);
+    await command(0, "RESUME");
+    const pausedPhoto = {
+      ...body,
+      assetId: randomUUID(),
+      sourceAssetKey: "src_" + "B".repeat(32),
+    };
+    await expect(
+      service.createUpload(members[0]!, pausedPhoto),
+    ).rejects.toMatchObject({ kind: "TRIP_STATE_CONFLICT" });
+    await expect(
+      service.createUpload(members[0]!, {
+        ...pausedPhoto,
+        capturedAt: now.toISOString(),
+      }),
+    ).resolves.toMatchObject({ assetId: pausedPhoto.assetId });
+  });
+  it("freezes a leaving member's queue, waits for originals and releases their active slot only after saving", async () => {
+    await fixtures.activeTrip(members[1]!.userId, tripId);
+    const upload = await uploaded();
+    const leaving = await command(1, "LEAVE");
+    expect(leaving).toMatchObject({
+      participation: "LEAVING",
+      pendingUploads: 1,
+    });
+    expect(
+      (await lifecycle().drained(members[1]!, tripId, leaving.version))
+        .participation,
+    ).toBe("LEAVING");
+    expect(
+      await context.db
+        .selectFrom("user_active_trips")
+        .selectAll()
+        .where("user_id", "=", members[1]!.userId)
+        .execute(),
+    ).toHaveLength(1);
+    await service.commit(members[0]!, body.assetId, upload);
+    now = new Date(now.getTime() + 5000);
+    const later = {
+      ...body,
+      assetId: randomUUID(),
+      sourceAssetKey: "src_" + "C".repeat(32),
+      capturedAt: now.toISOString(),
+    };
+    const laterUpload = await service.createUpload(members[2]!, later);
+    now = new Date(now.getTime() + 1000);
+    await command(0, "END"); // A later host end must not expand an earlier personal departure.
+    // Even a guessed asset ID must not grant a departed recipient future previews.
+    for (const object of laterUpload.objects)
+      objects.set(new URL(object.url).pathname.slice(1), {
+        bytes: object.requiredHeaders["content-length"],
+        checksum: object.requiredHeaders["x-amz-checksum-sha256"],
+        etag: `"${object.variant}"`,
+      });
+    await service.publishPreview(members[2]!, later.assetId, {
+      uploadSessionId: laterUpload.uploadSessionId,
+      etag: '"PREVIEW"',
+    });
+    await expect(
+      service.previewDownload(members[1]!, later.assetId),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+    await service.commit(members[2]!, later.assetId, {
+      uploadSessionId: laterUpload.uploadSessionId,
+      objects: [
+        { variant: "PREVIEW", etag: '"PREVIEW"' },
+        { variant: "ORIGINAL", etag: '"ORIGINAL"' },
+      ],
+    });
+    const pending = await service.pending(members[1]!);
+    expect(pending.items.map((item) => item.assetId)).toEqual([body.assetId]);
+    await service.saved(
+      members[1]!,
+      pending.items[0]!.deliveryId,
+      randomUUID(),
+      { assetId: body.assetId, savedAt: now.toISOString(), engineRevision: 1 },
+    );
+    expect((await lifecycle().read(members[1]!, tripId)).participation).toBe(
+      "LEFT",
+    );
+    expect(
+      await context.db
+        .selectFrom("user_active_trips")
+        .selectAll()
+        .where("user_id", "=", members[1]!.userId)
+        .execute(),
+    ).toHaveLength(0);
+    expect((await lifecycle().list(members[1]!)).items[0]).toMatchObject({
+      participation: "LEFT",
+      savedPhotoCount: 1,
+    });
+    expect((await lifecycle().list(outsider)).items).toHaveLength(0);
+  });
+  it("leave now revokes media access without fabricating receipts or removing other people's queued photos", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    const pending = (await service.pending(members[1]!)).items[0]!;
+    await command(1, "LEAVE_NOW");
+    await expect(
+      service.download(members[1]!, pending.deliveryId, {
+        variants: ["ORIGINAL"],
+      }),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+    expect(
+      await context.db
+        .selectFrom("receipts")
+        .selectAll()
+        .where("delivery_id", "=", pending.deliveryId)
+        .execute(),
+    ).toHaveLength(0);
+    expect((await service.pending(members[2]!)).items).toHaveLength(1);
+    expect(objects.size).toBe(2);
+  });
+  it("only the host ends a trip and ending waits for offline phones' final capture pass", async () => {
+    await expect(command(1, "END")).rejects.toMatchObject({
+      kind: "TRIP_OWNER_REQUIRED",
+    });
+    const ended = await command(0, "END");
+    expect(ended.status).toBe("ENDING");
+    expect(
+      (await lifecycle().drained(members[0]!, tripId, ended.version))
+        .participation,
+    ).toBe("LEAVING");
+    now = new Date(now.getTime() + 1000);
+    await expect(
+      service.createUpload(members[1]!, {
+        ...body,
+        capturedAt: now.toISOString(),
+      }),
+    ).rejects.toMatchObject({ kind: "TRIP_STATE_CONFLICT" });
+    for (const member of members.slice(1)) {
+      const state = await lifecycle().read(member, tripId);
+      await lifecycle().drained(member, tripId, state.version);
+    }
+    for (const member of members) await lifecycle().read(member, tripId);
+    expect((await lifecycle().read(members[0]!, tripId)).status).toBe(
+      "COMPLETE",
+    );
+  });
+  it("ends automatically after the final participant leaves, and rejects outsiders", async () => {
+    await expect(lifecycle().read(outsider, tripId)).rejects.toMatchObject({
+      kind: "NOT_FOUND",
+    });
+    for (let index = 0; index < members.length - 1; index++)
+      expect((await command(index, "LEAVE_NOW")).status).toBe("ACTIVE");
+    expect((await command(members.length - 1, "LEAVE_NOW")).status).toBe(
+      "INCOMPLETE_EXPIRED",
+    );
+  });
+  it("does not let waiting trips starve the expiry batch", async () => {
+    const endsAt = new Date(now.getTime() - 1000);
+    const startedAt = new Date(now.getTime() - 60_000);
+    const hardDeleteAt = new Date(endsAt.getTime() + 7 * 86_400_000);
+    for (let i = 0; i < 100; i++) {
+      await fixtures.trip(members[0]!.userId, {
+        state: "ENDING",
+        started_at: startedAt,
+        ending_started_at: endsAt,
+        ends_at: endsAt,
+        hard_delete_at: hardDeleteAt,
+      });
+    }
+    const expiring = await fixtures.trip(members[0]!.userId, {
+      state: "ACTIVE",
+      started_at: startedAt,
+      ends_at: endsAt,
+      hard_delete_at: hardDeleteAt,
+    });
+    await lifecycle().expire();
+    expect(
+      await context.db
+        .selectFrom("trips")
+        .select("state")
+        .where("id", "=", expiring.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "ENDING" });
+  });
+  it("rejects stale simultaneous lifecycle choices", async () => {
+    const state = await lifecycle().read(members[0]!, tripId);
+    const outcomes = await Promise.allSettled(
+      ["PAUSE", "LEAVE"].map((action) =>
+        lifecycle().change(members[0]!, tripId, {
+          action: action as "PAUSE" | "LEAVE",
+          expectedVersion: state.version,
+        }),
+      ),
+    );
+    expect(
+      outcomes.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      outcomes.find((result) => result.status === "rejected"),
+    ).toMatchObject({ reason: { kind: "VERSION_CONFLICT" } });
+  });
   it("publishes a verified preview to five phones before any original upload, without receipts", async () => {
     const user = await fixtures.user();
     const device = await fixtures.device(user.id);
@@ -229,7 +442,7 @@ describe.sequential("durable encrypted photo delivery", () => {
     await service.cleanup();
     await expect(
       service.previewDownload(members[2]!, body.assetId),
-    ).rejects.toMatchObject({ kind: "TRIP_STATE_CONFLICT" });
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
     expect(objects.size).toBe(0);
   });
   it("fans out to four phones atomically, and purges only after every receipt", async () => {

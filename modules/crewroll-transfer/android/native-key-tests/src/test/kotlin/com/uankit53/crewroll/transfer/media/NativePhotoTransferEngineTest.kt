@@ -16,6 +16,38 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class NativePhotoTransferEngineTest {
+    @Test fun `leaving acknowledges final discovery only after outgoing original commits`() {
+        Fixture().use { f ->
+            f.discover = true; f.participation = "LEAVING"
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.drains > 0 }
+            assertEquals(1, f.commits)
+            assertEquals(2, f.uploads)
+        }
+    }
+    @Test fun `refreshing an active projection does not cancel the current upload`() {
+        Fixture().use { f ->
+            f.discover = true
+            val engine = f.engine()
+            f.originalUploadHook = { f.originalUploadHook = null; engine.activate() }
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.commits == 1 }
+            assertEquals(2, f.uploads)
+        }
+    }
+    @Test fun `capture rejected after a pause race stays private without blocking the journal`() {
+        Fixture().use { f ->
+            f.discover = true; f.rejectCapture = true
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.rejectedCaptures > 0 && f.count(engine, "discovered") == 0 }
+            f.stop(engine)
+            assertEquals(0, f.uploads)
+            assertEquals(0, f.commits)
+            assertEquals(0, f.count(engine, "originalsSaved"))
+        }
+    }
     private class Fixture : AutoCloseable {
         val provider = VerifiedSodiumProvider.open()
         val crypto = NativePhotoCrypto(provider.sodium)
@@ -25,6 +57,10 @@ class NativePhotoTransferEngineTest {
         val delivery = "01990000-0000-4000-8000-000000000003"
         val key = crypto.randomKey()
         val source = ByteArray(300_001) { (it % 239).toByte() }
+        var rejectCapture = false
+        var rejectedCaptures = 0
+        var participation = "JOINED"
+        var drains = 0
         var discover = false
         var receiptLost = false
         var commitLost = false
@@ -89,6 +125,8 @@ class NativePhotoTransferEngineTest {
         val network = object : NativePhotoTransportPort {
             override fun cancel() = Unit
             override fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject = when {
+                path.endsWith("/transfer-state") -> JSONObject().put("tripId", trip).put("version", 1).put("participation", participation).put("captureUntil", context.metadata.endsAt).put("excludedCaptureWindows", JSONArray().apply { if (rejectedCaptures > 0) put(JSONObject().put("from", "2000-01-01T00:00:00Z").put("until", JSONObject.NULL)) })
+                path.endsWith("/drained") -> { assertEquals(1, body!!.getInt("observedVersion")); assertEquals(1, commits); drains++; JSONObject() }
                 path.contains("/previews?after=") -> JSONObject().put("hasMore", false).put("nextCursor", if (previewFeed) "1" else "0").put("items", JSONArray().apply {
                     if (previewFeed && path.endsWith("after=0")) put(JSONObject().put("sequence", "1").put("assetId", asset).put("sourceDeviceId", "another-device").put("publishedAt", "2026-09-09T12:00:00Z").put("download", previewGrant))
                 })
@@ -103,6 +141,7 @@ class NativePhotoTransferEngineTest {
                     if (receiptLost) { receiptLost = false; throw IOException("lost receipt response") }
                     JSONObject()
                 }
+                path.endsWith("upload-sessions") && rejectCapture -> { rejectedCaptures++; throw TransferHttpException(409, true) }
                 path.endsWith("upload-sessions") -> JSONObject().put("assetId", body!!.getString("assetId")).put("uploadSessionId", "upload-1")
                     .put("objects", JSONArray(listOf("PREVIEW", "ORIGINAL").map { JSONObject().put("variant", it).put("url", "https://storage.invalid/$it").put("requiredHeaders", JSONObject()) }))
                 path.endsWith("commit") -> {

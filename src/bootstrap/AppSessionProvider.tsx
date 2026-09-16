@@ -1,3 +1,8 @@
+import type {
+  TripListResponse,
+  TripLifecycleBody,
+  TripTransferState,
+} from "@crewroll/contracts";
 import type { TripInvitePreview, TripView } from "../domain/trips/model";
 import * as Clipboard from "expo-clipboard";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
@@ -110,6 +115,13 @@ export type AppSessionAuthSnapshot =
     }>;
 
 export type ScopedTripSession = Readonly<{
+  listTrips?(): Promise<TripListResponse>;
+  getTripLifecycle?(tripId: string): Promise<TripTransferState>;
+  changeTripLifecycle?(
+    tripId: string,
+    body: TripLifecycleBody,
+  ): Promise<TripTransferState>;
+  retireTrip?(tripId: string): Promise<void>;
   previewInvite(inviteCode: string): Promise<TripInvitePreview>;
   createTrip(input: CreateImmediateTripInput): Promise<TripView>;
   reconcileUnknownCreate(): Promise<TripView | "STILL_UNKNOWN">;
@@ -163,6 +175,12 @@ export type JoinMutationResult =
   | Readonly<{ kind: "PENDING_APPROVAL" }>;
 
 export type TripSessionActions = Readonly<{
+  listTrips(): Promise<TripListResponse>;
+  getTripLifecycle(tripId: string): Promise<TripTransferState>;
+  changeTripLifecycle(
+    tripId: string,
+    body: TripLifecycleBody,
+  ): Promise<TripTransferState>;
   previewInvite(inviteCode: string): Promise<TripInvitePreview>;
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
   join(inviteCode: string): Promise<JoinMutationResult>;
@@ -702,8 +720,42 @@ export function AppSessionProvider({
     [binding, observeOperation],
   );
 
+  const listTrips = useCallback(async () => {
+    const current = binding();
+    if (!current.services.listTrips) throw unavailableSession();
+    const value = await current.services.listTrips();
+    if (current.generation !== runGeneration.current)
+      throw unavailableSession();
+    return value;
+  }, [binding]);
+  const getTripLifecycle = useCallback(
+    async (tripId: string) => {
+      const current = binding();
+      if (!current.services.getTripLifecycle) throw unavailableSession();
+      const value = await current.services.getTripLifecycle(tripId);
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return value;
+    },
+    [binding],
+  );
+  const changeTripLifecycle = useCallback(
+    async (tripId: string, body: TripLifecycleBody) => {
+      const current = binding();
+      if (!current.services.changeTripLifecycle) throw unavailableSession();
+      const value = await current.services.changeTripLifecycle(tripId, body);
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return value;
+    },
+    [binding],
+  );
+
   const actions = useMemo<TripSessionActions>(
     () => ({
+      listTrips,
+      getTripLifecycle,
+      changeTripLifecycle,
       approve: approveMember,
       create: createTrip,
       invalidatePhotoReadiness,
@@ -715,6 +767,9 @@ export function AppSessionProvider({
       start: startTrip,
     }),
     [
+      listTrips,
+      getTripLifecycle,
+      changeTripLifecycle,
       approveMember,
       createTrip,
       invalidatePhotoReadiness,
@@ -887,7 +942,7 @@ export function AppSessionProvider({
         }
         if (!isCurrent()) return;
 
-        const services = runtime.createScopedTripSession(scope, device);
+        let services = runtime.createScopedTripSession(scope, device);
         scopedSession.current = services;
 
         try {
@@ -906,6 +961,45 @@ export function AppSessionProvider({
               generation,
               recovery,
             );
+            return;
+          }
+
+          if (
+            services.listTrips &&
+            recovery?.state !== "UNKNOWN_CREATE" &&
+            recovery?.state !== "UNKNOWN_JOIN"
+          ) {
+            const trips = await services.listTrips();
+            if (!isCurrent()) return;
+            const currentTrip = trips.items.find(
+              (t) => t.participation !== "LEFT" && t.onThisDevice,
+            );
+            const oldTripId =
+              activeTripId ??
+              (recovery?.state === "CONFIRMED" ? recovery.tripId : null);
+            if (
+              oldTripId &&
+              !trips.items.some(
+                (t) => t.id === oldTripId && t.participation !== "LEFT",
+              )
+            ) {
+              await services.retireTrip?.(oldTripId);
+              if (!isCurrent()) return;
+              activeTripId = null;
+              services = runtime.createScopedTripSession(scope, device);
+              scopedSession.current = services;
+            }
+            if (currentTrip) {
+              await observeOperation(
+                services.hydrateTrip(currentTrip.id),
+                generation,
+                recovery,
+              );
+              return;
+            }
+            setOwnerInvite(null);
+            setActivationFailureTripId(null);
+            setSnapshot({ phase: "READY_NO_TRIP", deviceId: device.deviceId });
             return;
           }
 
@@ -1027,6 +1121,52 @@ export function AppSessionProvider({
     retryGeneration,
     runtime,
   ]);
+
+  useEffect(() => {
+    if (snapshot.phase !== "READY_ACTIVE" && snapshot.phase !== "READY_LOBBY")
+      return;
+    const services = scopedSession.current;
+    if (!services?.getTripLifecycle || !services.retireTrip) return;
+    const tripId = snapshot.tripId;
+    const generation = runGeneration.current;
+    let cancelled = false;
+    let running = false;
+    const refresh = async () => {
+      if (cancelled || running || AppState.currentState === "background")
+        return;
+      running = true;
+      try {
+        const state = await services.getTripLifecycle!(tripId);
+        if (cancelled || generation !== runGeneration.current) return;
+        if (state.participation === "LEFT") {
+          // Fence projections before awaiting native teardown, including a
+          // refresh that was already waiting on the network when we left.
+          const retirementGeneration = ++runGeneration.current;
+          scopedSession.current = null;
+          try {
+            await services.retireTrip!(tripId);
+          } finally {
+            if (!cancelled && retirementGeneration === runGeneration.current)
+              setRetryGeneration((value) => value + 1);
+          }
+        }
+      } catch {
+        /* Keep the current trip visible during a temporary disconnection. */
+      } finally {
+        running = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5000);
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refresh();
+    });
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [snapshot]);
 
   useEffect(() => {
     if (snapshot.phase !== "READY_PENDING_APPROVAL") return;
@@ -1247,7 +1387,8 @@ export function useTripProjection(
     queryKey: tripQueryKey(scope.opaqueAccountScope, scope.deviceId, tripId),
     queryFn: () => session.loadTripProjection(tripId),
     refetchInterval: (query) =>
-      pollLobby && query.state.data?.status === "LOBBY"
+      pollLobby &&
+      ["LOBBY", "ACTIVE", "ENDING"].includes(query.state.data?.status ?? "")
         ? LOBBY_POLL_INTERVAL_MS
         : false,
     refetchIntervalInBackground: false,

@@ -178,6 +178,38 @@ const mockUseTripProjection = function useTripProjection() {
   return mockProjection;
 };
 
+jest.mock("../src/bootstrap/useTripLibrary", () => ({
+  useTripLibrary: () => {
+    mockUseAppSession();
+    const trip = mockProjection.trip;
+    return {
+      isPending: false,
+      isError: false,
+      refetch: mockRefresh,
+      data: {
+        items: trip
+          ? [
+              {
+                id: trip.id,
+                name: trip.name,
+                status: trip.status,
+                participation: "JOINED",
+                role: "OWNER",
+                sharingPaused: false,
+                onThisDevice: true,
+                memberCount: trip.members.length,
+                savedPhotoCount: 0,
+                startsAt: trip.startsAt,
+                endsAt: trip.endsAt,
+                leftAt: null,
+              },
+            ]
+          : [],
+      },
+    };
+  },
+}));
+
 jest.mock("../src/bootstrap/AppProviders", () => ({
   AppProviders: ({ children }: PropsWithChildren) => children,
 }));
@@ -285,8 +317,8 @@ describe("Expo Router mobile journey", () => {
     ["READY_UNKNOWN_CREATE", "/"],
     ["READY_UNKNOWN_JOIN", "/"],
     ["READY_PENDING_APPROVAL", "/"],
-    ["READY_LOBBY", `/trips/${tripId}`],
-    ["READY_ACTIVE", `/trips/${tripId}`],
+    ["READY_LOBBY", "/"],
+    ["READY_ACTIVE", "/"],
   ] as const)(
     "keeps %s on its public or protected anchor",
     async (phase, expected) => {
@@ -307,8 +339,8 @@ describe("Expo Router mobile journey", () => {
     ["READY_UNKNOWN_CREATE", "/sign-in", "/"],
     ["READY_UNKNOWN_JOIN", "/sign-in", "/"],
     ["READY_PENDING_APPROVAL", "/sign-in", "/"],
-    ["READY_LOBBY", "/sign-in", `/trips/${tripId}`],
-    ["READY_ACTIVE", "/sign-in", `/trips/${tripId}`],
+    ["READY_LOBBY", "/sign-in", "/"],
+    ["READY_ACTIVE", "/sign-in", "/"],
   ] as const)(
     "falls back from a denied route in %s through the static anchor",
     async (phase, deniedUrl, expected) => {
@@ -352,12 +384,22 @@ describe("Expo Router mobile journey", () => {
     ).toBeOnTheScreen();
   });
 
-  it("opens a ready trip directly without a duplicate summary screen", async () => {
+  it("opens a trip from Home and returns without ending sharing", async () => {
     setPhase("READY_LOBBY");
     mockProjection = { ...mockProjection, trip: ownerTrip() };
     const router = await renderActualRouter("/");
 
+    expect(screen.getByTestId("trip-library-screen")).toBeOnTheScreen();
+    await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
     await waitFor(() => expect(router.getPathname()).toBe(`/trips/${tripId}`));
+    await fireEvent.press(screen.getByRole("button", { name: "Back to Home" }));
+    await waitFor(() => expect(router.getPathname()).toBe("/"));
+    expect(
+      screen.getByRole("button", { name: "Open Kyoto" }),
+    ).toBeOnTheScreen();
+    expect(
+      screen.queryByRole("button", { name: "Start a trip" }),
+    ).not.toBeOnTheScreen();
   });
 
   it("does not retain a conclusive invalid invite through the actual route", async () => {

@@ -9,7 +9,10 @@ export type MobileDependencies = Readonly<{
   profileApi: Pick<ReturnType<typeof createCrewRollApi>, "syncProfile">;
   deviceRegistration: DeviceRegistrationPort;
   tripApi: TripApiPort &
-    Pick<ReturnType<typeof createCrewRollApi>, "previewInvite">;
+    Pick<
+      ReturnType<typeof createCrewRollApi>,
+      "previewInvite" | "listTrips" | "getTripLifecycle" | "changeTripLifecycle"
+    >;
 }>;
 
 export function createMobileDependencies(

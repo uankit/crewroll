@@ -400,6 +400,7 @@ async function readProjection(
        and device.user_id = member.user_id
       where member.trip_id = ${tripId}::uuid
         and member.user_id = ${actor.userId}::uuid
+        and member.left_at is null
         and member.state <> 'REJECTED'
     ), owner_membership as (
       select
@@ -516,6 +517,7 @@ async function readProjection(
     left join trip_members as member
       on member.trip_id = base.trip_id
      and member.state <> 'REJECTED'
+     and member.left_at is null
      and (base.caller_role = 'OWNER' or member.state = 'ACTIVE')
     left join users as member_user on member_user.id = member.user_id
     left join devices as device
@@ -879,6 +881,7 @@ function transactionAdapter(
         .selectFrom("trip_members")
         .select(membershipSelect())
         .where("trip_id", "=", tripId)
+        .where("left_at", "is", null)
         .where("id", "=", membershipId)
         .forUpdate()
         .executeTakeFirst();
@@ -889,6 +892,7 @@ function transactionAdapter(
         .selectFrom("trip_members")
         .select(membershipSelect())
         .where("trip_id", "=", tripId)
+        .where("left_at", "is", null)
         .where("user_id", "=", userId)
         .forUpdate()
         .executeTakeFirst();
@@ -899,6 +903,7 @@ function transactionAdapter(
         .selectFrom("trip_members")
         .select(membershipSelect())
         .where("trip_id", "=", tripId)
+        .where("left_at", "is", null)
         .orderBy("id")
         .forUpdate()
         .execute();

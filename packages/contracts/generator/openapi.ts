@@ -1,4 +1,8 @@
 import {
+  TripListResponseSchema,
+  TripLifecycleBodySchema,
+  TripTransferStateSchema,
+  TripDrainBodySchema,
   ApproveJoinRequestBodySchema,
   CommitAssetBodySchema,
   CommitAssetResponseSchema,
@@ -141,6 +145,10 @@ function componentSchemas(): Record<string, unknown> {
     SetTripReadinessBody: SetTripReadinessBodySchema,
     StartTripBody: StartTripBodySchema,
     EndTripBody: EndTripBodySchema,
+    TripListResponse: TripListResponseSchema,
+    TripLifecycleBody: TripLifecycleBodySchema,
+    TripTransferState: TripTransferStateSchema,
+    TripDrainBody: TripDrainBodySchema,
     CreateUploadSessionBody: CreateUploadSessionBodySchema,
     UploadSessionResponse: UploadSessionResponseSchema,
     CommitAssetBody: CommitAssetBodySchema,
@@ -166,6 +174,37 @@ export function createOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: { title: "CrewRoll Control Plane", version: "1.0.0" },
     paths: {
+      "/v1/trips/{tripId}/lifecycle": {
+        get: operation(
+          "getTripLifecycle",
+          [...queryHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripTransferState") },
+          undefined,
+          "ClerkBearer",
+        ),
+        post: operation(
+          "changeTripLifecycle",
+          [...commandHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripTransferState") },
+          "TripLifecycleBody",
+          "ClerkBearer",
+        ),
+      },
+      "/v1/trips/{tripId}/transfer-state": {
+        get: operation(
+          "getTripTransferState",
+          [...queryHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripTransferState") },
+        ),
+      },
+      "/v1/trips/{tripId}/drained": {
+        post: operation(
+          "acknowledgeTripDrain",
+          [...commandHeaders, pathId("tripId", TripIdSchema)],
+          { "200": response("TripTransferState") },
+          "TripDrainBody",
+        ),
+      },
       "/v1/profile": {
         put: operation(
           "syncProfile",
@@ -203,6 +242,13 @@ export function createOpenApiDocument(): OpenApiDocument {
         ),
       },
       "/v1/trips": {
+        get: operation(
+          "listTrips",
+          queryHeaders,
+          { "200": response("TripListResponse") },
+          undefined,
+          "ClerkBearer",
+        ),
         post: operation(
           "createTrip",
           commandHeaders,

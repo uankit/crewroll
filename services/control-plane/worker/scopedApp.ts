@@ -17,6 +17,13 @@ const media = () => {
   if (!service) throw new Error("CrewRoll media service missing");
   return service;
 };
+const lifecycle: NonNullable<AppDependencies["trips"]["lifecycle"]> = {
+  list: (...args) => current().trips.lifecycle!.list(...args),
+  read: (...args) => current().trips.lifecycle!.read(...args),
+  change: (...args) => current().trips.lifecycle!.change(...args),
+  drained: (...args) => current().trips.lifecycle!.drained(...args),
+  expire: () => current().trips.lifecycle!.expire(),
+};
 const logger = createSafeLogger({
   nodeEnvironment: "production",
   logLevel: "info",
@@ -61,6 +68,7 @@ export const workerApp = buildApp(
       },
     },
     trips: {
+      lifecycle,
       tokenVerifier: {
         verify: (...args) => current().trips.tokenVerifier.verify(...args),
       },
@@ -98,6 +106,7 @@ export const workerApp = buildApp(
       },
     },
     media: {
+      lifecycle,
       authenticator: {
         authenticate: (...args) => media().authenticator.authenticate(...args),
       },

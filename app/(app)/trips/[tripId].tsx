@@ -1,5 +1,11 @@
-import { Redirect, useIsFocused, useLocalSearchParams } from "expo-router";
-import { AppState } from "react-native";
+import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
+import {
+  Redirect,
+  useIsFocused,
+  useLocalSearchParams,
+  useRouter,
+} from "expo-router";
+import { AppState, BackHandler } from "react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -39,7 +45,19 @@ function endsLabel(endsAt: string): string {
 }
 
 function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
+  const router = useRouter();
   const focused = useIsFocused();
+  useEffect(() => {
+    if (!focused) return;
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => {
+        router.replace("/(app)");
+        return true;
+      },
+    );
+    return () => subscription.remove();
+  }, [focused, router]);
   const session = useAppSession();
   const actions = session.actions;
   const projection = useTripProjection(tripId, { pollLobby: focused });
@@ -116,6 +134,11 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
             message="CrewRoll could not refresh this trip."
           />
           <Button label="Try again" onPress={() => void projection.refresh()} />
+          <Button
+            label="Back to Home"
+            variant="text"
+            onPress={() => router.replace("/(app)")}
+          />
         </Stack>
       </Screen>
     );
@@ -156,13 +179,12 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   return (
     <>
       <LobbyScreen
+        onBack={() => router.replace("/(app)")}
         actionError={actionError}
         hasPhotos={photoCount > 0}
         filterCount={galleryFilterCount(filters)}
         onOpenFilters={() => setFiltersOpen(true)}
-        {...(activation?.kind === "ready" || trip.status === "ENDING"
-          ? { onOpenInfo: () => setInfoOpen(true) }
-          : {})}
+        onOpenInfo={() => setInfoOpen(true)}
         transferContent={
           activation?.kind === "ready" || trip.status === "ENDING" ? (
             <ActiveTripTransfers
@@ -171,9 +193,6 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
               filters={filters}
               onClearFilters={() => setFilters(defaultGalleryFilters)}
               onPhotoCountChange={setPhotoCount}
-              tripInfo={trip}
-              infoOpen={infoOpen}
-              onCloseInfo={() => setInfoOpen(false)}
             />
           ) : undefined
         }
@@ -233,6 +252,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         starting={starting}
         trip={trip}
       />
+      {infoOpen ? (
+        <TripInfoSheet
+          trip={trip}
+          onDismiss={() => setInfoOpen(false)}
+          onChanged={() => void projection.refresh()}
+        />
+      ) : null}
       {filtersOpen ? (
         <GalleryFiltersSheet
           value={filters}

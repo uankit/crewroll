@@ -1,4 +1,9 @@
-import type {
+import {
+  TripListResponseSchema,
+  TripTransferStateSchema,
+  type TripLifecycleBody,
+  type TripListResponse,
+  type TripTransferState,
   ApproveJoinRequestBody,
   CreateJoinRequestBody,
   CreateTripBody,
@@ -42,6 +47,17 @@ export class CrewRollTransportProblem extends Error {
 
 export type CrewRollApi = DeviceRegistrationPort &
   TripApiPort & {
+    listTrips(deviceId: string): Promise<TripListResponse>;
+    getTripLifecycle(
+      deviceId: string,
+      tripId: string,
+    ): Promise<TripTransferState>;
+    changeTripLifecycle(
+      deviceId: string,
+      commandId: string,
+      tripId: string,
+      body: TripLifecycleBody,
+    ): Promise<TripTransferState>;
     syncProfile(): Promise<GeneratedResponse<"syncProfile">>;
     previewInvite(
       deviceId: string,
@@ -288,6 +304,57 @@ function parseCreateTripOutcome(
 class OpenApiCrewRollApi implements CrewRollApi {
   constructor(private readonly client: MobileClient) {}
 
+  async listTrips(deviceId: string): Promise<TripListResponse> {
+    const value = await this.request<TripListResponse>(() =>
+      this.client.GET("/v1/trips", {
+        params: { header: { "X-CrewRoll-Device-Id": deviceId } },
+      }),
+    );
+    if (!matchesRuntimeSchema(TripListResponseSchema as RuntimeSchema, value))
+      throw new CrewRollTransportProblem();
+    return value;
+  }
+  async getTripLifecycle(
+    deviceId: string,
+    tripId: string,
+  ): Promise<TripTransferState> {
+    const value = await this.request<TripTransferState>(() =>
+      this.client.GET("/v1/trips/{tripId}/lifecycle", {
+        params: {
+          header: { "X-CrewRoll-Device-Id": deviceId },
+          path: { tripId },
+        },
+      }),
+    );
+    if (
+      !matchesRuntimeSchema(TripTransferStateSchema as RuntimeSchema, value) ||
+      value.tripId !== tripId
+    )
+      throw new CrewRollTransportProblem();
+    return value;
+  }
+  async changeTripLifecycle(
+    deviceId: string,
+    commandId: string,
+    tripId: string,
+    body: TripLifecycleBody,
+  ): Promise<TripTransferState> {
+    const value = await this.request<TripTransferState>(() =>
+      this.client.POST("/v1/trips/{tripId}/lifecycle", {
+        body,
+        params: {
+          header: commandHeaders(deviceId, commandId),
+          path: { tripId },
+        },
+      }),
+    );
+    if (
+      !matchesRuntimeSchema(TripTransferStateSchema as RuntimeSchema, value) ||
+      value.tripId !== tripId
+    )
+      throw new CrewRollTransportProblem();
+    return value;
+  }
   async syncProfile(): Promise<GeneratedResponse<"syncProfile">> {
     const profile = await this.request<GeneratedResponse<"syncProfile">>(() =>
       this.client.PUT("/v1/profile", { body: {} }),
