@@ -1,0 +1,15 @@
+This update adds clearer sharing consent, account deletion, photo and member reporting, blocking, and updated privacy information.
+
+Please use CrewRoll 1.0.4 on both phones. This release uses production accounts; older beta accounts and trips are separate.
+
+What to try:
+- Host a trip on iPhone and join from Android, then try the reverse.
+- Approve the invited member, allow full photo access and start sharing.
+- Take a new photo with your phone's usual camera. Confirm the original saves in the other phone's photo library.
+- Join after photos have already been taken, then check catch-up progress.
+- Reopen after going offline or closing the app and check that sharing resumes.
+- Open Account to review privacy options. In a trip, open a photo or member to find reporting and blocking.
+
+Keep both apps open while checking delivery. Background work depends on iOS and Android scheduling; force-closing an app can delay sharing. Keep your own photo backups.
+
+Send feedback through TestFlight or support@crewroll.app. Include your phone model, app version and what happened. Do not send private photos, passwords or verification codes.

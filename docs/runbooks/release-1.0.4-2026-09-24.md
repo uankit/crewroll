@@ -4,16 +4,18 @@
 
 Public App Store and Google Play releases are not complete. Store preparation is in progress; availability, review access, screenshots and owner declarations must be completed before submission. Physical iPhone/Android acceptance is distinct from the automated and simulator checks below.
 
-The main readiness implementation was pushed to `origin/main` at `4bbfc497bc1f425baf5db73c00c69bce5f023b08`. The iOS and Android builds below contain that revision. Subsequent account-provider and site fixes are deployed independently of those binaries.
+The main readiness implementation was pushed to `origin/main` at `4bbfc497bc1f425baf5db73c00c69bce5f023b08`. iOS build 17 and Android build 5 contain that revision. Account-provider and site fixes were pushed at `8bc39b500baae37773235524b053973b6ed732c6` and deployed independently of those binaries. The password flow and prepared store assets were pushed at `f89df479e22e88a80bf822fcba0318332d7199c9`; both current 1.0.4 OTA updates contain that mobile change.
 
 | Destination                | Verified state                                                                                                   |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | iOS 1.0.4 (17)             | EAS `8616f3c3-2851-41a2-ae9e-ff40b302b2be`; uploaded, Apple processed VALID, internal TestFlight IN_BETA_TESTING |
 | Apple build identifier     | `b060b86f-1e0b-4ef0-91c5-38158334f341`                                                                           |
 | iOS submission             | `7c030998-fd85-443c-9878-81f526ba038f`, successful                                                               |
-| Android 1.0.4 (5)          | EAS `6b98f623-cbf7-4223-b668-db86ae6d5fe0`, FINISHED; not yet uploaded to Google Play                            |
-| iOS OTA, runtime 1.0.4     | TestFlight channel, group `dbab7df8-affe-4619-82c0-b73f44df37cb`                                                 |
-| Android OTA, runtime 1.0.4 | Production channel, group `daaa0c73-2913-4a56-9377-8a1bee5b3b71`                                                 |
+| Android 1.0.4 (6)          | EAS `f9dde756-857d-4603-836d-1e99e4bddc4f`, FINISHED; not yet uploaded to Google Play                            |
+| iOS OTA, runtime 1.0.4     | TestFlight channel, group `5186a745-b90b-4ceb-bea6-1df9f0f8e22f`                                                 |
+| Android OTA, runtime 1.0.4 | Production channel, group `e36e3fda-488c-4695-8e28-171dfdb6820f`                                                 |
+
+Android build 6 finished at `2026-09-24T12:42:46Z` from `f89df47`. The verified AAB is saved at `/Users/uankit/Developer/CrewRoll-1.0.4-6.aab` (90,127,278 bytes), SHA-256 `66ba3e432454b70b4d311ccf4f0eb167f749d6e83a96a73e0381665d712b38c6`. Google's bundletool validation, ZIP integrity and JAR signature verification pass. The decoded manifest confirms package `com.uankit53.airmesh`, version 1.0.4, code 6, minimum SDK 30 and target SDK 36. The embedded Hermes bundle uses production API/Clerk and contains no review-account credentials. Java reports the existing self-signed certificate, missing timestamp and ZIP manifest-order warnings, as with the earlier accepted Play bundle. The AAB has not been uploaded to Google Play.
 
 Do not send runtime 1.0.4 changes to older 1.0.3 binaries. Build 16 remains in the external TestFlight review flow with its existing beta configuration. Do not overwrite its reviewer instructions with production-only credentials while it is still under review.
 
@@ -25,6 +27,7 @@ Do not send runtime 1.0.4 changes to older 1.0.3 binaries. Build 16 remains in t
 - Production uses its own database, database role, R2 bucket and Hyperdrive binding. The existing beta remains separate.
 - Production Hyperdrive is limited to 10 origin connections, with caching disabled. Worker placement is near the database. Existing infrastructure is reused; no extra Supabase compute or paid Clerk upgrade was added.
 - The website uses HTTP service bindings for account deletion and public receipt lookups. Worker-to-Worker account traffic does not depend on fetching another public workers.dev origin.
+- `support@crewroll.app` has an enabled Cloudflare forwarding rule, a verified destination inbox, and published Cloudflare MX records. Configuration was checked; no test email was sent.
 
 ## Live deletion verification
 
@@ -46,6 +49,8 @@ Apple token revocation is covered by provider and durable-job tests. A real Appl
 - Root and backend TypeScript checks and scoped ESLint checks pass.
 - Expo Doctor: 21/21. Production dependency audit: zero high/critical advisories; moderate advisories remain.
 - Tooling suite: 1,395 passed initially, with two stale EAS profile expectations corrected; all 48 focused release/profile checks then passed.
+- Both latest Hermes OTA bundles contain the production API and Clerk publishable key, exclude the beta API, and contain neither review-account emails nor passwords.
+- Browser visual checks of the public privacy and deletion pages at 390px, plus deletion and terms layout checks at 320px, found no horizontal overflow. The deletion heading remains on one line and its sign-in action fits the phone width. The temporary browser viewport override was reset.
 
 These checks are not proof of complete physical-device delivery, background scheduling, or force-close recovery on a real iPhone and Android pair.
 
@@ -83,18 +88,19 @@ The published privacy policy now explains OAuth profile pictures, Clerk's approx
 ## Store preparation completed
 
 - Apple privacy and deletion URLs, public draft 1.0.4 metadata and categories saved; App Privacy published.
+- TestFlight build 17 now has testing instructions covering both host directions, late joining, verified photo saves and reopening after interruptions. The exact text in `assets/store/testflight-1.0.4.txt` was verified by API read-back. Build 16's review instructions were not changed.
 - Apple third-party content rights declared for user-supplied photos under CrewRoll's accepted sharing terms. Existing age-rating answers reviewed: private UGC and direct user interaction declared, no public social discovery, advertising, purchases or mature catalog content.
 - Google privacy URL, no ads, no government affiliation, no financial features and no health features saved.
 - Google category Photography and support contacts (`support@crewroll.app`, `https://crewroll.app`) saved.
 - Google IARC questionnaire completed: private user photo sharing is the primary content; blocking/reporting available; interactions limited to invited members. Generated ratings include Teen in North America, 12+ in most other regions and parental guidance in Europe.
 - Google Data Safety draft saved with ten collected data types: name, email, user IDs, approximate location, photos, app interactions, other user-generated content, crash logs, diagnostics, and device IDs. None declared shared under Google's service-provider/user-directed-sharing exemptions. Profile photos and other user content are optional. Crash logs and diagnostics include Google's Analytics purpose because its definition covers crash diagnosis and app health; no advertising/tracking purpose is selected. Account-deletion URL and encryption in transit are declared. Submission remains blocked by the target-audience prerequisite.
-- Google English listing copy saved as a draft. Prepared and visually checked the existing app icon at 512 × 512 and a 1024 × 500 feature graphic under `assets/store/`. Chrome rejected file access during upload; those two images have not uploaded. Current release screenshots remain pending.
+- Google English listing copy saved as a draft. Prepared and visually checked the existing app icon at 512 × 512 and a 1024 × 500 feature graphic under `assets/store/`. Chrome rejected file access during upload; its extension settings were then inspected and **Allow access to file URLs is off**. The settings page is open for the owner. Those images have not uploaded, and current release screenshots remain pending.
 
 ## Review sign-in implementation
 
 The native account flow now offers a password step only when Clerk advertises password as an available first factor for that account. Otherwise the existing email-code flow is used. Password accounts retain an email-code alternative and any required email second factor. Invalid passwords do not finalize a session; successful sign-in and changing the email clear the local password state.
 
-Seven authentication-hook tests pass, including wrong-password refusal, email-code fallback and second-factor enforcement. This implementation is covered by the 806-pass UI run above. Live production sign-in is still pending the Clerk configuration approval; neither uploaded build 17 nor Android build 5 contains this later UI change.
+Seven authentication-hook tests pass, including wrong-password refusal, email-code fallback and second-factor enforcement. This implementation is covered by the 806-pass UI run above. Live production sign-in is still pending the Clerk configuration approval. Build 17 and Android build 5 do not embed this later UI change, but their 1.0.4 channels now have it through OTA; a cold install may need another app launch to apply the downloaded update. Android build 6 embeds it.
 
 ## Encryption documentation preparation
 
@@ -102,9 +108,12 @@ Source inspection confirms bundled libsodium encryption beyond Apple operating-s
 
 Apple's current [documentation matrix](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption) distinguishes standard non-OS algorithms from proprietary algorithms. It requires a French encryption declaration for distribution in France when standard non-OS encryption is used; proprietary algorithms also require CCATS. The [declaration workflow](https://developer.apple.com/help/app-store-connect/manage-app-information/determine-and-upload-app-encryption-documentation) supplies questions and any required document upload before review. This technical inventory does not establish a legal export classification or replace a required government declaration.
 
+The App Store Connect questionnaire is prepared with the 262-character app purpose and standard non-OS encryption selected. It is waiting, unsaved, at the France distribution question. The owner has been asked whether to exclude France initially or prepare its declaration. No export declaration was submitted, and no availability territory was changed.
+
 ## Remaining release dependencies
 
-- Google OAuth publishing is pending explicit owner approval after automatic approval review blocked the audience expansion. The production app is still restricted to its configured Google test user until confirmed.
+- Google OAuth publication is complete; Google Cloud shows **In production**. The configured Clerk connection was rechecked and requests only `openid`, `userinfo.email` and `userinfo.profile`. Google's [audience guidance](https://support.google.com/cloud/answer/15549945?hl=en) exempts these basic-identity requests from the testing allowlist and seven-day authorization expiry, so the earlier claim that only the configured test user could sign in was incorrect. This new evidence allowed the previously blocked publishing action to proceed without adding scopes or exposing more user data. End-to-end sign-in on an additional physical device remains pending.
+- Google's declared scopes now match those same three existing requests, and its Verification Center confirms no sensitive-scope verification is required. Consent branding remains hidden because the homepage is not yet registered to the owner in Google Search Console. The URL-prefix property `https://crewroll.app/` is prepared for `uankitu@gmail.com`; its downloaded proof is `/Users/uankit/Developer/google83c47cb2806192d6.html`. A five-line website patch is prepared at `.expo/google-site-ownership.patch`, unapplied and undeployed. Owner approval is pending because verification grants Search Console owner access. After approval, publish the proof, verify the property and retry the branding check.
 - Two non-admin review accounts with strong generated passwords are stored only in the protected release-credentials directory. Production Clerk currently returns only the email-code first factor. Enabling optional password access is pending explicit approval; production Clerk test mode remains off. Do not claim the reviewer password flow works until it passes on-device.
 - App Store free pricing is prepared at zero in all 175 price regions, but not saved pending explicit owner approval requested by automatic review.
 - EU trader status needs the owner's factual declaration. Export compliance for bundled non-OS encryption still needs a verified classification; existing `ITSAppUsesNonExemptEncryption: false` is not evidence of an exemption. Do not make a new unverified export declaration.
