@@ -2064,7 +2064,8 @@ test("parsing is static, deterministic, frozen, and never evaluates target modul
 
 for (const [column, accepted] of [
   ['.addColumn("left_at", "timestamptz")', true],
-  ['.addColumn("left_at", "text")', false],
+  ['.addColumn("encrypted_checkpoint", "text")', true],
+  ['.addColumn("left_at", "bigint")', false],
   [
     '.addColumn("pauses", "jsonb", c => c.notNull().defaultTo(sql`\'[]\'::jsonb`))',
     true,

@@ -76,6 +76,13 @@ export class ApiConfigurationError extends Error {
 }
 
 export interface ApiRuntimeFactories {
+  account?(input: {
+    database: unknown;
+    environment: Environment;
+    clock: Clock;
+    media: MediaRouteDependencies | undefined;
+    tokenVerifier: ClerkTokenVerifier;
+  }): AppDependencies["account"];
   tripContinuity?(
     database: unknown,
     clock: Clock,
@@ -282,7 +289,15 @@ export async function createApiRuntime(
       clock,
       environment,
     );
+    const account = factories.account?.({
+      database: databaseHandle.database,
+      environment,
+      clock,
+      media,
+      tokenVerifier,
+    });
     app = factories.buildApp({
+      ...(account ? { account } : {}),
       ...(media
         ? { media: { ...media, ...(lifecycle ? { lifecycle } : {}) } }
         : {}),

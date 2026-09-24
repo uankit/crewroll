@@ -1202,13 +1202,13 @@ test("EAS release profiles and submission destinations stay explicit", async () 
         extends: "production",
         distribution: "store",
         channel: "testflight",
-        environment: "preview",
+        environment: "production",
       },
       "play-testing": {
         extends: "production",
         distribution: "store",
-        channel: "preview",
-        environment: "preview",
+        channel: "production",
+        environment: "production",
         android: { buildType: "app-bundle" },
       },
       production: {

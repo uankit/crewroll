@@ -10,6 +10,7 @@ export const ProblemCodeSchema = Type.Union([
   Type.Literal("IDEMPOTENCY_CONFLICT"),
   Type.Literal("INVALID_REQUEST"),
   Type.Literal("RATE_LIMITED"),
+  Type.Literal("TRIP_STORAGE_LIMIT"),
   Type.Literal("ACTIVE_TRIP_EXISTS"),
   Type.Literal("TRIP_ID_CONFLICT"),
   Type.Literal("TRIP_DURATION_INVALID"),

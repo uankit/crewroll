@@ -14,6 +14,7 @@ import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 
 export type TripPhoto = Readonly<{
+  reportable?: boolean;
   id: string;
   previewUri: string | null;
   status: string;
@@ -66,10 +67,12 @@ export function TripPhotoGallery({
   photos,
   fillEmpty = false,
   emptyState = "ready",
+  onReport,
 }: Readonly<{
   photos: readonly TripPhoto[];
   fillEmpty?: boolean;
   emptyState?: "ready" | "waiting";
+  onReport?: (assetId: string) => void;
 }>) {
   const [selected, setSelected] = useState<string | null>(null);
   const { width } = useWindowDimensions();
@@ -156,6 +159,16 @@ export function TripPhotoGallery({
                 {selectedPhoto?.status}. This is a preview; full-quality photos
                 are saved to your phone.
               </AppText>
+              {onReport && selectedPhoto?.reportable ? (
+                <Button
+                  label="Report photo"
+                  variant="text"
+                  onPress={() => {
+                    setSelected(null);
+                    onReport(selectedPhoto.id);
+                  }}
+                />
+              ) : null}
             </Stack>
           </Screen>
         </SafeAreaProvider>

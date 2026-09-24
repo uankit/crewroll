@@ -1,4 +1,13 @@
 import {
+  AccountPolicySchema,
+  AcceptTermsBodySchema,
+  DeleteAccountBodySchema,
+  AccountDeletionSchema,
+  SafetyReportBodySchema,
+  SafetyReportResponseSchema,
+  BlockMemberBodySchema,
+  BlockedMembersSchema,
+  AccountActionResponseSchema,
   TripListResponseSchema,
   TripLifecycleBodySchema,
   TripTransferStateSchema,
@@ -123,6 +132,15 @@ const operation = (
 
 function componentSchemas(): Record<string, unknown> {
   return {
+    AccountPolicy: AccountPolicySchema,
+    AcceptTermsBody: AcceptTermsBodySchema,
+    DeleteAccountBody: DeleteAccountBodySchema,
+    AccountDeletion: AccountDeletionSchema,
+    SafetyReportBody: SafetyReportBodySchema,
+    SafetyReportResponse: SafetyReportResponseSchema,
+    BlockMemberBody: BlockMemberBodySchema,
+    BlockedMembers: BlockedMembersSchema,
+    AccountActionResponse: AccountActionResponseSchema,
     ProfileResponse: ProfileResponseSchema,
     SyncProfileBody: SyncProfileBodySchema,
     DeviceRegistrationHeaders:
@@ -177,6 +195,75 @@ export function createOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: { title: "CrewRoll Control Plane", version: "1.0.0" },
     paths: {
+      "/v1/account": {
+        get: operation(
+          "getAccountPolicy",
+          [],
+          { "200": response("AccountPolicy") },
+          undefined,
+          "ClerkBearer",
+        ),
+      },
+      "/v1/account/terms": {
+        put: operation(
+          "acceptAccountTerms",
+          [],
+          { "200": response("AccountPolicy") },
+          "AcceptTermsBody",
+          "ClerkBearer",
+        ),
+      },
+      "/v1/account/deletion": {
+        post: operation(
+          "requestAccountDeletion",
+          [],
+          { "202": response("AccountDeletion") },
+          "DeleteAccountBody",
+          "ClerkBearer",
+        ),
+      },
+      "/v1/account/deletions/{requestId}": {
+        get: {
+          ...operation("getAccountDeletion", [pathId("requestId")], {
+            "200": response("AccountDeletion"),
+          }),
+          security: [],
+        },
+      },
+      "/v1/account/reports": {
+        post: operation(
+          "reportSafetyIssue",
+          [],
+          { "201": response("SafetyReportResponse") },
+          "SafetyReportBody",
+          "ClerkBearer",
+        ),
+      },
+      "/v1/account/blocks": {
+        get: operation(
+          "getBlockedMembers",
+          [],
+          { "200": response("BlockedMembers") },
+          undefined,
+          "ClerkBearer",
+        ),
+        post: operation(
+          "blockMember",
+          [],
+          { "200": response("AccountActionResponse") },
+          "BlockMemberBody",
+          "ClerkBearer",
+        ),
+      },
+      "/v1/account/blocks/{userId}": {
+        delete: operation(
+          "unblockMember",
+          [pathId("userId")],
+          { "200": response("AccountActionResponse") },
+          undefined,
+          "ClerkBearer",
+        ),
+      },
       "/v1/trips/{tripId}/continuity": {
         get: operation(
           "getTripContinuity",

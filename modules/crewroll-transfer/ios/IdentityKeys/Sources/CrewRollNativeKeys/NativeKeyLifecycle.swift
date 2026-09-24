@@ -113,6 +113,7 @@ public struct ActiveTripMetadata: Codable, Equatable, Sendable {
 }
 
 public protocol NativeKeyStore: AnyObject {
+    func eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) throws -> Void) throws
     func clearSession() throws
     func mediaContext() throws -> NativeMediaContext?
     func loadIdentity(accountHash: String) throws -> DeviceIdentityMaterial?
@@ -153,6 +154,7 @@ public struct NativeMediaContext {
 }
 
 public extension NativeKeyStore {
+    func eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) throws -> Void) throws { throw NativeKeyError.invalidCommand }
     func mediaContext() throws -> NativeMediaContext? { nil }
 }
 
@@ -167,8 +169,13 @@ public protocol NativeKeyCrypto: AnyObject {
 }
 
 public protocol P256IdentityProvider: AnyObject {
+    func removeIdentity(scope: NativeKeyScope) throws
     func createPublicKey(scope: NativeKeyScope) throws -> Data
     func loadPublicKey(scope: NativeKeyScope) throws -> Data?
+}
+
+public extension P256IdentityProvider {
+    func removeIdentity(scope: NativeKeyScope) throws { throw NativeKeyError.invalidCommand }
 }
 
 public struct NativeDeviceIdentity: Equatable, Sendable {
@@ -907,6 +914,11 @@ public final class NativeKeyLifecycle {
     }
 
     public func clearDeviceSession() throws { try store.clearSession() }
+    public func eraseAccount(accountID: String) throws -> String {
+        let hash = try hashAccountID(accountID)
+        try store.eraseAccount(accountHash: hash, removeIdentity: { try self.p256.removeIdentity(scope: $0) })
+        return hash
+    }
 
     public func deactivateTrip(tripID: String) throws {
         let session = try currentSession()

@@ -12,6 +12,8 @@ import type { useProfileCompletion } from "../infrastructure/auth/useProfileComp
 import type { PhotoLibraryPermissionPort } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { usePhotoAccessSetup } from "./usePhotoAccessSetup";
 import { SessionLoadingScreen } from "./SessionLoadingScreen";
+import { TermsScreen } from "../features/auth/TermsScreen";
+import type { useAccountTerms } from "./useAccountTerms";
 
 type Setup = Readonly<{ required: boolean; screen: ReactNode }>;
 const AccountSetupContext = createContext<Setup>({
@@ -26,23 +28,31 @@ export function AccountSetupProvider({
   scope,
   permission,
   onUseAnotherAccount,
+  terms,
 }: PropsWithChildren<{
   accountId: string | null;
   profile: ReturnType<typeof useProfileCompletion>;
   scope: string;
   permission: PhotoLibraryPermissionPort;
   onUseAnotherAccount(): void;
+  terms?: ReturnType<typeof useAccountTerms>;
 }>) {
   const photo = usePhotoAccessSetup({ accountId, scope, permission });
   const profileReady = profile.accountId === accountId && profile.ready;
-  const required = accountId !== null && (!profileReady || !photo.complete);
+  const termsReady = terms === undefined || terms.ready;
+  const required =
+    accountId !== null && (!profileReady || !termsReady || !photo.complete);
   const step = !profileReady
     ? profile.accountId !== accountId || profile.checking
       ? "loading"
       : "profile"
-    : photo.checking
-      ? "loading"
-      : "photos";
+    : !termsReady
+      ? terms?.checking
+        ? "loading"
+        : "terms"
+      : photo.checking
+        ? "loading"
+        : "photos";
 
   const screen = (
     <FlowTransition step={step}>
@@ -59,6 +69,14 @@ export function AccountSetupProvider({
             void profile.save();
           }}
           onUseAnotherAccount={onUseAnotherAccount}
+        />
+      ) : step === "terms" && terms ? (
+        <TermsScreen
+          busy={terms.busy}
+          error={terms.error}
+          onAccept={() => void terms.accept()}
+          onRetry={terms.retry}
+          onBack={onUseAnotherAccount}
         />
       ) : (
         <PhotoAccessScreen

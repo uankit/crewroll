@@ -3,9 +3,13 @@ import type {
   SessionTokenSource,
 } from "../application/auth/ports";
 import type { TripApiPort } from "../application/trips/ports";
-import { createCrewRollApi } from "../infrastructure/api/crewRollApi";
+import {
+  createCrewRollApi,
+  type AccountApi,
+} from "../infrastructure/api/crewRollApi";
 
 export type MobileDependencies = Readonly<{
+  accountApi: AccountApi;
   profileApi: Pick<ReturnType<typeof createCrewRollApi>, "syncProfile">;
   deviceRegistration: DeviceRegistrationPort;
   tripApi: TripApiPort &
@@ -30,6 +34,7 @@ export function createMobileDependencies(
 ): MobileDependencies {
   const crewRollApi = createCrewRollApi(input);
   return Object.freeze({
+    accountApi: crewRollApi,
     profileApi: crewRollApi,
     deviceRegistration: crewRollApi,
     tripApi: crewRollApi,

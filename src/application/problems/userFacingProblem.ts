@@ -12,6 +12,11 @@ export const transportUnavailableProblem: UserFacingProblem = {
 };
 
 export const userFacingProblems = {
+  TRIP_STORAGE_LIMIT: {
+    tone: "warning",
+    message:
+      "This trip has reached its sharing limit. Your original photos remain on your phone.",
+  },
   AUTH_REQUIRED: {
     tone: "critical",
     message: "Your session ended. Sign in again.",

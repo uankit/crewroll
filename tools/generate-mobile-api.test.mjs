@@ -40,6 +40,13 @@ test("generates the exact bounded current mobile operations deterministically", 
     async () => undefined,
     async ({ inputPath, outputPath }) => {
       assert.deepEqual(requiredOperations, [
+        "getAccountPolicy",
+        "acceptAccountTerms",
+        "requestAccountDeletion",
+        "reportSafetyIssue",
+        "getBlockedMembers",
+        "blockMember",
+        "unblockMember",
         "getTripContinuity",
         "changeTripContinuity",
         "listTrips",

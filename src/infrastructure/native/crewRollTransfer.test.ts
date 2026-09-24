@@ -114,6 +114,7 @@ describe("CrewRoll native transfer boundary", () => {
       "deactivateTrip",
       "discardProvisionalTripKey",
       "ensureDeviceIdentity",
+      "eraseAccount",
       "getSnapshot",
       "importTripKey",
       "installDeviceSession",

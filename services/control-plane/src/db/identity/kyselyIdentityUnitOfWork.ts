@@ -4,6 +4,10 @@ import type { IdentityUnitOfWork } from "../../modules/identity/ports/identityUn
 import type { ProfileRepository } from "../../modules/identity/ports/profileRepository.js";
 import { DomainError } from "../../shared/errors/domainError.js";
 import type { Database } from "../schema/tables.js";
+import {
+  enqueueAccountDeletion,
+  subjectHash,
+} from "../account/accountDeletion.js";
 
 function isEventRace(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -24,7 +28,8 @@ export function createKyselyIdentityUnitOfWork(
     async synchronizeProfile(clerkSubject, displayName, candidateUserId, now) {
       const result = await sql<{ id: string }>`
         insert into users (id, clerk_subject, display_name, created_at, updated_at, deleted_at)
-        values (${candidateUserId}::uuid, ${clerkSubject}, ${displayName}, ${now}, ${now}, null)
+        select ${candidateUserId}::uuid, ${clerkSubject}, ${displayName}, ${now}, ${now}, null
+        where not exists (select 1 from account_deleted_subjects where subject_hash = ${await subjectHash(clerkSubject)})
         on conflict (clerk_subject) do update set display_name = excluded.display_name, updated_at = excluded.updated_at
         where users.deleted_at is null
         returning id
@@ -72,6 +77,19 @@ export function createKyselyIdentityUnitOfWork(
           ) {
             if (candidateUserId === null)
               throw new DomainError("INTERNAL_ERROR");
+            const finished = await transaction
+              .selectFrom("account_deleted_subjects")
+              .select("subject_hash")
+              .where("subject_hash", "=", await subjectHash(event.clerkSubject))
+              .executeTakeFirst();
+            if (finished) {
+              await transaction
+                .updateTable("account_deletions")
+                .set({ provider_deleted_at: now })
+                .where("clerk_subject", "=", event.clerkSubject)
+                .execute();
+              return "applied" as const;
+            }
             const result = await sql<{ id: string }>`
               insert into users (
                 id, clerk_subject, display_name, created_at, updated_at, deleted_at
@@ -93,16 +111,13 @@ export function createKyselyIdentityUnitOfWork(
             `.execute(transaction);
             const userId = result.rows[0]?.id;
             if (userId === undefined) throw new DomainError("INTERNAL_ERROR");
-            await transaction
-              .updateTable("devices")
-              .set({
-                encrypted_push_token: null,
-                push_token_hash: null,
-                revoked_at: sql`coalesce(revoked_at, ${now})`,
-                updated_at: sql`case when revoked_at is null then ${now} else updated_at end`,
-              })
-              .where("user_id", "=", userId)
-              .execute();
+            await enqueueAccountDeletion(
+              transaction,
+              userId,
+              event.clerkSubject,
+              now,
+              true,
+            );
           }
           return "applied" as const;
         });

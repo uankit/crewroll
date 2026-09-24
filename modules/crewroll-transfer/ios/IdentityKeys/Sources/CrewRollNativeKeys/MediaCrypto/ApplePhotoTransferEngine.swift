@@ -119,6 +119,20 @@ public actor ApplePhotoTransferEngine {
         if !paused && generation == policyGeneration && ifCurrent() { await activate(ifCurrent: ifCurrent) }
     }
     public func stop() async { await setPolicy(paused: true, cellularAllowed: cellularAllowed) }
+    public func eraseAccount(accountHash: String) async throws {
+        guard accountHash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw NativeKeyError.invalidCommand }
+        await stop()
+        if journalScope?.accountHash == accountHash {
+            journal = nil; journalScope = nil; previews = nil; progressScope = nil
+            globalBlocker = nil; previewBlocker = nil
+        }
+        if FileManager.default.fileExists(atPath: root.path) {
+            for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where directory.lastPathComponent.hasPrefix(accountHash + ".") {
+                try FileManager.default.removeItem(at: directory)
+            }
+        }
+        invalidated(0)
+    }
     public func retry(workID: String) async throws {
         if var record = journal?.record(workID) { record.blocker = nil; record.nextAttemptAt = nil; record.retryAttempts = nil; try journal?.put(record) }
         let assetID = journal?.record(workID)?.assetID ?? workID
@@ -755,6 +769,7 @@ public actor ApplePhotoTransferEngine {
               current.session.deviceID == context.session.deviceID else { throw CancellationError() }
     }
     private func blocker(_ error: Error) -> String? {
+        if let http = error as? NativeTransferHTTPError, http.authenticated && http.code == "TRIP_STORAGE_LIMIT" { return "SHARING_LIMIT" }
         if let photo = error as? PhotoLibraryFailure {
             switch photo { case .permission: return "PHOTO_PERMISSION"; case .missing: return "SOURCE_MISSING"; default: return "INTEGRITY_FAILURE" }
         }

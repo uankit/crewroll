@@ -9,6 +9,13 @@ const root = path.dirname(
 );
 
 export const requiredOperations = [
+  "getAccountPolicy",
+  "acceptAccountTerms",
+  "requestAccountDeletion",
+  "reportSafetyIssue",
+  "getBlockedMembers",
+  "blockMember",
+  "unblockMember",
   "getTripContinuity",
   "changeTripContinuity",
   "listTrips",
@@ -65,6 +72,69 @@ const tripPath = () => parameter("tripId", "path", UUID_V7_SCHEMA);
 const membershipPath = () => parameter("membershipId", "path", UUID_SCHEMA);
 
 const operationExpectations = [
+  {
+    method: "get",
+    operationId: "getAccountPolicy",
+    parameters: [],
+    path: "/v1/account",
+    request: null,
+    response: "AccountPolicy",
+    successStatus: "200",
+  },
+  {
+    method: "put",
+    operationId: "acceptAccountTerms",
+    parameters: [],
+    path: "/v1/account/terms",
+    request: "AcceptTermsBody",
+    response: "AccountPolicy",
+    successStatus: "200",
+  },
+  {
+    method: "post",
+    operationId: "requestAccountDeletion",
+    parameters: [],
+    path: "/v1/account/deletion",
+    request: "DeleteAccountBody",
+    response: "AccountDeletion",
+    successStatus: "202",
+  },
+  {
+    method: "post",
+    operationId: "reportSafetyIssue",
+    parameters: [],
+    path: "/v1/account/reports",
+    request: "SafetyReportBody",
+    response: "SafetyReportResponse",
+    successStatus: "201",
+  },
+  {
+    method: "get",
+    operationId: "getBlockedMembers",
+    parameters: [],
+    path: "/v1/account/blocks",
+    request: null,
+    response: "BlockedMembers",
+    successStatus: "200",
+  },
+  {
+    method: "post",
+    operationId: "blockMember",
+    parameters: [],
+    path: "/v1/account/blocks",
+    request: "BlockMemberBody",
+    response: "AccountActionResponse",
+    successStatus: "200",
+  },
+  {
+    method: "delete",
+    operationId: "unblockMember",
+    parameters: [parameter("userId", "path", UUID_SCHEMA)],
+    path: "/v1/account/blocks/{userId}",
+    request: null,
+    response: "AccountActionResponse",
+    successStatus: "200",
+  },
   {
     method: "get",
     operationId: "getTripContinuity",
@@ -544,6 +614,15 @@ function renderPaths(lines) {
 
 function renderGeneratedTypes() {
   const importedTypes = [
+    "AccountPolicy",
+    "AcceptTermsBody",
+    "DeleteAccountBody",
+    "AccountDeletion",
+    "SafetyReportBody",
+    "SafetyReportResponse",
+    "BlockMemberBody",
+    "BlockedMembers",
+    "AccountActionResponse",
     "TripContinuity",
     "TripContinuityBody",
     "TripListResponse",

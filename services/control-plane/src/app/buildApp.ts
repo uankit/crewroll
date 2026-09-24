@@ -20,6 +20,7 @@ import {
 } from "../modules/identity/index.js";
 import { tripRoutes } from "../modules/trips/index.js";
 import { mediaRoutes } from "../modules/media/index.js";
+import { accountRoutes } from "../modules/account/index.js";
 
 const corsMethods = [
   "GET",
@@ -46,6 +47,7 @@ function sendProblem(
   if (kind === "AUTH_REQUIRED" || kind === "AUTH_INVALID") {
     reply.header("WWW-Authenticate", "Bearer");
   }
+  if (kind === "RATE_LIMITED") reply.header("Retry-After", "60");
   return reply
     .code(problem.status)
     .type("application/problem+json")
@@ -116,6 +118,30 @@ export function buildApp(
 
   app.register(helmet);
 
+  if (dependencies.account) {
+    const account = dependencies.account;
+    app.addHook("preHandler", async (request) => {
+      const route = request.routeOptions.url ?? "";
+      if (/\/(transfer-state|drained|previews)$/.test(route)) return;
+      if (!/^\/v1\/(trips|devices|profile|invites)(\/|$)/.test(route)) return;
+      const actor = await account.tokenVerifier.verify(
+        request.headers.authorization,
+      );
+      const operation =
+        request.method === "GET"
+          ? "read"
+          : route.includes("join") || route.includes("invite")
+            ? "join"
+            : route === "/v1/trips"
+              ? "create"
+              : route === "/v1/devices"
+                ? "register"
+                : "write";
+      await account.service.guard(actor.clerkSubject, operation);
+    });
+    app.register(accountRoutes, account);
+  }
+
   if (
     dependencies.environment.nodeEnvironment !== "production" &&
     dependencies.environment.debugCorsOrigins.length > 0
@@ -167,14 +193,14 @@ export function buildApp(
     let pending: Promise<void> | undefined;
     const clean = () => {
       if (pending) return;
-      pending = media
-        .cleanup()
-        .then(
-          () => undefined,
-          () => {
+      pending = Promise.allSettled([
+        media.cleanup(),
+        dependencies.account?.service.cleanup(),
+      ])
+        .then((results) => {
+          if (results.some((result) => result.status === "rejected"))
             dependencies.logger.warn({ event: "media.cleanup.retry" });
-          },
-        )
+        })
         .finally(() => {
           pending = undefined;
         });

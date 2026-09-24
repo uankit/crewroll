@@ -71,6 +71,7 @@ data class NativeMediaContext(val scope: NativeKeyScope, val session: DeviceSess
 }
 
 interface NativeKeyStore {
+  fun eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) -> Unit) { throw NativeKeyException.invalidCommand() }
   fun mediaContext(): NativeMediaContext? = null
   fun loadIdentity(accountHash: String): DeviceIdentityMaterial?
   fun reservePendingIdentity(accountHash: String, makeInstallationId: () -> String): NativeKeyScope
@@ -99,6 +100,7 @@ interface NativeKeyCrypto {
   fun open(ciphertext: ByteArray, publicKey: ByteArray, privateKey: ByteArray): ByteArray
 }
 interface P256IdentityProvider {
+  fun removeIdentity(scope: NativeKeyScope) { throw NativeKeyException.invalidCommand() }
   fun createPublicKey(scope: NativeKeyScope): ByteArray
   fun loadPublicKey(scope: NativeKeyScope): ByteArray?
 }
@@ -651,6 +653,11 @@ class NativeKeyLifecycle(
   }
 
   fun clearDeviceSession() { store.clearSession() }
+  fun eraseAccount(accountId: String): String {
+    val hash = hashAccountId(accountId)
+    store.eraseAccount(hash) { p256.removeIdentity(it) }
+    return hash
+  }
 
   fun deactivateTrip(tripId: String) {
     val session = currentSession()

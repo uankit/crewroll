@@ -1,4 +1,15 @@
 import {
+  ACCOUNT_TERMS_VERSION,
+  AccountPolicySchema,
+  AccountDeletionSchema,
+  SafetyReportResponseSchema,
+  BlockedMembersSchema,
+  AccountActionResponseSchema,
+  type AccountPolicy,
+  type AccountDeletion,
+  type SafetyReportBody,
+  type BlockMemberBody,
+  type BlockedMembers,
   TripContinuitySchema,
   type TripContinuity,
   type TripContinuityBody,
@@ -49,7 +60,8 @@ export class CrewRollTransportProblem extends Error {
 }
 
 export type CrewRollApi = DeviceRegistrationPort &
-  TripApiPort & {
+  TripApiPort &
+  AccountApi & {
     rejectMember(
       deviceId: string,
       commandId: string,
@@ -83,6 +95,16 @@ export type CrewRollApi = DeviceRegistrationPort &
       inviteCode: string,
     ): Promise<GeneratedResponse<"previewInvite">>;
   };
+
+export interface AccountApi {
+  getAccountPolicy(): Promise<AccountPolicy>;
+  acceptAccountTerms(): Promise<AccountPolicy>;
+  requestAccountDeletion(): Promise<AccountDeletion>;
+  reportSafetyIssue(body: SafetyReportBody): Promise<{ reportId: string }>;
+  getBlockedMembers(): Promise<BlockedMembers>;
+  blockMember(body: BlockMemberBody): Promise<void>;
+  unblockMember(userId: string): Promise<void>;
+}
 
 type GeneratedResponse<Operation extends MobileOperationId> =
   MobileOperationMap[Operation]["response"];
@@ -322,6 +344,72 @@ function parseCreateTripOutcome(
 
 class OpenApiCrewRollApi implements CrewRollApi {
   constructor(private readonly client: MobileClient) {}
+
+  private checked<T>(schema: RuntimeSchema, value: T): T {
+    if (!matchesRuntimeSchema(schema, value))
+      throw new CrewRollTransportProblem();
+    return value;
+  }
+  async getAccountPolicy() {
+    return this.checked(
+      AccountPolicySchema as RuntimeSchema,
+      await this.request<AccountPolicy>(() => this.client.GET("/v1/account")),
+    );
+  }
+  async acceptAccountTerms() {
+    return this.checked(
+      AccountPolicySchema as RuntimeSchema,
+      await this.request<AccountPolicy>(() =>
+        this.client.PUT("/v1/account/terms", {
+          body: { termsVersion: ACCOUNT_TERMS_VERSION },
+        }),
+      ),
+    );
+  }
+  async requestAccountDeletion() {
+    return this.checked(
+      AccountDeletionSchema as RuntimeSchema,
+      await this.request<AccountDeletion>(() =>
+        this.client.POST("/v1/account/deletion", {
+          body: { confirmation: "DELETE" },
+        }),
+      ),
+    );
+  }
+  async reportSafetyIssue(body: SafetyReportBody) {
+    return this.checked(
+      SafetyReportResponseSchema as RuntimeSchema,
+      await this.request<{ reportId: string }>(() =>
+        this.client.POST("/v1/account/reports", { body }),
+      ),
+    );
+  }
+  async getBlockedMembers() {
+    return this.checked(
+      BlockedMembersSchema as RuntimeSchema,
+      await this.request<BlockedMembers>(() =>
+        this.client.GET("/v1/account/blocks"),
+      ),
+    );
+  }
+  async blockMember(body: BlockMemberBody) {
+    this.checked(
+      AccountActionResponseSchema as RuntimeSchema,
+      await this.request(() =>
+        this.client.POST("/v1/account/blocks", { body }),
+      ),
+    );
+  }
+  async unblockMember(userId: string) {
+    this.checked(
+      AccountActionResponseSchema as RuntimeSchema,
+      await this.request(() =>
+        this.client.DELETE("/v1/account/blocks/{userId}", {
+          params: { path: { userId } },
+        }),
+      ),
+    );
+  }
 
   async getTripContinuity(
     deviceId: string,

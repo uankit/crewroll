@@ -1,4 +1,5 @@
 import { Image } from "expo-image";
+import { LegalLinks } from "./LegalLinks";
 import { useEffect } from "react";
 import {
   Keyboard,
@@ -180,11 +181,7 @@ function AccountContents({
       description="Sign in or create your account."
       label="Your account"
       onBack={onBack}
-      footer={
-        <AppText variant="caption" tone="secondary" style={styles.terms}>
-          By continuing, you agree to our{"\n"}Terms &amp; Privacy Policy.
-        </AppText>
-      }
+      footer={<LegalLinks />}
     >
       <View style={styles.intro}>
         <Button

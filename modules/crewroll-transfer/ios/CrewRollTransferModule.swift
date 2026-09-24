@@ -88,6 +88,26 @@ public final class CrewRollTransferModule: Module {
         }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
+    AsyncFunction("eraseAccount") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion", "accountId"])
+        let accountID = try Self.string(command, "accountId")
+        let lifecycle = try self.lifecycle()
+        let engine = try self.engine()
+        let epoch = self.transferCommands.advance()
+        try CrewRollAppleRuntime.get().policy(enabled: false)
+        Task {
+          await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+          do {
+            guard self.transferCommands.matches(epoch) else { throw NativeKeyError.invalidCommand }
+            await AppleBackgroundTransfer.shared.clear()
+            let hash = try lifecycle.eraseAccount(accountID: accountID)
+            try await engine.eraseAccount(accountHash: hash)
+            promise.resolve(nil)
+          } catch { promise.reject(Self.bridgeException(error)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("createTripKey") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .createTripKey)

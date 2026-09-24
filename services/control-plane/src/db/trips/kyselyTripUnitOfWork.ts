@@ -1,4 +1,5 @@
 import { sql, type Kysely, type Transaction } from "kysely";
+import { requireUnblockedTrip } from "../account/blockPolicy.js";
 
 import type { Database } from "../schema/tables.js";
 import type {
@@ -774,6 +775,8 @@ function transactionAdapter(
         .executeTakeFirst();
     },
     async insertMembership(record) {
+      if (record.state !== "REJECTED")
+        await requireUnblockedTrip(transaction, record.tripId, record.userId);
       await transaction
         .insertInto("trip_members")
         .values({
@@ -959,6 +962,8 @@ function transactionAdapter(
         .executeTakeFirstOrThrow();
     },
     async updateMembership(record) {
+      if (record.state !== "REJECTED")
+        await requireUnblockedTrip(transaction, record.tripId, record.userId);
       await transaction
         .updateTable("trip_members")
         .set({

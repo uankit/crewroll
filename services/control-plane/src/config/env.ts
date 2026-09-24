@@ -35,6 +35,11 @@ function isJsonObject(value: string): boolean {
 }
 
 const sourceSchema = z.object({
+  APPLE_SIGN_IN_CLIENT_ID: nonemptySecretSchema.optional(),
+  APPLE_SIGN_IN_TEAM_ID: nonemptySecretSchema.optional(),
+  APPLE_SIGN_IN_KEY_ID: nonemptySecretSchema.optional(),
+  APPLE_SIGN_IN_PRIVATE_KEY: nonemptySecretSchema.optional(),
+  REQUIRE_TERMS: z.enum(["true", "false"]).optional(),
   APNS_BUNDLE_ID: nonemptySecretSchema.optional(),
   APNS_KEY_ID: nonemptySecretSchema.optional(),
   APNS_PRIVATE_KEY: nonemptySecretSchema.optional(),
@@ -85,6 +90,13 @@ export type NodeEnvironment = z.infer<typeof nodeEnvironmentSchema>;
 export type LogLevel = z.infer<typeof logLevelSchema>;
 
 export interface Environment {
+  readonly appleSignIn?: {
+    clientId: string;
+    teamId: string;
+    keyId: string;
+    privateKey: string;
+  };
+  readonly requireTerms?: boolean;
   readonly localMediaDirectory?: string;
   readonly localMediaOrigin?: string;
   readonly apnsBundleId: string | undefined;
@@ -314,7 +326,27 @@ export function loadEnvironment(
 
   const normalizedClerkAuthorizedParties = clerkAuthorizedParties ?? [];
 
+  const appleKeys = [
+    "APPLE_SIGN_IN_CLIENT_ID",
+    "APPLE_SIGN_IN_TEAM_ID",
+    "APPLE_SIGN_IN_KEY_ID",
+    "APPLE_SIGN_IN_PRIVATE_KEY",
+  ] as const;
+  if (
+    appleKeys.some((key) => source[key]) &&
+    !appleKeys.every((key) => source[key])
+  )
+    throw new EnvironmentError(appleKeys.filter((key) => !source[key]));
   const environment = {
+    appleSignIn: source.APPLE_SIGN_IN_CLIENT_ID
+      ? {
+          clientId: source.APPLE_SIGN_IN_CLIENT_ID,
+          teamId: source.APPLE_SIGN_IN_TEAM_ID!,
+          keyId: source.APPLE_SIGN_IN_KEY_ID!,
+          privateKey: source.APPLE_SIGN_IN_PRIVATE_KEY!,
+        }
+      : undefined,
+    requireTerms: parsed.data.REQUIRE_TERMS === "true",
     apnsBundleId: parsed.data.APNS_BUNDLE_ID,
     apnsKeyId: parsed.data.APNS_KEY_ID,
     apnsPrivateKey: parsed.data.APNS_PRIVATE_KEY,

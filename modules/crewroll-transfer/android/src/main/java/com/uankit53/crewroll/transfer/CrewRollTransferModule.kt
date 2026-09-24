@@ -97,6 +97,17 @@ class CrewRollTransferModule : Module() {
         engine().stop().thenApply { mediaSession.change { lifecycle.clearDeviceSession() }; null }
       }
     }
+    AsyncFunction("eraseAccount") { command: Map<String, Any?>, promise: Promise ->
+      future("eraseAccount", promise) {
+        requireCommand(command, setOf("protocolVersion", "accountId"))
+        val accountId = string(command, "accountId")
+        runtime().policy(false)
+        engine().stop().thenCompose {
+          val hash = mediaSession.change { lifecycle().eraseAccount(accountId) }
+          engine().eraseAccount(hash)
+        }.thenApply { null }
+      }
+    }
     AsyncFunction("createTripKey") { command: Map<String, Any?>, promise: Promise ->
       bridge("createTripKey", promise) {
         NativeCommandDecoder.require(command, NativeCommandKind.CREATE_TRIP_KEY)

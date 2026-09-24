@@ -34,9 +34,11 @@ import {
 import { Type } from "@sinclair/typebox";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { MediaActor, MediaService } from "./index.js";
+import type { CiphertextStore } from "./ports/mediaService.js";
 import type { LocalCiphertextGateway } from "./ports/localCiphertextGateway.js";
 
 export interface MediaRouteDependencies {
+  readonly ciphertextStore?: CiphertextStore;
   readonly lifecycle?: {
     read(actor: MediaActor, tripId: string): Promise<TripTransferState>;
     drained(

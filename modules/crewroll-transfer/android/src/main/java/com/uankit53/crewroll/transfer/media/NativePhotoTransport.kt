@@ -13,7 +13,7 @@ import org.json.JSONObject
 
 class PhotoNetworkUnavailable : java.io.IOException("Network unavailable")
 
-class TransferHttpException(val status: Int, val authenticated: Boolean) : RuntimeException("photo request failed")
+class TransferHttpException(val status: Int, val authenticated: Boolean, val code: String? = null) : RuntimeException("photo request failed")
 interface NativePhotoTransportPort {
     fun cancel()
     fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject
@@ -57,6 +57,19 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
                 val bytes = body.toString().toByteArray(); connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json"); connection.setFixedLengthStreamingMode(bytes.size)
                 connection.outputStream.use { it.write(bytes) }
+            }
+            if (connection.responseCode == 409) {
+                val errorBytes = connection.errorStream?.use { input ->
+                    val output = ByteArrayOutputStream(); val buffer = ByteArray(1024)
+                    while (output.size() <= 16_384) {
+                        val count = input.read(buffer, 0, minOf(buffer.size, 16_385 - output.size()))
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                val code = if (errorBytes != null && errorBytes.size <= 16_384) runCatching { JSONObject(String(errorBytes, Charsets.UTF_8)).optString("code") }.getOrNull() else null
+                throw TransferHttpException(409, true, if (code == "TRIP_STORAGE_LIMIT") code else null)
             }
             checkResponse(connection, true)
             val bytes = connection.inputStream.use { input ->

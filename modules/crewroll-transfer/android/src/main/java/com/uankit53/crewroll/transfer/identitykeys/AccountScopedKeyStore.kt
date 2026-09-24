@@ -13,6 +13,23 @@ internal interface ScopedDatabasePersistence {
 
 internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePersistence) : NativeKeyStore {
   private val lock = ReentrantLock()
+  override fun eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) -> Unit): Unit = transaction { database ->
+    if (!accountHash.matches(Regex("^[a-f0-9]{64}$"))) throw NativeKeyException.invalidCommand()
+    val installations = database.scopes.values.filter { it.scope.accountHash == accountHash }.map { it.scope.installationId }.toMutableSet()
+    database.identities[accountHash]?.let { installations.add(it.installationId) }
+    database.pendingIdentities[accountHash]?.let { installations.add(it) }
+    installations.forEach { removeIdentity(NativeKeyScope(accountHash, it)) }
+    database.identities.remove(accountHash)?.e2eePrivateKey?.fill(0)
+    database.pendingIdentities.remove(accountHash)
+    database.scopes.entries.removeAll { entry ->
+      if (entry.value.scope.accountHash != accountHash) false else {
+        entry.value.session?.backgroundBearer?.fill(0)
+        entry.value.trips.values.forEach { it.key.fill(0) }
+        true
+      }
+    }
+    if (database.selectedScope?.accountHash == accountHash) database.selectedScope = null
+  }
   override fun loadIdentity(accountHash: String): DeviceIdentityMaterial? = read { database ->
     database.identities[accountHash]?.deepCopy()
   }

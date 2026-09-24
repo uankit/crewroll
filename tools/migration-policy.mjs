@@ -227,13 +227,13 @@ function validateCallbackParameter(
 }
 
 function validateAlterTableAddColumn(alteration, context, opaqueCode) {
-  // Additive nullable timestamps cannot rewrite existing rows. Keep the
+  // Additive nullable timestamps and text do not rewrite existing rows. Keep the
   // accepted grammar literal and narrow, just like the existing boolean form.
   if (
     alteration.args.length === 2 &&
     isDirectString(alteration.args[0]) &&
     isDirectString(alteration.args[1]) &&
-    alteration.args[1].text === "timestamptz"
+    ["timestamptz", "text"].includes(alteration.args[1].text)
   )
     return null;
   if (

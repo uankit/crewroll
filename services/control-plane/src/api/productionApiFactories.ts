@@ -1,4 +1,6 @@
 import { createKyselyTripContinuity } from "../db/trips/kyselyTripContinuity.js";
+import { createKyselyAccountService } from "../db/account/kyselyAccountService.js";
+import { createClerkIdentityDeletion } from "../platform/clerk/deleteClerkIdentity.js";
 import { createOwnerInviteVault } from "../platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../db/trips/kyselyTripLifecycle.js";
 import { buildApp } from "../app/buildApp.js";
@@ -59,6 +61,23 @@ function databaseHandle(environment: Environment) {
 }
 
 export const productionApiFactories: ApiRuntimeFactories = {
+  account: ({ database, environment, clock, media, tokenVerifier }) =>
+    media?.ciphertextStore
+      ? {
+          tokenVerifier,
+          service: createKyselyAccountService(
+            database as Parameters<typeof createKyselyAccountService>[0],
+            media.ciphertextStore,
+            clock,
+            createClerkIdentityDeletion(
+              required(environment.clerkSecretKey),
+              environment.appleSignIn,
+              environment.backgroundCredentialHmacKeyV1,
+            ),
+            environment.requireTerms ?? false,
+          ),
+        }
+      : undefined,
   tripContinuity: (database, clock, environment) =>
     createKyselyTripContinuity(
       database as Parameters<typeof createKyselyTripContinuity>[0],
@@ -83,6 +102,7 @@ export const productionApiFactories: ApiRuntimeFactories = {
       now: () => clock.now(),
     });
     return {
+      ciphertextStore: local.store,
       authenticator,
       localObjects: local.gateway,
       service: createKyselyMediaService(

@@ -1,0 +1,22 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "crewroll-site",
+  "main": "site/index.mjs",
+  "account_id": "8cdc605c7487d2a65f3c5f6e53f17bf8",
+  "compatibility_date": "2026-09-09",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "crewroll.app", "custom_domain": true },
+    { "pattern": "www.crewroll.app", "custom_domain": true },
+    { "pattern": "go.crewroll.app", "custom_domain": true },
+  ],
+  "vars": {
+    "API_ORIGIN": "https://crewroll-api-production.uankitu.workers.dev",
+    "BETA_API_ORIGIN": "https://crewroll-api.uankitu.workers.dev",
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "invocation_logs": false, "head_sampling_rate": 1 },
+  },
+}

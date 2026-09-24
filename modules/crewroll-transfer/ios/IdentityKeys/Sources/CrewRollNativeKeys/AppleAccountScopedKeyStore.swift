@@ -48,13 +48,18 @@ private struct AppleScopedDatabase: Codable {
 /// aliases inside the authenticated record use only account hashes and
 /// installation IDs, and every mutation commits as one Keychain update.
 public final class AppleAccountScopedKeyStore: NativeKeyStore {
-    private let service = "com.uankit53.airmesh.native-keys.v2"
+    private let service: String
     private let databaseAccount = "scoped-database.v2"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let lock = NSRecursiveLock()
 
-    public init() {
+    public convenience init() {
+        self.init(service: "com.uankit53.airmesh.native-keys.v2")
+    }
+
+    init(service: String) {
+        self.service = service
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .millisecondsSince1970
         decoder.dateDecodingStrategy = .millisecondsSince1970
@@ -63,6 +68,30 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
     public func loadIdentity(accountHash: String) throws -> DeviceIdentityMaterial? {
         try read { database in
             database.identities[accountHash].map(scopedIdentityCopy)
+        }
+    }
+
+    public func eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) throws -> Void) throws {
+        guard scopedValidAccountHash(accountHash) else { throw NativeKeyError.invalidCommand }
+        try transaction { database in
+            var installations = Set(database.scopes.values.filter { $0.scope.accountHash == accountHash }.map { $0.scope.installationID })
+            if let identity = database.identities[accountHash] { installations.insert(identity.installationID) }
+            if let pending = database.pendingIdentities[accountHash] { installations.insert(pending) }
+            // Delete hardware keys before committing the record removal, so a
+            // locked Keychain leaves enough information for an idempotent retry.
+            for installation in installations { try removeIdentity(NativeKeyScope(accountHash: accountHash, installationID: installation)) }
+            if var identity = database.identities.removeValue(forKey: accountHash) {
+                scopedSecureZero(&identity.e2eePrivateKey)
+            }
+            database.pendingIdentities.removeValue(forKey: accountHash)
+            for key in Array(database.scopes.keys) where database.scopes[key]?.scope.accountHash == accountHash {
+                database.scopes[key]?.secureClearSession()
+                for tripID in Array(database.scopes[key]?.trips.keys ?? Dictionary<String, TripKeyRecord>().keys) {
+                    database.scopes[key]?.secureRemoveTrip(tripID)
+                }
+                database.scopes.removeValue(forKey: key)
+            }
+            if database.selectedScope?.accountHash == accountHash { database.selectedScope = nil }
         }
     }
 

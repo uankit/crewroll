@@ -168,6 +168,11 @@ export type ReconcileNowCommand = Static<typeof ReconcileNowCommandSchema>;
 export const ClearDeviceSessionCommandSchema = ClosedObject({
   protocolVersion: Type.Literal(1),
 });
+export const EraseAccountCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+});
+export type EraseAccountCommand = Static<typeof EraseAccountCommandSchema>;
 export type ClearDeviceSessionCommand = Static<
   typeof ClearDeviceSessionCommandSchema
 >;
@@ -179,6 +184,7 @@ export const RetryCommandSchema = ClosedObject({
 export type RetryCommand = Static<typeof RetryCommandSchema>;
 
 export const EngineBlockerSchema = Type.Union([
+  Type.Literal("SHARING_LIMIT"),
   Type.Literal("PHOTO_PERMISSION"),
   Type.Literal("STORAGE_FULL"),
   Type.Literal("AUTH_REVOKED"),

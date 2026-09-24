@@ -911,6 +911,8 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
+    await migrateDown(db); // 011
+    await migrateDown(db); // 010
     await migrateDown(db); // 009
     const cleanupClaimsAfterDown = await sql<{ table_name: string }>`
       select table_name from information_schema.tables

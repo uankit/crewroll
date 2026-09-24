@@ -98,7 +98,7 @@ describe("Clerk deletion and registration ordering", () => {
         .select(["deleted_at", "display_name"])
         .where("clerk_subject", "=", clerkSubject)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ deleted_at: now, display_name: "CrewRoll member" });
+    ).resolves.toEqual({ deleted_at: now, display_name: "Deleted account" });
   });
 
   it("revokes and clears the device when registration commits before deletion", async () => {

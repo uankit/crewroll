@@ -27,6 +27,16 @@ public final class AppleP256IdentityProvider: P256IdentityProvider {
         return try validated(key)
     }
 
+    public func removeIdentity(scope: NativeKeyScope) throws {
+        let status = SecItemDelete([
+            kSecClass: kSecClassKey,
+            kSecAttrApplicationTag: try applicationTag(scope: scope),
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrSynchronizable: false,
+        ] as CFDictionary)
+        if status != errSecItemNotFound { try appleP256Check(status) }
+    }
+
     private func applicationTag(scope: NativeKeyScope) throws -> Data {
         guard scope.accountHash.range(
             of: "^[a-f0-9]{64}$",

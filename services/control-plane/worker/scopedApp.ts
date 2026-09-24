@@ -39,6 +39,27 @@ export const workerApp = buildApp(
     clock: { now: () => current().clock.now() },
     ids: { uuid: () => current().ids.uuid() },
     readiness: { check: () => current().readiness.check() },
+    account: {
+      tokenVerifier: {
+        verify: (...args) => current().devices.tokenVerifier.verify(...args),
+      },
+      service: {
+        policy: (...args) => current().account!.service.policy(...args),
+        acceptTerms: (...args) =>
+          current().account!.service.acceptTerms(...args),
+        requestDeletion: (...args) =>
+          current().account!.service.requestDeletion(...args),
+        deletionStatus: (...args) =>
+          current().account!.service.deletionStatus(...args),
+        report: (...args) => current().account!.service.report(...args),
+        block: (...args) => current().account!.service.block(...args),
+        blockedMembers: (...args) =>
+          current().account!.service.blockedMembers(...args),
+        unblock: (...args) => current().account!.service.unblock(...args),
+        guard: (...args) => current().account!.service.guard(...args),
+        cleanup: () => current().account!.service.cleanup(),
+      },
+    },
     devices: {
       tokenVerifier: {
         verify: (...args) => current().devices.tokenVerifier.verify(...args),

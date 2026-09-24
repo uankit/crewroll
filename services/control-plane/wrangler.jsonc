@@ -9,7 +9,12 @@
   "placement": { "region": "aws:ap-northeast-2" },
   "workers_dev": true,
   "preview_urls": false,
-  "vars": { "PUBLIC_API_ORIGIN": "https://crewroll-api.uankitu.workers.dev" },
+  "vars": {
+    "PUBLIC_API_ORIGIN": "https://crewroll-api.uankitu.workers.dev",
+    "CLERK_ISSUER": "https://creative-oriole-5086.clerk.accounts.dev",
+    "CLERK_AUTHORIZED_PARTIES_JSON": "[]",
+    "REQUIRE_TERMS": "false",
+  },
   "hyperdrive": [
     { "binding": "DATABASE", "id": "d3f9413b86474696bac3e5f0220925e5" },
   ],
@@ -32,5 +37,39 @@
       "MEDIA_SIGNING_KEY_V1",
       "PUSH_TOKEN_ENCRYPTION_KEY_V1",
     ],
+  },
+  "env": {
+    "production": {
+      "name": "crewroll-api-production",
+      "vars": {
+        "PUBLIC_API_ORIGIN": "https://crewroll-api-production.uankitu.workers.dev",
+        "CLERK_ISSUER": "https://clerk.crewroll.app",
+        "CLERK_AUTHORIZED_PARTIES_JSON": "[\"https://crewroll.app\",\"https://www.crewroll.app\",\"https://accounts.crewroll.app\"]",
+        "REQUIRE_TERMS": "true",
+        "APPLE_SIGN_IN_CLIENT_ID": "app.crewroll.signin",
+        "APPLE_SIGN_IN_TEAM_ID": "639SF375P5",
+        "APPLE_SIGN_IN_KEY_ID": "ZTLQAKY32D",
+      },
+      "hyperdrive": [
+        { "binding": "DATABASE", "id": "b8722aa8a101445dbe7252f2383e9747" },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "CIPHERTEXT",
+          "bucket_name": "crewroll-production-ciphertext",
+        },
+      ],
+      "secrets": {
+        "required": [
+          "CLERK_SECRET_KEY",
+          "CLERK_WEBHOOK_SECRET",
+          "BACKGROUND_CREDENTIAL_HMAC_KEY_V1",
+          "INVITE_CODE_HMAC_KEY",
+          "MEDIA_SIGNING_KEY_V1",
+          "PUSH_TOKEN_ENCRYPTION_KEY_V1",
+          "APPLE_SIGN_IN_PRIVATE_KEY",
+        ],
+      },
+    },
   },
 }

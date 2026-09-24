@@ -39,6 +39,7 @@ export type DeliveryState = "HELD" | "READY" | "SAVED_LOCALLY" | "EXPIRED";
 export type ReceiptType = "SOURCE_PRESENT" | "SAVED_LOCALLY";
 
 export interface UserTable {
+  suspended_at: Generated<Date | null>;
   id: string;
   clerk_subject: string;
   display_name: string;
@@ -307,6 +308,48 @@ export interface TripDeviceRequestTable {
   approved_by_device_id: string | null;
 }
 export interface Database {
+  account_terms: {
+    user_id: string;
+    terms_version: string;
+    accepted_at: Timestamp;
+  };
+  account_deleted_subjects: { subject_hash: string; deleted_at: Timestamp };
+  account_deletions: {
+    apple_grant: Generated<string | null>;
+    apple_revoked: Generated<boolean>;
+    id: string;
+    user_id: string | null;
+    clerk_subject: string | null;
+    requested_at: Timestamp;
+    available_at: Timestamp;
+    provider_deleted_at: NullableTimestamp;
+    completed_at: NullableTimestamp;
+    lease_token: string | null;
+    attempt_count: Generated<number>;
+  };
+  account_deletion_objects: {
+    request_id: string;
+    object_key: string;
+    deleted_at: NullableTimestamp;
+  };
+  user_blocks: {
+    user_id: string;
+    blocked_user_id: string;
+    created_at: Timestamp;
+  };
+  safety_reports: {
+    id: string;
+    reporter_user_id: string | null;
+    subject_user_id: string | null;
+    trip_id: string | null;
+    asset_id: string | null;
+    reason: "INAPPROPRIATE" | "HARASSMENT" | "PRIVACY" | "OTHER";
+    details: string;
+    created_at: Timestamp;
+    resolved_at: NullableTimestamp;
+    resolution: "REMOVED" | "ACTION_TAKEN" | "DISMISSED" | null;
+  };
+  request_limits: { key: string; window_start: Timestamp; count: number };
   media_cleanup_claims: {
     id: string;
     trip_id: string;

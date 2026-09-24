@@ -8,6 +8,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppState, StyleSheet, View } from "react-native";
+import { SafetyActions } from "./SafetyActions";
+import { useAccountPrivacy } from "./AccountPrivacy";
 import type { DurableEngineSnapshot } from "@crewroll/contracts/native/protocol";
 
 import {
@@ -33,6 +35,8 @@ import {
 } from "./tripGalleryCache";
 
 const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
+  SHARING_LIMIT:
+    "This trip has reached its sharing limit. Original photos remain on your phone.",
   PHOTO_PERMISSION:
     "Allow full photo access in Settings, including original metadata access on Android, then retry.",
   STORAGE_FULL: "Free some space on this phone, then retry.",
@@ -50,6 +54,7 @@ const galleryRetryDelays = [500, 1500] as const;
 /** Read-only native projections. Photo bytes and decryption keys never enter JS. */
 export function ActiveTripTransfers({
   tripId,
+  currentMembershipId,
   onPhotoCountChange,
   filters = defaultGalleryFilters,
   onClearFilters,
@@ -57,12 +62,15 @@ export function ActiveTripTransfers({
   focused = true,
 }: Readonly<{
   tripId: string;
+  currentMembershipId?: string;
   onPhotoCountChange?: (count: number) => void;
   filters?: GalleryFilters;
   onClearFilters?: () => void;
   cache?: TripGalleryCache;
   focused?: boolean;
 }>) {
+  const privacy = useAccountPrivacy();
+  const [reportedAsset, setReportedAsset] = useState<string | null>(null);
   const cache = useMemo(
     () => suppliedCache ?? createTripGalleryCache(tripId),
     [suppliedCache, tripId],
@@ -266,6 +274,13 @@ export function ActiveTripTransfers({
       snapshot && state
         ? state.assets.items.map((asset) => ({
             id: asset.assetId ?? asset.workId,
+            reportable: Boolean(
+              privacy &&
+              asset.assetId &&
+              asset.sourceMembershipId &&
+              currentMembershipId &&
+              asset.sourceMembershipId !== currentMembershipId,
+            ),
             previewUri: snapshot.paused ? null : (asset.previewUri ?? null),
             status: asset.blocker
               ? "Needs attention"
@@ -278,7 +293,7 @@ export function ActiveTripTransfers({
                     : "Getting preview…",
           }))
         : [],
-    [snapshot, state],
+    [snapshot, state, privacy, currentMembershipId],
   );
   const discoveredCount = snapshot?.counts.discovered;
   useEffect(() => {
@@ -350,7 +365,7 @@ export function ActiveTripTransfers({
             />
           </Stack>
         ) : photos.length > 0 ? (
-          <TripPhotoGallery photos={photos} />
+          <TripPhotoGallery photos={photos} onReport={setReportedAsset} />
         ) : (
           <Stack gap="xs" style={{ flex: 1, justifyContent: "center" }}>
             <AppText variant="title2">Your roll starts here.</AppText>
@@ -388,6 +403,12 @@ export function ActiveTripTransfers({
           />
         ) : null}
       </Stack>
+      {reportedAsset ? (
+        <SafetyActions
+          target={{ tripId, assetId: reportedAsset }}
+          onDismiss={() => setReportedAsset(null)}
+        />
+      ) : null}
     </>
   );
 }

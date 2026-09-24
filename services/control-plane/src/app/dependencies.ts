@@ -8,12 +8,14 @@ import type { ClerkWebhookRouteDependencies } from "../modules/identity/index.js
 import type { ProfileRouteDependencies } from "../modules/identity/index.js";
 import type { TripRouteDependencies } from "../modules/trips/index.js";
 import type { MediaRouteDependencies } from "../modules/media/index.js";
+import type { AccountRouteDependencies } from "../modules/account/index.js";
 
 export interface ReadinessProbe {
   check(): Promise<void>;
 }
 
 export interface AppDependencies {
+  readonly account?: AccountRouteDependencies;
   readonly profile?: ProfileRouteDependencies;
   readonly media?: MediaRouteDependencies;
   readonly clock: Clock;

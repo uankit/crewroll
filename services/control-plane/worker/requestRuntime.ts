@@ -17,17 +17,26 @@ import {
   createRemoteClerkKeyResolver,
 } from "../src/platform/clerk/joseClerkTokenVerifier.js";
 
-const clerkIssuer = "https://creative-oriole-5086.clerk.accounts.dev";
 // Public issuer keys can survive a request. jose handles key expiry/rotation
 // and isolates in-flight fetches on Workers. Never share a DB pool or actor.
-const clerkKeyResolver = createRemoteClerkKeyResolver({ issuer: clerkIssuer });
+const keyResolvers = new Map<
+  string,
+  ReturnType<typeof createRemoteClerkKeyResolver>
+>();
 
 // Wiring takes the Hyperdrive-generated connection string, never process.env
 // credentials or a shared cross-request Pool. The deployment entrypoint supplies it.
 export async function createWorkerRequestRuntime(
   env: Pick<
     Env,
+    | "APPLE_SIGN_IN_CLIENT_ID"
+    | "APPLE_SIGN_IN_TEAM_ID"
+    | "APPLE_SIGN_IN_KEY_ID"
+    | "APPLE_SIGN_IN_PRIVATE_KEY"
     | "CIPHERTEXT"
+    | "CLERK_ISSUER"
+    | "CLERK_AUTHORIZED_PARTIES_JSON"
+    | "REQUIRE_TERMS"
     | "CLERK_SECRET_KEY"
     | "CLERK_WEBHOOK_SECRET"
     | "BACKGROUND_CREDENTIAL_HMAC_KEY_V1"
@@ -38,6 +47,12 @@ export async function createWorkerRequestRuntime(
   connectionString: string,
   origin: string,
 ) {
+  const clerkIssuer = env.CLERK_ISSUER;
+  let clerkKeyResolver = keyResolvers.get(clerkIssuer);
+  if (!clerkKeyResolver) {
+    clerkKeyResolver = createRemoteClerkKeyResolver({ issuer: clerkIssuer });
+    keyResolvers.set(clerkIssuer, clerkKeyResolver);
+  }
   const environment = loadEnvironment(
     {
       NODE_ENV: "production",
@@ -46,7 +61,12 @@ export async function createWorkerRequestRuntime(
       LOG_LEVEL: "info",
       DATABASE_URL: connectionString,
       CLERK_ISSUER: clerkIssuer,
-      CLERK_AUTHORIZED_PARTIES_JSON: "[]",
+      CLERK_AUTHORIZED_PARTIES_JSON: env.CLERK_AUTHORIZED_PARTIES_JSON,
+      REQUIRE_TERMS: env.REQUIRE_TERMS,
+      APPLE_SIGN_IN_CLIENT_ID: env.APPLE_SIGN_IN_CLIENT_ID,
+      APPLE_SIGN_IN_TEAM_ID: env.APPLE_SIGN_IN_TEAM_ID,
+      APPLE_SIGN_IN_KEY_ID: env.APPLE_SIGN_IN_KEY_ID,
+      APPLE_SIGN_IN_PRIVATE_KEY: env.APPLE_SIGN_IN_PRIVATE_KEY,
       CLERK_SECRET_KEY: env.CLERK_SECRET_KEY,
       CLERK_WEBHOOK_SECRET: env.CLERK_WEBHOOK_SECRET,
       BACKGROUND_CREDENTIAL_HMAC_KEY_V1: env.BACKGROUND_CREDENTIAL_HMAC_KEY_V1,
@@ -77,12 +97,13 @@ export async function createWorkerRequestRuntime(
         authorizedParties: configuration.clerkAuthorizedParties,
         issuer: clerkIssuer,
         clock: requestClock,
-        resolver: clerkKeyResolver,
+        resolver: clerkKeyResolver!,
       }),
     pushTokenProtector: () =>
       createWorkerPushTokenProtector(env.PUSH_TOKEN_ENCRYPTION_KEY_V1),
     media: ({ authenticator }) =>
       Promise.resolve({
+        ciphertextStore: gateway.store,
         authenticator,
         service: createKyselyMediaService(db, gateway.store, clock),
       }),
@@ -98,7 +119,14 @@ export async function createWorkerRequestRuntime(
   }
   return {
     close: () => runtime.close(),
-    cleanup: () => current.media!.service.cleanup(),
+    async cleanup() {
+      const results = await Promise.allSettled([
+        current.media!.service.cleanup(),
+        current.account?.service.cleanup(),
+      ]);
+      if (results.some((result) => result.status === "rejected"))
+        throw new Error("Scheduled cleanup needs retry");
+    },
     async fetch(
       request: Request<unknown, IncomingRequestCfProperties<unknown>>,
       ctx: ExecutionContext,

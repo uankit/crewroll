@@ -13,7 +13,7 @@ import {
 } from "@crewroll/contracts";
 import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox";
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 
 import type {
   CiphertextStore,
@@ -628,6 +628,23 @@ export function createKyselyMediaService(
             .where("id", "=", member.id)
             .execute();
         const sessionId = randomUUID();
+        // Reservations count too; concurrent uploads cannot oversubscribe a
+        // trip. Existing sessions above remain retryable at the limit.
+        const quota = await sql<{ photos: string; bytes: string }>`select
+          count(distinct u.id)::text as photos,
+          coalesce(sum(o.expected_ciphertext_bytes), 0)::text as bytes
+          from upload_sessions u left join upload_objects o on o.upload_session_id = u.id
+          where u.trip_id = ${trip.id}::uuid`.execute(tx);
+        const requestedBytes = body.objects.reduce(
+          (sum, object) => sum + BigInt(object.ciphertextBytes),
+          0n,
+        );
+        if (
+          Number(quota.rows[0]?.photos ?? 0) >= 5000 ||
+          BigInt(quota.rows[0]?.bytes ?? "0") + requestedBytes >
+            20n * 1024n ** 3n
+        )
+          throw new DomainError("TRIP_STORAGE_LIMIT");
         const expiresAt = new Date(
           Math.min(now.getTime() + 900_000, trip.hard_delete_at.getTime()),
         );

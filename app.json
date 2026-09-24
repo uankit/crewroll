@@ -2,7 +2,7 @@
   "expo": {
     "name": "CrewRoll",
     "slug": "AirMesh",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "platforms": ["ios", "android"],
     "icon": "./assets/brand/app-icon.png",

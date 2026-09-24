@@ -24,6 +24,12 @@ import { createPhotoReadinessService } from "./photoReadinessService";
 import { createStartAndActivateTrip } from "../application/trips/StartAndActivateTrip";
 import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvider";
 import { AccountSetupProvider } from "./AccountSetup";
+import { AccountPrivacyProvider } from "./AccountPrivacy";
+import { useAccountTerms } from "./useAccountTerms";
+import {
+  clearLocalAccountRecords,
+  rememberLocalScope,
+} from "../infrastructure/storage/accountLocalData";
 import { useProfileCompletion } from "../infrastructure/auth/useProfileCompletion";
 import {
   ClerkSessionTokenSource,
@@ -111,7 +117,8 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
       const snapshot = await crewRollTransfer.getSnapshot();
       return Object.freeze({ activeTripId: snapshot.activeTripId });
     },
-    loadRecovery(scope: TripRecoveryScope) {
+    async loadRecovery(scope: TripRecoveryScope) {
+      await rememberLocalScope(scope);
       return recoveryStore.load(scope);
     },
     createScopedTripSession(scope, device) {
@@ -325,6 +332,14 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
   });
 
   return Object.freeze({
+    accountApi: mobileDependencies.accountApi,
+    async eraseLocalAccount(accountId: string) {
+      await runtime.pauseTransfers?.();
+      if (!crewRollTransfer.eraseAccount)
+        throw new Error("Account erasure requires an app update");
+      await crewRollTransfer.eraseAccount({ protocolVersion: 1, accountId });
+      await clearLocalAccountRecords(accountId, env.apiUrl);
+    },
     developmentCut,
     runtime,
     photoPermission,
@@ -350,6 +365,11 @@ function ProductionSessionBridge({
   });
 
   const profileReady = profile.accountId === auth.userId && profile.ready;
+  const terms = useAccountTerms(
+    composition.accountApi,
+    auth.isSignedIn ? auth.userId : null,
+    profileReady,
+  );
 
   const authSnapshot: AppSessionAuthSnapshot = !auth.isLoaded
     ? { isLoaded: false, isSignedIn: undefined }
@@ -383,31 +403,39 @@ function ProductionSessionBridge({
       : null;
 
   return (
-    <DevelopmentAcceptanceProvider value={acceptance}>
-      <AppSessionProvider
-        auth={authSnapshot}
-        fontsReady={fontsReady}
-        profileReady={profileReady}
-        onAuthInvalid={onAuthInvalid}
-        provisionInput={{
-          apiBaseUrl: env.apiUrl,
-          appVersion: Constants.expoConfig?.version,
-          platform: Platform.OS,
-        }}
-        queryClient={queryClient}
-        runtime={composition.runtime}
-      >
-        <AccountSetupProvider
-          accountId={fontsReady && auth.isSignedIn ? auth.userId : null}
-          profile={profile}
-          scope={env.apiUrl}
-          permission={composition.photoPermission}
-          onUseAnotherAccount={() => void signOut()}
+    <AccountPrivacyProvider
+      api={composition.accountApi}
+      eraseLocalAccount={composition.eraseLocalAccount}
+      signOut={onAuthInvalid}
+      ready={auth.isLoaded}
+    >
+      <DevelopmentAcceptanceProvider value={acceptance}>
+        <AppSessionProvider
+          auth={authSnapshot}
+          fontsReady={fontsReady}
+          profileReady={profileReady && terms.ready}
+          onAuthInvalid={onAuthInvalid}
+          provisionInput={{
+            apiBaseUrl: env.apiUrl,
+            appVersion: Constants.expoConfig?.version,
+            platform: Platform.OS,
+          }}
+          queryClient={queryClient}
+          runtime={composition.runtime}
         >
-          {children}
-        </AccountSetupProvider>
-      </AppSessionProvider>
-    </DevelopmentAcceptanceProvider>
+          <AccountSetupProvider
+            terms={terms}
+            accountId={fontsReady && auth.isSignedIn ? auth.userId : null}
+            profile={profile}
+            scope={env.apiUrl}
+            permission={composition.photoPermission}
+            onUseAnotherAccount={() => void signOut()}
+          >
+            {children}
+          </AccountSetupProvider>
+        </AppSessionProvider>
+      </DevelopmentAcceptanceProvider>
+    </AccountPrivacyProvider>
   );
 }
 

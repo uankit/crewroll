@@ -286,6 +286,7 @@ describe("native bridge protocol", () => {
     expect(
       EngineBlockerSchema.anyOf.map((candidate) => candidate.const),
     ).toEqual([
+      "SHARING_LIMIT",
       "PHOTO_PERMISSION",
       "STORAGE_FULL",
       "AUTH_REVOKED",

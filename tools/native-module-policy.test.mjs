@@ -104,6 +104,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     "restoreDeviceSession",
     "installDeviceSession",
     "clearDeviceSession",
+    "eraseAccount",
     "createTripKey",
     "discardProvisionalTripKey",
     "wrapTripKey",

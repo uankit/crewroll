@@ -154,7 +154,7 @@ describe("Clerk webhook persistence", () => {
         .select(["display_name", "deleted_at"])
         .where("clerk_subject", "=", "user_never_seen")
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ deleted_at: now, display_name: "CrewRoll member" });
+    ).resolves.toEqual({ deleted_at: now, display_name: "Deleted account" });
   });
 
   it("deduplicates concurrent delivery, rejects an event-type mismatch, and rolls back failures", async () => {

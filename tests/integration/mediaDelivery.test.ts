@@ -109,6 +109,76 @@ describe.sequential("durable encrypted photo delivery", () => {
       ],
     };
   });
+  it("serializes quota reservations, rejects excess storage, and permits an existing upload retry at the limit", async () => {
+    const first = await service.createUpload(members[0]!, body);
+    const limit = 20n * 1024n ** 3n;
+    const seed = await context.db
+      .selectFrom("upload_sessions")
+      .selectAll()
+      .where("id", "=", first.uploadSessionId)
+      .executeTakeFirstOrThrow();
+    const seedObjects = await context.db
+      .selectFrom("upload_objects")
+      .selectAll()
+      .where("upload_session_id", "=", first.uploadSessionId)
+      .execute();
+    const sessions = [];
+    const reservations = [];
+    // Keep each reservation within the real 50 MiB per-photo constraint.
+    let remaining = limit - 66n;
+    while (remaining > 0n) {
+      const id = randomUUID();
+      const originalBytes = remaining > 52428801n ? 52428800n : remaining - 1n;
+      sessions.push({
+        ...seed,
+        id,
+        client_asset_id: randomUUID(),
+        source_asset_key: `src_${id.replaceAll("-", "")}`,
+      });
+      reservations.push(
+        ...seedObjects.map((object) => ({
+          ...object,
+          upload_session_id: id,
+          s3_key: `${object.s3_key}/${id}`,
+          expected_ciphertext_bytes:
+            object.variant === "PREVIEW" ? "1" : originalBytes.toString(),
+        })),
+      );
+      remaining -= originalBytes + 1n;
+    }
+    await context.db.insertInto("upload_sessions").values(sessions).execute();
+    await context.db
+      .insertInto("upload_objects")
+      .values(reservations)
+      .execute();
+    const candidates = [1, 2].map((n): CreateUploadSessionBody => ({
+      ...body,
+      assetId: randomUUID(),
+      sourceAssetKey: `src_${String(n).repeat(32)}`,
+      objects: [
+        { ...body.objects[0], ciphertextBytes: "11" },
+        { ...body.objects[1], ciphertextBytes: "11" },
+      ],
+    }));
+    const outcomes = await Promise.allSettled(
+      candidates.map((candidate) =>
+        service.createUpload(members[0]!, candidate),
+      ),
+    );
+    expect(
+      outcomes.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      outcomes.find((result) => result.status === "rejected"),
+    ).toMatchObject({ reason: { kind: "TRIP_STORAGE_LIMIT" } });
+    const accepted = outcomes.findIndex(
+      (result) => result.status === "fulfilled",
+    );
+    await expect(
+      service.createUpload(members[0]!, candidates[accepted]!),
+    ).resolves.toMatchObject({ uploadSessionId: expect.any(String) });
+  });
+
   async function uploaded() {
     const session = await service.createUpload(members[0]!, body);
     for (const object of session.objects)

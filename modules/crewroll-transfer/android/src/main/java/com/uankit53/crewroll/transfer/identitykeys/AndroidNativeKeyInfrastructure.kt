@@ -147,6 +147,10 @@ class AndroidSodiumCrypto : NativeKeyCrypto {
 }
 
 class AndroidP256IdentityProvider : P256IdentityProvider {
+  override fun removeIdentity(scope: NativeKeyScope) {
+    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    keyStore.deleteEntry(androidP256Alias(scope))
+  }
   override fun createPublicKey(scope: NativeKeyScope): ByteArray = try {
     val alias = androidP256Alias(scope)
     val keyStore = keyStore()

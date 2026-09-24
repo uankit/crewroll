@@ -1,7 +1,12 @@
 import Foundation
 import CryptoKit
 
-public struct NativeTransferHTTPError: Error { public let status: Int; public let authenticated: Bool }
+public struct NativeTransferHTTPError: Error {
+    public let status: Int
+    public let authenticated: Bool
+    public let code: String?
+    public init(status: Int, authenticated: Bool, code: String? = nil) { self.status = status; self.authenticated = authenticated; self.code = code }
+}
 
 protocol NativePhotoTransportPort: AnyObject {
     func cancel()
@@ -50,8 +55,12 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
         request.setValue(context.session.deviceID, forHTTPHeaderField: "X-CrewRoll-Device-Id")
         request.setValue(commandID, forHTTPHeaderField: "Idempotency-Key")
         let (data, response) = try await session.data(for: request)
-        try requireSuccess(response, authenticated: true)
         guard data.count <= 1_048_576 else { throw NativeKeyError.invalidEnvelope }
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], body["code"] as? String == "TRIP_STORAGE_LIMIT" {
+            throw NativeTransferHTTPError(status: 409, authenticated: true, code: "TRIP_STORAGE_LIMIT")
+        }
+        try requireSuccess(response, authenticated: true)
         return data
     }
 

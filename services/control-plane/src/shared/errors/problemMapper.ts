@@ -10,6 +10,13 @@ interface ProblemDefinition {
 }
 
 const problemDefinitions = {
+  TRIP_STORAGE_LIMIT: {
+    code: "TRIP_STORAGE_LIMIT",
+    detail:
+      "This trip has reached its sharing limit. Your original photos remain on your phone.",
+    status: 409,
+    title: "Trip sharing limit reached",
+  },
   ACTIVE_TRIP_EXISTS: {
     code: "ACTIVE_TRIP_EXISTS",
     detail: "The user already has an active trip.",

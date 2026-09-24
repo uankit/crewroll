@@ -1,4 +1,5 @@
 import type {
+  EraseAccountCommand,
   ActivateTripCommand,
   AssetPage,
   ClearDeviceSessionCommand,
@@ -27,6 +28,7 @@ export type CrewRollTransferEventSubscription = Readonly<{
 }>;
 
 export interface CrewRollTransferNativeModule {
+  eraseAccount?(command: EraseAccountCommand): Promise<void>;
   restoreDeviceSession?(
     command: RestoreDeviceSessionCommand,
   ): Promise<RestoredDeviceSession>;

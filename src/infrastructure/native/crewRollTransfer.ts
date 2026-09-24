@@ -1,5 +1,7 @@
 import { installCrewRollFormats } from "@crewroll/contracts";
 import {
+  EraseAccountCommandSchema,
+  type EraseAccountCommand,
   ActivateTripCommandSchema,
   AssetPageSchema,
   ClearDeviceSessionCommandSchema,
@@ -77,6 +79,7 @@ function parse<Schema extends TSchema>(
 }
 
 export interface CrewRollTransferPort {
+  eraseAccount?(command: EraseAccountCommand): Promise<void>;
   restoreDeviceSession?(
     command: RestoreDeviceSessionCommand,
   ): Promise<RestoredDeviceSession>;
@@ -161,6 +164,18 @@ export function createCrewRollTransferPort(
         "clearDeviceSession command",
       );
       await getNativeModule().clearDeviceSession(parsed);
+    },
+    async eraseAccount(command) {
+      changed();
+      const parsed = parse(
+        EraseAccountCommandSchema,
+        command,
+        "eraseAccount command",
+      );
+      const native = getNativeModule();
+      if (!native.eraseAccount)
+        throw new CrewRollTransferProtocolError("eraseAccount unavailable");
+      await native.eraseAccount(parsed);
     },
     async createTripKey(command) {
       changed();

@@ -98,6 +98,17 @@ class NativePhotoTransferEngine(
     // Projection refreshes must not cancel an original already being transferred.
     fun activate(): CompletableFuture<Unit> = if (!paused && cellular) CompletableFuture.completedFuture(Unit) else policy(false, true)
     fun stop() = policy(true, cellular)
+    fun eraseAccount(accountHash: String): CompletableFuture<Unit> {
+        require(accountHash.matches(Regex("^[a-f0-9]{64}$")))
+        return stop().thenCompose { serial {
+            if (scope?.startsWith(accountHash + ".") == true) {
+                journal = null; previews = null; scope = null; progressScope = null
+                globalBlocker = null; previewBlocker = null
+            }
+            root.listFiles()?.filter { it.name.startsWith(accountHash + ".") }?.forEach { check(it.deleteRecursively()) }
+            invalidated(0)
+        } }
+    }
     fun close() { stop().whenComplete { _, _ -> executor.shutdown(); previewExecutor.shutdown(); projectionExecutor.shutdown(); bulkExecutor.shutdown() } }
     fun wake(): CompletableFuture<Unit> {
         if (!wakeQueued.compareAndSet(false, true)) return CompletableFuture.completedFuture(Unit)
@@ -593,7 +604,7 @@ class NativePhotoTransferEngine(
         is SecurityException -> "PHOTO_PERMISSION"
         is CryptoReadException, is IllegalArgumentException, is org.json.JSONException -> "INTEGRITY_FAILURE"
         is NativeKeyException -> if (error.code in setOf("KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST")) error.code else "INTEGRITY_FAILURE"
-        is TransferHttpException -> if (error.authenticated && error.status in setOf(401, 403)) "AUTH_REVOKED" else null
+        is TransferHttpException -> if (error.authenticated && error.code == "TRIP_STORAGE_LIMIT") "SHARING_LIMIT" else if (error.authenticated && error.status in setOf(401, 403)) "AUTH_REVOKED" else null
         else -> null
     }
     private fun b64(bytes: ByteArray) = Base64.getEncoder().encodeToString(bytes)

@@ -814,6 +814,7 @@ describe("sync and error contracts", () => {
       "IDEMPOTENCY_CONFLICT",
       "INVALID_REQUEST",
       "RATE_LIMITED",
+      "TRIP_STORAGE_LIMIT",
       "ACTIVE_TRIP_EXISTS",
       "TRIP_ID_CONFLICT",
       "TRIP_DURATION_INVALID",

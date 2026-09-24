@@ -1,4 +1,16 @@
 export * from "./tripContinuity.js";
+export * from "./account.js";
+import {
+  AccountPolicySchema,
+  AcceptTermsBodySchema,
+  DeleteAccountBodySchema,
+  AccountDeletionSchema,
+  SafetyReportBodySchema,
+  SafetyReportResponseSchema,
+  BlockMemberBodySchema,
+  BlockedMembersSchema,
+  AccountActionResponseSchema,
+} from "./account.js";
 import {
   TripContinuitySchema,
   TripContinuityBodySchema,
@@ -96,6 +108,15 @@ import {
 } from "./tripLifecycle.js";
 
 export const publicObjectSchemas = {
+  AccountPolicySchema,
+  AcceptTermsBodySchema,
+  DeleteAccountBodySchema,
+  AccountDeletionSchema,
+  SafetyReportBodySchema,
+  SafetyReportResponseSchema,
+  BlockMemberBodySchema,
+  BlockedMembersSchema,
+  AccountActionResponseSchema,
   TripContinuitySchema,
   TripContinuityBodySchema,
   DeviceApprovalRequestSchema,

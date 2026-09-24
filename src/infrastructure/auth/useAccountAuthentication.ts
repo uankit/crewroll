@@ -5,7 +5,6 @@ import {
   useSignUp,
   useSSO,
 } from "@clerk/expo";
-import { useSignInWithApple } from "@clerk/expo/apple";
 import * as Linking from "expo-linking";
 import { useEffect, useRef, useState } from "react";
 
@@ -45,7 +44,6 @@ export function useAccountAuthentication() {
   const { signIn } = useSignIn();
   const { signUp } = useSignUp();
   const { startSSOFlow } = useSSO();
-  const { startAppleAuthenticationFlow } = useSignInWithApple();
   const [email, setEmail] = useState("");
   const [code, setCodeValue] = useState("");
   const [kind, setKind] = useState<"signin" | "signup" | "mfa" | null>(null);
@@ -150,13 +148,11 @@ export function useAccountAuthentication() {
   }
   async function social(provider: "google" | "apple") {
     await run(async () => {
-      const result =
-        provider === "apple"
-          ? await startAppleAuthenticationFlow()
-          : await startSSOFlow({
-              strategy: "oauth_google",
-              redirectUrl: Linking.createURL("/"),
-            });
+      // Clerk retains the provider grant so account deletion can revoke it.
+      const result = await startSSOFlow({
+        strategy: provider === "apple" ? "oauth_apple" : "oauth_google",
+        redirectUrl: Linking.createURL("/"),
+      });
       if (result.createdSessionId && result.setActive)
         await result.setActive({ session: result.createdSessionId });
       else if (result.signIn || result.signUp)

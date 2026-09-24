@@ -247,6 +247,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         transferContent={
           activation?.kind === "ready" || trip.status === "ENDING" ? (
             <ActiveTripTransfers
+              {...(trip.members.find((m) => m.isCurrentMember)?.membershipId
+                ? {
+                    currentMembershipId: trip.members.find(
+                      (m) => m.isCurrentMember,
+                    )!.membershipId,
+                  }
+                : {})}
               key={`${trip.id}:${JSON.stringify(galleryQuery(filters))}`}
               tripId={trip.id}
               cache={galleryCache}

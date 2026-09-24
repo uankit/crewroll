@@ -30,6 +30,7 @@ const EXACT_PROBLEM_CODES = [
   "IDEMPOTENCY_CONFLICT",
   "INVALID_REQUEST",
   "RATE_LIMITED",
+  "TRIP_STORAGE_LIMIT",
   "ACTIVE_TRIP_EXISTS",
   "TRIP_ID_CONFLICT",
   "TRIP_DURATION_INVALID",
@@ -124,6 +125,8 @@ function operationSecurity(
   return Object.fromEntries(
     operations(document).map(({ method, path, operation }) => {
       const scheme = Object.keys(operation.security?.[0] ?? {})[0];
+      if (operation.security?.length === 0)
+        return [`${method.toUpperCase()} ${path}`, "Public"];
       if (!scheme)
         throw new Error(`Missing security scheme: ${method} ${path}`);
       return [`${method.toUpperCase()} ${path}`, scheme];
@@ -326,6 +329,13 @@ describe("canonical OpenAPI artifact", () => {
   it("contains only the canonical v1 routes and header variants", () => {
     const document = createOpenApiDocument();
     expect(Object.keys(document.paths)).toEqual([
+      "/v1/account",
+      "/v1/account/terms",
+      "/v1/account/deletion",
+      "/v1/account/deletions/{requestId}",
+      "/v1/account/reports",
+      "/v1/account/blocks",
+      "/v1/account/blocks/{userId}",
       "/v1/trips/{tripId}/continuity",
       "/v1/trips/{tripId}/lifecycle",
       "/v1/trips/{tripId}/transfer-state",
@@ -461,6 +471,14 @@ describe("canonical OpenAPI artifact", () => {
       );
     }
     expect(operationSecurity(document)).toEqual({
+      "GET /v1/account": "ClerkBearer",
+      "PUT /v1/account/terms": "ClerkBearer",
+      "POST /v1/account/deletion": "ClerkBearer",
+      "GET /v1/account/deletions/{requestId}": "Public",
+      "POST /v1/account/reports": "ClerkBearer",
+      "GET /v1/account/blocks": "ClerkBearer",
+      "POST /v1/account/blocks": "ClerkBearer",
+      "DELETE /v1/account/blocks/{userId}": "ClerkBearer",
       "GET /v1/trips": "ClerkBearer",
       "GET /v1/trips/{tripId}/continuity": "ClerkBearer",
       "POST /v1/trips/{tripId}/continuity": "ClerkBearer",

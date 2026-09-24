@@ -1096,6 +1096,8 @@ describe.sequential("media and coordination schema", () => {
     const prior = await startMigratedPostgres();
 
     try {
+      await migrateDown(prior.db); // 011
+      await migrateDown(prior.db); // 010
       await migrateDown(prior.db); // 009
       await migrateDown(prior.db); // 008
       await migrateDown(prior.db); // 007
@@ -1143,6 +1145,8 @@ describe.sequential("media and coordination schema", () => {
   });
 
   it("migrates an empty database up, fully down, and up again", async () => {
+    await migrateDown(db); // 011
+    await migrateDown(db); // 010
     await migrateDown(db); // 009
     await migrateDown(db); // 008
     await migrateDown(db); // 007
@@ -1266,6 +1270,10 @@ describe.sequential("media and coordination schema", () => {
     expect(
       tablesAfterSecondUp.rows.map(({ table_name }) => table_name),
     ).toEqual([
+      "account_deleted_subjects",
+      "account_deletion_objects",
+      "account_deletions",
+      "account_terms",
       "api_idempotency",
       "asset_objects",
       "assets",
@@ -1277,6 +1285,8 @@ describe.sequential("media and coordination schema", () => {
       "media_cleanup_claims",
       "outbox_events",
       "receipts",
+      "request_limits",
+      "safety_reports",
       "trip_device_requests",
       "trip_invites",
       "trip_key_envelopes",
@@ -1286,6 +1296,7 @@ describe.sequential("media and coordination schema", () => {
       "upload_objects",
       "upload_sessions",
       "user_active_trips",
+      "user_blocks",
       "users",
     ]);
     const indexesAfterSecondUp = await sql<{ indexname: string }>`

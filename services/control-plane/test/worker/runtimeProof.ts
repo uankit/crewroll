@@ -50,6 +50,9 @@ export default {
       const runtime = await createWorkerRequestRuntime(
         {
           ...env,
+          CLERK_ISSUER: "https://creative-oriole-5086.clerk.accounts.dev",
+          CLERK_AUTHORIZED_PARTIES_JSON: "[]",
+          REQUIRE_TERMS: "false",
           CLERK_SECRET_KEY: "sk_test_local_runtime_proof_only",
           CLERK_WEBHOOK_SECRET: `whsec_${secret}`,
           BACKGROUND_CREDENTIAL_HMAC_KEY_V1: secret,

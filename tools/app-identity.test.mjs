@@ -85,7 +85,7 @@ test("rejects missing production auto-increment instead of defaulting it", () =>
   );
 });
 
-test("TestFlight targets the existing Apple app without changing Android or production", async () => {
+test("TestFlight uses production authentication while retaining the existing app identities", async () => {
   const readConfig = async (filename) =>
     JSON.parse(
       await readFile(new URL(`../${filename}`, import.meta.url), "utf8"),
@@ -103,7 +103,7 @@ test("TestFlight targets the existing Apple app without changing Android or prod
     extends: "production",
     distribution: "store",
     channel: "testflight",
-    environment: "preview",
+    environment: "production",
   });
   assert.equal(eas.submit.testflight.ios.ascAppId, "6797897853");
   assert.equal(eas.build.production.autoIncrement, true);
