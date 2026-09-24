@@ -91,20 +91,37 @@ describe("account authentication", () => {
     expect(signIn.finalize).not.toHaveBeenCalled();
   });
 
-  it("does not bypass an email second factor after a correct password", async () => {
-    const { signIn } = fixture();
-    signIn.supportedFirstFactors = [{ strategy: "password" }];
-    signIn.supportedSecondFactors = [{ strategy: "email_code" }];
-    signIn.status = "needs_second_factor";
-    const { result } = await renderHook(useAccountAuthentication);
-    await act(() => result.current.setEmail("reviewer@example.com"));
-    await act(() => result.current.submitEmail());
-    await act(() => result.current.setPassword("accepted-password"));
-    await act(() => result.current.submitPassword());
-    expect(signIn.mfa.sendEmailCode).toHaveBeenCalledTimes(1);
-    expect(signIn.finalize).not.toHaveBeenCalled();
-    expect(result.current.verifying).toBe(true);
-  });
+  it.each(["needs_second_factor", "needs_client_trust"])(
+    "requires a verified email code after a correct password when %s",
+    async (status) => {
+      const { signIn } = fixture();
+      signIn.supportedFirstFactors = [{ strategy: "password" }];
+      signIn.supportedSecondFactors = [{ strategy: "email_code" }];
+      signIn.status = status;
+      const { result } = await renderHook(useAccountAuthentication);
+      await act(() => result.current.setEmail("reviewer@example.com"));
+      await act(() => result.current.submitEmail());
+      await act(() => result.current.setPassword("accepted-password"));
+      await act(() => result.current.submitPassword());
+      expect(signIn.mfa.sendEmailCode).toHaveBeenCalledTimes(1);
+      expect(signIn.finalize).not.toHaveBeenCalled();
+      expect(result.current.verifying).toBe(true);
+      signIn.mfa.verifyEmailCode.mockResolvedValueOnce({
+        error: { clerkError: true, code: "form_code_incorrect" },
+      } as never);
+      await act(() => result.current.setCode("000000"));
+      await act(() => result.current.verify());
+      expect(result.current.error).toMatch(/code didn’t work/);
+      expect(signIn.finalize).not.toHaveBeenCalled();
+      signIn.status = "complete";
+      await act(() => result.current.setCode("123456"));
+      await act(() => result.current.verify());
+      expect(signIn.mfa.verifyEmailCode).toHaveBeenLastCalledWith({
+        code: "123456",
+      });
+      expect(signIn.finalize).toHaveBeenCalledTimes(1);
+    },
+  );
   it("signs a returning user in without creating another account", async () => {
     const { signIn, signUp } = fixture();
     const { result } = await renderHook(useAccountAuthentication);
