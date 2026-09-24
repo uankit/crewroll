@@ -97,7 +97,11 @@ test("TestFlight uses production authentication while retaining the existing app
   );
 
   assert.equal(app.expo.ios.bundleIdentifier, "app.crewroll.mobile");
-  assert.equal(app.expo.ios.infoPlist.ITSAppUsesNonExemptEncryption, false);
+  assert.notEqual(
+    app.expo.ios.infoPlist?.ITSAppUsesNonExemptEncryption,
+    false,
+    "Complete Apple's encryption questionnaire before asserting an exemption",
+  );
   assert.equal(app.expo.android.package, "com.uankit53.airmesh");
   assert.deepEqual(eas.build.testflight, {
     extends: "production",
