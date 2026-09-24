@@ -6,6 +6,10 @@
   "compatibility_date": "2026-09-09",
   "workers_dev": true,
   "preview_urls": false,
+  "services": [
+    { "binding": "API", "service": "crewroll-api-production" },
+    { "binding": "BETA_API", "service": "crewroll-api" },
+  ],
   "routes": [
     { "pattern": "crewroll.app", "custom_domain": true },
     { "pattern": "www.crewroll.app", "custom_domain": true },

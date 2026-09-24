@@ -84,7 +84,8 @@ export default {
           "Cache-Control": "no-store",
         });
       try {
-        const response = await fetch(env.API_ORIGIN + "/v1/account/deletion", {
+        const send = env.API ? env.API.fetch.bind(env.API) : fetch;
+        const response = await send(env.API_ORIGIN + "/v1/account/deletion", {
           method: "POST",
           headers: {
             Authorization: authorization,
@@ -92,7 +93,7 @@ export default {
           },
           body: '{"confirmation":"DELETE"}',
           signal: AbortSignal.timeout(25000),
-          redirect: "error",
+          redirect: "manual",
         });
         if (!response.ok) {
           await response.body?.cancel();
@@ -170,13 +171,15 @@ export default {
         return reply("{}", "application/json", 404, {
           "Cache-Control": "no-store",
         });
-      for (const origin of [env.API_ORIGIN, env.BETA_API_ORIGIN].filter(
-        Boolean,
-      )) {
+      for (const [origin, service] of [
+        [env.API_ORIGIN, env.API],
+        [env.BETA_API_ORIGIN, env.BETA_API],
+      ].filter(([origin]) => Boolean(origin))) {
         try {
-          const response = await fetch(origin + "/v1/account/deletions/" + id, {
+          const send = service ? service.fetch.bind(service) : fetch;
+          const response = await send(origin + "/v1/account/deletions/" + id, {
             signal: AbortSignal.timeout(8000),
-            redirect: "error",
+            redirect: "manual",
           });
           if (response.ok) {
             const result = await response.json();

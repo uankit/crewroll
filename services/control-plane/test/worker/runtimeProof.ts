@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createR2CiphertextStore } from "../../worker/r2CiphertextStore.js";
 import { workerApp } from "../../worker/scopedApp.js";
 import { createWorkerRequestRuntime } from "../../worker/requestRuntime.js";
+import { createClerkIdentityDeletion } from "../../src/platform/clerk/deleteClerkIdentity.js";
 import contract from "@crewroll/contracts/generated/crewroll.openapi.json" with { type: "json" };
 
 export default {
@@ -46,6 +47,42 @@ export default {
         }),
       );
     try {
+      const originalFetch = globalThis.fetch;
+      try {
+        // Construct real workerd Requests: Node accepts redirect modes the edge rejects.
+        globalThis.fetch = (input, init) => {
+          const request = new Request(input, init);
+          assert(
+            request.redirect === "manual",
+            "Provider requests cannot redirect credentials",
+          );
+          return Promise.resolve(Response.json({ external_accounts: [] }));
+        };
+        let checkpoints = 0;
+        await createClerkIdentityDeletion(
+          "local-proof-only",
+          {
+            clientId: "local",
+            teamId: "local",
+            keyId: "local",
+            privateKey: "unused",
+          },
+          new Uint8Array(32).fill(7),
+        )("user_local_proof", {
+          appleGrant: null,
+          appleRevoked: false,
+          checkpoint: () => {
+            checkpoints += 1;
+            return Promise.resolve();
+          },
+        });
+        assert(
+          checkpoints === 2,
+          "Encrypted deletion checkpoint works in workerd",
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
       const secret = Buffer.alloc(32, 7).toString("base64");
       const runtime = await createWorkerRequestRuntime(
         {

@@ -30,6 +30,24 @@ function checkpoint() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("provider identity deletion", () => {
+  it("refuses provider redirects without forwarding credentials to another host", async () => {
+    const request = vi.fn((_url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://untrusted.example/collect" },
+      });
+    });
+    vi.stubGlobal("fetch", request);
+    await expect(
+      createClerkIdentityDeletion(
+        "clerk-test",
+        apple,
+        key,
+      )("user_fixture", checkpoint().read()),
+    ).rejects.toThrow("Identity lookup unavailable");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it("does not delete the identity until Apple revocation succeeds and resumes from an encrypted checkpoint", async () => {
     const state = checkpoint();
     const calls: string[] = [];

@@ -90,6 +90,45 @@ test("public receipts strip upstream private fields and never accept arbitrary l
   assert.equal(invalid.status, 404);
   assert.equal(calls.length, 1);
 });
+test("authenticated deletion and receipts use the configured Worker service binding", async () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  const calls = [];
+  const env = {
+    API_ORIGIN: "https://api.example.test",
+    API: {
+      async fetch(url, init) {
+        calls.push(new Request(url, init));
+        return Response.json({ requestId: id, status: "PENDING" });
+      },
+    },
+  };
+  const response = await site.fetch(
+    new Request("https://crewroll.app/account-deletion", {
+      method: "POST",
+      headers: {
+        Origin: "https://crewroll.app",
+        Authorization: "Bearer fixture-token-long-enough",
+        "X-CrewRoll-Confirmation": "DELETE",
+      },
+    }),
+    env,
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(await response.json(), { requestId: id, status: "PENDING" });
+  assert.equal(
+    calls[0].headers.get("Authorization"),
+    "Bearer fixture-token-long-enough",
+  );
+  assert.equal(calls[0].redirect, "manual");
+  assert.deepEqual(await calls[0].json(), { confirmation: "DELETE" });
+  const receipt = await site.fetch(
+    new Request("https://crewroll.app/deletion-status/" + id),
+    env,
+  );
+  assert.deepEqual(await receipt.json(), { status: "PENDING" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].headers.get("Authorization"), null);
+});
 test("verified app associations retain the existing signed package identities", async () => {
   const android = await (
     await site.fetch(

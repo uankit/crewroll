@@ -25,7 +25,7 @@ export function createClerkIdentityDeletion(
       method,
       headers: { Authorization: `Bearer ${secretKey}` },
       signal: AbortSignal.timeout(10_000),
-      redirect: "error",
+      redirect: "manual",
     });
   const key = () => {
     if (!checkpointKey)
@@ -141,7 +141,7 @@ export function createClerkIdentityDeletion(
                 token_type_hint: "access_token",
               }),
               signal: AbortSignal.timeout(10_000),
-              redirect: "error",
+              redirect: "manual",
             },
           );
           const success = response.ok;
