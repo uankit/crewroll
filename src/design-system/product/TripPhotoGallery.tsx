@@ -94,13 +94,7 @@ export function TripPhotoGallery({
       >
         {photos.length === 0 ? (
           <View style={[styles.emptyArea, fillEmpty && styles.fill]}>
-            <View
-              accessible
-              style={[
-                styles.emptyCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
+            <View accessible style={styles.emptyContent}>
               <View
                 style={[
                   styles.emptyMark,
@@ -175,10 +169,8 @@ const styles = StyleSheet.create({
   grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   tile: { aspectRatio: 1 },
   emptyArea: { width: "100%", justifyContent: "center" },
-  emptyCard: {
+  emptyContent: {
     padding: spacing.lg,
-    borderWidth: 1,
-    borderRadius: radius.lg,
     alignItems: "center",
     justifyContent: "center",
     gap: spacing.sm,

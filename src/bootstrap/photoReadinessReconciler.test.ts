@@ -84,4 +84,29 @@ describe("photo readiness reconciliation sequencing", () => {
     expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
     expect(actions.publishPhotoReadiness).toHaveBeenCalledWith("A", true);
   });
+
+  it("does not lose a permission tap behind a passive check or a later foreground event", async () => {
+    const first = deferred();
+    const actions = {
+      invalidatePhotoReadiness: jest.fn(),
+      publishPhotoReadiness: jest
+        .fn()
+        .mockImplementationOnce(async () => first.promise)
+        .mockResolvedValue(undefined),
+    } as unknown as TripSessionActions;
+    const reconciler = createPhotoReadinessReconciler();
+    reconciler.reconcile(actions, "A");
+    reconciler.reconcile(actions, "A", true);
+    reconciler.reconcile(actions, "A", true);
+    const drained = reconciler.reconcile(actions, "A");
+    first.resolve();
+    await drained;
+    expect(actions.publishPhotoReadiness).toHaveBeenCalledTimes(2);
+    expect(actions.publishPhotoReadiness).toHaveBeenNthCalledWith(
+      1,
+      "A",
+      false,
+    );
+    expect(actions.publishPhotoReadiness).toHaveBeenNthCalledWith(2, "A", true);
+  });
 });

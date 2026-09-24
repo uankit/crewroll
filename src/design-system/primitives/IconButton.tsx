@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   View,
@@ -20,6 +21,7 @@ export type IconButtonProps = {
   readonly onPress: (event: GestureResponderEvent) => void;
   readonly accessibilityHint?: string;
   readonly disabled?: boolean;
+  readonly loading?: boolean;
   readonly variant?: IconButtonVariant;
   readonly style?: StyleProp<ViewStyle>;
   readonly testID?: string;
@@ -31,6 +33,7 @@ export function IconButton({
   onPress,
   accessibilityHint,
   disabled = false,
+  loading = false,
   variant = "default",
   style,
   testID,
@@ -49,8 +52,8 @@ export function IconButton({
       accessibilityHint={accessibilityHint}
       accessibilityLabel={label}
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
+      disabled={disabled || loading}
       onPress={onPress}
       testID={testID}
       style={({ pressed }) => [
@@ -71,7 +74,11 @@ export function IconButton({
       ]}
     >
       <View accessible={false} importantForAccessibility="no-hide-descendants">
-        {renderedIcon}
+        {loading ? (
+          <ActivityIndicator color={contentColor} size="small" />
+        ) : (
+          renderedIcon
+        )}
       </View>
     </Pressable>
   );

@@ -24,16 +24,12 @@ const grantSchema = z.discriminatedUnion("mode", [
 ]);
 type Grant = z.infer<typeof grantSchema>;
 
-/** Must serialize across isolates and with cleanup, not just in-memory. */
-export interface ObjectMutationLock {
-  run<T>(key: string, action: () => Promise<T>): Promise<T>;
-}
+const TOMBSTONE = "crewroll-retired-v1";
 
 export function createR2CiphertextStore(options: {
   bucket: Pick<R2Bucket, "head" | "get" | "put" | "delete">;
   origin: string;
   signingKey: Uint8Array;
-  mutations: ObjectMutationLock;
   now: () => Date;
 }): { store: CiphertextStore; fetch(request: Request): Promise<Response> } {
   const origin = new URL(options.origin);
@@ -84,7 +80,7 @@ export function createR2CiphertextStore(options: {
   };
   const inspect: CiphertextStore["inspect"] = async (key) => {
     const object = await options.bucket.head(key);
-    if (!object) return null;
+    if (!object || object.customMetadata?.[TOMBSTONE] === "1") return null;
     if (!object.checksums.sha256 || object.size < 1 || object.size > MAX_BYTES)
       throw new DomainError("CONFLICT");
     return {
@@ -101,8 +97,19 @@ export function createR2CiphertextStore(options: {
     download: (key, expiresAt) =>
       Promise.resolve(url({ key, mode: "get", expires: expiresAt.getTime() })),
     inspect,
-    delete: (key) =>
-      options.mutations.run(key, () => options.bucket.delete(key)),
+    async delete(key) {
+      // Retire an immutable key atomically. A zero-byte marker replaces all
+      // ciphertext and fences any in-flight/replayed create-only PUT. Never
+      // delete this marker: doing so would reopen the key to a stale writer.
+      // Markers contain no photo bytes, user metadata, or decryption material.
+      await options.bucket.put(key, new Uint8Array(), {
+        customMetadata: { [TOMBSTONE]: "1" },
+        httpMetadata: {
+          contentType: "application/octet-stream",
+          cacheControl: "no-store",
+        },
+      });
+    },
   };
   return {
     store,
@@ -122,6 +129,10 @@ export function createR2CiphertextStore(options: {
       if (request.method === "GET" && grant.mode === "get") {
         const object = await options.bucket.get(grant.key);
         if (!object) throw new DomainError("NOT_FOUND");
+        if (object.customMetadata?.[TOMBSTONE] === "1") {
+          await object.body.cancel();
+          throw new DomainError("NOT_FOUND");
+        }
         return new Response(object.body, {
           headers: {
             ...headers,
@@ -143,7 +154,7 @@ export function createR2CiphertextStore(options: {
         request.headers.get("if-none-match") !== "*"
       )
         throw new DomainError("INVALID_REQUEST");
-      return options.mutations.run(grant.key, async () => {
+      {
         valid(grant);
         const prior = await inspect(grant.key);
         if (prior) {
@@ -174,28 +185,46 @@ export function createR2CiphertextStore(options: {
               cacheControl: "no-store",
             },
           })
+          .then((object) => {
+            // A competing PUT or cleanup won. Stop consuming a body R2 no
+            // longer needs, then reconcile the immutable winner below.
+            if (!object) abort.abort();
+            return object;
+          })
           .catch((error: unknown) => {
             abort.abort();
             throw error;
           });
         try {
           const results = await Promise.allSettled([pumping, writing]);
+          const result = results[1];
+          if (result?.status === "fulfilled" && result.value === null) {
+            valid(grant);
+            const winner = await inspect(grant.key);
+            if (
+              !winner ||
+              winner.bytes !== grant.bytes ||
+              winner.checksum !== grant.checksum
+            )
+              throw new DomainError("CONFLICT");
+            return new Response(null, {
+              headers: { ...headers, ETag: winner.etag },
+            });
+          }
           const failed = results.find((result) => result.status === "rejected");
           if (failed?.status === "rejected") throw failed.reason;
-          const result = results[1];
           if (result?.status !== "fulfilled" || !result.value)
             throw new DomainError("CONFLICT");
-          if (grant.expires <= options.now().getTime()) {
-            await options.bucket.delete(grant.key);
-            throw new DomainError("AUTH_INVALID");
-          }
+          // An expired response cannot authorize commit. Cleanup owns retirement;
+          // this old grant must not retire a concurrently renewed session's key.
+          valid(grant);
           return new Response(null, {
             headers: { ...headers, ETag: result.value.httpEtag },
           });
         } finally {
           clearTimeout(timer);
         }
-      });
+      }
     },
   };
 }

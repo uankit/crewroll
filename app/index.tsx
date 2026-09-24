@@ -2,10 +2,14 @@ import { Redirect, useRouter } from "expo-router";
 
 import { SessionLoadingScreen, useAppSession } from "@/bootstrap";
 import { WelcomeScreen } from "@/features/auth";
+import { useAccountSetup } from "@/bootstrap/AccountSetup";
 
 export default function LaunchRoute() {
   const { snapshot } = useAppSession();
   const router = useRouter();
+  const setup = useAccountSetup();
+
+  if (setup.required) return <Redirect href="/setup" withAnchor />;
 
   switch (snapshot.phase) {
     case "LOADING_FONTS_OR_CLERK":

@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 
 /// URLSession owns ciphertext transfers while the app is suspended. Completed
-/// files/ETags are cached by immutable object path, so a renewed signed URL after
+/// files/ETags are cached by verified ciphertext identity, so a renewed URL after
 /// process death rejoins the same work. Decrypt/save/receipt remain engine work.
 public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     public static let shared = AppleBackgroundTransfer()
@@ -45,21 +45,23 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
         queue.async { self.completions[identifier] = completion; _ = self.session(identifier.hasSuffix("cellular")) }
         return true
     }
-    private func key(_ request: URLRequest, expectedBytes: UInt64?) throws -> String {
-        guard let url = request.url, url.scheme == "https", let host = url.host, url.user == nil, url.password == nil else { throw NativeKeyError.invalidEnvelope }
-        let identity = "\(request.httpMethod ?? "GET")|\(host)|\(url.path)|\(expectedBytes.map(String.init) ?? request.value(forHTTPHeaderField: "x-amz-checksum-sha256") ?? "")"
-        return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
-    }
-    func transfer(request: URLRequest, upload: URL?, expectedBytes: UInt64?, cellular: Bool, owner: UUID) async throws -> String {
-        let id = try key(request, expectedBytes: expectedBytes)
+    func transfer(request: URLRequest, upload: URL?, expectedBytes: UInt64?, expectedSHA256: Bytes? = nil, cellular: Bool, owner: UUID) async throws -> String {
+        let id = try NativeTransferCacheIdentity.key(request, expectedBytes: expectedBytes, expectedSHA256: expectedSHA256)
         return try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     let root = try self.root
                     let marker = root.appendingPathComponent(id + ".done")
-                    if let data = try? Data(contentsOf: marker), let result = String(data: data, encoding: .utf8),
-                       upload != nil || FileManager.default.fileExists(atPath: root.appendingPathComponent(id + ".ciphertext").path) {
-                        continuation.resume(returning: result); return
+                    if let data = try? Data(contentsOf: marker), let result = String(data: data, encoding: .utf8) {
+                        if upload != nil { continuation.resume(returning: result); return }
+                        let cached = root.appendingPathComponent(id + ".ciphertext")
+                        if let expectedBytes, let expectedSHA256,
+                           (try? NativeTransferCacheIdentity.verify(cached, bytes: expectedBytes, sha256: Data(expectedSHA256))) != nil {
+                            continuation.resume(returning: result); return
+                        }
+                        // A corrupt cache entry must not poison every later retry.
+                        try? FileManager.default.removeItem(at: marker)
+                        try? FileManager.default.removeItem(at: cached)
                     }
                     self.waiters[id, default: []].append((owner, continuation))
                     if self.waiters[id]!.count > 1 { return }
@@ -71,7 +73,7 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
                         let task: URLSessionTask
                         if let upload { task = session.uploadTask(with: request, fromFile: upload) }
                         else { task = session.downloadTask(with: request) }
-                        task.taskDescription = id + "|" + (expectedBytes.map(String.init) ?? "upload")
+                        task.taskDescription = id + "|" + (expectedBytes.map(String.init) ?? "upload") + "|" + (expectedSHA256.map { Data($0).base64EncodedString() } ?? "upload")
                         task.resume()
                     } }
                 } catch { continuation.resume(throwing: error) }
@@ -118,12 +120,11 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         if cancelledTasks.contains(ObjectIdentifier(downloadTask)) { return }
         do {
-            guard let parts = downloadTask.taskDescription?.split(separator: "|"), parts.count == 2,
-                  let expected = UInt64(parts[1]), let response = downloadTask.response as? HTTPURLResponse,
+            guard let parts = downloadTask.taskDescription?.split(separator: "|"), parts.count == 3,
+                  let expected = UInt64(parts[1]), let checksum = Data(base64Encoded: String(parts[2])), let response = downloadTask.response as? HTTPURLResponse,
                   (200..<300).contains(response.statusCode),
                   response.url?.host == downloadTask.originalRequest?.url?.host else { throw NativeKeyError.invalidEnvelope }
-            let size = try FileManager.default.attributesOfItem(atPath: location.path)[.size] as? NSNumber
-            guard size?.uint64Value == expected else { throw NativeKeyError.invalidEnvelope }
+            try NativeTransferCacheIdentity.verify(location, bytes: expected, sha256: checksum)
             let destination = try root.appendingPathComponent(String(parts[0]) + ".ciphertext")
             if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
             try FileManager.default.moveItem(at: location, to: destination)

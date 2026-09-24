@@ -4,6 +4,16 @@ import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 
+/// Bounded file/CPU work must not occupy the actor serving status and cancellation.
+private final class NativePhotoFileWork {
+    private let queue = DispatchQueue(label: "app.crewroll.photo-files", qos: .utility)
+    func run<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { continuation.resume(with: Result(catching: work)) }
+        }
+    }
+}
+
 private struct PendingPhotoPage: Decodable {
     struct Item: Decodable { let deliveryId: String; let assetId: String; let tripId: String; let sourceDeviceId: String; let committedAt: String }
     let items: [Item]
@@ -30,6 +40,7 @@ public actor ApplePhotoTransferEngine {
     private let transportFactory: (Bool) -> NativePhotoTransportPort
     private let root: URL
     private let invalidated: (Int) -> Void
+    private let fileWork = NativePhotoFileWork()
     private var journal: NativeTransferJournal?
     private var journalScope: NativeKeyScope?
     private var previews: NativePreviewStore?
@@ -38,10 +49,22 @@ public actor ApplePhotoTransferEngine {
     private var previewBlocker: String?
     private var originalPoll: Task<Void, Never>?
     private var paused = true
-    private var cellularAllowed = false
+    private var cellularAllowed = true
     private var generation = 0
     private var transport: NativePhotoTransportPort?
     private var running = false
+    private var activeOriginals: [String: (network: NativePhotoTransportPort, upload: Bool, tripID: String)] = [:]
+    private var progressScope: String?
+    private var lastPreviewCheckedAt: Date?
+    private var lastCheckedAt: Date?
+    private var lastProgressAt: Date?
+    private var retryAt: Date?
+    private var networkUnavailable = false
+    private var originalNextCheck = Date.distantPast
+    private var previewNextCheck = Date.distantPast
+    private var originalIdle = 0
+    private var previewIdle = 0
+    private var visible = true
     private var globalBlocker: String?
     private var poll: Task<Void, Never>?
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -57,8 +80,9 @@ public actor ApplePhotoTransferEngine {
     }
     public func activate(ifCurrent: () -> Bool = { true }) async {
         guard ifCurrent() else { return }
+        cellularAllowed = true
         paused = false
-        library.onChange = { [weak self] in Task { await self?.wakePreviews() } }
+        library.onChange = { [weak self] in Task { await self?.libraryChanged() } }
         if poll == nil {
             poll = Task { [weak self] in
                 while !Task.isCancelled {
@@ -75,6 +99,7 @@ public actor ApplePhotoTransferEngine {
                 }
             }
         }
+        originalNextCheck = .distantPast; previewNextCheck = .distantPast
         Task { await self.wakePreviews() }
         Task { await self.wake() }
     }
@@ -84,17 +109,18 @@ public actor ApplePhotoTransferEngine {
         let policyGeneration = generation
         self.paused = paused; self.cellularAllowed = cellularAllowed
         transport?.cancel(); transport = nil
+        for task in activeOriginals.values { task.network.cancel() }
         previewTransport?.cancel(); previewTransport = nil
         if paused { poll?.cancel(); poll = nil; originalPoll?.cancel(); originalPoll = nil; library.onChange = nil }
         // Photos can already be committing a verified save. Do not tell the
         // sign-out boundary we are stopped until that operation has settled.
-        if running || previewRunning { await withCheckedContinuation { idleWaiters.append($0) } }
+        if running || previewRunning || !activeOriginals.isEmpty { await withCheckedContinuation { idleWaiters.append($0) } }
         if paused && generation == policyGeneration { try? previews?.clearRenders() }
         if !paused && generation == policyGeneration && ifCurrent() { await activate(ifCurrent: ifCurrent) }
     }
     public func stop() async { await setPolicy(paused: true, cellularAllowed: cellularAllowed) }
     public func retry(workID: String) async throws {
-        if var record = journal?.record(workID) { record.blocker = nil; try journal?.put(record) }
+        if var record = journal?.record(workID) { record.blocker = nil; record.nextAttemptAt = nil; record.retryAttempts = nil; try journal?.put(record) }
         let assetID = journal?.record(workID)?.assetID ?? workID
         if var record = previews?.record(assetID) {
             if record.blocker == "INTEGRITY_FAILURE", let directory = try previews?.directory(assetID) {
@@ -103,17 +129,51 @@ public actor ApplePhotoTransferEngine {
             }
             record.blocker = nil; try previews?.put(record)
         }
-        globalBlocker = nil
-        previewBlocker = nil
+        globalBlocker = nil; previewBlocker = nil; retryAt = nil
+        originalNextCheck = .distantPast; previewNextCheck = .distantPast
         Task { await self.wakePreviews() }
-        await wake()
+        Task { await self.wake() }
+    }
+
+    public func foreground(_ value: Bool) async {
+        visible = value
+        if value {
+            originalNextCheck = .distantPast; previewNextCheck = .distantPast
+            Task { await self.wakePreviews() }; Task { await self.wake() }
+        }
+    }
+    private func libraryChanged() async {
+        previewNextCheck = .distantPast
+        await wakePreviews()
+    }
+    /// Accept a trip-wide retry without waiting for network I/O or Photos saves.
+    public func reconcileNow() throws {
+        guard !paused, var context = try contextProvider() else { return }
+        defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
+        let ledger = try currentJournal(context)
+        for var record in ledger.snapshot().works where record.tripID == context.metadata.tripID && !record.complete && activeOriginals[record.workID] == nil {
+            record.blocker = nil; record.nextAttemptAt = nil; record.retryAttempts = nil; try ledger.put(record)
+        }
+        if let previews {
+            for var record in previews.snapshot(tripID: context.metadata.tripID).records where record.blocker != nil {
+                if record.blocker == "INTEGRITY_FAILURE" {
+                    let file = try previews.directory(record.assetID).appendingPathComponent("preview.ciphertext")
+                    if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+                }
+                record.blocker = nil; try previews.put(record)
+            }
+        }
+        globalBlocker = nil; previewBlocker = nil; retryAt = nil
+        originalNextCheck = .distantPast; previewNextCheck = .distantPast
+        Task { await self.wakePreviews() }; Task { await self.wake() }
     }
 
     public func wake() async {
-        guard !paused, !running else { return }
+        guard !paused, !running, Date() >= originalNextCheck else { return }
         running = true
         defer {
             running = false
+            invalidated(journal?.snapshot().revision ?? 0)
             finishWaiters()
         }
         let epoch = generation
@@ -147,25 +207,65 @@ public actor ApplePhotoTransferEngine {
             Task { await self.wakePreviews() }
             let pending = ledger.snapshot().works.filter { $0.tripID == context.metadata.tripID && !$0.complete && $0.blocker == nil }
                 .sorted { $0.capturedAt < $1.capturedAt }
-            // One incoming and one outgoing original per pass. The independent
-            // preview lane stays responsive during either large transfer.
-            let selected = [pending.first { $0.deliveryID != nil }, pending.first { $0.sourceLocalID != nil && $0.previewPublished == true }].compactMap { $0 }
+            lastCheckedAt = Date(); retryAt = nil; networkUnavailable = false
+            let available = pending.filter { activeOriginals[$0.workID] == nil && ($0.nextAttemptAt ?? .distantPast) <= Date() }
+            let downloads = max(0, 2 - activeOriginals.values.filter { !$0.upload }.count)
+            let uploads = max(0, 1 - activeOriginals.values.filter { $0.upload }.count)
+            let selected = Array(available.filter { $0.deliveryID != nil }.prefix(downloads)) +
+                Array(available.filter { $0.sourceLocalID != nil && $0.previewPublished == true }.prefix(uploads))
             for record in selected {
+                if let retryAt, retryAt > Date() { break }
                 try assertCurrent(context, epoch)
-                do {
-                    if record.deliveryID != nil { try await receive(record, context: context, epoch: epoch, ledger: ledger, network: network) }
-                    else { try await publish(record, context: context, epoch: epoch, ledger: ledger, network: network) }
-                } catch {
-                    try assertCurrent(context, epoch)
-                    if var current = ledger.record(record.workID), let blocker = blocker(error) {
-                        current.blocker = blocker; try ledger.put(current)
-                    }
-                    if let http = error as? NativeTransferHTTPError, http.authenticated && (http.status == 401 || http.status == 403) { throw error }
-                }
-                invalidated(ledger.snapshot().revision)
+                let worker = transportFactory(cellularAllowed)
+                activeOriginals[record.workID] = (worker, record.deliveryID == nil, context.metadata.tripID)
+                let copy = context
+                lastProgressAt = Date()
+                Task { await self.runOriginal(record, context: copy, epoch: epoch, ledger: ledger, network: worker) }
             }
+            originalIdle = activeOriginals.isEmpty ? min(5, originalIdle + 1) : 0
+            originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (visible ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
+            if let retry = pending.compactMap(\.nextAttemptAt).filter({ $0 > Date() }).min() { originalNextCheck = min(originalNextCheck, retry) }
         } catch {
-            if epoch == generation { globalBlocker = blocker(error) }
+            if epoch == generation {
+                globalBlocker = blocker(error)
+                networkUnavailable = (error as? URLError)?.code == .notConnectedToInternet
+                if globalBlocker == nil && !(error is CancellationError) { retryAt = Date().addingTimeInterval(5) }
+                originalNextCheck = Date().addingTimeInterval(5)
+            }
+        }
+    }
+
+    private func runOriginal(_ record: NativePhotoWork, context input: NativeMediaContext, epoch: Int, ledger: NativeTransferJournal, network: NativePhotoTransportPort) async {
+        var context = input
+        defer {
+            network.cancel()
+            context.tripKey.resetBytes(in: 0..<context.tripKey.count)
+            context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count)
+            activeOriginals.removeValue(forKey: record.workID)
+            invalidated(ledger.snapshot().revision)
+            originalNextCheck = .distantPast
+            finishWaiters()
+            Task { await self.wake() }
+        }
+        do {
+            try assertCurrent(context, epoch)
+            if record.deliveryID != nil { try await receive(record, context: context, epoch: epoch, ledger: ledger, network: network) }
+            else { try await publish(record, context: context, epoch: epoch, ledger: ledger, network: network) }
+            lastProgressAt = Date(); retryAt = nil
+            if record.sourceLocalID != nil { previewNextCheck = .distantPast; Task { await self.wakePreviews() } }
+        } catch {
+            if !paused && generation == epoch {
+                if var current = ledger.record(record.workID), let reason = blocker(error) {
+                    current.blocker = reason
+                    do { try ledger.put(current) } catch { globalBlocker = blocker(error); retryAt = Date().addingTimeInterval(5) }
+                    if reason == "AUTH_REVOKED" { globalBlocker = reason }
+                } else if !(error is CancellationError), var current = ledger.record(record.workID) {
+                    networkUnavailable = (error as? URLError)?.code == .notConnectedToInternet
+                    current.retryAttempts = min(6, (current.retryAttempts ?? 0) + 1)
+                    current.nextAttemptAt = Date().addingTimeInterval(min(60, pow(2, Double(current.retryAttempts! + 1))))
+                    do { try ledger.put(current) } catch { globalBlocker = blocker(error); retryAt = Date().addingTimeInterval(5) }
+                }
+            }
         }
     }
 
@@ -197,15 +297,21 @@ public actor ApplePhotoTransferEngine {
                 record.ignored = true; record.complete = true; try ledger.put(record)
                 return
             }
-            let dimensions = try library.makePreview(original: original, destination: preview)
-            var root = try NativePhotoCrypto.randomKey()
-            defer { sodium_memzero(&root, root.count) }
-            let previewDescriptor = try NativePhotoCrypto.encryptFile(source: preview, destination: directory.appendingPathComponent("preview.ciphertext"), contentRoot: root,
-                tripID: record.tripID, assetID: record.assetID, variant: .preview, mime: "image/jpeg", width: dimensions.width, height: dimensions.height)
-            let originalDescriptor = try NativePhotoCrypto.encryptFile(source: original, destination: directory.appendingPathComponent("original.ciphertext"), contentRoot: root,
-                tripID: record.tripID, assetID: record.assetID, variant: .original, mime: metadata.mime, width: metadata.width, height: metadata.height)
-            let manifest = try NativePhotoCrypto.sealManifest(contentRoot: root, capturedAt: record.capturedAt, preview: previewDescriptor,
-                original: originalDescriptor, tripKey: Bytes(context.tripKey), tripID: record.tripID, assetID: record.assetID)
+            let preparing = record
+            let library = self.library
+            let (previewDescriptor, originalDescriptor, manifest) = try await fileWork.run {
+                let dimensions = try library.makePreview(original: original, destination: preview)
+                var root = try NativePhotoCrypto.randomKey()
+                defer { sodium_memzero(&root, root.count) }
+                let previewDescriptor = try NativePhotoCrypto.encryptFile(source: preview, destination: directory.appendingPathComponent("preview.ciphertext"), contentRoot: root,
+                    tripID: preparing.tripID, assetID: preparing.assetID, variant: .preview, mime: "image/jpeg", width: dimensions.width, height: dimensions.height)
+                let originalDescriptor = try NativePhotoCrypto.encryptFile(source: original, destination: directory.appendingPathComponent("original.ciphertext"), contentRoot: root,
+                    tripID: preparing.tripID, assetID: preparing.assetID, variant: .original, mime: metadata.mime, width: metadata.width, height: metadata.height)
+                let manifest = try NativePhotoCrypto.sealManifest(contentRoot: root, capturedAt: preparing.capturedAt, preview: previewDescriptor,
+                    original: originalDescriptor, tripKey: Bytes(context.tripKey), tripID: preparing.tripID, assetID: preparing.assetID)
+                return (previewDescriptor, originalDescriptor, manifest)
+            }
+            try assertCurrent(context, epoch)
             let sourceKey = HMAC<SHA256>.authenticationCode(for: Data(("crewroll/source/v1/" + record.tripID + "/" + localID).utf8), using: SymmetricKey(data: context.tripKey))
             let opaque = Data(sourceKey).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
             record.uploadBody = try json([
@@ -242,6 +348,7 @@ public actor ApplePhotoTransferEngine {
             try assertCurrent(context, epoch)
             try cacheSourcePreview(record, context: context, ledger: ledger)
             record.previewPublished = true; try ledger.put(record)
+            originalNextCheck = .distantPast; Task { await self.wake() }
             return
         }
         // A source receipt asserts the original still exists, not just that an
@@ -292,10 +399,13 @@ public actor ApplePhotoTransferEngine {
             let ciphertext = directory.appendingPathComponent("original.ciphertext")
             let fileExtension = UTType(mimeType: manifest.original.mime)?.preferredFilenameExtension ?? "jpg"
             let plaintext = directory.appendingPathComponent("original.\(fileExtension)")
-            try await network.download(url: object.url, destination: ciphertext, expectedBytes: manifest.original.ciphertextBytes)
+            try await network.download(url: object.url, destination: ciphertext, expectedBytes: manifest.original.ciphertextBytes, expectedSHA256: manifest.original.ciphertextSHA256)
             try assertCurrent(context, epoch)
-            try NativePhotoCrypto.decryptFile(source: ciphertext, destination: plaintext, descriptor: manifest.original,
-                contentRoot: manifest.contentRoot, tripID: record.tripID, assetID: record.assetID)
+            let decrypting = record, descriptor = manifest.original, contentRoot = manifest.contentRoot
+            try await fileWork.run {
+                try NativePhotoCrypto.decryptFile(source: ciphertext, destination: plaintext, descriptor: descriptor,
+                    contentRoot: contentRoot, tripID: decrypting.tripID, assetID: decrypting.assetID)
+            }
             try assertCurrent(context, epoch)
             let captured = manifest.capturedAtMilliseconds.map { Date(timeIntervalSince1970: Double($0) / 1000) }
             let pendingRecord = record
@@ -358,9 +468,29 @@ public actor ApplePhotoTransferEngine {
         let blockers = Set(items.compactMap { $0["blocker"] as? String } + [globalBlocker, previewBlocker].compactMap { $0 })
         return ["protocolVersion": 1, "revision": revision, "activeTripId": tripID as Any? ?? NSNull(), "paused": paused, "cellularAllowed": cellularAllowed,
             "counts": ["discovered": items.count, "previewReady": items.filter { $0["previewUri"] is String }.count,
-                "originalsSaved": items.filter { $0["originalStage"] as? String == "SAVED" }.count, "blocked": items.filter { $0["blocker"] is String }.count], "blockers": Array(blockers).sorted()]
+                "originalsSaved": items.filter { $0["originalStage"] as? String == "SAVED" }.count, "blocked": items.filter { $0["blocker"] is String }.count], "blockers": Array(blockers).sorted(), "sync": syncState(tripID, blocked: !blockers.isEmpty)]
+    }
+    private func syncState(_ tripID: String?, blocked: Bool) -> [String: Any] {
+        let pending = journal?.snapshot().works.filter { $0.tripID == tripID && !$0.complete && $0.ignored != true } ?? []
+        let active = activeOriginals.values.filter { $0.tripID == tripID }
+        let uploads = active.filter { $0.upload }.count
+        let downloads = active.count - uploads
+        let retry = (pending.compactMap(\.nextAttemptAt) + [retryAt].compactMap { $0 }).filter { $0 > Date() }.min()
+        let state = paused ? "PAUSED" : (uploads + downloads > 0 ? "TRANSFERRING" : (blocked ? "NEEDS_ATTENTION" : (networkUnavailable ? "WAITING_NETWORK" : (retry != nil ? "RETRYING" : (running ? "CHECKING" : "IDLE")))))
+        return ["state": state, "uploadsPending": pending.filter { $0.sourceLocalID != nil }.count,
+            "downloadsPending": pending.filter { $0.deliveryID != nil }.count,
+            "uploadsActive": uploads, "downloadsActive": downloads,
+            "lastProgressAt": lastProgressAt.map(iso) as Any? ?? NSNull(),
+            "lastCheckedAt": lastCheckedAt.map(iso) as Any? ?? NSNull(),
+            "nextRetryAt": retry.map(iso) as Any? ?? NSNull()]
     }
     private func currentJournal(_ context: NativeMediaContext) throws -> NativeTransferJournal {
+        let progress = context.scope.accountHash + "." + context.scope.installationID + "." + context.session.deviceID + "." + context.metadata.tripID
+        if progressScope != progress {
+            progressScope = progress
+            lastCheckedAt = nil; lastPreviewCheckedAt = nil; lastProgressAt = nil
+            retryAt = nil; networkUnavailable = false; globalBlocker = nil; previewBlocker = nil
+        }
         if journalScope == context.scope, let journal { return journal }
         let directory = root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID)
         let value = try NativeTransferJournal(directory: directory)
@@ -371,13 +501,13 @@ public actor ApplePhotoTransferEngine {
         return value
     }
     private func finishWaiters() {
-        guard !running && !previewRunning else { return }
+        guard !running && !previewRunning && activeOriginals.isEmpty else { return }
         let waiters = idleWaiters; idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
     }
 
     public func wakePreviews() async {
-        guard !paused && !previewRunning else { return }
+        guard !paused && !previewRunning && Date() >= previewNextCheck else { return }
         previewRunning = true
         defer { previewRunning = false; finishWaiters() }
         let epoch = generation
@@ -389,7 +519,10 @@ public actor ApplePhotoTransferEngine {
             let initialRevision = ledger.snapshot().revision + cache.snapshot(tripID: context.metadata.tripID).revision
             defer {
                 let revision = ledger.snapshot().revision + cache.snapshot(tripID: context.metadata.tripID).revision
-                if revision != initialRevision { invalidated(revision) }
+                let worked = revision != initialRevision
+                if worked { lastProgressAt = Date(); invalidated(revision) }
+                previewIdle = worked ? 0 : min(5, previewIdle + 1)
+                previewNextCheck = Date().addingTimeInterval(worked ? 1 : (visible ? min(15, pow(2, Double(previewIdle))) : 30))
             }
             try cache.purgeExpired(now: Date())
             let network = transportFactory(cellularAllowed)
@@ -403,7 +536,7 @@ public actor ApplePhotoTransferEngine {
             var excluded = Set(existing.flatMap { [$0.sourceLocalID, $0.savedLocalID].compactMap { $0 } })
             guard let startsAt = date(context.metadata.startsAt), let endsAt = date(context.metadata.endsAt) else { throw NativeKeyError.invalidState }
             let windows = try policy.windows(tripID: context.metadata.tripID, start: startsAt, end: endsAt)
-            if policy.left { previewBlocker = nil; return }
+            if policy.left { previewBlocker = nil; lastPreviewCheckedAt = Date(); return }
             var discovered = 0
             for (start, end) in windows {
                 if discovered >= 4 { break }
@@ -419,7 +552,7 @@ public actor ApplePhotoTransferEngine {
                 do {
                     try await publish(work, context: context, epoch: epoch, ledger: ledger, network: network, previewOnly: true)
                     invalidated(ledger.snapshot().revision + cache.snapshot(tripID: context.metadata.tripID).revision)
-                    Task { await self.wake() }
+                    originalNextCheck = .distantPast; Task { await self.wake() }
                 } catch {
                     try assertCurrent(context, epoch)
                     // Reconcile captures discovered just before a pause/departure
@@ -443,6 +576,20 @@ public actor ApplePhotoTransferEngine {
                     if var failed = ledger.record(work.workID), let code = blocker(error) { failed.blocker = code; try ledger.put(failed) }
                 }
             }
+            // Final capture discovery and original uploads determine this
+            // acknowledgement. Optional gallery reads can fail after the server
+            // has already purged delivered photos; they must not hold it open.
+            if policy.leaving && discovered == 0 && !ledger.snapshot().works.contains(where: { $0.tripID == context.metadata.tripID && $0.sourceLocalID != nil && !$0.complete && $0.ignored != true }) {
+                try assertCurrent(context, epoch)
+                let data = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/drained", method: "POST", body: JSONSerialization.data(withJSONObject: ["observedVersion": policy.version]), context: context, commandID: UUID().uuidString)
+                try assertCurrent(context, epoch)
+                let settled = try JSONDecoder().decode(NativeCapturePolicy.self, from: data)
+                _ = try settled.windows(tripID: context.metadata.tripID, start: startsAt, end: endsAt)
+                if settled.left { lastPreviewCheckedAt = Date(); return }
+            }
+            // Verified originals remain useful after their temporary server
+            // previews expire. Rebuild locally before optional network reads.
+            try await restoreSavedPreviews(context: context, epoch: epoch, ledger: ledger, cache: cache)
             let after = cache.cursor(context.metadata.tripID)
             let data = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/previews?after=\(after)", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
             try assertCurrent(context, epoch)
@@ -484,12 +631,27 @@ public actor ApplePhotoTransferEngine {
                     if var failed = cache.record(record.assetID), let code = blocker(error) { failed.blocker = code; try cache.put(failed) }
                 }
             }
-            if policy.leaving && discovered == 0 && !ledger.snapshot().works.contains(where: { $0.tripID == context.metadata.tripID && $0.sourceLocalID != nil && !$0.complete && $0.ignored != true }) {
-                try assertCurrent(context, epoch)
-                _ = try await network.json(path: "/v1/trips/\(context.metadata.tripID)/drained", method: "POST", body: JSONSerialization.data(withJSONObject: ["observedVersion": policy.version]), context: context, commandID: UUID().uuidString)
-                try assertCurrent(context, epoch)
-            }
-        } catch { if generation == epoch { previewBlocker = blocker(error) } }
+            lastPreviewCheckedAt = Date()
+        } catch { if generation == epoch {
+            previewBlocker = blocker(error)
+            networkUnavailable = (error as? URLError)?.code == .notConnectedToInternet
+            if previewBlocker == nil && !(error is CancellationError) { retryAt = Date().addingTimeInterval(5) }
+            previewNextCheck = Date().addingTimeInterval(5)
+        } }
+    }
+
+    public func backgroundWork(since: Date) throws -> (checked: Bool, working: Bool, pending: Bool) {
+        guard var context = try contextProvider() else { return (true, false, false) }
+        defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
+        let ledger = try currentJournal(context)
+        // A preview can arrive before its original is admitted to the journal.
+        // Keep the background lease while that known original is still pending.
+        let rows = projectedAssets(tripID: context.metadata.tripID, membershipID: context.metadata.membershipID,
+            works: ledger.snapshot().works, cached: previews?.snapshot(tripID: context.metadata.tripID).records ?? [])
+        let pending = rows.contains { $0["originalStage"] as? String != "SAVED" }
+        return ((lastCheckedAt ?? .distantPast) >= since && (lastPreviewCheckedAt ?? .distantPast) >= since,
+                running || previewRunning || !activeOriginals.isEmpty,
+                pending || globalBlocker != nil || previewBlocker != nil || retryAt != nil)
     }
 
     private func cacheSourcePreview(_ record: NativePhotoWork, context: NativeMediaContext, ledger: NativeTransferJournal) throws {
@@ -510,6 +672,48 @@ public actor ApplePhotoTransferEngine {
         try cache.put(NativePreviewRecord(assetID: record.assetID, tripID: record.tripID, capturedAt: record.capturedAt, retainUntil: endsAt.addingTimeInterval(7 * 86_400), grant: grant))
     }
 
+    private func restoreSavedPreviews(context: NativeMediaContext, epoch: Int, ledger: NativeTransferJournal, cache: NativePreviewStore) async throws {
+        let works = ledger.snapshot().works.filter { $0.tripID == context.metadata.tripID && $0.complete && $0.ignored != true && cache.render($0.assetID) == nil && cache.record($0.assetID)?.blocker == nil }
+        for work in works.prefix(8) {
+            guard let localID = work.savedLocalID ?? work.sourceLocalID,
+                  let body = work.downloadBody ?? work.uploadBody,
+                  let json = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let encoded = json["encryptedManifest"] as? String, let sealed = Data(base64Encoded: encoded) else { continue }
+            var manifest = try ManifestReader.open(encryptedManifest: Bytes(sealed), tripKey: Bytes(context.tripKey), aad: CrewRollAAD.manifest(tripID: work.tripID, assetID: work.assetID))
+            defer { manifest.eraseSecrets() }
+            var record = cache.record(work.assetID) ?? NativePreviewRecord(assetID: work.assetID, tripID: work.tripID,
+                capturedAt: work.capturedAt, retainUntil: (date(context.metadata.endsAt) ?? Date()).addingTimeInterval(7 * 86_400),
+                grant: NativePreviewGrant(assetId: work.assetID, expiresAt: iso(Date()), encryptedManifest: encoded,
+                    object: .init(variant: "PREVIEW", url: "", ciphertextBytes: String(manifest.preview.ciphertextBytes), checksumSha256: Data(manifest.preview.ciphertextSHA256).base64EncodedString())))
+            do {
+                // Unreferenced stage directories are erased on recovery after a crash.
+                let stage = ledger.directory.appendingPathComponent("stage-\(UUID().uuidString.lowercased())")
+                try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false)
+                defer { try? FileManager.default.removeItem(at: stage) }
+                let original = stage.appendingPathComponent("source.plaintext")
+                let preview = stage.appendingPathComponent("preview.jpg")
+                _ = try await library.exportOriginal(localID: localID, destination: original)
+                try assertCurrent(context, epoch)
+                let descriptor = manifest.original, library = self.library
+                try await fileWork.run {
+                    try NativeTransferCacheIdentity.verify(original, bytes: descriptor.plaintextBytes, sha256: Data(descriptor.plaintextSHA256))
+                    _ = try library.makePreview(original: original, destination: preview)
+                }
+                try assertCurrent(context, epoch)
+                let directory = try cache.directory(work.assetID)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: preview, to: directory.appendingPathComponent("preview.jpg"))
+                if let milliseconds = manifest.capturedAtMilliseconds { record.capturedAt = Date(timeIntervalSince1970: Double(milliseconds) / 1000) }
+                record.readyAt = Date(); record.galleryMetadataVersion = 1; record.blocker = nil
+                try cache.put(record)
+                invalidated(ledger.snapshot().revision + cache.snapshot(tripID: work.tripID).revision)
+            } catch {
+                try assertCurrent(context, epoch)
+                if let code = blocker(error) { record.blocker = code; try cache.put(record) }
+            }
+        }
+    }
+
     private func materializePreview(_ input: NativePreviewRecord, context: NativeMediaContext, epoch: Int, cache: NativePreviewStore, network: NativePhotoTransportPort) async throws {
         var record = input
         let directory = try cache.directory(record.assetID)
@@ -528,12 +732,15 @@ public actor ApplePhotoTransferEngine {
         defer { manifest.eraseSecrets() }
         guard grant.object.ciphertextBytes == String(manifest.preview.ciphertextBytes), grant.object.checksumSha256 == Data(manifest.preview.ciphertextSHA256).base64EncodedString() else { throw NativeKeyError.invalidEnvelope }
         if !FileManager.default.fileExists(atPath: ciphertext.path) {
-            try await network.download(url: grant.object.url, destination: ciphertext, expectedBytes: manifest.preview.ciphertextBytes)
+            try await network.download(url: grant.object.url, destination: ciphertext, expectedBytes: manifest.preview.ciphertextBytes, expectedSHA256: manifest.preview.ciphertextSHA256)
         }
         try assertCurrent(context, epoch)
         let pending = directory.appendingPathComponent("preview.pending")
         do {
-            try NativePhotoCrypto.decryptFile(source: ciphertext, destination: pending, descriptor: manifest.preview, contentRoot: manifest.contentRoot, tripID: record.tripID, assetID: record.assetID)
+            let decrypting = record, descriptor = manifest.preview, contentRoot = manifest.contentRoot
+            try await fileWork.run {
+                try NativePhotoCrypto.decryptFile(source: ciphertext, destination: pending, descriptor: descriptor, contentRoot: contentRoot, tripID: decrypting.tripID, assetID: decrypting.assetID)
+            }
             try assertCurrent(context, epoch)
             try FileManager.default.moveItem(at: pending, to: plaintext)
         } catch { try? FileManager.default.removeItem(at: pending); throw error }

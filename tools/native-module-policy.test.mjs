@@ -149,7 +149,13 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     /pendingScopeException|inactiveSnapshot|TRANSFER_SCOPE_PENDING/,
   );
   assert.match(kotlin, /NativePhotoTransferEngine/);
-  for (const method of ["policy", "wake", "retry", "snapshot", "assets"])
+  for (const method of [
+    "policy",
+    "requestReconcile",
+    "retry",
+    "snapshot",
+    "assets",
+  ])
     assert.match(kotlin, new RegExp(`engine\\(\\)\\.${method}`));
   assert.match(swift, /"protocolVersion": 1/);
   assert.match(kotlin, /"protocolVersion" to 1/);

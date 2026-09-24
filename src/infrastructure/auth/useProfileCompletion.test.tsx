@@ -155,4 +155,23 @@ describe("profile completion", () => {
     expect(result.current.ready).toBe(false);
     expect(result.current.checking).toBe(true);
   });
+
+  it("keeps the name form visible while saving instead of switching to a loading screen", async () => {
+    const f = fixture();
+    const pending = deferred<{ displayName: string }>();
+    f.api.syncProfile.mockReturnValueOnce(pending.promise);
+    const { result } = await renderHook(() => useProfileCompletion(f.options));
+    await act(() => result.current.setName("Riya"));
+    let save!: Promise<void>;
+    await act(() => {
+      save = result.current.save();
+    });
+    expect(result.current.busy).toBe(true);
+    expect(result.current.checking).toBe(false);
+    await act(async () => {
+      pending.resolve({ displayName: "Riya" });
+      await save;
+    });
+    expect(result.current.ready).toBe(true);
+  });
 });

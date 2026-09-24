@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 internal object CrewRollSyncJobs {
@@ -66,20 +67,31 @@ class CrewRollSyncJobService : JobService() {
       if (launch != null) notification.setContentIntent(PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
       setNotification(params, 73103, notification.build(), JOB_END_NOTIFICATION_POLICY_REMOVE)
     }
-    // A bounded lease; journals survive expiration and all network operations are
-    // cancelled by engine.stop before another session can use the worker.
-    val deadline = Runnable {
-      deadlines.remove(params.jobId)
-      runtime.endJob(params.jobId)
-      jobFinished(params, false)
-      if (runtime.enabled && params.jobId == CrewRollSyncJobs.PHOTOS) {
-        // A one-shot content job must be submitted again after completion.
-        getSystemService(JobScheduler::class.java).cancel(CrewRollSyncJobs.PHOTOS)
-        CrewRollSyncJobs.armPhotos(applicationContext, runtime.cellular)
+    val started = Instant.now()
+    val expires = started.plusSeconds(if (params.jobId == CrewRollSyncJobs.USER) 300 else 120)
+    // Finish a lease when this phone has drained its known work. A timeout is
+    // resumable work, never a false successful delivery or a two-minute idle job.
+    val check = object : Runnable {
+      override fun run() {
+        runtime.engine.backgroundWork(started).whenComplete { work, error ->
+          handler.post {
+            if (deadlines[params.jobId] !== this) return@post
+            val drained = error == null && work.checked && !work.working && !work.pending
+            if (drained || Instant.now() >= expires || !runtime.enabled) {
+              deadlines.remove(params.jobId)
+              runtime.endJob(params.jobId)
+              jobFinished(params, !drained && runtime.enabled)
+              if (drained && runtime.enabled && params.jobId == CrewRollSyncJobs.PHOTOS) {
+                getSystemService(JobScheduler::class.java).cancel(CrewRollSyncJobs.PHOTOS)
+                CrewRollSyncJobs.armPhotos(applicationContext, runtime.cellular)
+              }
+            } else handler.postDelayed(this, 2_000)
+          }
+        }
       }
     }
-    deadlines[params.jobId] = deadline
-    handler.postDelayed(deadline, TimeUnit.MINUTES.toMillis(if (params.jobId == CrewRollSyncJobs.USER) 5 else 2))
+    deadlines[params.jobId] = check
+    handler.postDelayed(check, 2_000)
     return true
   }
   override fun onStopJob(params: JobParameters): Boolean {

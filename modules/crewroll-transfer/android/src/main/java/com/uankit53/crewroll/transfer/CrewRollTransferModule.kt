@@ -161,7 +161,7 @@ class CrewRollTransferModule : Module() {
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
         val lifecycle = lifecycle()
         lifecycle.activateTrip(NativeCommandDecoder.activation(command))
-        runtime().policy(true)
+        runtime().policy(true, cellular = true)
         engine().activate().thenApply { null }
       }
     }
@@ -185,7 +185,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
-      future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); runtime().let { if (it.enabled && it.foreground) CrewRollSyncJobs.syncNow(it.context, it.cellular) }; engine().wake().thenApply { null } }
+      future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); runtime().let { if (it.enabled && it.foreground) CrewRollSyncJobs.syncNow(it.context, it.cellular) }; engine().requestReconcile().thenApply { null } }
     }
     AsyncFunction("retry") { command: Map<String, Any?>, promise: Promise ->
       future("retry", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion", "workId")); engine().retry(string(command, "workId")).thenApply { null } }

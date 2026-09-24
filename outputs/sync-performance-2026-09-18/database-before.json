@@ -1,0 +1,12 @@
+{
+  "phase": "before",
+  "scenario": "PostgreSQL 17 trip-row acquisition during 250ms injected object HEAD latency",
+  "samples": [
+    263.27937499999996,
+    254.87737500000003,
+    256.0152089999999,
+    258.9761249999999,
+    260.2953749999997
+  ],
+  "medianMs": 258.9761249999999
+}

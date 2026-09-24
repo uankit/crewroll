@@ -7,12 +7,20 @@ import { createKyselyMediaService } from "../src/db/media/kyselyMediaService.js"
 import { DomainError } from "../src/shared/errors/domainError.js";
 import { toProblemDetails } from "../src/shared/errors/problemMapper.js";
 import { createR2CiphertextStore } from "./r2CiphertextStore.js";
-import { createPostgresObjectMutationLock } from "./postgresObjectMutationLock.js";
 import {
   createWorkerPushTokenProtector,
   decodeSecretKey,
 } from "./pushTokenProtector.js";
 import { inRequestScope, nodeHttpHandler } from "./scopedApp.js";
+import {
+  createJoseClerkTokenVerifier,
+  createRemoteClerkKeyResolver,
+} from "../src/platform/clerk/joseClerkTokenVerifier.js";
+
+const clerkIssuer = "https://creative-oriole-5086.clerk.accounts.dev";
+// Public issuer keys can survive a request. jose handles key expiry/rotation
+// and isolates in-flight fetches on Workers. Never share a DB pool or actor.
+const clerkKeyResolver = createRemoteClerkKeyResolver({ issuer: clerkIssuer });
 
 // Wiring takes the Hyperdrive-generated connection string, never process.env
 // credentials or a shared cross-request Pool. The deployment entrypoint supplies it.
@@ -37,7 +45,7 @@ export async function createWorkerRequestRuntime(
       PORT: "8080",
       LOG_LEVEL: "info",
       DATABASE_URL: connectionString,
-      CLERK_ISSUER: "https://creative-oriole-5086.clerk.accounts.dev",
+      CLERK_ISSUER: clerkIssuer,
       CLERK_AUTHORIZED_PARTIES_JSON: "[]",
       CLERK_SECRET_KEY: env.CLERK_SECRET_KEY,
       CLERK_WEBHOOK_SECRET: env.CLERK_WEBHOOK_SECRET,
@@ -57,7 +65,6 @@ export async function createWorkerRequestRuntime(
     origin,
     now: clock.now,
     signingKey: mediaSigningKey,
-    mutations: createPostgresObjectMutationLock(db),
   });
   let dependencies: AppDependencies | undefined;
   const runtime = await createApiRuntime({
@@ -65,6 +72,13 @@ export async function createWorkerRequestRuntime(
     environment: () => environment,
     database: () => ({ database: db, destroy: () => db.destroy() }),
     clock: () => clock,
+    tokenVerifier: (configuration, requestClock) =>
+      createJoseClerkTokenVerifier({
+        authorizedParties: configuration.clerkAuthorizedParties,
+        issuer: clerkIssuer,
+        clock: requestClock,
+        resolver: clerkKeyResolver,
+      }),
     pushTokenProtector: () =>
       createWorkerPushTokenProtector(env.PUSH_TOKEN_ENCRYPTION_KEY_V1),
     media: ({ authenticator }) =>

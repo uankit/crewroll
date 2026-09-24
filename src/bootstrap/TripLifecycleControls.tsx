@@ -16,6 +16,14 @@ export function TripLifecycleControls({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
+  const canShare =
+    state?.status === "ACTIVE" && state.participation === "JOINED";
+  const canExit =
+    (state?.status === "ACTIVE" || state?.status === "LOBBY") &&
+    state.participation !== "LEAVING" &&
+    state.participation !== "LEFT";
+  const canLeaveNow =
+    state?.participation === "LEAVING" && state.status === "ACTIVE";
   useEffect(() => {
     let cancelled = false;
     let reading = false;
@@ -42,7 +50,13 @@ export function TripLifecycleControls({
     };
   }, [actions, tripId]);
   async function change(action: TripLifecycleBody["action"]) {
-    if (!actions || inFlight.current || !state) return;
+    const allowed =
+      action === "PAUSE" || action === "RESUME"
+        ? canShare
+        : action === "LEAVE_NOW"
+          ? canLeaveNow
+          : canExit;
+    if (!actions || inFlight.current || !state || !allowed) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
@@ -68,7 +82,7 @@ export function TripLifecycleControls({
       setBusy(false);
     }
   }
-  if (confirmation)
+  if (confirmation && (confirmation === "LEAVE_NOW" ? canLeaveNow : canExit))
     return (
       <Stack gap="md" testID="trip-exit-confirmation">
         <AppText variant="title2">
@@ -115,71 +129,40 @@ export function TripLifecycleControls({
     );
   return (
     <Stack gap="sm" testID="trip-lifecycle-controls">
-      {state?.participation === "LEAVING" ? (
+      {state && state.status !== "LOBBY" ? (
+        <Button
+          variant="secondary"
+          label={state.sharingPaused ? "Resume my sharing" : "Pause my sharing"}
+          disabled={!canShare || busy}
+          loading={busy}
+          onPress={() => void change(state.sharingPaused ? "RESUME" : "PAUSE")}
+        />
+      ) : null}
+      <Button
+        label={owner ? "End trip" : "Leave trip"}
+        variant="text"
+        disabled={!canExit || busy}
+        onPress={() => setConfirmation(owner ? "END" : "LEAVE")}
+      />
+      {canLeaveNow && state ? (
         <>
-          <AppText variant="headline">Finishing sync before you leave</AppText>
-          <AppText tone="secondary">
-            {state.pendingDownloads} photos to save · {state.pendingUploads}{" "}
-            uploads still arriving
-          </AppText>
           <AppText variant="caption" tone="secondary">
-            Keep CrewRoll open to finish. You can come back later; your progress
-            is saved. No new photos from your camera will be shared.
+            {state.pendingDownloads || state.pendingUploads
+              ? `Finishing sync · ${state.pendingDownloads} to save · ${state.pendingUploads} arriving`
+              : "Finishing sync before you leave."}
           </AppText>
-          {state.status === "ENDING" ? (
-            <AppText variant="caption" tone="secondary">
-              Waiting for the crew’s final photos. Offline phones need to
-              reconnect before{" "}
-              {new Date(state.deliveryDeadline).toLocaleDateString()}.
-            </AppText>
-          ) : null}
           <Button
-            label="Leave now instead"
+            label="Leave now"
             variant="text"
+            disabled={busy}
             onPress={() => setConfirmation("LEAVE_NOW")}
           />
         </>
       ) : state?.participation === "LEFT" ? (
-        <AppText tone="secondary">You’ve left this trip.</AppText>
-      ) : (
-        <>
-          {state?.status === "ACTIVE" ? (
-            <>
-              <Button
-                variant="secondary"
-                label={
-                  state.sharingPaused ? "Resume my sharing" : "Pause my sharing"
-                }
-                loading={busy}
-                onPress={() =>
-                  void change(state.sharingPaused ? "RESUME" : "PAUSE")
-                }
-              />
-              <AppText variant="caption" tone="secondary">
-                {state.sharingPaused
-                  ? "Photos taken while paused stay private. You’ll still receive your crew’s photos."
-                  : "Pause only your new photos. Uploads and downloads already queued keep going."}
-              </AppText>
-            </>
-          ) : null}
-          {!owner ? (
-            <Button
-              label="Leave trip"
-              variant="text"
-              disabled={!state || busy}
-              onPress={() => setConfirmation("LEAVE")}
-            />
-          ) : null}
-          {owner ? (
-            <Button
-              label="End trip for everyone"
-              variant="text"
-              disabled={!state || busy}
-              onPress={() => setConfirmation("END")}
-            />
-          ) : null}
-        </>
-      )}
+        <AppText variant="caption" tone="secondary">
+          You’ve left this trip.
+        </AppText>
+      ) : null}
       {!state && !error ? (
         <AppText tone="secondary">Loading trip controls…</AppText>
       ) : null}

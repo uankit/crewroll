@@ -29,6 +29,8 @@ import {
 } from "./AppSessionProvider";
 import { sessionUiStore } from "./state/sessionUiStore";
 import { usePhotoReadinessEntryBoundary } from "./photoReadinessReconciler";
+import { createPhotoReadinessService } from "./photoReadinessService";
+import { useTripLibrary } from "./useTripLibrary";
 
 const userId = "user_one";
 const sessionId = "session_one";
@@ -246,6 +248,255 @@ function Harness({
 }
 
 describe("resolveLaunchPhase", () => {
+  it("shows the recovered trip library without a duplicate request and discards it on account change", async () => {
+    const initialAppState = AppState.currentState;
+    AppState.currentState = "active";
+    const client = createQueryClient();
+    const { runtime: base, scoped } = createRuntime();
+    const listTrips = jest.fn().mockResolvedValue({ items: [] });
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    function HomeProbe() {
+      const session = useAppSession();
+      const library = useTripLibrary();
+      return (
+        <Text testID="library-probe">
+          {session.snapshot.phase}:{library.data ? "loaded" : "loading"}
+        </Text>
+      );
+    }
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <HomeProbe />
+        </Harness>
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("library-probe")).toHaveTextContent(
+        "READY_NO_TRIP:loaded",
+      ),
+    );
+    expect(listTrips).toHaveBeenCalledTimes(1);
+    const firstScope = client
+      .getQueryCache()
+      .getAll()
+      .find(
+        (q) => q.queryKey[0] === "trip-library" && q.state.data !== undefined,
+      )!.queryKey;
+    await view.rerender(
+      <QueryClientProvider client={client}>
+        <Harness
+          auth={{
+            ...signedIn,
+            userId: "other-account",
+            sessionId: "other-session",
+          }}
+          runtime={runtime}
+          queryClient={client}
+        >
+          <HomeProbe />
+        </Harness>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listTrips).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByTestId("library-probe")).toHaveTextContent(
+        "READY_NO_TRIP:loaded",
+      ),
+    );
+    expect(client.getQueryData(firstScope)).toBeUndefined();
+    await view.unmount();
+    client.clear();
+    AppState.currentState = initialAppState;
+  });
+  it("stops native transfers before explicit sign-out and keeps the session retryable if teardown fails", async () => {
+    const queryClient = createQueryClient();
+    const { runtime: baseRuntime, scoped } = createRuntime({
+      recovery: { state: "CONFIRMED", tripId, membershipId },
+      activeTripId: tripId,
+    });
+    const pauseTransfers = jest
+      .fn<Promise<void>, []>()
+      .mockResolvedValue(undefined);
+    const onAuthInvalid = jest.fn(async () => undefined);
+    const runtime = { ...baseRuntime, pauseTransfers };
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SessionProbe />;
+    }
+    await render(
+      <Harness
+        auth={signedIn}
+        runtime={runtime}
+        queryClient={queryClient}
+        onAuthInvalid={onAuthInvalid}
+      >
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_LOBBY"));
+    sessionUiStore.getState().setPendingInvite("ABCD2345");
+    queryClient.setQueryData(["trip", "private"], lobby);
+    pauseTransfers.mockRejectedValueOnce(new Error("KEYCHAIN_UNAVAILABLE"));
+    await act(async () => {
+      await expect(current.signOut()).rejects.toThrow("KEYCHAIN_UNAVAILABLE");
+    });
+    expect(onAuthInvalid).not.toHaveBeenCalled();
+    expect(current.snapshot.phase).toBe("READY_LOBBY");
+
+    let finishPause!: () => void;
+    pauseTransfers.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPause = resolve;
+        }),
+    );
+    let signOut!: Promise<void>;
+    await act(async () => {
+      signOut = current.signOut();
+    });
+    expect(onAuthInvalid).not.toHaveBeenCalled();
+    await act(async () => {
+      finishPause();
+      await signOut;
+    });
+    expect(current.snapshot.phase).toBe("SIGNED_OUT");
+    expect(current.actions).toBeNull();
+    expect(current.queryScope).toBeNull();
+    expect(onAuthInvalid).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
+    expect(scoped.createTrip).not.toHaveBeenCalled();
+    expect(scoped.startTrip).not.toHaveBeenCalled();
+    expect(scoped.setPhotoReadiness).not.toHaveBeenCalled();
+  });
+
+  it("keeps unchanged permission rechecks local and clears the gallery on account change and sign-out", async () => {
+    const full = {
+      kind: "FULL" as const,
+      fullPhotoLibraryAccess: true as const,
+      canAskAgain: true,
+    };
+    const localRead = jest.fn(async () => full);
+    const hydrate = jest.fn(async () => lobby);
+    const { runtime } = createRuntime({
+      recovery: { state: "CONFIRMED", tripId, membershipId },
+      setPhotoReadiness: createPhotoReadinessService({
+        photoPermission: {
+          read: localRead,
+          request: jest.fn(async () => full),
+          openSettings: jest.fn(),
+        },
+        hydrate,
+        reconcile: async (trip) => trip,
+      }),
+    });
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <Text>{session.snapshot.phase}</Text>;
+    }
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_LOBBY"));
+    await act(async () => {
+      await current.actions!.publishPhotoReadiness(tripId, false);
+      current.actions!.invalidatePhotoReadiness();
+      await current.actions!.publishPhotoReadiness(tripId, false);
+    });
+    expect(localRead).toHaveBeenCalledTimes(2);
+    expect(hydrate).not.toHaveBeenCalled();
+    const firstCache = current.galleryCache;
+    firstCache.saveScrollY(280);
+    firstCache.setFilters({
+      sourceMembershipId: membershipId,
+      day: null,
+      order: "NEWEST",
+    });
+    const oldToken = firstCache.token();
+    await view.rerender(
+      <Harness
+        auth={{
+          ...signedIn,
+          userId: "another-account",
+          sessionId: "another-session",
+        }}
+        runtime={runtime}
+      >
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_LOBBY"));
+    expect(current.galleryCache).not.toBe(firstCache);
+    expect(current.galleryCache.getScrollY()).toBe(0);
+    expect(firstCache.accepts(oldToken)).toBe(false);
+    expect(firstCache.getSnapshot().filters.sourceMembershipId).toBeNull();
+    const lastCache = current.galleryCache;
+    lastCache.saveScrollY(450);
+    await act(async () => current.signOut());
+    expect(lastCache.getScrollY()).toBe(0);
+    expect(lastCache.accepts(lastCache.token())).toBe(false);
+  });
+
+  it("clears cached access as soon as the OS reports revocation, before server readiness finishes", async () => {
+    const denied = {
+      kind: "SETTINGS_REQUIRED" as const,
+      fullPhotoLibraryAccess: false as const,
+      canAskAgain: false as const,
+    };
+    let finish!: (
+      value: Awaited<ReturnType<ScopedTripSession["setPhotoReadiness"]>>,
+    ) => void;
+    const { runtime } = createRuntime({
+      recovery: { state: "CONFIRMED", tripId, membershipId },
+      setPhotoReadiness: async (_, __, options) => {
+        options?.onPermission?.(denied);
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <Text>{session.snapshot.phase}</Text>;
+    }
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_LOBBY"));
+    current.galleryCache.saveScrollY(350);
+    const token = current.galleryCache.token();
+    let pending!: Promise<TripMutationResult>;
+    await act(async () => {
+      pending = current.actions!.publishPhotoReadiness(tripId, false);
+    });
+    expect(current.photoPermission.kind).toBe("SETTINGS_REQUIRED");
+    expect(current.galleryCache.getScrollY()).toBe(0);
+    expect(current.galleryCache.accepts(token)).toBe(false);
+    await act(async () => {
+      finish({ permission: denied, trip: lobby });
+      await pending;
+    });
+  });
   it("blocks a new lobby from inheriting another trip's FULL permission", () => {
     const full = {
       kind: "FULL" as const,
@@ -863,7 +1114,7 @@ describe("AppSessionProvider", () => {
       await act(async () => {
         actions.invalidatePhotoReadiness();
       });
-      expect(current!.photoPermission.kind).toBe("CHECKING");
+      expect(current!.photoPermission.kind).toBe(kind);
       expect(current!.actions).toBe(actions);
     },
   );

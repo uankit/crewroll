@@ -16,6 +16,54 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class NativePhotoTransferEngineTest {
+    @Test fun `saved original rebuilds its preview even when the server gallery is unavailable`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf(); f.acknowledged = true; f.previewFeedMissing = true
+            val ledger = NativeTransferJournal(File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId))
+            ledger.put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("savedLocalId", "saved").put("downloadBody", f.grant)
+                .put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject()))
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.count(engine, "previewReady") == 1 }
+            assertEquals(0, f.downloads)
+            assertEquals(0, f.saves)
+            assertEquals(0, f.receipts)
+        }
+    }
+
+    @Test fun `a suspended download does not block an outgoing original or gallery status`() {
+        Fixture().use { f ->
+            f.discover = true; f.receiveWhileSending = true; f.previewFeed = true
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.originalDownloadHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                f.await { f.commits == 1 }
+                val snapshot = engine.snapshot().get(1, TimeUnit.SECONDS)
+                assertEquals(1, (snapshot["sync"] as Map<*, *>)["downloadsActive"])
+                assertEquals(0, f.receipts)
+            } finally { release.countDown() }
+            f.await { f.receipts == 1 }
+            assertArrayEquals(f.source, f.saved)
+        }
+    }
+    @Test fun `activation uses the available network after the retired wifi policy or sign out`() {
+        Fixture().use { f ->
+            val engine = f.engine()
+            engine.policy(true, false).get(5, TimeUnit.SECONDS)
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["cellularAllowed"])
+            assertTrue(f.connectionPolicies.isNotEmpty())
+            assertTrue(f.connectionPolicies.all { it })
+            f.stop(engine)
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+        }
+    }
     @Test fun `leaving acknowledges final discovery only after outgoing original commits`() {
         Fixture().use { f ->
             f.discover = true; f.participation = "LEAVING"
@@ -24,6 +72,26 @@ class NativePhotoTransferEngineTest {
             f.await { f.drains > 0 }
             assertEquals(1, f.commits)
             assertEquals(2, f.uploads)
+        }
+    }
+    @Test fun `gallery failure cannot prevent acknowledging finished outgoing sync`() {
+        Fixture().use { f ->
+            f.discover = true; f.participation = "LEAVING"; f.previewFeedMissing = true
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.drains > 0 }
+            assertTrue(f.previewFeedFailures > 0)
+            assertEquals(1, f.commits)
+            assertEquals(2, f.uploads)
+        }
+    }
+    @Test fun `completed departure stops before another gallery request`() {
+        Fixture().use { f ->
+            f.participation = "LEAVING"; f.acknowledged = true; f.leaveAfterDrain = true
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.drains > 0 }
+            assertEquals(0, f.previewFeedReads)
         }
     }
     @Test fun `refreshing an active projection does not cancel the current upload`() {
@@ -61,7 +129,12 @@ class NativePhotoTransferEngineTest {
         var rejectedCaptures = 0
         var participation = "JOINED"
         var drains = 0
+        var leaveAfterDrain = false
+        var previewFeedMissing = false
+        var previewFeedFailures = 0
+        var previewFeedReads = 0
         var discover = false
+        var receiveWhileSending = false
         var receiptLost = false
         var commitLost = false
         var acknowledged = false
@@ -126,14 +199,25 @@ class NativePhotoTransferEngineTest {
             override fun cancel() = Unit
             override fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject = when {
                 path.endsWith("/transfer-state") -> JSONObject().put("tripId", trip).put("version", 1).put("participation", participation).put("captureUntil", context.metadata.endsAt).put("excludedCaptureWindows", JSONArray().apply { if (rejectedCaptures > 0) put(JSONObject().put("from", "2000-01-01T00:00:00Z").put("until", JSONObject.NULL)) })
-                path.endsWith("/drained") -> { assertEquals(1, body!!.getInt("observedVersion")); assertEquals(1, commits); drains++; JSONObject() }
-                path.contains("/previews?after=") -> JSONObject().put("hasMore", false).put("nextCursor", if (previewFeed) "1" else "0").put("items", JSONArray().apply {
+                path.endsWith("/drained") -> {
+                    assertEquals(1, body!!.getInt("observedVersion"))
+                    if (discover) assertEquals(1, commits)
+                    drains++
+                    if (leaveAfterDrain) participation = "LEFT"
+                    JSONObject().put("tripId", trip).put("version", 1).put("participation", participation)
+                        .put("captureUntil", context.metadata.endsAt).put("excludedCaptureWindows", JSONArray())
+                }
+                path.contains("/previews?after=") -> {
+                    previewFeedReads++
+                    if (previewFeedMissing) { previewFeedFailures++; throw TransferHttpException(404, true) }
+                    JSONObject().put("hasMore", false).put("nextCursor", if (previewFeed) "1" else "0").put("items", JSONArray().apply {
                     if (previewFeed && path.endsWith("after=0")) put(JSONObject().put("sequence", "1").put("assetId", asset).put("sourceDeviceId", "another-device").put("publishedAt", "2026-09-09T12:00:00Z").put("download", previewGrant))
                 })
+                }
                 path.endsWith("/preview") && method == "POST" -> { previewPublications++; JSONObject() }
                 path.endsWith("/preview") -> if (previewFeed) JSONObject(previewGrant.toString()) else throw IOException("preview unavailable in legacy fixture")
                 path == "/v1/deliveries/pending" -> JSONObject().put("items", JSONArray().apply {
-                    if (!discover && !acknowledged) put(JSONObject().put("tripId", trip).put("assetId", asset).put("deliveryId", delivery).put("committedAt", "2026-09-09T12:00:00Z"))
+                    if ((!discover || receiveWhileSending) && !acknowledged) put(JSONObject().put("tripId", trip).put("assetId", asset).put("deliveryId", delivery).put("committedAt", "2026-09-09T12:00:00Z"))
                 })
                 path.endsWith("download-session") -> JSONObject(grant.toString())
                 path.endsWith("saved-receipt") -> {
@@ -159,9 +243,10 @@ class NativePhotoTransferEngineTest {
                 downloads++; val bytes = encrypted.readBytes(); if (corrupt) bytes[30] = (bytes[30].toInt() xor 1).toByte(); destination.writeBytes(bytes)
             }
         }
+        val connectionPolicies = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
         fun engine(): NativePhotoTransferEngine = NativePhotoTransferEngine(root.resolve("journals"), {
             context.copy(session = context.session.copy(backgroundBearer = context.session.backgroundBearer.copyOf()), tripKey = key.copyOf())
-        }, photos, crypto, { network }, {}).also(engines::add)
+        }, photos, crypto, { cellular -> connectionPolicies.add(cellular); network }, {}).also(engines::add)
         fun start(engine: NativePhotoTransferEngine) {
             val completed = if (discover) commits else receipts
             engine.activate().get(5, TimeUnit.SECONDS)
@@ -209,6 +294,7 @@ class NativePhotoTransferEngineTest {
             assertEquals(listOf("INTEGRITY_FAILURE"), engine.snapshot().get()["blockers"])
             assertFalse(f.root.resolve("journals").walkTopDown().any { it.name.endsWith(".plaintext") })
             f.corrupt = false; engine.activate().get(5, TimeUnit.SECONDS); engine.retry(f.delivery).get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
             assertEquals(1, f.saves); assertEquals(1, f.receipts); assertEquals(1, f.count(engine, "originalsSaved"))
         }
     }

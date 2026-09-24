@@ -94,6 +94,28 @@ in the future for the Cloudflare runtime when tested.
 
 ## Live deployment and remaining acceptance
 
+### Runtime database grants after migrations
+
+Hyperdrive connects as `crewroll_api`, independently of the migration owner.
+New tables need explicit runtime grants. On September 16, migration 008's
+`trip_owner_invites` and `trip_device_requests` existed but lacked these grants,
+causing authenticated continuity/lifecycle requests to return 500 and hiding
+the host's invite code. The following narrow grant was applied to the hosted DB:
+
+```sql
+GRANT SELECT, INSERT, UPDATE
+ON TABLE public.trip_owner_invites, public.trip_device_requests
+TO crewroll_api;
+```
+
+For each migration that adds a runtime table, verify `has_table_privilege` for
+the actual runtime role and each required operation, then exercise the affected
+authenticated API through Hyperdrive. An admin connection or `/health/ready`
+alone does not verify runtime table permissions. Do not grant schema creation,
+role membership, or unrelated table privileges to repair this failure.
+
+### Deployment baseline
+
 - API: https://crewroll-api.uankitu.workers.dev
 - Deployed speed version: `c3f2378e-1daa-40dc-9fed-2a9f00c8aa54`.
   Worker execution is placed near the Seoul database; existing bindings remain.

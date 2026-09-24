@@ -1,0 +1,14 @@
+[
+  {
+    "fixture": "host-photo-1.jpg",
+    "sha256": "9342879d6e65816acb83ad47a2e948601067c09309a6db6d8b6094c06a9cfd35",
+    "savedPath": "DCIM/100APPLE/IMG_0008.JPEG",
+    "bytes": 76856
+  },
+  {
+    "fixture": "host-photo-2.jpg",
+    "sha256": "a2e2098b883ef9615655a82d241009e147ef301c7eb52bcc62a24b4b99f81bf2",
+    "savedPath": "DCIM/100APPLE/IMG_0007.JPEG",
+    "bytes": 76856
+  }
+]

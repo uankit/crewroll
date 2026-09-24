@@ -1,20 +1,23 @@
 import { DeviceRecoveryFlow } from "@/bootstrap/DeviceRecoveryFlow";
+import { AccountMenu } from "@/bootstrap/AccountMenu";
 import { useState } from "react";
 import type { TripSummary } from "@/features/home";
 import { useTripLibrary } from "@/bootstrap/useTripLibrary";
 import { TripLifecycleControls } from "@/bootstrap/TripLifecycleControls";
 import { TripLibraryScreen, HomeScreen } from "@/features/home";
 import { AppText, Sheet } from "@/design-system";
-import { Redirect, useRouter } from "expo-router";
+import { Redirect, useIsFocused, useRouter } from "expo-router";
 
 import { useAppSession } from "@/bootstrap";
 
 export default function ProtectedHomeRoute() {
   const router = useRouter();
-  const library = useTripLibrary();
+  const focused = useIsFocused();
+  const library = useTripLibrary(focused);
   const [selected, setSelected] = useState<TripSummary | null>(null);
   const { retry, snapshot, pendingTripPreview } = useAppSession();
   const actions = {
+    accountControl: <AccountMenu />,
     onCreateTrip: () => router.push("/trips/create"),
     onJoinTrip: () => router.push("/trips/join"),
   };
@@ -43,6 +46,7 @@ export default function ProtectedHomeRoute() {
         <TripLibraryScreen
           {...actions}
           trips={library.data?.items ?? []}
+          canCreateTrip={snapshot.phase === "READY_NO_TRIP"}
           refreshing={library.isPending}
           error={library.isError}
           onRetry={() => void library.refetch()}

@@ -25,6 +25,15 @@ protocol NativePhotoLibraryPort: AnyObject {
 }
 extension NativePhotoLibraryPort { func findSaved(assetID: String, capturedAt: Date?) throws -> String? { nil } }
 
+enum NativePhotoDiscoveryPolicy {
+    static func isCrewRollSavedPhoto(_ originalFilename: String) -> Bool {
+        let name = originalFilename.lowercased()
+        guard name.hasPrefix("crewroll-") else { return false }
+        let identifier = name.dropFirst("crewroll-".count).split(separator: ".", maxSplits: 1).first
+        return identifier.flatMap { UUID(uuidString: String($0)) } != nil
+    }
+}
+
 public final class ApplePhotoLibrary: NSObject, PHPhotoLibraryChangeObserver, NativePhotoLibraryPort {
     private var observed: PHFetchResult<PHAsset>?
     private var registeredForChanges = false
@@ -49,6 +58,11 @@ public final class ApplePhotoLibrary: NSObject, PHPhotoLibraryChangeObserver, Na
         assets.enumerateObjects { asset, _, stop in
             guard !excluding.contains(asset.localIdentifier), !asset.mediaSubtypes.contains(.photoScreenshot),
                   asset.sourceType.contains(.typeUserLibrary), let date = asset.creationDate else { return }
+            // Received originals retain camera EXIF. Recognize our durable save
+            // name even after signing out, switching accounts, or losing a journal.
+            guard !PHAssetResource.assetResources(for: asset).contains(where: {
+                NativePhotoDiscoveryPolicy.isCrewRollSavedPhoto($0.originalFilename)
+            }) else { return }
             found.append(DiscoveredPhoto(localID: asset.localIdentifier, capturedAt: date))
             if found.count >= limit { stop.pointee = true }
         }

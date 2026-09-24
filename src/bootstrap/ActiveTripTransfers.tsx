@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppState } from "react-native";
-import type {
-  AssetPage,
-  DurableEngineSnapshot,
-} from "@crewroll/contracts/native/protocol";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { AppState, StyleSheet, View } from "react-native";
+import type { DurableEngineSnapshot } from "@crewroll/contracts/native/protocol";
 
 import {
   AppText,
-  BrandLoading,
   Button,
   Stack,
   TripPhotoGallery,
+  spacing,
 } from "../design-system";
 import { crewRollTransfer } from "../infrastructure/native/crewRollTransfer";
 import {
@@ -21,6 +26,11 @@ import {
 } from "../domain/trips/galleryFilters";
 
 import { createObservedRead } from "./observedRead";
+import { syncProgress } from "./syncProgress";
+import {
+  createTripGalleryCache,
+  type TripGalleryCache,
+} from "./tripGalleryCache";
 
 const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
   PHOTO_PERMISSION:
@@ -34,6 +44,8 @@ const blockerCopy: Record<DurableEngineSnapshot["blockers"][number], string> = {
   KEY_MATERIAL_LOST: "This phone needs its secure trip access restored.",
   KEY_ENVELOPE_INVALID: "Secure trip access could not be verified.",
 };
+const galleryReadFailure = "Couldn’t load photos yet. Try again.";
+const galleryRetryDelays = [500, 1500] as const;
 
 /** Read-only native projections. Photo bytes and decryption keys never enter JS. */
 export function ActiveTripTransfers({
@@ -41,71 +53,143 @@ export function ActiveTripTransfers({
   onPhotoCountChange,
   filters = defaultGalleryFilters,
   onClearFilters,
+  cache: suppliedCache,
+  focused = true,
 }: Readonly<{
   tripId: string;
   onPhotoCountChange?: (count: number) => void;
   filters?: GalleryFilters;
   onClearFilters?: () => void;
+  cache?: TripGalleryCache;
+  focused?: boolean;
 }>) {
-  const [state, setState] = useState<Readonly<{
-    snapshot: DurableEngineSnapshot;
-    assets: AssetPage;
-  }> | null>(null);
-  const [failed, setFailed] = useState(false);
+  const cache = useMemo(
+    () => suppliedCache ?? createTripGalleryCache(tripId),
+    [suppliedCache, tripId],
+  );
+  const gallery = useSyncExternalStore(
+    cache.subscribe,
+    cache.getSnapshot,
+    cache.getSnapshot,
+  );
+  const { data: state, cursor } = gallery;
+  const setCursor = cache.setCursor;
+  useLayoutEffect(() => {
+    cache.setFilters(filters);
+  }, [cache, filters]);
+  const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const syncing = useRef(false);
+  const syncAttempt = useRef(0);
+  const mounted = useRef(true);
+  const [syncError, setSyncError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now);
   const query = useMemo(() => galleryQuery(filters), [filters]);
 
   useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!focused || !state?.snapshot.sync?.nextRetryAt) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [focused, state?.snapshot.sync?.nextRetryAt]);
+
+  useEffect(() => {
+    if (!focused) return;
+    let readToken = cache.token();
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancelRetry = () => {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    const recover = (message: string) => {
+      // Permission dialogs and native activation can briefly invalidate a read.
+      // Retry locally before asking the user to fix a connection that is fine.
+      if (retryTimer !== undefined) return;
+      const delay = galleryRetryDelays[retryCount++];
+      if (delay === undefined) {
+        setFailure(message);
+        return;
+      }
+      const token = cache.token();
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (cache.accepts(token)) void reader.refresh();
+      }, delay);
+    };
     const reader = createObservedRead({
-      active: () => AppState.currentState !== "background",
+      active: () =>
+        AppState.currentState !== "background" && cache.accepts(cache.token()),
       read: async () => {
-        const [snapshot, assets] = await Promise.all([
-          crewRollTransfer.getSnapshot(),
-          crewRollTransfer.listAssets({
-            protocolVersion: 1,
-            cursor,
-            limit: 24,
-            ...query,
-          }),
-        ]);
-        return { snapshot, assets };
+        const token = cache.token();
+        readToken = token;
+        const previous = cache.getSnapshot().data;
+        const snapshot = await crewRollTransfer.getSnapshot();
+        // Native revisions include newly captured/received photos and transfers.
+        // The unchanged page can stay visible without another listAssets read.
+        const assets =
+          previous &&
+          previous.snapshot.revision === snapshot.revision &&
+          previous.snapshot.activeTripId === snapshot.activeTripId &&
+          previous.snapshot.paused === snapshot.paused &&
+          JSON.stringify(previous.snapshot.blockers) ===
+            JSON.stringify(snapshot.blockers)
+            ? previous.assets
+            : await crewRollTransfer.listAssets({
+                protocolVersion: 1,
+                cursor,
+                limit: 24,
+                ...query,
+              });
+        return { token, snapshot, assets };
       },
-      ready: ({ snapshot, assets }) => {
-        // Never show a prior account/trip's native projection during transitions.
-        if (
-          snapshot.activeTripId !== tripId ||
-          (assets.activeTripId !== undefined &&
-            assets.activeTripId !== tripId) ||
-          (assets.items.some((asset) => asset.previewUri) &&
-            assets.activeTripId !== tripId)
-        ) {
-          setState(null);
-          setFailed(true);
+      ready: ({ token, snapshot, assets }) => {
+        if (!cache.accepts(token)) return;
+        cancelRetry();
+        const accessBlocker = snapshot.blockers.find((blocker) =>
+          [
+            "PHOTO_PERMISSION",
+            "AUTH_REVOKED",
+            "KEY_ACCESS_LOCKED",
+            "KEY_MATERIAL_LOST",
+            "KEY_ENVELOPE_INVALID",
+          ].includes(blocker),
+        );
+        if (accessBlocker) {
+          cache.clear();
+          // Never retain previews while access is blocked, including during
+          // the short handoff after the OS has just granted photo permission.
+          if (accessBlocker === "PHOTO_PERMISSION")
+            recover(blockerCopy[accessBlocker]);
+          else setFailure(blockerCopy[accessBlocker]);
           return;
         }
-        setState((previous) =>
-          previous?.snapshot.revision === snapshot.revision &&
-          previous.assets.revision === assets.revision &&
-          previous.assets.items[0]?.assetId === assets.items[0]?.assetId &&
-          previous.snapshot.paused === snapshot.paused &&
-          previous.snapshot.cellularAllowed === snapshot.cellularAllowed &&
-          previous.snapshot.activeTripId === snapshot.activeTripId &&
-          previous.snapshot.blockers.join() === snapshot.blockers.join()
-            ? previous
-            : { snapshot, assets },
-        );
-        setFailed(false);
+        if (!cache.save(token, { snapshot, assets })) {
+          if (snapshot.activeTripId === null) recover(galleryReadFailure);
+          else setFailure(galleryReadFailure);
+          return;
+        }
+        retryCount = 0;
+        setFailure(null);
       },
       failed: () => {
+        if (!cache.accepts(readToken)) return;
         if (cursor !== null) setCursor(null);
-        else setFailed(true);
+        else recover(galleryReadFailure);
       },
     });
     const refresh = reader.refresh;
     void refresh();
-    const timer = setInterval(() => void refresh(), 5_000);
+    // Native events drive updates; this foreground-only fallback catches a
+    // missed event without rebuilding the gallery every few seconds.
+    const timer = setInterval(() => void refresh(), 15_000);
     let subscription:
       ReturnType<typeof crewRollTransfer.subscribeToInvalidations> | undefined;
     try {
@@ -113,44 +197,66 @@ export function ActiveTripTransfers({
         () => void refresh(),
       );
     } catch {
-      // getSnapshot reports the missing-native-module failure in this panel.
-      // An unavailable event bridge must not crash the whole trip route.
+      // The fallback remains available if this installed event bridge is absent.
     }
     const foreground = AppState.addEventListener("change", (next) => {
       if (next === "active") void refresh();
     });
     return () => {
       reader.dispose();
+      cancelRetry();
       clearInterval(timer);
       subscription?.remove();
       foreground.remove();
     };
-  }, [tripId, refreshKey, cursor, query]);
+  }, [tripId, cache, focused, refreshKey, cursor, query, setCursor]);
 
   const reconcile = useCallback(
     async (workId?: string) => {
-      if (busy) return;
+      if (syncing.current) return;
+      syncing.current = true;
+      const attempt = ++syncAttempt.current;
+      let expired = false;
       setBusy(true);
+      setSyncError(false);
+      const token = cache.token();
+      const deadline = setTimeout(() => {
+        expired = true;
+        if (mounted.current && syncAttempt.current === attempt) {
+          syncing.current = false;
+          setBusy(false);
+          setSyncError(true);
+        }
+      }, 10_000);
       try {
+        const current = await crewRollTransfer.getSnapshot();
+        if (
+          expired ||
+          !mounted.current ||
+          !cache.accepts(token) ||
+          current.activeTripId !== tripId
+        )
+          return;
         if (workId)
           await crewRollTransfer.retry({ protocolVersion: 1, workId });
         else {
-          const blockedIds =
-            state?.assets.items
-              .filter((asset) => asset.blocker)
-              .map((asset) => asset.workId) ?? [];
-          for (const id of blockedIds)
-            await crewRollTransfer.retry({ protocolVersion: 1, workId: id });
+          // Native owns the whole account/trip journal, including off-page work.
+          if (!mounted.current || !cache.accepts(token)) return;
           await crewRollTransfer.reconcileNow({ protocolVersion: 1 });
         }
       } catch {
-        setFailed(true);
+        if (mounted.current && syncAttempt.current === attempt)
+          setSyncError(true);
       } finally {
-        setBusy(false);
-        setRefreshKey((value) => value + 1);
+        clearTimeout(deadline);
+        if (syncAttempt.current === attempt) syncing.current = false;
+        if (mounted.current && syncAttempt.current === attempt) {
+          setBusy(false);
+          setRefreshKey((value) => value + 1);
+        }
       }
     },
-    [busy, state],
+    [tripId, cache],
   );
 
   const snapshot =
@@ -178,20 +284,31 @@ export function ActiveTripTransfers({
   useEffect(() => {
     if (discoveredCount !== undefined) onPhotoCountChange?.(discoveredCount);
   }, [onPhotoCountChange, discoveredCount]);
-  if (failed || snapshot === null)
+  if (snapshot === null)
     return (
       <>
         <Stack gap="sm" style={{ flex: 1 }}>
-          {!failed ? <BrandLoading /> : null}
-          {failed ? (
-            <AppText accessibilityRole="alert" tone="critical">
-              Photos couldn’t refresh. Check your connection and try again.
+          {!failure ? (
+            <AppText
+              variant="caption"
+              tone="secondary"
+              accessibilityLiveRegion="polite"
+            >
+              Loading photos…
             </AppText>
           ) : null}
-          {failed ? (
+          {failure ? (
+            <AppText accessibilityRole="alert" tone="critical">
+              {failure}
+            </AppText>
+          ) : null}
+          {failure ? (
             <Button
               label="Try again"
-              onPress={() => setRefreshKey((value) => value + 1)}
+              onPress={() => {
+                setFailure(null);
+                setRefreshKey((value) => value + 1);
+              }}
             />
           ) : null}
         </Stack>
@@ -201,6 +318,27 @@ export function ActiveTripTransfers({
   return (
     <>
       <Stack gap="sm" style={photos.length === 0 ? { flex: 1 } : undefined}>
+        <View style={styles.syncRow}>
+          <AppText
+            variant="caption"
+            tone="secondary"
+            style={styles.syncStatus}
+            accessibilityLiveRegion="polite"
+          >
+            {busy ? "Checking for photos…" : syncProgress(snapshot, now)}
+          </AppText>
+          <Button
+            label="Sync now"
+            variant="text"
+            loading={busy}
+            onPress={() => void reconcile()}
+          />
+        </View>
+        {syncError || failure ? (
+          <AppText variant="caption" tone="secondary" accessibilityRole="alert">
+            {failure ?? "Couldn’t start sync yet. Try again."}
+          </AppText>
+        ) : null}
         {photos.length === 0 && galleryFilterCount(filters) > 0 ? (
           <Stack gap="sm" style={{ flex: 1, justifyContent: "center" }}>
             <AppText variant="headline">No photos for these filters</AppText>
@@ -233,11 +371,6 @@ export function ActiveTripTransfers({
                 {blockerCopy[blocker]}
               </AppText>
             ))}
-            <Button
-              label="Retry photo sharing"
-              loading={busy}
-              onPress={() => void reconcile()}
-            />
           </Stack>
         ) : null}
         {cursor !== null ? (
@@ -258,3 +391,13 @@ export function ActiveTripTransfers({
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  syncRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  syncStatus: { flex: 1 },
+});

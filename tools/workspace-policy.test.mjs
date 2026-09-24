@@ -1192,7 +1192,7 @@ test("EAS release profiles and submission destinations stay explicit", async () 
         distribution: "internal",
         channel: "preview",
         environment: "preview",
-        android: { buildType: "apk" },
+        android: { autoIncrement: true, buildType: "apk" },
       },
       "preview-simulator": {
         extends: "preview",
@@ -1204,6 +1204,13 @@ test("EAS release profiles and submission destinations stay explicit", async () 
         channel: "testflight",
         environment: "preview",
       },
+      "play-testing": {
+        extends: "production",
+        distribution: "store",
+        channel: "preview",
+        environment: "preview",
+        android: { buildType: "app-bundle" },
+      },
       production: {
         autoIncrement: true,
         channel: "production",
@@ -1212,6 +1219,9 @@ test("EAS release profiles and submission destinations stay explicit", async () 
     },
     submit: {
       testflight: { ios: { ascAppId: "6797897853" } },
+      "play-testing": {
+        android: { track: "internal", releaseStatus: "draft" },
+      },
       production: {},
     },
   });

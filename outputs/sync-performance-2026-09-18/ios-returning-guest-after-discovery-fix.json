@@ -1,0 +1,24 @@
+{
+  "activeTripId": "01a0b32f-31dc-772c-a25e-c7bd4d819484",
+  "blockers": [],
+  "cellularAllowed": true,
+  "counts": {
+    "blocked": 0,
+    "discovered": 4,
+    "originalsSaved": 4,
+    "previewReady": 4
+  },
+  "paused": false,
+  "protocolVersion": 1,
+  "revision": 39,
+  "sync": {
+    "downloadsActive": 0,
+    "downloadsPending": 0,
+    "lastCheckedAt": "2026-09-18T08:20:54.200Z",
+    "lastProgressAt": "2026-09-18T08:20:04.502Z",
+    "nextRetryAt": null,
+    "state": "IDLE",
+    "uploadsActive": 0,
+    "uploadsPending": 0
+  }
+}

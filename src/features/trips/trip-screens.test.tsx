@@ -143,24 +143,149 @@ function renderLobby(overrides: Partial<LobbyScreenProps> = {}) {
 }
 
 describe("LobbyScreen", () => {
+  test("explains the brief server update after the user grants full access", async () => {
+    const solo = ownerTrip({
+      members: [{ ...ownerTrip().members[0]!, fullPhotoLibraryAccess: false }],
+    });
+    const view = await renderLobby({
+      trip: solo,
+      photoPermission: { kind: "FULL" },
+      onStart: jest.fn(),
+    });
+    view.getByText("Finishing setup…");
+    view.getByText("Finishing photo setup on this phone…");
+    expect(view.getByRole("button", { name: "Start trip" })).toBeDisabled();
+  });
+  test("uses local denied access immediately even while the server still says ready", async () => {
+    const screen = await renderLobby({
+      trip: eligibleOwnerTrip(),
+      photoPermission: { kind: "SETTINGS_REQUIRED" },
+      onStart: jest.fn(),
+      actionError: "Settings couldn’t open. Open Settings manually.",
+    });
+    screen.getByText("Photo access needed");
+    expect(screen.getAllByText("Ready")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Start trip" })).toBeNull();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Set up photo access" }),
+    );
+    screen.getByText("Settings couldn’t open. Open Settings manually.");
+    screen.getByText(/Apps → CrewRoll → Photos/);
+  });
+
+  test("explains checking and unavailable Start actions without inventing a minimum crew size", async () => {
+    const solo = ownerTrip({ members: [ownerTrip().members[0]!] });
+    const screen = await renderLobby({
+      trip: solo,
+      photoPermission: { kind: "CHECKING" },
+      onStart: jest.fn(),
+    });
+    screen.getByText("Checking photo access on this phone…");
+    expect(screen.getByRole("button", { name: "Start trip" })).toBeDisabled();
+    await screen.rerender(
+      <LobbyScreen
+        endsLabel="Tomorrow"
+        trip={solo}
+        photoPermission={{ kind: "FULL" }}
+      />,
+    );
+    screen.getByText("Connecting to your trip…");
+    await screen.rerender(
+      <LobbyScreen
+        endsLabel="Tomorrow"
+        trip={solo}
+        photoPermission={{ kind: "FULL" }}
+        onStart={jest.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Start trip" })).toBeEnabled();
+    screen.getByText("Start whenever you’re ready. Others can join later.");
+  });
+  test.each(["LOBBY", "ACTIVE"] as const)(
+    "keeps the %s trip visible while checking access, then handles the actual permission",
+    async (status) => {
+      const props = {
+        endsLabel: "2 September, 5:30 pm",
+        trip: eligibleOwnerTrip({ status }),
+        onBack: jest.fn(),
+        onOpenInfo: jest.fn(),
+        onStart: jest.fn(),
+        transferContent: <View testID="saved-trip-photos" />,
+      };
+      const screen = await renderLobby({
+        ...props,
+        photoPermission: { kind: "CHECKING" },
+      });
+      screen.getByText(
+        status === "LOBBY" ? "Who’s coming along?" : "Weekend in Goa",
+      );
+      screen.getByRole("button", { name: "Back to Home" });
+      expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+      expect(screen.queryByTestId("saved-trip-photos")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Set up photo access" }),
+      ).toBeNull();
+      if (status === "LOBBY") {
+        expect(
+          screen.getByRole("button", { name: "Start trip" }).props
+            .accessibilityState.disabled,
+        ).toBe(true);
+      }
+
+      await screen.rerender(
+        <LobbyScreen {...props} photoPermission={{ kind: "FULL" }} />,
+      );
+      expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+      if (status === "ACTIVE") screen.getByTestId("saved-trip-photos");
+
+      await screen.rerender(
+        <LobbyScreen {...props} photoPermission={{ kind: "CHECKING" }} />,
+      );
+      expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+      if (status === "ACTIVE") screen.getByTestId("saved-trip-photos");
+
+      await screen.rerender(
+        <LobbyScreen
+          {...props}
+          photoPermission={{ kind: "SETTINGS_REQUIRED" }}
+        />,
+      );
+      expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Set up photo access" }),
+      );
+      screen.getByTestId("photo-access-screen");
+      screen.getByRole("button", { name: "Open photo settings" });
+      expect(screen.queryByTestId("saved-trip-photos")).toBeNull();
+    },
+  );
+
   test("makes mid-trip join and phone approvals discoverable from the gallery", async () => {
     const onOpenInfo = jest.fn();
+    const onOpenNotifications = jest.fn();
     const screen = await renderLobby({
       trip: ownerTrip({ status: "ACTIVE" }),
       deviceRequestCount: 1,
       onOpenInfo,
+      onOpenNotifications,
     });
     await fireEvent.press(
-      screen.getByRole("button", { name: "Trip info, 2 waiting requests" }),
+      screen.getByRole("button", { name: "Notifications, 2 pending requests" }),
+    );
+    expect(onOpenNotifications).toHaveBeenCalledTimes(1);
+    expect(onOpenInfo).not.toHaveBeenCalled();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Trip settings" }),
     );
     expect(onOpenInfo).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Trip info")).toBeNull();
   });
-  test("copies the code from the owner sheet and approves the named request", async () => {
+  test("copies the code from the owner sheet and opens requests separately", async () => {
     const onCopy = jest.fn(async () => undefined);
-    const onApproveMember = jest.fn();
+    const onOpenNotifications = jest.fn();
     const screen = await renderLobby({
       invite: invite({ onCopy }),
-      onApproveMember,
+      onOpenNotifications,
     });
     expect(screen.queryByText("ABCD 2345")).toBeNull();
     await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
@@ -173,16 +298,16 @@ describe("LobbyScreen", () => {
       screen.getByRole("button", { name: "Close Invite your crew" }),
     );
     await fireEvent.press(
-      screen.getByRole("button", { name: "Approve Grace Hopper" }),
+      screen.getByRole("button", { name: "Notifications, 1 pending request" }),
     );
-    expect(onApproveMember).toHaveBeenCalledWith(memberMembershipId);
+    expect(onOpenNotifications).toHaveBeenCalledTimes(1);
     expect(
       screen.getByRole("button", { name: "Start trip" }).props
         .accessibilityState.disabled,
     ).toBe(true);
   });
 
-  test("shows photo access before the gallery and lets a deferral return to it", async () => {
+  test("keeps a skipped permission on the trip until the user explicitly reopens setup", async () => {
     const request = jest.fn();
     const screen = await renderLobby({
       photoPermission: { kind: "REQUESTABLE" },
@@ -190,10 +315,16 @@ describe("LobbyScreen", () => {
       onStart: jest.fn(),
     });
     expect(request).not.toHaveBeenCalled();
-    await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Set up photo access" }),
+    );
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Allow photo access" }),
+    );
     expect(request).toHaveBeenCalledTimes(1);
     await fireEvent.press(screen.getByRole("button", { name: "Set up later" }));
-    screen.getByTestId("trip-photo-gallery");
+    screen.getByTestId("lobby-crew");
     expect(screen.queryByRole("button", { name: "Start trip" })).toBeNull();
     await fireEvent.press(
       screen.getByRole("button", { name: "Set up photo access" }),
@@ -220,22 +351,24 @@ describe("LobbyScreen", () => {
         },
       ],
     });
-    const onApproveMember = jest.fn();
+    const onOpenNotifications = jest.fn();
     const onStart = jest.fn();
     const screen = await renderLobby({
       trip,
       invite: invite(),
-      onApproveMember,
+      onOpenNotifications,
       onStart,
     });
 
-    screen.getByText("Waiting for your host.");
+    screen.getByText(
+      "Waiting for your host. Photos begin when the trip starts.",
+    );
     expect(screen.queryByText("ABCD2345")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Start trip" })).toBeNull();
     expect(screen.queryByText(/device.*missing/i)).toBeNull();
-    expect(onApproveMember).not.toHaveBeenCalled();
+    expect(onOpenNotifications).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
   });
 
@@ -303,25 +436,12 @@ describe("LobbyScreen", () => {
     expect(onStart).toHaveBeenCalledTimes(1);
   });
 
-  test("disables all repeat trip mutations while approval or Start is active", async () => {
-    const onApproveMember = jest.fn();
-    const pending = await renderLobby({
-      approvingMembershipId: memberMembershipId,
-      onApproveMember,
-      onStart: jest.fn(),
-    });
-
-    const approve = pending.getByRole("button", {
-      name: "Approve Grace Hopper",
-    });
-    const blockedStart = pending.getByRole("button", { name: "Start trip" });
-    expect(approve.props.accessibilityState).toEqual({
-      busy: true,
-      disabled: true,
-    });
-    expect(blockedStart.props.accessibilityState.disabled).toBe(true);
-    await fireEvent.press(approve);
-    expect(onApproveMember).not.toHaveBeenCalled();
+  test("disables Start while join requests are pending and while Start is active", async () => {
+    const pending = await renderLobby({ onStart: jest.fn() });
+    expect(pending.getByRole("button", { name: "Start trip" })).toBeDisabled();
+    expect(
+      pending.queryByRole("button", { name: "Approve Grace Hopper" }),
+    ).toBeNull();
     await pending.unmount();
 
     const onStart = jest.fn();
@@ -389,7 +509,7 @@ describe("LobbyScreen", () => {
     );
 
     const heading = screen.getByRole("header", {
-      name: "A very long family and friends weekend by the sea",
+      name: "Who’s coming along?",
     });
     const share = screen.getByRole("button", { name: "Invite crew" });
     const start = screen.getByRole("button", { name: "Start trip" });
@@ -412,6 +532,82 @@ describe("LobbyScreen", () => {
     ).toEqual(
       expect.objectContaining({ backgroundColor: darkColors.background }),
     );
+  });
+
+  test("keeps inviting primary as a real member joins and becomes ready", async () => {
+    const solo = ownerTrip({ members: [ownerTrip().members[0]!] });
+    const onStart = jest.fn();
+    const view = await renderLobby({ trip: solo, onStart });
+    view.getByText("Who’s coming along?");
+    view.getByText("You · Host");
+    expect(view.queryByText(solo.name)).toBeNull();
+    view.getByTestId("crew-placeholders", { includeHiddenElements: true });
+    expect(view.queryByTestId("trip-photo-gallery")).toBeNull();
+
+    await view.rerender(
+      <LobbyScreen
+        endsLabel="Tomorrow"
+        photoPermission={{ kind: "FULL" }}
+        trip={ownerTrip()}
+        onStart={onStart}
+      />,
+    );
+    expect(
+      view.queryByRole("button", { name: "Approve Grace Hopper" }),
+    ).toBeNull();
+    view.getByText("1 joined · 1 waiting");
+    expect(
+      view.getByRole("button", { name: "Start trip" }).props.accessibilityState
+        .disabled,
+    ).toBe(true);
+
+    await view.rerender(
+      <LobbyScreen
+        endsLabel="Tomorrow"
+        photoPermission={{ kind: "FULL" }}
+        trip={eligibleOwnerTrip()}
+        onStart={onStart}
+      />,
+    );
+    view.getByText("2 joined");
+    expect(
+      view.queryByTestId("crew-placeholders", { includeHiddenElements: true }),
+    ).toBeNull();
+    expect(view.getAllByText("Ready")).toHaveLength(2);
+    expect(
+      view.queryByRole("button", { name: "Approve Grace Hopper" }),
+    ).toBeNull();
+    expect(
+      view.getByRole("button", { name: "Start trip" }).props.accessibilityState
+        .disabled,
+    ).toBe(false);
+    expect(
+      StyleSheet.flatten(
+        view.getByRole("button", { name: "Invite crew" }).props.style,
+      ).backgroundColor,
+    ).not.toBe("transparent");
+  });
+
+  test("keeps invite failures inside an accessible sheet with a retry", async () => {
+    const onRetryInvite = jest.fn();
+    const view = await renderLobby({ inviteStatus: "failed", onRetryInvite });
+    expect(
+      view.queryByText("The invite code couldn’t load. Your trip is saved."),
+    ).toBeNull();
+    await fireEvent.press(view.getByRole("button", { name: "Invite crew" }));
+    view.getByText("The invite code couldn’t load. Your trip is saved.");
+    await fireEvent.press(view.getByRole("button", { name: "Try again" }));
+    expect(onRetryInvite).toHaveBeenCalledTimes(1);
+    await view.rerender(
+      <LobbyScreen
+        endsLabel="Tomorrow"
+        photoPermission={{ kind: "FULL" }}
+        trip={ownerTrip()}
+        invite={invite()}
+      />,
+    );
+    view.getByText("ABCD 2345");
+    expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 });
 
@@ -734,11 +930,11 @@ describe("CreateTripScreen", () => {
     });
   });
 
-  test("uses the default window and takes the user directly to photo access next", async () => {
+  test("uses the default window without promising another photo permission step", async () => {
     const screen = await renderCreate({ locale: "en-GB" });
     screen.getByRole("header", { name: "Name your trip." });
     screen.getByRole("button", { name: /^End date\./ });
-    screen.getByText("Photo access comes next.");
+    expect(screen.queryByText("Photo access comes next.")).toBeNull();
     expect(screen.queryByText("Trip created")).toBeNull();
   });
 

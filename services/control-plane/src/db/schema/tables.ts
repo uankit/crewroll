@@ -307,6 +307,13 @@ export interface TripDeviceRequestTable {
   approved_by_device_id: string | null;
 }
 export interface Database {
+  media_cleanup_claims: {
+    id: string;
+    trip_id: string;
+    token: string;
+    available_at: Timestamp;
+    attempt_count: Generated<number>;
+  };
   trip_owner_invites: TripOwnerInviteTable;
   trip_device_requests: TripDeviceRequestTable;
   users: UserTable;

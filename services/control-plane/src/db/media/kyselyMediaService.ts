@@ -1,5 +1,5 @@
 import { captureAllowed } from "./capturePolicy.js";
-import { createKyselyTripLifecycle } from "../trips/kyselyTripLifecycle.js";
+import { cleanupMedia } from "./mediaCleanup.js";
 import {
   CommitAssetBodySchema,
   CreateDownloadSessionBodySchema,
@@ -39,18 +39,20 @@ export function createKyselyMediaService(
   const randomUUID = () => crypto.randomUUID();
   // Match device/trip command lock order. Recheck authorization inside every
   // mutation, so revocation cannot race a previously authenticated request.
-  async function authorize(tx: Tx, actor: MediaActor) {
+  async function authorize(tx: Tx, actor: MediaActor, readOnly = false) {
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
-      .forUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forUpdate())
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
-      .forUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forUpdate())
       .executeTakeFirst();
     if (
       !user ||
@@ -111,6 +113,50 @@ export function createKyselyMediaService(
       .executeTakeFirstOrThrow();
     return { delivery, asset, trip };
   }
+  async function inspectUpload(
+    actor: MediaActor,
+    assetId: string,
+    sessionId: string,
+    previewOnly = false,
+  ) {
+    const objects = await db.transaction().execute(async (tx) => {
+      await authorize(tx, actor, true);
+      const session = await tx
+        .selectFrom("upload_sessions")
+        .selectAll()
+        .where("id", "=", sessionId)
+        .where("client_asset_id", "=", assetId)
+        .where("source_device_id", "=", actor.deviceId)
+        .executeTakeFirst();
+      if (!session) throw new DomainError("NOT_FOUND");
+      // Exact replays must still work after ciphertext has been purged.
+      if (!previewOnly && session.state === "COMMITTED") return [];
+      if (previewOnly) {
+        const prior = await tx
+          .selectFrom("inbox_events")
+          .select("sequence")
+          .where("aggregate_id", "=", assetId)
+          .where("recipient_device_id", "=", actor.deviceId)
+          .where("event_type", "=", "ASSET_PREVIEW_READY")
+          .executeTakeFirst();
+        if (prior) return [];
+      }
+      return tx
+        .selectFrom("upload_objects")
+        .selectAll()
+        .where("upload_session_id", "=", sessionId)
+        .$if(previewOnly, (query) => query.where("variant", "=", "PREVIEW"))
+        .execute();
+    });
+    return new Map(
+      await Promise.all(
+        objects.map(
+          async (object) =>
+            [object.s3_key, await store.inspect(object.s3_key)] as const,
+        ),
+      ),
+    );
+  }
   async function commitResult(
     tx: Tx,
     assetId: string,
@@ -135,7 +181,7 @@ export function createKyselyMediaService(
     };
   }
   async function uploadResponse(
-    tx: Tx,
+    tx: Kysely<Database>,
     sessionId: string,
     recoverUploaded = false,
   ): Promise<UploadSessionResponse> {
@@ -249,6 +295,12 @@ export function createKyselyMediaService(
   return {
     async publishPreview(actor, assetId, body) {
       requireBody(PublishPreviewBodySchema, body);
+      const inspected = await inspectUpload(
+        actor,
+        assetId,
+        body.uploadSessionId,
+        true,
+      );
       return db.transaction().execute(async (tx) => {
         await authorize(tx, actor);
         const session = await tx
@@ -282,7 +334,7 @@ export function createKyselyMediaService(
         }
         if (session.expires_at <= clock.now())
           throw new DomainError("CONFLICT");
-        const actual = await store.inspect(object.s3_key);
+        const actual = inspected.get(object.s3_key);
         if (
           !actual ||
           actual.etag !== body.etag ||
@@ -466,7 +518,7 @@ export function createKyselyMediaService(
         assetId: rawBody.assetId.toLowerCase(),
         tripId: rawBody.tripId.toLowerCase(),
       };
-      return db.transaction().execute(async (tx) => {
+      const prepared = await db.transaction().execute(async (tx) => {
         await authorize(tx, actor);
         const trip = await tripFor(tx, actor, body.tripId);
         if (trip.release_mode !== "IMMEDIATE")
@@ -537,7 +589,7 @@ export function createKyselyMediaService(
               })
               .where("id", "=", existing.id)
               .execute();
-          return uploadResponse(tx, existing.id, true);
+          return { sessionId: existing.id, recover: true };
         }
         const member = await tx
           .selectFrom("trip_members")
@@ -614,11 +666,17 @@ export function createKyselyMediaService(
             })),
           )
           .execute();
-        return uploadResponse(tx, sessionId);
+        return { sessionId, recover: false };
       });
+      return uploadResponse(db, prepared.sessionId, prepared.recover);
     },
     async commit(actor, assetId, body) {
       requireBody(CommitAssetBodySchema, body);
+      const inspected = await inspectUpload(
+        actor,
+        assetId,
+        body.uploadSessionId,
+      );
       return db.transaction().execute(async (tx) => {
         await authorize(tx, actor);
         const session = await tx
@@ -649,21 +707,18 @@ export function createKyselyMediaService(
         const now = clock.now();
         if (session.state === "EXPIRED" || session.expires_at <= now)
           throw new DomainError("CONFLICT");
-        const verified = await Promise.all(
-          objects.map(async (object) => {
-            const actual = await store.inspect(object.s3_key);
-            if (
-              !actual ||
-              actual.bytes !== object.expected_ciphertext_bytes ||
-              actual.checksum !== b64(object.expected_ciphertext_sha256) ||
-              actual.etag !==
-                body.objects.find((item) => item.variant === object.variant)
-                  ?.etag
-            )
-              throw new DomainError("CONFLICT");
-            return { ...object, etag: actual.etag };
-          }),
-        );
+        const verified = objects.map((object) => {
+          const actual = inspected.get(object.s3_key);
+          if (
+            !actual ||
+            actual.bytes !== object.expected_ciphertext_bytes ||
+            actual.checksum !== b64(object.expected_ciphertext_sha256) ||
+            actual.etag !==
+              body.objects.find((item) => item.variant === object.variant)?.etag
+          )
+            throw new DomainError("CONFLICT");
+          return { ...object, etag: actual.etag };
+        });
         if (verified.length !== 2) throw new DomainError("CONFLICT");
         await tx
           .insertInto("assets")
@@ -775,7 +830,7 @@ export function createKyselyMediaService(
     },
     async pending(actor) {
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
+        await authorize(tx, actor, true);
         const rows = await tx
           .selectFrom("deliveries as d")
           .innerJoin("assets as a", "a.id", "d.asset_id")
@@ -925,134 +980,6 @@ export function createKyselyMediaService(
         };
       });
     },
-    async cleanup() {
-      await createKyselyTripLifecycle(db, clock).expire();
-      // Delete only committed ciphertext whose recipients all acknowledged, or
-      // whose trip's explicit hard retention deadline has passed. Retry safely.
-      const candidates = await db
-        .selectFrom("assets as a")
-        .innerJoin("trips as t", "t.id", "a.trip_id")
-        .innerJoin("upload_sessions as u", "u.client_asset_id", "a.id")
-        .select(["a.id", "a.trip_id"])
-        // An issued PUT capability must expire before physical deletion, or a
-        // delayed/replayed upload could recreate already-purged ciphertext.
-        .where("u.expires_at", "<=", clock.now())
-        .where((eb) =>
-          eb.or([
-            eb("a.state", "=", "PURGE_PENDING"),
-            eb.and([
-              eb("a.state", "=", "COMMITTED"),
-              eb("t.hard_delete_at", "<=", clock.now()),
-            ]),
-          ]),
-        )
-        .limit(100)
-        .execute();
-      let count = 0;
-      for (const candidate of candidates)
-        await db.transaction().execute(async (tx) => {
-          const trip = await tx
-            .selectFrom("trips")
-            .selectAll()
-            .where("id", "=", candidate.trip_id)
-            .forUpdate()
-            .executeTakeFirstOrThrow();
-          const asset = await tx
-            .selectFrom("assets")
-            .selectAll()
-            .where("id", "=", candidate.id)
-            .executeTakeFirstOrThrow();
-          const now = clock.now();
-          const upload = await tx
-            .selectFrom("upload_sessions")
-            .select("expires_at")
-            .where("client_asset_id", "=", asset.id)
-            .executeTakeFirstOrThrow();
-          if (upload.expires_at > now) return;
-          if (
-            asset.state !== "PURGE_PENDING" &&
-            !(asset.state === "COMMITTED" && trip.hard_delete_at <= now)
-          )
-            return;
-          const objects = await tx
-            .selectFrom("asset_objects")
-            .selectAll()
-            .where("asset_id", "=", asset.id)
-            .where("deleted_at", "is", null)
-            .execute();
-          for (const object of objects) {
-            await store.delete(object.s3_key);
-            await tx
-              .updateTable("asset_objects")
-              .set({ deleted_at: now })
-              .where("asset_id", "=", asset.id)
-              .where("variant", "=", object.variant)
-              .execute();
-          }
-          if (asset.state === "PURGE_PENDING")
-            await tx
-              .updateTable("assets")
-              .set({ state: "PURGED", purged_at: now })
-              .where("id", "=", asset.id)
-              .execute();
-          else {
-            await tx
-              .updateTable("assets")
-              .set({ state: "EXPIRED", expired_at: now })
-              .where("id", "=", asset.id)
-              .execute();
-            await tx
-              .updateTable("deliveries")
-              .set({ state: "EXPIRED" })
-              .where("asset_id", "=", asset.id)
-              .where("state", "in", ["READY", "HELD"])
-              .execute();
-          }
-          count += 1;
-        });
-      // Uncommitted uploads also contain ciphertext. Preserve resumable leases
-      // during a live trip, but never retain abandoned bytes past its deadline.
-      const abandoned = await db
-        .selectFrom("upload_sessions as u")
-        .innerJoin("trips as t", "t.id", "u.trip_id")
-        .select(["u.id", "u.trip_id"])
-        .where("u.state", "=", "CREATED")
-        .where("t.hard_delete_at", "<=", clock.now())
-        .limit(100)
-        .execute();
-      for (const candidate of abandoned)
-        await db.transaction().execute(async (tx) => {
-          const trip = await tx
-            .selectFrom("trips")
-            .select("hard_delete_at")
-            .where("id", "=", candidate.trip_id)
-            .forUpdate()
-            .executeTakeFirstOrThrow();
-          const session = await tx
-            .selectFrom("upload_sessions")
-            .selectAll()
-            .where("id", "=", candidate.id)
-            .executeTakeFirstOrThrow();
-          if (
-            session.state !== "CREATED" ||
-            trip.hard_delete_at > clock.now() ||
-            session.expires_at > clock.now()
-          )
-            return;
-          const objects = await tx
-            .selectFrom("upload_objects")
-            .select("s3_key")
-            .where("upload_session_id", "=", session.id)
-            .execute();
-          for (const object of objects) await store.delete(object.s3_key);
-          await tx
-            .updateTable("upload_sessions")
-            .set({ state: "EXPIRED" })
-            .where("id", "=", session.id)
-            .execute();
-          count += 1;
-        });
-      return count;
-    },
+    cleanup: () => cleanupMedia(db, store, clock),
   };
 }

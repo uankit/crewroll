@@ -52,7 +52,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function project(value: unknown): PhotoLibraryPermissionState {
-  const response = isRecord(value) ? value : {};
+  if (
+    !isRecord(value) ||
+    !["granted", "denied", "undetermined"].includes(String(value.status)) ||
+    typeof value.canAskAgain !== "boolean"
+  )
+    throw new PhotoLibraryPermissionError();
+  const response = value;
   const canAskAgain = response.canAskAgain === true;
   if (response.status === "granted" && response.accessPrivileges === "all") {
     return Object.freeze({
@@ -61,7 +67,17 @@ function project(value: unknown): PhotoLibraryPermissionState {
       canAskAgain,
     });
   }
-  return canAskAgain
+  // iOS considers limited access a completed grant: requestAuthorization will
+  // not reopen the full-access prompt. Android can offer the choice again.
+  const requestable =
+    response.status === "undetermined" ||
+    (canAskAgain &&
+      !(
+        Platform.OS === "ios" &&
+        response.status === "granted" &&
+        response.accessPrivileges === "limited"
+      ));
+  return requestable
     ? Object.freeze({
         kind: "REQUESTABLE" as const,
         fullPhotoLibraryAccess: false as const,

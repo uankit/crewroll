@@ -1,11 +1,14 @@
-import type { PropsWithChildren } from "react";
+import { type PropsWithChildren, useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Modal,
+  Animated,
+  Easing,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
+  useWindowDimensions,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -43,83 +46,125 @@ export function Sheet({
   const theme = useCrewRollTheme();
   const insets = useSafeAreaInsets();
   const resolvedCloseLabel = closeLabel ?? `Close ${title}`;
+  const { height } = useWindowDimensions();
+  const [presented, setPresented] = useState(visible);
+  const [progress] = useState(() => new Animated.Value(0));
+  if (visible && !presented) setPresented(true);
+
+  useEffect(() => {
+    const animation = Animated.timing(progress, {
+      toValue: visible ? 1 : 0,
+      duration: visible ? theme.motion.transition : theme.motion.direct,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start(({ finished }) => {
+      if (finished && !visible) setPresented(false);
+    });
+    return () => animation.stop();
+  }, [progress, visible, theme.motion.transition, theme.motion.direct]);
 
   return (
     <Modal
-      animationType={theme.motion.navigation === 0 ? "none" : "slide"}
+      animationType="none"
       onRequestClose={onDismiss}
       statusBarTranslucent
       testID={testID}
       transparent
-      visible={visible}
+      visible={presented}
     >
       <View style={styles.root}>
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              backgroundColor: theme.fixedInk,
+              opacity: progress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 0.28],
+              }),
+            },
+          ]}
+        />
         <Pressable
           accessible={false}
           disabled={!dismissOnBackdropPress}
           importantForAccessibility="no-hide-descendants"
           onPress={onDismiss}
-          style={[
-            StyleSheet.absoluteFill,
-            { backgroundColor: theme.fixedInk, opacity: 0.28 },
-          ]}
+          style={StyleSheet.absoluteFill}
         />
-        <Stack
-          accessibilityViewIsModal
-          gap="lg"
-          onAccessibilityEscape={onDismiss}
-          style={[
-            styles.content,
-            {
-              backgroundColor: theme.surface,
-              borderColor: theme.border,
-              paddingBottom: Math.max(spacing.lg, insets.bottom),
-            },
-            contentStyle,
-          ]}
-          testID="sheet-content"
+        <Animated.View
+          testID="sheet-motion"
+          style={{
+            maxHeight: "90%",
+            transform: [
+              {
+                translateY: progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [height, 0],
+                }),
+              },
+            ],
+          }}
         >
-          {!showCloseButton ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={resolvedCloseLabel}
-              onPress={onDismiss}
-              style={styles.handleTarget}
-            >
-              <View
-                style={[styles.handle, { backgroundColor: theme.border }]}
-              />
-            </Pressable>
-          ) : null}
-          <Inline align="start" justify="space-between">
-            <AppText
-              accessibilityRole="header"
-              style={styles.title}
-              variant="title2"
-            >
-              {title}
-            </AppText>
-            {showCloseButton ? (
-              <IconButton
-                icon={
-                  <AppText aria-hidden tone="secondary" variant="title2">
-                    ×
-                  </AppText>
-                }
-                label={resolvedCloseLabel}
-                onPress={onDismiss}
-              />
-            ) : null}
-          </Inline>
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            style={styles.scrollBody}
-            testID="sheet-scroll-body"
+          <Stack
+            accessibilityViewIsModal
+            gap="lg"
+            onAccessibilityEscape={onDismiss}
+            style={[
+              styles.content,
+              {
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                paddingBottom: Math.max(spacing.lg, insets.bottom),
+              },
+              contentStyle,
+            ]}
+            testID="sheet-content"
           >
-            {children}
-          </ScrollView>
-        </Stack>
+            {!showCloseButton ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={resolvedCloseLabel}
+                onPress={onDismiss}
+                style={styles.handleTarget}
+              >
+                <View
+                  style={[styles.handle, { backgroundColor: theme.border }]}
+                />
+              </Pressable>
+            ) : null}
+            <Inline align="start" justify="space-between">
+              <AppText
+                accessibilityRole="header"
+                style={styles.title}
+                variant="title2"
+              >
+                {title}
+              </AppText>
+              {showCloseButton ? (
+                <IconButton
+                  icon={
+                    <AppText aria-hidden tone="secondary" variant="title2">
+                      ×
+                    </AppText>
+                  }
+                  label={resolvedCloseLabel}
+                  onPress={onDismiss}
+                />
+              ) : null}
+            </Inline>
+            <ScrollView
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+              style={styles.scrollBody}
+              testID="sheet-scroll-body"
+            >
+              {children}
+            </ScrollView>
+          </Stack>
+        </Animated.View>
       </View>
     </Modal>
   );
@@ -134,7 +179,7 @@ const styles = StyleSheet.create({
     borderTopEndRadius: radius.xl,
     borderTopStartRadius: radius.xl,
     borderWidth: 1,
-    maxHeight: "90%",
+    maxHeight: "100%",
     paddingBottom: spacing.xl,
     paddingHorizontal: spacing.gutter,
     paddingTop: spacing.gutter,

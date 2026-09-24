@@ -20,7 +20,7 @@ final class CrewRollAppleRuntime {
     private let defaults = UserDefaults.standard
     static let taskID = "com.uankit53.airmesh.media-processing"
     var enabled: Bool { defaults.bool(forKey: "crewroll.background.enabled") }
-    var cellular: Bool { defaults.bool(forKey: "crewroll.background.cellular") }
+    var cellular: Bool { defaults.object(forKey: "crewroll.background.cellular") as? Bool ?? true }
     private init() throws {
         let lifecycle = try AppleNativeKeyInfrastructure.makeLifecycle()
         self.lifecycle = lifecycle
@@ -28,8 +28,14 @@ final class CrewRollAppleRuntime {
         engine = ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { try lifecycle.mediaContext() }, invalidated: { revision in
             NotificationCenter.default.post(name: .crewRollEngineInvalidated, object: nil, userInfo: ["revision": revision])
         })
+        // Replace the retired Wi-Fi-only preference, preserving sign-out and
+        // the account-scoped journal. New activations also enable all networks.
+        if defaults.integer(forKey: "crewroll.background.networkPolicyVersion") < 1 {
+            defaults.set(true, forKey: "crewroll.background.cellular")
+            defaults.set(1, forKey: "crewroll.background.networkPolicyVersion")
+        }
     }
-    func foreground(_ value: Bool) { lock.lock(); visible = value; lock.unlock(); if !value { schedule() } }
+    func foreground(_ value: Bool) { lock.lock(); visible = value; lock.unlock(); Task { await engine.foreground(value) }; if !value { schedule() } }
     func policy(enabled: Bool, cellular: Bool? = nil) {
         lock.lock(); revision += 1; lock.unlock()
         defaults.set(enabled, forKey: "crewroll.background.enabled")
@@ -54,14 +60,18 @@ final class CrewRollAppleRuntime {
                 guard var context = try lifecycle.mediaContext() else { completion.finish( true); return }
                 context.tripKey.resetBytes(in: 0..<context.tripKey.count)
                 context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count)
-                await engine.setPolicy(paused: false, cellularAllowed: cellular, ifCurrent: { self.current(epoch) })
-                // Both lanes are single-flight. A fixed batch avoids an unbounded
-                // daemon; URLSession continues staged ciphertext if suspended.
-                for _ in 0..<20 {
-                    if Task.isCancelled || !current(epoch) { break }
-                    await engine.wakePreviews(); await engine.wake()
+                let started = Date()
+                await engine.activate(ifCurrent: { self.current(epoch) })
+                try await engine.reconcileNow()
+                // Network work continues independently. Stay alive to checkpoint
+                // verified saves and receipts, but finish as soon as it drains.
+                while current(epoch) && Date().timeIntervalSince(started) < 120 {
+                    try Task.checkCancellation()
+                    let work = try await engine.backgroundWork(since: started)
+                    if work.checked && !work.working && !work.pending { completion.finish(true); return }
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
                 }
-                if !Task.isCancelled { completion.finish( true) }
+                if !Task.isCancelled { completion.finish(false) }
             } catch { if !Task.isCancelled { completion.finish( false) } }
         }
         task.expirationHandler = {
@@ -78,7 +88,7 @@ final class CrewRollAppleRuntime {
     func resumeAfterTransfer() {
         lock.lock(); let epoch = revision; lock.unlock()
         Task {
-            await engine.setPolicy(paused: false, cellularAllowed: cellular, ifCurrent: { self.current(epoch) })
+            await engine.activate(ifCurrent: { self.current(epoch) })
             if current(epoch) { await engine.wake() }
         }
     }

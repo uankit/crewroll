@@ -53,6 +53,64 @@ const readinessBody = {
 } as SetTripReadinessBody;
 const membershipId = "5a95305d-c558-4c79-b78c-a075be7bff85";
 const requestId = "5a95305d-c558-4c79-b78c-a075be7bff86";
+
+it("bounds a stalled token lookup and never sends a late authenticated request", async () => {
+  let resolve!: (token: string) => void;
+  const fetcher = jest.fn(async () => new Response("{}"));
+  const api = createCrewRollApi({
+    apiBaseUrl: "https://api.example",
+    fetch: fetcher,
+    timeoutMs: 20,
+    sessionTokenSource: {
+      getToken: () =>
+        new Promise<string>((done) => {
+          resolve = done;
+        }),
+    },
+  });
+  await expect(api.listTrips(deviceId)).rejects.toBeInstanceOf(
+    CrewRollTransportProblem,
+  );
+  resolve("late-token");
+  await Promise.resolve();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("aborts a stalled network call without replaying an uncertain mutation", async () => {
+  let signal: AbortSignal | undefined;
+  const fetcher = jest.fn(async (request: Request) => {
+    signal = request.signal;
+    return new Promise<Response>(() => {});
+  });
+  const api = createCrewRollApi({
+    apiBaseUrl: "https://api.example",
+    fetch: fetcher as typeof fetch,
+    timeoutMs: 20,
+    sessionTokenSource: { getToken: async () => "token" },
+  });
+  await expect(
+    api.createTrip(deviceId, commandId, createBody),
+  ).rejects.toBeInstanceOf(CrewRollTransportProblem);
+  expect(signal?.aborted).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0]![0].headers.get("Idempotency-Key")).toBe(
+    commandId,
+  );
+});
+
+it("bounds a stalled response body, not just connection establishment", async () => {
+  const stalled = new Response("{}");
+  stalled.text = () => new Promise<string>(() => {});
+  const api = createCrewRollApi({
+    apiBaseUrl: "https://api.example",
+    fetch: (async () => stalled) as typeof fetch,
+    timeoutMs: 20,
+    sessionTokenSource: { getToken: async () => "token" },
+  });
+  await expect(api.listTrips(deviceId)).rejects.toBeInstanceOf(
+    CrewRollTransportProblem,
+  );
+});
 const createOutcomeBody = { tripId } as const;
 const tripResponse: TripResponse = {
   currentMembershipId: membershipId,
@@ -600,6 +658,28 @@ describe("CrewRoll API boundary", () => {
         url: `https://api.crewroll.app/v1/trips/${tripId}`,
       },
     ]);
+  });
+
+  it("declines a join request with authenticated command headers and accepts only no-content success", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(problemResponse("NOT_FOUND", 404));
+    const api = apiWith(fetchMock);
+    await expect(
+      api.rejectMember(deviceId, commandId, tripId, membershipId),
+    ).resolves.toBeUndefined();
+    const request = requestFrom(fetchMock.mock.calls[0]);
+    expect(request.method).toBe("DELETE");
+    expect(request.url).toBe(
+      `https://api.crewroll.app/v1/trips/${tripId}/join-requests/${membershipId}`,
+    );
+    expect(request.headers.get("Authorization")).toBe("Bearer clerk-session");
+    expect(request.headers.get("Idempotency-Key")).toBe(commandId);
+    expect(request.headers.get("X-CrewRoll-Device-Id")).toBe(deviceId);
+    await expect(
+      api.rejectMember(deviceId, commandId, tripId, membershipId),
+    ).rejects.toEqual(new CrewRollApiProblem("NOT_FOUND"));
   });
 
   it("never returns RFC 9457 detail to callers", async () => {

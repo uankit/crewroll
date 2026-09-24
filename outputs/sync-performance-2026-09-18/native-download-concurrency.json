@@ -1,0 +1,23 @@
+{
+  "networkDelayPerOriginalMs": 40,
+  "kind": "native-engine controlled transport comparison",
+  "photos": 100,
+  "runs": [
+    {
+      "snapshotP95Ms": 19.445542,
+      "snapshotP50Ms": 13.625833,
+      "verifiedSaves": 100,
+      "downloadLimit": 1,
+      "durationMs": 6738.277958,
+      "peakDownloads": 1
+    },
+    {
+      "snapshotP95Ms": 21.028666,
+      "snapshotP50Ms": 12.005167,
+      "verifiedSaves": 100,
+      "downloadLimit": 2,
+      "durationMs": 5941.024709,
+      "peakDownloads": 2
+    }
+  ]
+}

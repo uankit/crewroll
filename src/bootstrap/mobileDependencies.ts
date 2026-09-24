@@ -11,6 +11,7 @@ export type MobileDependencies = Readonly<{
   tripApi: TripApiPort &
     Pick<
       ReturnType<typeof createCrewRollApi>,
+      | "rejectMember"
       | "getTripContinuity"
       | "changeTripContinuity"
       | "previewInvite"

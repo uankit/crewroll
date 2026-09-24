@@ -19,6 +19,7 @@ export {
   type FeedbackTone,
 } from "./feedback";
 export {
+  AppIcon,
   AppText,
   type AppTextProps,
   type AppTextTone,
@@ -43,6 +44,7 @@ export {
   type ProgressRingProps,
   Screen,
   type ScreenProps,
+  type ScrollRestoration,
   Sheet,
   type SheetProps,
   Skeleton,
@@ -107,6 +109,7 @@ export { spacing } from "./tokens/spacing";
 export { typography, type TypographyVariant } from "./tokens/typography";
 export { TripPhotoGallery, type TripPhoto } from "./product/TripPhotoGallery";
 export { FlowScreen } from "./product/FlowScreen";
+export { FlowTransition } from "./product/FlowTransition";
 export { onboardingGeometry } from "./tokens/onboarding";
 
 export { BrandLoading } from "./product/BrandLoading";

@@ -1,15 +1,16 @@
+import type { ReactNode } from "react";
 import type { TripSummary } from "../../domain/trips/model";
 import { Pressable, StyleSheet, View } from "react-native";
 import {
   AppText,
   Button,
-  CrewRollWordmark,
   FlowScreen,
   Stack,
   radius,
   spacing,
   useCrewRollTheme,
 } from "../../design-system";
+import { HomeHeader } from "./HomeHeader";
 
 export function tripSummaryStatus(trip: TripSummary): string {
   if (trip.participation === "LEFT")
@@ -20,45 +21,58 @@ export function tripSummaryStatus(trip: TripSummary): string {
         : "Past trip";
   if (trip.participation === "LEAVING") return "Finishing sync";
   if (trip.participation === "JOINING") return "Waiting for approval";
-  if (trip.status === "LOBBY") return "Ready when you are";
+  if (trip.status === "LOBBY") return "Gathering your crew";
   return trip.sharingPaused ? "Your sharing is paused" : "Live now";
 }
 export function TripLibraryScreen({
+  accountControl,
   trips,
   onOpenTrip,
   onCreateTrip,
   onJoinTrip,
   refreshing = false,
   error = false,
+  canCreateTrip = true,
   onRetry,
 }: Readonly<{
+  accountControl?: ReactNode;
   trips: readonly TripSummary[];
   onOpenTrip: (trip: TripSummary) => void;
   onCreateTrip: () => void;
   onJoinTrip: () => void;
   refreshing?: boolean;
   error?: boolean;
+  canCreateTrip?: boolean;
   onRetry: () => void;
 }>) {
   const theme = useCrewRollTheme();
   const current = trips.find((trip) => trip.participation !== "LEFT");
   const previous = trips.filter((trip) => trip.participation === "LEFT");
+  const canStartTrip = !current && !refreshing && !error && canCreateTrip;
+  const live =
+    current?.status === "ACTIVE" &&
+    current.participation === "JOINED" &&
+    !current.sharingPaused;
   return (
     <FlowScreen
-      header={<CrewRollWordmark />}
+      header={<HomeHeader accountControl={accountControl} />}
       title="Your trips."
       testID="trip-library-screen"
       footer={
-        !current && !refreshing && !error ? (
-          <>
-            <Button label="Start a trip" onPress={onCreateTrip} />
+        <>
+          <Button
+            label="Start a new trip"
+            disabled={!canStartTrip}
+            onPress={onCreateTrip}
+          />
+          {canStartTrip ? (
             <Button
               label="Enter invite code"
               variant="text"
               onPress={onJoinTrip}
             />
-          </>
-        ) : undefined
+          ) : null}
+        </>
       }
     >
       {current ? (
@@ -71,25 +85,41 @@ export function TripLibraryScreen({
             accessibilityLabel={`Open ${current.name}`}
             onPress={() => onOpenTrip(current)}
             style={[
-              styles.current,
+              styles.tripRow,
               {
-                backgroundColor: theme.surfaceMuted,
-                borderColor: theme.border,
+                borderBottomColor: theme.border,
               },
             ]}
           >
-            <AppText variant="label" tone="action">
-              {tripSummaryStatus(current)}
-            </AppText>
-            <AppText variant="title2">{current.name}</AppText>
-            <View style={styles.row}>
-              <AppText variant="label" tone="secondary">
+            <View
+              style={[
+                styles.currentAccent,
+                { backgroundColor: live ? theme.success : theme.textSecondary },
+              ]}
+            />
+            <View style={styles.details}>
+              <View style={styles.row}>
+                <AppText variant="headline" style={styles.name}>
+                  {current.name}
+                </AppText>
+                {live ? (
+                  <AppText variant="caption" style={{ color: theme.success }}>
+                    Live
+                  </AppText>
+                ) : null}
+              </View>
+              <AppText variant="caption" tone="secondary">
                 {current.memberCount}{" "}
                 {current.memberCount === 1 ? "person" : "people"} ·{" "}
                 {current.savedPhotoCount} photos
               </AppText>
-              <AppText tone="action">→</AppText>
+              {!live ? (
+                <AppText variant="caption" tone="secondary">
+                  {tripSummaryStatus(current)}
+                </AppText>
+              ) : null}
             </View>
+            <AppText tone="secondary">›</AppText>
           </Pressable>
         </Stack>
       ) : null}
@@ -104,7 +134,11 @@ export function TripLibraryScreen({
               accessibilityRole="button"
               accessibilityLabel={`View ${trip.name}`}
               onPress={() => onOpenTrip(trip)}
-              style={[styles.past, { borderColor: theme.border }]}
+              style={[
+                styles.tripRow,
+                styles.past,
+                { borderBottomColor: theme.border },
+              ]}
             >
               <View style={styles.details}>
                 <AppText variant="headline">{trip.name}</AppText>
@@ -133,24 +167,22 @@ export function TripLibraryScreen({
   );
 }
 const styles = StyleSheet.create({
-  current: {
-    padding: spacing.xl,
-    gap: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-  },
   row: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.md,
   },
-  past: {
-    paddingVertical: spacing.lg,
-    borderBottomWidth: 1,
+  tripRow: {
+    minHeight: 80,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
-  details: { flex: 1, gap: spacing.xs },
+  currentAccent: { width: 3, alignSelf: "stretch", borderRadius: radius.pill },
+  past: { paddingLeft: spacing.sm + 3 },
+  name: { flex: 1 },
+  details: { flex: 1, gap: spacing.xxs },
 });

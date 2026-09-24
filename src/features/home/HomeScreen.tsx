@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import { Image } from "expo-image";
 import { StyleSheet, View } from "react-native";
@@ -5,13 +6,13 @@ import { StyleSheet, View } from "react-native";
 import {
   AppText,
   Button,
-  CrewRollWordmark,
   useCrewRollTheme,
   FlowScreen,
   spacing,
   radius,
   onboardingGeometry,
 } from "../../design-system";
+import { HomeHeader } from "./HomeHeader";
 
 export type HomeScreenState =
   | Readonly<{ kind: "no-trip"; creationFailed?: boolean }>
@@ -25,6 +26,7 @@ export type HomeScreenState =
     }>;
 
 export type HomeScreenProps = Readonly<{
+  accountControl?: ReactNode;
   onCreateTrip: () => void;
   onJoinTrip: () => void;
   state?: HomeScreenState;
@@ -82,6 +84,7 @@ function CrewConstellation() {
 }
 
 export function HomeScreen({
+  accountControl,
   onCreateTrip,
   onJoinTrip,
   state = { kind: "no-trip" },
@@ -92,19 +95,7 @@ export function HomeScreen({
     return (
       <FlowScreen
         testID="home-screen"
-        header={
-          pending ? (
-            <AppText
-              tone="secondary"
-              variant="label"
-              style={{ textAlign: "right" }}
-            >
-              {state.preview?.name ?? "Your invitation"}
-            </AppText>
-          ) : (
-            <CrewRollWordmark />
-          )
-        }
+        header={<HomeHeader accountControl={accountControl} />}
         title={
           pending
             ? `Waiting for ${state.preview?.hostDisplayName ?? "your host"}.`
@@ -162,7 +153,7 @@ export function HomeScreen({
   return (
     <FlowScreen
       testID="home-screen"
-      header={<CrewRollWordmark />}
+      header={<HomeHeader accountControl={accountControl} />}
       title="Start your first trip."
       centerContent
       description={

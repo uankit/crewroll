@@ -40,7 +40,7 @@ describe("overlay and progress primitives", () => {
       </ThemeHarness>,
     );
 
-    expect(screen.getByTestId("sheet-modal").props.animationType).toBe("slide");
+    expect(screen.getByTestId("sheet-modal").props.animationType).toBe("none");
     expect(
       screen.getByTestId("sheet-content").props.accessibilityViewIsModal,
     ).toBe(true);
@@ -122,7 +122,7 @@ describe("overlay and progress primitives", () => {
       expect.objectContaining({ flexShrink: 1 }),
     );
     expect(
-      StyleSheet.flatten(screen.getByTestId("sheet-content").props.style),
+      StyleSheet.flatten(screen.getByTestId("sheet-motion").props.style),
     ).toEqual(expect.objectContaining({ maxHeight: "90%" }));
     expect(
       StyleSheet.flatten(screen.getByTestId("dialog-content").props.style),

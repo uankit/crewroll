@@ -32,7 +32,7 @@ export default function JoinTripRoute() {
 
   function recoverUnknownJoin() {
     retry();
-    router.replace("/(app)");
+    router.dismissTo("/(app)");
   }
 
   function requestJoin(inviteCode: string) {
@@ -42,7 +42,7 @@ export default function JoinTripRoute() {
       .join(inviteCode)
       .then((result) => {
         if (result.kind === "PENDING_APPROVAL") {
-          router.replace("/(app)");
+          router.dismissTo("/(app)");
           return;
         }
         if (result.kind === "REJECTED") {
@@ -95,7 +95,7 @@ export default function JoinTripRoute() {
         if (actions === null) throw new Error("Session unavailable");
         return actions.previewInvite(code);
       }}
-      onCancel={() => router.back()}
+      onCancel={() => router.dismissTo("/(app)")}
       onJoin={requestJoin}
       state={state}
     />

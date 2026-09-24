@@ -1096,6 +1096,7 @@ describe.sequential("media and coordination schema", () => {
     const prior = await startMigratedPostgres();
 
     try {
+      await migrateDown(prior.db); // 009
       await migrateDown(prior.db); // 008
       await migrateDown(prior.db); // 007
       await migrateDown(prior.db); // 006
@@ -1142,6 +1143,7 @@ describe.sequential("media and coordination schema", () => {
   });
 
   it("migrates an empty database up, fully down, and up again", async () => {
+    await migrateDown(db); // 009
     await migrateDown(db); // 008
     await migrateDown(db); // 007
     await migrateDown(db); // 006
@@ -1272,6 +1274,7 @@ describe.sequential("media and coordination schema", () => {
       "deliveries",
       "devices",
       "inbox_events",
+      "media_cleanup_claims",
       "outbox_events",
       "receipts",
       "trip_device_requests",

@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { Keyboard, StyleSheet, View } from "react-native";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import {
   AppText,
   Button,
   FlowScreen,
+  FlowTransition,
   MemberAvatar,
   Stack,
   TextField,
@@ -54,6 +55,7 @@ export function JoinTripScreen({
       return;
     }
     inFlight.current = true;
+    Keyboard.dismiss();
     setFinding(true);
     setError(undefined);
     try {
@@ -77,37 +79,41 @@ export function JoinTripScreen({
   }
   if (state.kind === "failed" || state.kind === "unknown")
     return (
-      <FlowScreen
-        testID="join-trip-screen"
-        title="Checking your request."
-        description="Your request may already have reached your host. Check the same request to continue."
-        footer={
-          <Button
-            label="Check join request"
-            loading={state.retrying ?? false}
-            onPress={state.onRetry}
-          />
-        }
-      />
+      <FlowTransition step="recovery">
+        <FlowScreen
+          testID="join-trip-screen"
+          title="Checking your request."
+          description="Your request may already have reached your host. Check the same request to continue."
+          footer={
+            <Button
+              label="Check join request"
+              loading={state.retrying ?? false}
+              onPress={state.onRetry}
+            />
+          }
+        />
+      </FlowTransition>
     );
   if (state.kind === "invalid" || state.kind === "rejected")
     return (
-      <FlowScreen
-        testID="join-trip-screen"
-        title={
-          state.kind === "invalid"
-            ? "Invite unavailable."
-            : "Request not approved."
-        }
-        description={
-          state.kind === "invalid"
-            ? "That invite is invalid or has expired."
-            : "Your host hasn’t approved this request. You can use another invite."
-        }
-        footer={
-          <Button label="Use another code" onPress={state.onUseAnotherCode} />
-        }
-      />
+      <FlowTransition step="unavailable">
+        <FlowScreen
+          testID="join-trip-screen"
+          title={
+            state.kind === "invalid"
+              ? "Invite unavailable."
+              : "Request not approved."
+          }
+          description={
+            state.kind === "invalid"
+              ? "That invite is invalid or has expired."
+              : "Your host hasn’t approved this request. You can use another invite."
+          }
+          footer={
+            <Button label="Use another code" onPress={state.onUseAnotherCode} />
+          }
+        />
+      </FlowTransition>
     );
   const submitting = state.kind === "submitting";
   function backToCode() {
@@ -120,109 +126,115 @@ export function JoinTripScreen({
       dateStyle: "long",
     }).format(new Date(preview.endsAt));
     return (
-      <FlowScreen
-        testID="join-trip-screen"
-        label="Your invitation"
-        onBack={backToCode}
-        title={preview.name}
-        description={`${preview.startsAt ? "LIVE · " : ""}Until ${dates}`}
-        footer={
-          <>
-            <Button
-              label="Request to join"
-              loading={submitting}
-              onPress={() => {
-                if (joining.current) return;
-                joining.current = true;
-                onJoin(code);
-              }}
-            />
-            <Button
-              label="Not this trip"
-              variant="text"
-              disabled={submitting}
-              onPress={backToCode}
-            />
-          </>
-        }
-      >
-        <View
-          style={[
-            styles.crew,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
+      <FlowTransition step="preview">
+        <FlowScreen
+          testID="join-trip-screen"
+          label="Your invitation"
+          onBack={backToCode}
+          title={preview.name}
+          description={`${preview.startsAt ? "LIVE · " : ""}Until ${dates}`}
+          footer={
+            <>
+              <Button
+                label="Request to join"
+                loading={submitting}
+                onPress={() => {
+                  if (joining.current) return;
+                  joining.current = true;
+                  onJoin(code);
+                }}
+              />
+              <Button
+                label="Not this trip"
+                variant="text"
+                disabled={submitting}
+                onPress={backToCode}
+              />
+            </>
+          }
         >
-          <AppText tone="action" variant="eyebrow">
-            Hosted by
-          </AppText>
-          <AppText variant="bodyStrong">{preview.hostDisplayName}</AppText>
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-          <AppText variant="eyebrow" tone="secondary">
-            Crew · {preview.members.length} joined
-          </AppText>
-          <Stack gap="none">
-            {preview.members.map((member, index) => (
-              <View
-                key={`${index}-${member.displayName}`}
-                style={[
-                  styles.member,
-                  index > 0 && {
-                    borderTopWidth: 1,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                <MemberAvatar displayName={member.displayName} />
-                <View style={styles.identity}>
-                  <AppText variant="bodyStrong">{member.displayName}</AppText>
-                  <AppText tone="secondary" variant="caption">
-                    {member.role === "OWNER" ? "Host" : "Joined"}
-                  </AppText>
+          <View
+            style={[
+              styles.crew,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <AppText tone="action" variant="eyebrow">
+              Hosted by
+            </AppText>
+            <AppText variant="bodyStrong">{preview.hostDisplayName}</AppText>
+            <View
+              style={[styles.divider, { backgroundColor: colors.border }]}
+            />
+            <AppText variant="eyebrow" tone="secondary">
+              Crew · {preview.members.length} joined
+            </AppText>
+            <Stack gap="none">
+              {preview.members.map((member, index) => (
+                <View
+                  key={`${index}-${member.displayName}`}
+                  style={[
+                    styles.member,
+                    index > 0 && {
+                      borderTopWidth: 1,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                >
+                  <MemberAvatar displayName={member.displayName} />
+                  <View style={styles.identity}>
+                    <AppText variant="bodyStrong">{member.displayName}</AppText>
+                    <AppText tone="secondary" variant="caption">
+                      {member.role === "OWNER" ? "Host" : "Joined"}
+                    </AppText>
+                  </View>
                 </View>
-              </View>
-            ))}
-          </Stack>
-        </View>
-        <AppText tone="secondary">
-          Your roll starts when {preview.hostDisplayName.split(" ")[0]}{" "}
-          approves. Photos from before that moment stay private.
-        </AppText>
-      </FlowScreen>
+              ))}
+            </Stack>
+          </View>
+          <AppText tone="secondary">
+            Your roll starts when {preview.hostDisplayName.split(" ")[0]}{" "}
+            approves. Photos from before that moment stay private.
+          </AppText>
+        </FlowScreen>
+      </FlowTransition>
     );
   }
   return (
-    <FlowScreen
-      testID="join-trip-screen"
-      label="Join a trip"
-      onBack={onCancel}
-      title="Enter your code."
-      description="Paste the 8-character code from your host."
-      footer={
-        <Button
-          label="Find trip"
-          loading={finding}
-          onPress={() => void findTrip()}
+    <FlowTransition step="code">
+      <FlowScreen
+        testID="join-trip-screen"
+        label="Join a trip"
+        onBack={onCancel}
+        title="Enter your code."
+        description="Paste the 8-character code from your host."
+        footer={
+          <Button
+            label="Find trip"
+            loading={finding}
+            onPress={() => void findTrip()}
+          />
+        }
+      >
+        <TextField
+          label="Invite code"
+          accessibilityHint="Enter the 8-character code from your host."
+          value={code}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          disabled={finding}
+          maxLength={32}
+          onChangeText={(value) => {
+            setCode(normalizeCode(value).slice(0, 8));
+            setError(undefined);
+          }}
+          placeholder="XXXXXXXX"
+          returnKeyType="go"
+          onSubmitEditing={() => void findTrip()}
+          {...(error === undefined ? {} : { errorMessage: error })}
         />
-      }
-    >
-      <TextField
-        label="Invite code"
-        accessibilityHint="Enter the 8-character code from your host."
-        value={code}
-        autoCapitalize="characters"
-        autoCorrect={false}
-        disabled={finding}
-        maxLength={32}
-        onChangeText={(value) => {
-          setCode(normalizeCode(value).slice(0, 8));
-          setError(undefined);
-        }}
-        placeholder="XXXXXXXX"
-        returnKeyType="go"
-        onSubmitEditing={() => void findTrip()}
-        {...(error === undefined ? {} : { errorMessage: error })}
-      />
-    </FlowScreen>
+      </FlowScreen>
+    </FlowTransition>
   );
 }
 const styles = StyleSheet.create({

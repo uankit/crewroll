@@ -141,7 +141,7 @@ describe("Expo 57 full-photo permission adapter", () => {
   it.each([
     [
       response({ status: "granted", accessPrivileges: "limited" }),
-      "REQUESTABLE",
+      "SETTINGS_REQUIRED",
     ],
     [response({ status: "denied", canAskAgain: false }), "SETTINGS_REQUIRED"],
     [
@@ -162,6 +162,28 @@ describe("Expo 57 full-photo permission adapter", () => {
       canAskAgain: kind === "REQUESTABLE",
     });
   });
+
+  it("requests an undetermined permission instead of sending a new install to Settings", async () => {
+    media.getPermissionsAsync.mockResolvedValue(
+      response({ status: "undetermined", canAskAgain: false }),
+    );
+    const adapter = new ExpoPhotoLibraryPermission({ linking, media });
+    await expect(adapter.read()).resolves.toMatchObject({
+      kind: "REQUESTABLE",
+    });
+    expect(linking.openSettings).not.toHaveBeenCalled();
+  });
+
+  it.each([null, {}, { status: "unknown", canAskAgain: false }])(
+    "reports malformed native permission %p as unavailable, not Settings required",
+    async (value) => {
+      media.getPermissionsAsync.mockResolvedValue(value);
+      await expect(
+        new ExpoPhotoLibraryPermission({ linking, media }).read(),
+      ).rejects.toThrow("Photo access is unavailable");
+      expect(linking.openSettings).not.toHaveBeenCalled();
+    },
+  );
 
   it("reports Settings failure without exposing native error detail", async () => {
     linking.openSettings.mockRejectedValue(new Error("private settings error"));

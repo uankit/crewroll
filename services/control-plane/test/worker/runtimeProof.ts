@@ -22,7 +22,6 @@ export default {
       origin: "https://crewroll.invalid",
       signingKey: new Uint8Array(32).fill(9),
       now: () => new Date(now),
-      mutations: { run: (_key, action) => action() },
     });
     const key = `proof/${crypto.randomUUID()}`;
     const body = new Uint8Array([3, 8, 2, 9]);
@@ -145,6 +144,73 @@ export default {
         download.headers.get("cache-control") === "no-store",
         "No cached capability response",
       );
+      const raceKey = `${key}/race`;
+      const raceUrl = await adapter.store.upload(
+        { ...object, key: raceKey },
+        expires,
+      );
+      const winners = await Promise.all([
+        put(body, raceUrl),
+        put(body, raceUrl),
+      ]);
+      assert(
+        winners.every((response) => response.status === 200) &&
+          winners[0]?.headers.get("etag") === winners[1]?.headers.get("etag"),
+        "Concurrent immutable PUTs reconcile one stored object",
+      );
+      await adapter.store.delete(raceKey);
+      let retiredRejected = false;
+      try {
+        await put(body, raceUrl);
+      } catch {
+        retiredRejected = true;
+      }
+      assert(
+        retiredRejected && (await adapter.store.inspect(raceKey)) === null,
+        "A still-valid grant cannot resurrect retired ciphertext",
+      );
+
+      const slowKey = `${key}/slow`;
+      const slowUrl = await adapter.store.upload(
+        { ...object, key: slowKey },
+        expires,
+      );
+      let finish!: () => void;
+      const delayed = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body.slice(0, 2));
+          finish = () => {
+            controller.enqueue(body.slice(2));
+            controller.close();
+          };
+        },
+      });
+      const latePut = adapter
+        .fetch(
+          new Request(slowUrl, {
+            method: "PUT",
+            body: delayed,
+            headers: {
+              "content-length": object.bytes,
+              "content-type": "application/octet-stream",
+              "x-amz-checksum-sha256": object.checksum,
+              "if-none-match": "*",
+            },
+          }),
+        )
+        .then(
+          () => false,
+          () => true,
+        );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await adapter.store.delete(slowKey);
+      finish();
+      assert(
+        (await latePut) && (await adapter.store.inspect(slowKey)) === null,
+        "Cleanup fences an already-streaming late PUT without a DB lock",
+      );
+      const marker = await env.CIPHERTEXT.head(slowKey);
+      assert(marker?.size === 0, "Retirement retains no ciphertext bytes");
       const badKey = `${key}/bad`;
       try {
         const badUrl = await adapter.store.upload(
@@ -171,7 +237,12 @@ export default {
       assert((await adapter.store.inspect(key)) === null, "Ciphertext cleanup");
       return Response.json({ passed });
     } finally {
-      await env.CIPHERTEXT.delete([key, `${key}/bad`]);
+      await env.CIPHERTEXT.delete([
+        key,
+        `${key}/bad`,
+        `${key}/race`,
+        `${key}/slow`,
+      ]);
     }
   },
 };

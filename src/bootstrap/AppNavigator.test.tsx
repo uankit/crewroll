@@ -9,7 +9,12 @@ jest.mock("../infrastructure/auth/useAccountAuthentication", () => ({
 }));
 
 const mockUseAppSession = jest.fn();
+let mockSetupRequired = false;
 const mockProtectedGuards: boolean[] = [];
+
+jest.mock("./AccountSetup", () => ({
+  useAccountSetup: () => ({ required: mockSetupRequired }),
+}));
 
 jest.mock("./AppSessionProvider", () => ({
   useAppSession: () => mockUseAppSession(),
@@ -48,6 +53,7 @@ function snapshot(phase: AppSessionPhase) {
 describe("AppNavigator", () => {
   beforeEach(() => {
     mockProtectedGuards.length = 0;
+    mockSetupRequired = false;
   });
 
   it.each([
@@ -84,6 +90,15 @@ describe("AppNavigator", () => {
     expect(screen.queryByText("screen:sign-in")).toBeNull();
     expect(screen.queryByText("screen:provision")).toBeNull();
     expect(screen.queryByText("screen:(app)")).toBeNull();
-    expect(mockProtectedGuards).toEqual([false, false, false]);
+    expect(mockProtectedGuards).toEqual([false, false, false, false]);
+  });
+
+  it("gates both trip paths behind account setup while keeping the root navigator", async () => {
+    mockSetupRequired = true;
+    mockUseAppSession.mockReturnValue({ snapshot: snapshot("READY_NO_TRIP") });
+    await render(<AppNavigator />);
+    expect(screen.getByText("screen:setup")).toBeOnTheScreen();
+    expect(screen.queryByText("screen:(app)")).toBeNull();
+    expect(screen.queryByText("screen:provision")).toBeNull();
   });
 });

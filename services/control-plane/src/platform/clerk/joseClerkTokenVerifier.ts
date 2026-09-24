@@ -85,19 +85,32 @@ export function createRemoteJoseClerkTokenVerifier({
   fetchImplementation,
   issuer,
 }: RemoteJoseClerkTokenVerifierOptions): ClerkTokenVerifier {
+  return createJoseClerkTokenVerifier({
+    authorizedParties,
+    clock,
+    issuer,
+    resolver: createRemoteClerkKeyResolver({
+      issuer,
+      ...(fetchImplementation ? { fetchImplementation } : {}),
+    }),
+  });
+}
+
+/** Only public signing keys are cached; every token is still verified anew. */
+export function createRemoteClerkKeyResolver({
+  issuer,
+  fetchImplementation,
+}: Pick<
+  RemoteJoseClerkTokenVerifierOptions,
+  "issuer" | "fetchImplementation"
+>): JWTVerifyGetKey {
   const jwksUrl = new URL("/.well-known/jwks.json", issuer);
-  const resolver = createRemoteJWKSet(jwksUrl, {
+  return createRemoteJWKSet(jwksUrl, {
     cacheMaxAge: 600_000,
     cooldownDuration: 30_000,
     timeoutDuration: 5_000,
     ...(fetchImplementation === undefined
       ? {}
       : { [customFetch]: fetchImplementation }),
-  });
-  return createJoseClerkTokenVerifier({
-    authorizedParties,
-    clock,
-    issuer,
-    resolver,
   });
 }

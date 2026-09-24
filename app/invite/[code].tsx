@@ -9,6 +9,7 @@ import {
 } from "@/bootstrap";
 import { AppText, LiveStatus, Screen, Stack, Surface } from "@/design-system";
 import { ProvisioningScreen } from "@/features/auth";
+import { useAccountSetup } from "@/bootstrap/AccountSetup";
 
 function inviteParam(value: string | string[] | undefined): string | null {
   return typeof value === "string" ? normalizeInviteCode(value) : null;
@@ -33,6 +34,7 @@ export default function InviteRoute() {
   const params = useLocalSearchParams<{ code?: string | string[] }>();
   const code = inviteParam(params.code);
   const { retry, snapshot } = useAppSession();
+  const setup = useAccountSetup();
 
   useEffect(() => {
     if (code !== null) {
@@ -43,6 +45,7 @@ export default function InviteRoute() {
   }, [code]);
 
   if (code === null) return <InvalidInvite />;
+  if (setup.required) return <Redirect href="/setup" withAnchor />;
 
   switch (snapshot.phase) {
     case "LOADING_FONTS_OR_CLERK":

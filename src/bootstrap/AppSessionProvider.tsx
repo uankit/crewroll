@@ -5,7 +5,12 @@ import type {
   TripTransferState,
 } from "@crewroll/contracts";
 import type { TripInvitePreview, TripView } from "../domain/trips/model";
-import * as Clipboard from "expo-clipboard";
+import { copyInviteCode } from "./copyInviteCode";
+import {
+  createTripGalleryCache,
+  type TripGalleryCache,
+} from "./tripGalleryCache";
+import type { PhotoReadinessOptions } from "./photoReadinessService";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 import {
@@ -37,6 +42,7 @@ import {
   clearForegroundQueryState,
   clearForegroundSessionState,
   tripQueryKey,
+  tripLibraryQueryKey,
 } from "./queryClient";
 import { normalizeInviteCode, sessionUiStore } from "./state/sessionUiStore";
 
@@ -143,9 +149,11 @@ export type ScopedTripSession = Readonly<{
   hydrateTrip(tripId: string): Promise<TripView>;
   requestJoin(inviteCode: string): Promise<JoinTripResult>;
   approveMember(tripId: string, membershipId: string): Promise<TripView>;
+  rejectMember?(tripId: string, membershipId: string): Promise<TripView>;
   setPhotoReadiness(
     tripId: string,
     requestPermission: boolean,
+    options?: PhotoReadinessOptions,
   ): Promise<
     Readonly<{
       permission: PhotoLibraryPermissionState;
@@ -208,6 +216,7 @@ export type TripSessionActions = Readonly<{
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
   join(inviteCode: string): Promise<JoinMutationResult>;
   approve(tripId: string, membershipId: string): Promise<TripMutationResult>;
+  reject(tripId: string, membershipId: string): Promise<TripMutationResult>;
   invalidatePhotoReadiness(): void;
   publishPhotoReadiness(
     tripId: string,
@@ -224,6 +233,7 @@ type QueryScope = Readonly<{
 }>;
 
 type AppSessionContextValue = Readonly<{
+  galleryCache: TripGalleryCache;
   snapshot: AppSessionSnapshot;
   ownerInviteCode: string | null;
   pendingTripPreview: TripInvitePreview | null;
@@ -311,6 +321,26 @@ function isAuthFailure(error: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function isTripAccessFailure(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : null;
+  return (
+    typeof code === "string" &&
+    [
+      "AUTH_REQUIRED",
+      "AUTH_INVALID",
+      "DEVICE_REVOKED",
+      "DEVICE_NOT_OWNED",
+      "DEVICE_NOT_PARTICIPANT",
+      "NOT_FOUND",
+      "KEY_ENVELOPE_INVALID",
+      "KEY_MATERIAL_LOST",
+    ].includes(code)
+  );
 }
 
 function isInvalidInviteFailure(error: unknown): boolean {
@@ -411,10 +441,12 @@ export function AppSessionProvider({
     Readonly<{ key: string; attempt: Promise<ProvisionedDevice> }> | undefined
   >(undefined);
   const scopedSession = useRef<ScopedTripSession | null>(null);
+  const galleryCacheRef = useRef<TripGalleryCache | null>(null);
   const currentDevice = useRef<ProvisionedDevice | null>(null);
 
   const clearAndSignOut = useCallback(async (): Promise<void> => {
     const teardownGeneration = ++runGeneration.current;
+    galleryCacheRef.current?.dispose();
     await runtime.pauseTransfers?.();
     if (teardownGeneration !== runGeneration.current) return;
     await clearForegroundSessionState(queryClient);
@@ -537,11 +569,20 @@ export function AppSessionProvider({
   const loadTripProjection = useCallback(
     async (tripId: string): Promise<TripView> => {
       const current = binding();
-      const observed = await observeOperation(
-        current.services.hydrateTrip(tripId),
-        current.generation,
-      );
-      return observed.trip;
+      try {
+        const observed = await observeOperation(
+          current.services.hydrateTrip(tripId),
+          current.generation,
+        );
+        return observed.trip;
+      } catch (error) {
+        if (
+          current.generation === runGeneration.current &&
+          isTripAccessFailure(error)
+        )
+          galleryCacheRef.current?.dispose();
+        throw error;
+      }
     },
     [binding, observeOperation],
   );
@@ -640,6 +681,19 @@ export function AppSessionProvider({
     [binding, observeOperation],
   );
 
+  const rejectMember = useCallback(
+    async (tripId: string, membershipId: string) => {
+      const current = binding();
+      if (!current.services.rejectMember) throw unavailableSession();
+      const observed = await observeOperation(
+        current.services.rejectMember(tripId, membershipId),
+        current.generation,
+      );
+      return observed.result;
+    },
+    [binding, observeOperation],
+  );
+
   const publishPhotoReadiness = useCallback(
     async (
       tripId: string,
@@ -648,55 +702,77 @@ export function AppSessionProvider({
       const current = binding();
       const expectedPublicOperationScope = publicOperationScope.current;
       const expectedReadinessGeneration = ++readinessGeneration.current;
-      setPhotoPermission({ kind: "CHECKING" });
-      setPhotoPermissionTripId(null);
       photoPermissionTripIdRef.current = null;
-      let resolvedPermission: PhotoLibraryPermissionState | null = null;
-      const observed = await observeOperation(
-        current.services
-          .setPhotoReadiness(tripId, requestPermission)
-          .then((result) => {
-            if (
-              expectedReadinessGeneration !== readinessGeneration.current ||
-              expectedPublicOperationScope !== publicOperationScope.current
-            ) {
-              throw unavailableSession();
-            }
-            resolvedPermission = result.permission;
-            return result.trip;
-          })
-          .catch((error: unknown) => {
-            if (
-              expectedReadinessGeneration === readinessGeneration.current &&
-              expectedPublicOperationScope === publicOperationScope.current
-            ) {
-              setPhotoPermission({ kind: "UNAVAILABLE" });
-              setPhotoPermissionTripId(tripId);
-            }
-            throw error;
-          }),
-        current.generation,
+      const knownTrip = queryClient.getQueryData<TripView>(
+        tripQueryKey(
+          current.queryScope.opaqueAccountScope,
+          current.queryScope.deviceId,
+          tripId,
+        ),
       );
-      if (current.generation !== runGeneration.current) {
-        throw unavailableSession();
+      let resolvedPermission: PhotoLibraryPermissionState | null = null;
+      const assertCurrent = () => {
+        if (
+          current.generation !== runGeneration.current ||
+          expectedReadinessGeneration !== readinessGeneration.current ||
+          expectedPublicOperationScope !== publicOperationScope.current
+        ) {
+          throw unavailableSession();
+        }
+      };
+      const acceptPermission = (permission: PhotoLibraryPermissionState) => {
+        assertCurrent();
+        resolvedPermission = permission;
+        if (permission.kind !== "FULL") galleryCacheRef.current?.clear();
+        setPhotoPermission(permission);
+        setPhotoPermissionTripId(tripId);
+      };
+      try {
+        const result = await current.services.setPhotoReadiness(
+          tripId,
+          requestPermission,
+          {
+            ...(knownTrip ? { knownTrip } : {}),
+            onPermission: acceptPermission,
+          },
+        );
+        if (resolvedPermission !== result.permission)
+          acceptPermission(result.permission);
+        else assertCurrent();
+        // An unchanged local check must not replay trip activation, replace a
+        // newer server projection, or read recovery storage again.
+        const mutation =
+          result.trip === knownTrip
+            ? { kind: "READY" as const, tripId }
+            : (
+                await observeOperation(
+                  Promise.resolve(result.trip),
+                  current.generation,
+                )
+              ).result;
+        assertCurrent();
+        photoPermissionTripIdRef.current =
+          result.permission.kind === "FULL" ? tripId : null;
+        return mutation;
+      } catch (error) {
+        assertCurrent();
+        if (resolvedPermission === null) {
+          galleryCacheRef.current?.clear();
+          setPhotoPermission({ kind: "UNAVAILABLE" });
+          setPhotoPermissionTripId(tripId);
+        }
+        if (isAuthFailure(error)) await clearAndSignOut();
+        throw error;
       }
-      const acceptedPermission =
-        resolvedPermission as PhotoLibraryPermissionState | null;
-      if (acceptedPermission === null) throw unavailableSession();
-      setPhotoPermission(acceptedPermission);
-      setPhotoPermissionTripId(tripId);
-      photoPermissionTripIdRef.current =
-        acceptedPermission.kind === "FULL" ? tripId : null;
-      return observed.result;
     },
-    [binding, observeOperation],
+    [binding, observeOperation, queryClient, clearAndSignOut],
   );
 
   const invalidatePhotoReadiness = useCallback(() => {
     ++readinessGeneration.current;
     photoPermissionTripIdRef.current = null;
-    setPhotoPermission({ kind: "CHECKING" });
-    setPhotoPermissionTripId(null);
+    // Keep the last confirmed view while the local permission is checked.
+    // Start remains fenced until that check and any readiness change finish.
   }, []);
 
   const openPhotoSettings = useCallback(async (): Promise<void> => {
@@ -758,6 +834,7 @@ export function AppSessionProvider({
       const value = await current.services.getTripLifecycle(tripId);
       if (current.generation !== runGeneration.current)
         throw unavailableSession();
+      if (value.participation === "LEFT") galleryCacheRef.current?.dispose();
       return value;
     },
     [binding],
@@ -769,6 +846,7 @@ export function AppSessionProvider({
       const value = await current.services.changeTripLifecycle(tripId, body);
       if (current.generation !== runGeneration.current)
         throw unavailableSession();
+      if (value.participation === "LEFT") galleryCacheRef.current?.dispose();
       return value;
     },
     [binding],
@@ -835,6 +913,7 @@ export function AppSessionProvider({
       getTripLifecycle,
       changeTripLifecycle,
       approve: approveMember,
+      reject: rejectMember,
       create: createTrip,
       invalidatePhotoReadiness,
       join: joinTrip,
@@ -853,6 +932,7 @@ export function AppSessionProvider({
       getTripLifecycle,
       changeTripLifecycle,
       approveMember,
+      rejectMember,
       createTrip,
       invalidatePhotoReadiness,
       joinTrip,
@@ -883,6 +963,7 @@ export function AppSessionProvider({
     ++runGeneration.current;
     ++readinessGeneration.current;
     photoPermissionTripIdRef.current = null;
+    galleryCacheRef.current?.clear();
   }, [renderedPublicOperationScope]);
 
   useEffect(() => {
@@ -1053,6 +1134,12 @@ export function AppSessionProvider({
           ) {
             const trips = await services.listTrips();
             if (!isCurrent()) return;
+            // Home uses this same fresh, account-scoped response. Do not make
+            // reopening wait for a second identical trip-library request.
+            queryClient.setQueryData(
+              tripLibraryQueryKey(opaqueAccountScope, device.deviceId),
+              trips,
+            );
             const currentTrip = trips.items.find(
               (t) => t.participation !== "LEFT" && t.onThisDevice,
             );
@@ -1414,14 +1501,24 @@ export function AppSessionProvider({
       ? ownerInvite.code
       : null;
   const ready = resolvedSnapshot.phase.startsWith("READY_");
+  const galleryTripId =
+    "tripId" in resolvedSnapshot ? resolvedSnapshot.tripId : "";
+  const galleryCache = useMemo(
+    () => createTripGalleryCache(galleryTripId, publishedQueryScope),
+    [galleryTripId, publishedQueryScope],
+  );
+  useLayoutEffect(() => {
+    galleryCacheRef.current = galleryCache;
+    return () => galleryCache.clear();
+  }, [galleryCache]);
   const copyOwnerInvite = useCallback(async (): Promise<void> => {
     if (visibleOwnerInviteCode === null) throw new Error("Invite unavailable");
-    const copied = await Clipboard.setStringAsync(visibleOwnerInviteCode);
-    if (!copied) throw new Error("Clipboard unavailable");
+    await copyInviteCode(visibleOwnerInviteCode);
   }, [visibleOwnerInviteCode]);
 
   const value = useMemo<AppSessionContextValue>(
     () => ({
+      galleryCache,
       actions: ready ? actions : null,
       activationFailureTripId: ready ? activationFailureTripId : null,
       confirmPendingInvite,
@@ -1451,6 +1548,7 @@ export function AppSessionProvider({
       copyOwnerInvite,
       photoPermission,
       photoPermissionTripId,
+      galleryCache,
       publishedQueryScope,
       ready,
       resolvedSnapshot,
@@ -1509,6 +1607,7 @@ export function useTripProjection(
   const projection = useQuery<TripView>({
     queryKey: tripQueryKey(scope.opaqueAccountScope, scope.deviceId, tripId),
     queryFn: () => session.loadTripProjection(tripId),
+    staleTime: LOBBY_POLL_INTERVAL_MS,
     refetchInterval: (query) =>
       pollLobby &&
       ["LOBBY", "ACTIVE", "ENDING"].includes(query.state.data?.status ?? "")
@@ -1523,7 +1622,9 @@ export function useTripProjection(
   }, [projection]);
 
   return Object.freeze({
-    failed: projection.isError,
+    failed:
+      projection.isError &&
+      (projection.data === undefined || isTripAccessFailure(projection.error)),
     loading: projection.isPending,
     refresh,
     trip: projection.data ?? null,

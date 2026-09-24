@@ -9,6 +9,7 @@ export type MemberAvatarProps = {
   readonly displayName: string;
   readonly style?: StyleProp<ViewStyle>;
   readonly testID?: string;
+  readonly muted?: boolean;
 };
 
 function memberInitials(displayName: string): string {
@@ -25,6 +26,7 @@ export function MemberAvatar({
   displayName,
   style,
   testID,
+  muted = false,
 }: MemberAvatarProps) {
   const colors = useCrewRollTheme();
 
@@ -33,10 +35,18 @@ export function MemberAvatar({
       accessibilityLabel={displayName}
       accessibilityRole="image"
       accessible
-      style={[styles.root, { backgroundColor: colors.action }, style]}
+      style={[
+        styles.root,
+        { backgroundColor: muted ? colors.surfaceMuted : colors.action },
+        style,
+      ]}
       testID={testID}
     >
-      <AppText aria-hidden tone="onAction" variant="bodyStrong">
+      <AppText
+        aria-hidden
+        tone={muted ? "primary" : "onAction"}
+        variant="bodyStrong"
+      >
         {memberInitials(displayName)}
       </AppText>
     </View>
@@ -46,6 +56,10 @@ export function MemberAvatar({
 const styles = StyleSheet.create({
   root: {
     alignItems: "center",
+    alignSelf: "center",
+    flexShrink: 0,
+    width: spacing.xxxl,
+    height: spacing.xxxl,
     borderRadius: radius.pill,
     justifyContent: "center",
     minHeight: spacing.xxxl,

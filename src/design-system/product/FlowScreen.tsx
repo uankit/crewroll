@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 
 import { AppText, Screen } from "../primitives";
+import type { ScrollRestoration } from "../primitives/Screen";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 
 /** Shared safe-area, keyboard and spacing rules from the approved onboarding. */
@@ -20,6 +21,7 @@ export function FlowScreen({
   centerContent = false,
   fillContent = false,
   compact = false,
+  scrollRestoration,
 }: Readonly<{
   children?: ReactNode;
   footer?: ReactNode;
@@ -33,11 +35,16 @@ export function FlowScreen({
   centerContent?: boolean;
   fillContent?: boolean;
   compact?: boolean;
+  scrollRestoration?: ScrollRestoration;
 }>) {
   const theme = useCrewRollTheme();
   const { width } = useWindowDimensions();
   return (
-    <Screen {...(testID ? { testID } : {})} contentStyle={styles.content}>
+    <Screen
+      {...(testID ? { testID } : {})}
+      contentStyle={styles.content}
+      {...(scrollRestoration ? { scrollRestoration } : {})}
+    >
       <View
         style={[
           styles.main,

@@ -911,6 +911,12 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
+    await migrateDown(db); // 009
+    const cleanupClaimsAfterDown = await sql<{ table_name: string }>`
+      select table_name from information_schema.tables
+      where table_schema = 'public' and table_name = 'media_cleanup_claims'
+    `.execute(db);
+    expect(cleanupClaimsAfterDown.rows).toEqual([]);
     await migrateDown(db); // 008
     await migrateDown(db); // 007
     await migrateDown(db); // 006

@@ -615,6 +615,7 @@ async function reauthorizeForegroundActor(
     .where("id", "=", actor.userId)
     .where("clerk_subject", "=", actor.clerkSubject)
     .forUpdate()
+    .noWait()
     .executeTakeFirst();
   if (user === undefined || user.deleted_at !== null) {
     return { kind: "AUTH_INVALID" };
@@ -624,6 +625,7 @@ async function reauthorizeForegroundActor(
     .select(["id", "user_id", "revoked_at"])
     .where("id", "=", actor.deviceId)
     .forUpdate()
+    .noWait()
     .executeTakeFirst();
   if (device === undefined || device.user_id !== actor.userId) {
     return { kind: "DEVICE_NOT_OWNED" };
@@ -860,6 +862,7 @@ function transactionAdapter(
         .select(deviceSelect())
         .where("id", "=", deviceId)
         .forUpdate()
+        .noWait()
         .executeTakeFirst();
       return row === undefined ? null : mapDevice(row);
     },
@@ -872,6 +875,7 @@ function transactionAdapter(
         .where("id", "in", uniqueIds)
         .orderBy("id")
         .forUpdate()
+        .noWait()
         .execute();
       return rows.map(mapDevice);
     },
@@ -1184,23 +1188,45 @@ export function createKyselyTripUnitOfWork(
       return readProjection(database, actor, tripId);
     },
     async run(operation) {
-      return database.transaction().execute(async (transaction) => {
-        const scope = callbackTransactionScope(transactionAdapter(transaction));
-        let result;
+      // Commands lock the trip before reauthorizing/locking its participants.
+      // Media/lifecycle work can already hold a participant before taking the
+      // trip. NOWAIT above releases this entire DB-only transaction instead of
+      // forming a wait cycle. Retry only PostgreSQL-confirmed rollbacks, never
+      // an uncertain commit/network failure; idempotency still owns replays.
+      for (let attempt = 0; ; attempt++) {
         try {
-          result = await operation(scope.transaction);
+          return await database.transaction().execute(async (transaction) => {
+            const scope = callbackTransactionScope(
+              transactionAdapter(transaction),
+            );
+            let result;
+            try {
+              result = await operation(scope.transaction);
+            } catch (error) {
+              scope.invalidate();
+              await scope.settlePending();
+              throw error;
+            }
+            scope.invalidate();
+            if (scope.hasPending()) {
+              await scope.settlePending();
+              throw new Error(UNSETTLED_TRANSACTION_MESSAGE);
+            }
+            return result;
+          });
         } catch (error) {
-          scope.invalidate();
-          await scope.settlePending();
-          throw error;
+          const code =
+            error instanceof Error && "code" in error ? error.code : null;
+          if (
+            attempt >= 4 ||
+            !["55P03", "40P01", "40001"].includes(String(code))
+          )
+            throw error;
+          await new Promise((resolve) =>
+            setTimeout(resolve, 20 * 2 ** attempt + Math.random() * 15),
+          );
         }
-        scope.invalidate();
-        if (scope.hasPending()) {
-          await scope.settlePending();
-          throw new Error(UNSETTLED_TRANSACTION_MESSAGE);
-        }
-        return result;
-      });
+      }
     },
   };
 }

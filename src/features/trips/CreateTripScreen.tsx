@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
+import { Keyboard } from "react-native";
 
-import { AppText, Button, FlowScreen, TextField } from "../../design-system";
+import { Button, FlowScreen, TextField } from "../../design-system";
 import {
   createDefaultTripEnd,
   TripEndField,
@@ -75,6 +76,7 @@ function CreateTripForm({
     if (nextNameError !== undefined || nextEndError !== undefined) return;
 
     createRequested.current = true;
+    Keyboard.dismiss();
     onCreate({ endsAt: endsAt.toISOString(), name: trimmedName });
   }
 
@@ -86,20 +88,7 @@ function CreateTripForm({
       description="Start when you’re ready. Choose when sharing ends."
       {...(submitting ? {} : { onBack: onCancel })}
       footer={
-        <>
-          <Button
-            label="Create trip"
-            loading={submitting}
-            onPress={createTrip}
-          />
-          <AppText
-            tone="secondary"
-            variant="caption"
-            style={{ textAlign: "center" }}
-          >
-            Photo access comes next.
-          </AppText>
-        </>
+        <Button label="Create trip" loading={submitting} onPress={createTrip} />
       }
     >
       <TextField
@@ -109,6 +98,8 @@ function CreateTripForm({
         disabled={submitting}
         label="Trip name"
         placeholder="Goa weekend"
+        returnKeyType="done"
+        onSubmitEditing={Keyboard.dismiss}
         onChangeText={(value) => {
           createRequested.current = false;
           setName(value);

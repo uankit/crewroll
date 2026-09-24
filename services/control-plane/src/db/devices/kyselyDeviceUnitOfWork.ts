@@ -186,23 +186,36 @@ function transactionAdapter(
       return row === undefined ? null : mapDevice(row);
     },
     async findDeviceByBackgroundCredentialHash(credentialHash) {
+      // Resolve only the owner first. Locking a devices/users join lets the
+      // query planner choose device-first, opposite to registration/media work.
+      const candidate = await transaction
+        .selectFrom("devices")
+        .select(["id", "user_id"])
+        .where("background_credential_hash", "=", Buffer.from(credentialHash))
+        .executeTakeFirst();
+      if (!candidate) return null;
+      const user = await transaction
+        .selectFrom("users")
+        .select("deleted_at")
+        .where("id", "=", candidate.user_id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!user) return null;
+      // Recheck the credential after acquiring locks: it may have been rotated
+      // or revoked while the candidate read waited for its owner.
       const row = await transaction
         .selectFrom("devices")
-        .innerJoin("users", "users.id", "devices.user_id")
-        .selectAll("devices")
-        .select("users.deleted_at as user_deleted_at")
-        .where(
-          "devices.background_credential_hash",
-          "=",
-          Buffer.from(credentialHash),
-        )
+        .selectAll()
+        .where("id", "=", candidate.id)
+        .where("user_id", "=", candidate.user_id)
+        .where("background_credential_hash", "=", Buffer.from(credentialHash))
         .forUpdate()
         .executeTakeFirst();
       return row === undefined
         ? null
         : {
             device: mapDevice(row),
-            userDeleted: row.user_deleted_at !== null,
+            userDeleted: user.deleted_at !== null,
           };
     },
     async findDeviceByOwnerAndId(userId, deviceId) {

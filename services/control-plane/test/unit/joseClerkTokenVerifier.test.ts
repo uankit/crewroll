@@ -2,7 +2,10 @@ import { createLocalJWKSet, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
 
 import { DomainError } from "../../src/shared/errors/domainError.js";
-import { createJoseClerkTokenVerifier } from "../../src/platform/clerk/joseClerkTokenVerifier.js";
+import {
+  createJoseClerkTokenVerifier,
+  createRemoteClerkKeyResolver,
+} from "../../src/platform/clerk/joseClerkTokenVerifier.js";
 import { createClerkJwtKey, signClerkJwt } from "../support/clerkJwt.js";
 
 const issuer = "https://clerk.example.test";
@@ -18,6 +21,56 @@ function expectAuthKind(
 }
 
 describe("createJoseClerkTokenVerifier", () => {
+  it("reuses public keys across request verifiers, rejects invalid tokens, and refreshes expired keys", async () => {
+    const key = await createClerkJwtKey("key-a");
+    const fetchImplementation = vi.fn(() =>
+      Promise.resolve(Response.json({ keys: [key.publicJwk] })),
+    );
+    const resolver = createRemoteClerkKeyResolver({
+      issuer,
+      fetchImplementation,
+    });
+    const verifier = () =>
+      createJoseClerkTokenVerifier({
+        authorizedParties: [],
+        clock: { now: () => new Date() },
+        issuer,
+        resolver,
+      });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    try {
+      const token = await signClerkJwt({ issuer, key, nowSeconds });
+      await expect(verifier().verify(`Bearer ${token}`)).resolves.toMatchObject(
+        { clerkSubject: "user_crewroll_subject" },
+      );
+      await expect(verifier().verify(`Bearer ${token}`)).resolves.toBeDefined();
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+      const wrongIssuer = await signClerkJwt({
+        issuer,
+        key,
+        nowSeconds,
+        claims: { iss: "https://wrong.example.test" },
+      });
+      await expect(
+        verifier().verify(`Bearer ${wrongIssuer}`),
+      ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
+      vi.setSystemTime(new Date(now.getTime() + 601_000));
+      await expect(verifier().verify(`Bearer ${token}`)).rejects.toMatchObject({
+        kind: "AUTH_INVALID",
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      const fresh = await signClerkJwt({
+        issuer,
+        key,
+        nowSeconds: nowSeconds + 601,
+      });
+      await expect(verifier().verify(`Bearer ${fresh}`)).resolves.toBeDefined();
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("accepts an ordinary RS256 session JWT with exact issuer and no audience", async () => {
     const key = await createClerkJwtKey("key-a");
     const verifier = createJoseClerkTokenVerifier({

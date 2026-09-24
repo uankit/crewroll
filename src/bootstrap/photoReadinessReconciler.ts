@@ -46,7 +46,16 @@ export function createPhotoReadinessReconciler() {
     if (
       active?.actions === actions &&
       active.tripId === tripId &&
-      pending === null
+      pending === null &&
+      (!requestPermission || active.requestPermission)
+    )
+      return drain;
+    // A user tap must survive an earlier passive check and any foreground
+    // events that arrive while that tap is queued.
+    if (
+      pending?.actions === actions &&
+      pending.tripId === tripId &&
+      (!requestPermission || pending.requestPermission)
     )
       return drain;
     actions.invalidatePhotoReadiness();

@@ -15,6 +15,7 @@ export const requiredOperations = [
   "getTripLifecycle",
   "changeTripLifecycle",
   "approveJoinRequest",
+  "rejectJoinRequest",
   "createJoinRequest",
   "createTrip",
   "getTrip",
@@ -135,6 +136,15 @@ const operationExpectations = [
     request: "ApproveJoinRequestBody",
     response: "MembershipResponse",
     successStatus: "200",
+  },
+  {
+    method: "delete",
+    operationId: "rejectJoinRequest",
+    parameters: [deviceHeader(), commandHeader(), tripPath(), membershipPath()],
+    path: "/v1/trips/{tripId}/join-requests/{membershipId}",
+    request: null,
+    response: null,
+    successStatus: "204",
   },
   {
     method: "post",
@@ -345,15 +355,24 @@ function validateResponses(operation, expected) {
     throw new Error(`${expected.operationId} response statuses drifted`);
   }
 
-  validateContent(
-    requireObject(
+  if (expected.response === null) {
+    const success = requireObject(
       responses[expected.successStatus],
       `${expected.operationId} response ${expected.successStatus}`,
-    ).content,
-    "application/json",
-    expected.response,
-    `${expected.operationId} response ${expected.successStatus}`,
-  );
+    );
+    if (success.content !== undefined)
+      throw new Error(`${expected.operationId} must return no content`);
+  } else {
+    validateContent(
+      requireObject(
+        responses[expected.successStatus],
+        `${expected.operationId} response ${expected.successStatus}`,
+      ).content,
+      "application/json",
+      expected.response,
+      `${expected.operationId} response ${expected.successStatus}`,
+    );
+  }
 
   for (const status of PROBLEM_STATUSES) {
     validateContent(
@@ -479,9 +498,13 @@ function renderParameters(operation, lines) {
 function renderResponses(operation, lines) {
   lines.push("      responses: {");
   lines.push(`        ${operation.successStatus}: {`);
-  lines.push("          content: {");
-  lines.push(`            "application/json": ${operation.response};`);
-  lines.push("          };");
+  if (operation.response === null) {
+    lines.push("          content?: never;");
+  } else {
+    lines.push("          content: {");
+    lines.push(`            "application/json": ${operation.response};`);
+    lines.push("          };");
+  }
   lines.push("        };");
   for (const status of PROBLEM_STATUSES) {
     lines.push(`        ${status}: {`);
@@ -568,7 +591,7 @@ function renderGeneratedTypes() {
     if (operation.request !== null) {
       lines.push(`    request: ${operation.request};`);
     }
-    lines.push(`    response: ${operation.response};`);
+    lines.push(`    response: ${operation.response ?? "void"};`);
     lines.push("  };");
   }
 

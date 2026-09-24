@@ -20,10 +20,10 @@ import {
   type TripRecoveryScope,
 } from "../application/trips/ports";
 import { createSetTripReadiness } from "../application/trips/SetTripReadiness";
+import { createPhotoReadinessService } from "./photoReadinessService";
 import { createStartAndActivateTrip } from "../application/trips/StartAndActivateTrip";
 import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvider";
-import { BrandLoading, Screen } from "../design-system";
-import { ProfileScreen } from "../features/auth/ProfileScreen";
+import { AccountSetupProvider } from "./AccountSetup";
 import { useProfileCompletion } from "../infrastructure/auth/useProfileCompletion";
 import {
   ClerkSessionTokenSource,
@@ -288,6 +288,15 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
           await approveMember.approve(candidate, membershipId);
           return hydrateTrip.hydrate(tripId);
         },
+        async rejectMember(tripId: string, membershipId: string) {
+          await mobileDependencies.tripApi.rejectMember(
+            device.deviceId,
+            await createUuidV4(random),
+            tripId,
+            membershipId,
+          );
+          return hydrateTrip.hydrate(tripId);
+        },
         createTrip: createTrip.create,
         reconcileUnknownCreate: createTrip.reconcileUnknownCreate,
         replayUnknownJoin: joinTrip.replayUnknownJoin,
@@ -305,17 +314,11 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
             ? readiness.replayPendingMutation()
             : startTrip.replayPendingMutation();
         },
-        async setPhotoReadiness(tripId: string, requestPermission: boolean) {
-          const permission = requestPermission
-            ? await photoPermission.request()
-            : await photoPermission.read();
-          const current = await hydrateTrip.hydrate(tripId);
-          const trip = await readiness.reconcile(
-            current,
-            permission.fullPhotoLibraryAccess,
-          );
-          return Object.freeze({ permission, trip });
-        },
+        setPhotoReadiness: createPhotoReadinessService({
+          photoPermission,
+          hydrate: hydrateTrip.hydrate,
+          reconcile: readiness.reconcile,
+        }),
         startTrip: startTrip.start,
       });
     },
@@ -324,6 +327,7 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
   return Object.freeze({
     developmentCut,
     runtime,
+    photoPermission,
     profileApi: mobileDependencies.profileApi,
   });
 }
@@ -393,24 +397,15 @@ function ProductionSessionBridge({
         queryClient={queryClient}
         runtime={composition.runtime}
       >
-        {auth.isSignedIn && !profileReady ? (
-          !fontsReady || profile.checking ? (
-            <Screen scroll={false}>
-              <BrandLoading />
-            </Screen>
-          ) : (
-            <ProfileScreen
-              name={profile.name}
-              setName={profile.setName}
-              busy={profile.busy}
-              error={profile.error}
-              onSave={() => void profile.save()}
-              onUseAnotherAccount={() => void signOut()}
-            />
-          )
-        ) : (
-          children
-        )}
+        <AccountSetupProvider
+          accountId={fontsReady && auth.isSignedIn ? auth.userId : null}
+          profile={profile}
+          scope={env.apiUrl}
+          permission={composition.photoPermission}
+          onUseAnotherAccount={() => void signOut()}
+        >
+          {children}
+        </AccountSetupProvider>
       </AppSessionProvider>
     </DevelopmentAcceptanceProvider>
   );

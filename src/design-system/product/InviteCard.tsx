@@ -3,7 +3,6 @@ import { StyleSheet, View } from "react-native";
 import { AppText, Button, Stack } from "../primitives";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
 import { spacing } from "../tokens/spacing";
-import { radius } from "../tokens/radius";
 export type InviteCardProps = Readonly<{
   code: string;
   onCopy: () => Promise<void>;
@@ -28,17 +27,16 @@ export function InviteCard({ code, onCopy }: InviteCardProps) {
     }
   }
   return (
-    <Stack
-      gap="xs"
-      style={[styles.card, { backgroundColor: theme.accentSurface }]}
-    >
-      <AppText variant="eyebrow" tone="action">
-        INVITE CODE
-      </AppText>
+    <Stack gap="xs" style={[styles.card, { borderColor: theme.border }]}>
       <View style={styles.row}>
-        <AppText variant="title2" selectable style={{ flexShrink: 1 }}>
-          {code}
-        </AppText>
+        <Stack gap="xxs" style={{ flex: 1 }}>
+          <AppText variant="caption" tone="secondary">
+            Invite code
+          </AppText>
+          <AppText variant="headline" selectable>
+            {code}
+          </AppText>
+        </Stack>
         <Button
           label={state === "copied" ? "Copied" : "Copy code"}
           variant="text"
@@ -46,9 +44,6 @@ export function InviteCard({ code, onCopy }: InviteCardProps) {
           onPress={() => void copy()}
         />
       </View>
-      <AppText variant="caption" tone="secondary">
-        Only people you approve can join.
-      </AppText>
       {state === "failed" ? (
         <AppText tone="critical" accessibilityRole="alert">
           The code couldn’t be copied. Try again.
@@ -58,7 +53,11 @@ export function InviteCard({ code, onCopy }: InviteCardProps) {
   );
 }
 const styles = StyleSheet.create({
-  card: { padding: spacing.md, borderRadius: radius.md },
+  card: {
+    paddingVertical: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",

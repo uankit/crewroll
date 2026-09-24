@@ -15,7 +15,7 @@ export {
 } from "./PressableRow";
 export { ProgressBar, type ProgressBarProps } from "./ProgressBar";
 export { ProgressRing, type ProgressRingProps } from "./ProgressRing";
-export { Screen, type ScreenProps } from "./Screen";
+export { Screen, type ScreenProps, type ScrollRestoration } from "./Screen";
 export { Sheet, type SheetProps } from "./Sheet";
 export { Skeleton, type SkeletonProps, type SkeletonWidth } from "./Skeleton";
 export {
@@ -27,3 +27,4 @@ export {
 } from "./Stack";
 export { Surface, type SurfaceProps } from "./Surface";
 export { TextField, type TextFieldProps } from "./TextField";
+export { AppIcon } from "./AppIcon";

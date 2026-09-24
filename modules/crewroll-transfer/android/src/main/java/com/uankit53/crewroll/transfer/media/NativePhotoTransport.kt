@@ -7,7 +7,11 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import org.json.JSONObject
+
+class PhotoNetworkUnavailable : java.io.IOException("Network unavailable")
 
 class TransferHttpException(val status: Int, val authenticated: Boolean) : RuntimeException("photo request failed")
 interface NativePhotoTransportPort {
@@ -18,11 +22,15 @@ interface NativePhotoTransportPort {
 }
 
 class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePhotoTransportPort {
+    companion object {
+        private val deadlines = ScheduledThreadPoolExecutor(1) { task -> Thread(task, "CrewRollNetworkDeadline").apply { isDaemon = true } }.apply { removeOnCancelPolicy = true }
+    }
     @Volatile private var cancelled = false
     @Volatile private var active: HttpURLConnection? = null
     override fun cancel() { cancelled = true; active?.disconnect() }
     private fun connection(raw: String): HttpURLConnection {
-        if (cancelled || !networkAllowed()) throw CancellationException()
+        if (cancelled) throw CancellationException()
+        if (!networkAllowed()) throw PhotoNetworkUnavailable()
         val uri = URI(raw)
         require(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null && uri.fragment == null)
         return (uri.toURL().openConnection() as HttpURLConnection).also {
@@ -39,6 +47,7 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
         val base = URI(context.session.apiBaseUrl); val uri = base.resolve(path)
         require(base.scheme == "https" && uri.scheme == base.scheme && uri.host == base.host && uri.port == base.port)
         val connection = connection(uri.toString())
+        val deadline = deadlines.schedule({ connection.disconnect() }, 30, TimeUnit.SECONDS)
         try {
             connection.requestMethod = method
             connection.setRequestProperty("Authorization", "Bearer " + String(context.session.backgroundBearer, Charsets.US_ASCII))
@@ -56,23 +65,25 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
                 output.toByteArray()
             }
             return JSONObject(String(bytes, Charsets.UTF_8))
-        } finally { connection.disconnect(); active = null }
+        } finally { deadline.cancel(false); connection.disconnect(); active = null }
     }
     override fun upload(url: String, headers: Map<String, String>, source: File): String {
         require(headers.keys == setOf("content-length", "content-type", "x-amz-checksum-sha256", "if-none-match"))
         require(headers["content-type"] == "application/octet-stream" && headers["if-none-match"] == "*" && headers["content-length"] == source.length().toString())
         val connection = connection(url)
+        val deadline = deadlines.schedule({ connection.disconnect() }, 180, TimeUnit.SECONDS)
         try {
             connection.requestMethod = "PUT"; connection.doOutput = true; connection.setFixedLengthStreamingMode(source.length())
             headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
             connection.outputStream.use { output -> source.inputStream().use { it.copyTo(output, 65_536) } }
             checkResponse(connection, false)
             return requireNotNull(connection.getHeaderField("ETag")).also { require(it.length in 1..256) }
-        } finally { connection.disconnect(); active = null }
+        } finally { deadline.cancel(false); connection.disconnect(); active = null }
     }
     override fun download(url: String, destination: File, expectedBytes: Long) {
         require(expectedBytes in 45..52_428_800)
         val connection = connection(url); var created = false; var complete = false
+        val deadline = deadlines.schedule({ connection.disconnect() }, 180, TimeUnit.SECONDS)
         try {
             checkResponse(connection, false)
             check(destination.createNewFile()); created = true
@@ -86,6 +97,6 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
                 require(total == expectedBytes); output.fd.sync()
             } }
             complete = true
-        } finally { connection.disconnect(); active = null; if (created && !complete) destination.delete() }
+        } finally { deadline.cancel(false); connection.disconnect(); active = null; if (created && !complete) destination.delete() }
     }
 }

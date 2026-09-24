@@ -1,6 +1,48 @@
 # CrewRoll TestFlight
 
-## Latest refactor beta — September 12, 2026
+## Latest UI and trip lifecycle beta — September 16, 2026
+
+**1.0.2 (15)** is available to the existing **Team (Expo)** internal testers.
+At **23:47:18 India**, Apple's API confirmed processing `VALID`, internal state
+`IN_BETA_TESTING`, `autoNotifyEnabled = true`, and explicit membership of build 15
+in the existing group. This confirms distribution and enabled notifications;
+individual email delivery and physical installation are not verified.
+
+- [App Store Connect build 1.0.2 (15)](https://appstoreconnect.apple.com/teams/51807f83-da72-480a-8be9-5f4c5d4d55c7/apps/6797897853/testflight/ios/01dc0bd9-23b9-432c-8977-fe3c345a76d7)
+- [EAS device build dd71ee91](https://expo.dev/accounts/uankit53/projects/AirMesh/builds/dd71ee91-f7f6-49ad-9a2f-75600973f731)
+- [Successful EAS submission 38a4ad27](https://expo.dev/accounts/uankit53/projects/AirMesh/submissions/38a4ad27-367b-4068-99c6-5500f9a856fb)
+
+The tested working tree includes the new onboarding, trip library, gallery,
+notifications, personal pause, host ending, and native final-sync acknowledgement
+fixes. EAS uploaded the working tree, including its uncommitted changes; the
+displayed base commit `6bd0173462156a2af6f88fa09421baf4d29c89a2` is not the complete
+release diff. The source manifest is `.expo/release-1.0.2-manifest.json`.
+
+The signed IPA passed deep/strict verification. Its actual bundle is
+`app.crewroll.mobile`, version `1.0.2`, build `15`, platform `iPhoneOS`, Apple team
+`639SF375P5`, with App Store provisioning, production push, beta reporting, and
+`get-task-allow = false`. The embedded runtime is `1.0.2`, channel `testflight`;
+the latest Notifications, Start a new trip, and Pause my sharing UI is present.
+The version bump isolates these native changes from `1.0.1` OTA updates.
+
+IPA SHA-256:
+`f578de0ad352d737d60f9f46b41d3b38f77b2e91a54632c3417a86cf929a9526`.
+Evidence is in `.expo/release-1.0.2-ios-verification.json`,
+`.expo/release-1.0.2-ios-submission.json`, and `.expo/release-apple-status.json`.
+English TestFlight notes were saved and read back through Apple's API.
+
+Release checks passed: TypeScript, lint, production bundle resolution on both
+platforms, 760 UI tests (one existing skip), and 13 identity/configuration tests.
+The immediately preceding sync/end fix also passed 13 Swift transfer tests,
+14 Kotlin transfer tests, and 34 PostgreSQL media/lifecycle integration tests.
+
+The account holder requested the existing TestFlight testers and notifications.
+No external/public tester group or App Store review was created. Earlier builds,
+tester membership, signing credentials, and hosted data are preserved. The
+existing beta authentication environment and encryption declaration are unchanged.
+Update through TestFlight without uninstalling to retain sign-in and trip data.
+
+## Refactor beta — September 12, 2026
 
 The account holder requested the latest iPhone build while preserving the working
 **1.0.1 (13)**. The existing tested working tree was built with the pinned EAS CLI
@@ -163,10 +205,10 @@ TestFlight testers do not need registered device UDIDs.
 
 ## Release configuration
 
-Version `1.0.1` uses the tested speed-MVP code and existing hosted API and Clerk
+Version `1.0.2` uses the tested onboarding/lifecycle code and existing hosted API and Clerk
 development environment. The profile deliberately uses EAS `preview` environment
 variables with a separate `testflight` update channel. Runtime version remains
-the app version, isolating this build from old `0.2.0` updates. This is a beta,
+the app version, isolating this build from older `1.0.1` and `0.2.0` updates. This is a beta,
 not a public App Store release or physical acceptance sign-off.
 
 ```sh
@@ -190,16 +232,16 @@ from assigning a build to the existing internal group.
 ## First test
 
 1. Open TestFlight with the Apple account invited to **Team (Expo)**. Open
-   **CrewRoll: Shared Trip Photos**, then install/update to **1.0.1 (13)**.
+   **CrewRoll: Shared Trip Photos**, then install/update to **1.0.2 (15)**.
    Internal availability was verified above; physical installation is still the
-   tester's next step. Do not mistake the older build 11 for this replacement.
+   tester's next step. Select build 15 when checking this release.
 2. Use a distinct verified email-code account for each phone inside CrewRoll.
 3. Follow [the five-phone speed and recovery checklist](speed-mvp.md#first-five-phone-test).
 
 Additional non-team testers should use an external TestFlight group, subject to
 Apple's beta review. Do not grant App Store Connect administrative access merely
 to let friends test. Android testers use the APK in
-[the startup/recovery runbook](startup-crash-2026-09-10.md#distribution).
+[the current beta release](beta-1.0.2-2026-09-16.md#android).
 
 ## Historical build 11 record
 

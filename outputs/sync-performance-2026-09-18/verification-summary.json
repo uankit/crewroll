@@ -1,0 +1,56 @@
+{
+  "date": "2026-09-18",
+  "automated": {
+    "postgres_media_integration": {
+      "passed": 41
+    },
+    "local_workerd": {
+      "passed": 46
+    },
+    "native_kotlin": {
+      "passed": 61
+    },
+    "native_swift": {
+      "passed": 54,
+      "latest_log": "/tmp/crewroll-swift-discovery-final.log"
+    },
+    "focused_ui_api_navigation": {
+      "passed": 77
+    },
+    "postgres_concurrency_and_media": {
+      "passed": 69,
+      "suites": 4,
+      "includes_media_tests": true,
+      "log": "/tmp/crewroll-db-lock-final.log"
+    },
+    "foreground_trip_and_background_auth_unit": {
+      "passed": 107,
+      "suites": 2,
+      "log": "/tmp/crewroll-lock-unit.log"
+    }
+  },
+  "builds": {
+    "ios_simulator_app": "BUILD SUCCEEDED after cache, preview recovery and cross-account discovery fixes",
+    "android_native_module": "BUILD SUCCESSFUL after preview recovery changes",
+    "ios_log": "/tmp/crewroll-ios-discovery-final.log"
+  },
+  "static_checks": {
+    "root_typescript": "passed",
+    "worker_typescript": "passed",
+    "control_plane_lint": "passed",
+    "changed_frontend_lint": "passed"
+  },
+  "scope": "Local implementation and isolated test environment; no production deployment or physical-phone acceptance.",
+  "emulator": {
+    "platform": "iOS 26.5 simulator",
+    "final_device_count": 3,
+    "final_asset_count": 4,
+    "known_pre_fix_duplicate_assets": 1,
+    "pending_eligible_deliveries": 0,
+    "post_fix_account_switch_extra_uploads": 0,
+    "native_gallery_blockers": 0,
+    "late_join_policy": "approval onward",
+    "left_open": "host gallery",
+    "cold_auth_startup": "One post-boot launch needed reopening; not conclusively diagnosed."
+  }
+}

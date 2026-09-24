@@ -50,6 +50,12 @@ export class CrewRollTransportProblem extends Error {
 
 export type CrewRollApi = DeviceRegistrationPort &
   TripApiPort & {
+    rejectMember(
+      deviceId: string,
+      commandId: string,
+      tripId: string,
+      membershipId: string,
+    ): Promise<void>;
     getTripContinuity(
       deviceId: string,
       tripId: string,
@@ -520,6 +526,28 @@ class OpenApiCrewRollApi implements CrewRollApi {
     );
   }
 
+  async rejectMember(
+    deviceId: string,
+    commandId: string,
+    tripId: string,
+    membershipId: string,
+  ): Promise<void> {
+    await this.request<true>(async () => {
+      const result = await this.client.DELETE(
+        "/v1/trips/{tripId}/join-requests/{membershipId}",
+        {
+          params: {
+            header: commandHeaders(deviceId, commandId),
+            path: { tripId, membershipId },
+          },
+        },
+      );
+      if (result.response.status === 204)
+        return { data: true, response: result.response };
+      throw problemFrom(result.error, result.response.status);
+    });
+  }
+
   async startTrip(
     deviceId: string,
     commandId: string,
@@ -599,44 +627,84 @@ export function createCrewRollApi(
     apiBaseUrl: string;
     fetch: typeof fetch;
     sessionTokenSource: SessionTokenSource;
+    timeoutMs?: number;
   }>,
 ): CrewRollApi {
+  const timeoutMs = input.timeoutMs ?? 20_000;
+  const bounded = async <T>(
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        work(controller.signal),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new CrewRollTransportProblem());
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const refreshingTokens = new Map<string, Promise<string>>();
   const refreshToken = (rejectedToken: string): Promise<string> => {
     const pending = refreshingTokens.get(rejectedToken);
     if (pending) return pending;
     // A different session must not inherit another account's pending refresh.
-    const refresh = input.sessionTokenSource
-      .getToken({ skipCache: true })
-      .finally(() => refreshingTokens.delete(rejectedToken));
+    const refresh = bounded(() =>
+      input.sessionTokenSource.getToken({ skipCache: true }),
+    ).finally(() => refreshingTokens.delete(rejectedToken));
     refreshingTokens.set(rejectedToken, refresh);
     return refresh;
   };
   const client = createClient<MobilePaths>({
     baseUrl: input.apiBaseUrl,
-    fetch: async (originalRequest) => {
-      const request = new Request(originalRequest);
-      const token = await input.sessionTokenSource.getToken();
-      if (!token.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
-      request.headers.set("Authorization", `Bearer ${token}`);
-      // Preserve the body and idempotency key before fetch consumes the request.
-      const retry = request.clone();
-      const response = await input.fetch(request);
-      if (response.status !== 401) return response;
-      let problem: CrewRollApiProblem;
-      try {
-        problem = problemFrom(await response.clone().json(), response.status);
-      } catch {
-        return response;
-      }
-      if (problem.code !== "AUTH_INVALID" && problem.code !== "AUTH_REQUIRED")
-        return response;
-      const freshToken = await refreshToken(token);
-      if (!freshToken.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
-      retry.headers.set("Authorization", `Bearer ${freshToken}`);
-      // A rejected fresh token is returned to normal auth handling; never loop.
-      return input.fetch(retry);
-    },
+    fetch: (originalRequest) =>
+      bounded(async (signal) => {
+        const request = new Request(originalRequest, { signal });
+        const token = await input.sessionTokenSource.getToken();
+        if (signal.aborted) throw new CrewRollTransportProblem();
+        if (!token.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
+        request.headers.set("Authorization", `Bearer ${token}`);
+        // Preserve the body and idempotency key before fetch consumes the request.
+        const retry = request.clone();
+        // Keep the deadline through body consumption too. An accepted TCP
+        // connection with a stalled JSON body must not leave a button busy forever.
+        const send = async (value: Request) => {
+          if (signal.aborted) throw new CrewRollTransportProblem();
+          const result = await input.fetch(value);
+          const body = await result.text();
+          if (signal.aborted || body.length > 1_048_576)
+            throw new CrewRollTransportProblem();
+          return new Response(
+            result.status === 204 || result.status === 205 ? null : body,
+            {
+              status: result.status,
+              statusText: result.statusText,
+              headers: result.headers,
+            },
+          );
+        };
+        const response = await send(request);
+        if (response.status !== 401) return response;
+        let problem: CrewRollApiProblem;
+        try {
+          problem = problemFrom(await response.clone().json(), response.status);
+        } catch {
+          return response;
+        }
+        if (problem.code !== "AUTH_INVALID" && problem.code !== "AUTH_REQUIRED")
+          return response;
+        const freshToken = await refreshToken(token);
+        if (!freshToken.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
+        retry.headers.set("Authorization", `Bearer ${freshToken}`);
+        // A rejected fresh token is returned to normal auth handling; never loop.
+        return send(retry);
+      }),
   });
 
   return new OpenApiCrewRollApi(client);

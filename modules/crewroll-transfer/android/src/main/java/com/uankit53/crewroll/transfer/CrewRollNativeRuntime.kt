@@ -24,7 +24,14 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     private set
   private val jobs = mutableSetOf<Int>()
   val enabled get() = preferences.getBoolean("enabled", false)
-  val cellular get() = preferences.getBoolean("cellular", false)
+  val cellular get() = preferences.getBoolean("cellular", true)
+  init {
+    // Upgrade the old Wi-Fi-only preference without touching the enabled flag,
+    // account credentials, trip keys, or durable transfer journal.
+    if (preferences.getInt("network-policy-version", 0) < 1) {
+      check(preferences.edit().putBoolean("cellular", true).putInt("network-policy-version", 1).commit())
+    }
+  }
   private val connectivity = context.getSystemService(ConnectivityManager::class.java)
   val engine = NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() },
     AndroidPhotoLibrary(context), NativePhotoCrypto(SodiumAndroid()), { cellular ->
@@ -53,16 +60,9 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     if (!enabled) return false
     val active = try { mediaSession.read() } catch (_: Exception) { null } ?: return false
     active.erase()
-    val firstLease = jobs.isEmpty()
     jobs.add(id)
-    if (firstLease && !foreground) {
-      engine.foreground(false)
-      engine.policy(false, cellular)
-    } else {
-      // Overlapping OS jobs share the same writer; never cancel an existing
-      // foreground/other-job transfer simply to acquire another lease.
-      engine.activate()
-    }
+    // An OS lease joins existing work without cancelling another transfer.
+    engine.activate().thenRun { engine.requestReconcile() }
     return true
   }
   @Synchronized fun endJob(id: Int) {

@@ -158,7 +158,7 @@ public final class CrewRollTransferModule: Module {
         try NativeCommandDecoder.require(command, for: .activateTrip)
         let lifecycle = try self.lifecycle()
         try lifecycle.activateTrip(try NativeCommandDecoder.activation(command))
-        try CrewRollAppleRuntime.get().policy(enabled: true)
+        try CrewRollAppleRuntime.get().policy(enabled: true, cellular: true)
         let engine = try self.engine()
         let epoch = self.transferCommands.advance()
         Task {
@@ -200,7 +200,7 @@ public final class CrewRollTransferModule: Module {
       do {
         try Self.require(command, keys: ["protocolVersion"])
         let engine = try self.engine()
-        Task { await engine.wake(); promise.resolve(nil) }
+        Task { do { try await engine.reconcileNow(); promise.resolve(nil) } catch { promise.reject(Self.bridgeException(error)) } }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("retry") { (command: [String: Any], promise: Promise) in

@@ -5,7 +5,7 @@ import { createHmacInviteCodeHasher } from "../../services/control-plane/src/pla
 import { createOwnerInviteVault } from "../../services/control-plane/src/platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -140,6 +140,150 @@ describe.sequential("durable encrypted photo delivery", () => {
       expectedVersion: state.version,
     });
   }
+  it.each(["actor", "recipient"] as const)(
+    "retries a trip command without deadlocking %s media work",
+    async (contended) => {
+      const actor = members[0]!;
+      const recipient = members[1]!;
+      const user = await context.db
+        .selectFrom("users")
+        .select("clerk_subject")
+        .where("id", "=", actor.userId)
+        .executeTakeFirstOrThrow();
+      let locked!: () => void;
+      let tripLocked!: () => void;
+      const mediaLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const commandLocked = new Promise<void>((resolve) => {
+        tripLocked = resolve;
+      });
+      const media = context.db.transaction().execute(async (tx) => {
+        if (contended === "actor") {
+          await tx
+            .selectFrom("users")
+            .select("id")
+            .where("id", "=", actor.userId)
+            .forUpdate()
+            .execute();
+        } else {
+          await tx
+            .selectFrom("devices")
+            .select("id")
+            .where("id", "=", recipient.deviceId)
+            .forUpdate()
+            .execute();
+        }
+        locked();
+        await commandLocked;
+        await tx
+          .selectFrom("trips")
+          .select("id")
+          .where("id", "=", tripId)
+          .forUpdate()
+          .execute();
+      });
+      await mediaLocked;
+      let attempts = 0;
+      const command = createKyselyTripUnitOfWork(context.db).run(async (tx) => {
+        attempts++;
+        const trip = await tx.lockTrip(tripId);
+        tripLocked();
+        expect(
+          (
+            await tx.reauthorizeForegroundActor({
+              ...actor,
+              clerkSubject: user.clerk_subject,
+            })
+          ).kind,
+        ).toBe("ACTIVE");
+        expect(await tx.lockDevices([recipient.deviceId])).toHaveLength(1);
+        return trip?.tripId;
+      });
+      const results = await Promise.allSettled([media, command]);
+      expect(results.map((result) => result.status)).toEqual([
+        "fulfilled",
+        "fulfilled",
+      ]);
+      expect(attempts).toBeGreaterThan(1);
+      expect(attempts).toBeLessThanOrEqual(5);
+      expect(results[1]).toMatchObject({ status: "fulfilled", value: tripId });
+    },
+  );
+
+  it("benchmarks trip availability during slow object verification", async () => {
+    const phase = process.env.CREWROLL_SYNC_BENCHMARK_PHASE;
+    const waits: number[] = [];
+    const inspect = store.inspect;
+    for (let index = 0; index < (phase ? 5 : 1); index++) {
+      body = {
+        ...body,
+        assetId: randomUUID(),
+        sourceAssetKey: `src_${randomBytes(24).toString("base64url")}`,
+      };
+      const commitBody = await uploaded();
+      let inspecting!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        inspecting = resolve;
+      });
+      let release!: () => void;
+      const storage = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      store.inspect = async (key) => {
+        inspecting();
+        await storage;
+        return inspect(key);
+      };
+      const committing = service.commit(members[0]!, body.assetId, commitBody);
+      await entered;
+      const started = performance.now();
+      let acquiredBeforeStorageFinished = false;
+      let storageFinished = false;
+      const probe = context.db.transaction().execute(async (tx) => {
+        await tx
+          .selectFrom("trips")
+          .select("id")
+          .where("id", "=", tripId)
+          .forUpdate()
+          .execute();
+        acquiredBeforeStorageFinished = !storageFinished;
+        waits.push(performance.now() - started);
+      });
+      const timer = setTimeout(() => {
+        storageFinished = true;
+        release();
+      }, 250);
+      try {
+        await Promise.all([committing, probe]);
+        if (!phase || phase === "after")
+          expect(acquiredBeforeStorageFinished).toBe(true);
+      } finally {
+        clearTimeout(timer);
+        release();
+        store.inspect = inspect;
+      }
+    }
+    if (phase === "before" || phase === "after") {
+      await mkdir(".expo/sync-benchmark", { recursive: true });
+      await writeFile(
+        `.expo/sync-benchmark/database-${phase}.json`,
+        JSON.stringify(
+          {
+            phase,
+            scenario:
+              "PostgreSQL 17 trip-row acquisition during 250ms injected object HEAD latency",
+            samples: waits,
+            medianMs: [...waits].sort((a, b) => a - b)[
+              Math.floor(waits.length / 2)
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+    }
+  });
   it("pauses only the sender and never backfills paused captures after resume", async () => {
     await command(0, "PAUSE");
     await expect(service.createUpload(members[0]!, body)).rejects.toMatchObject(
@@ -260,6 +404,8 @@ describe.sequential("durable encrypted photo delivery", () => {
     expect(objects.size).toBe(2);
   });
   it("only the host ends a trip and ending waits for offline phones' final capture pass", async () => {
+    for (const member of members)
+      await fixtures.activeTrip(member.userId, tripId);
     await expect(command(1, "END")).rejects.toMatchObject({
       kind: "TRIP_OWNER_REQUIRED",
     });
@@ -284,7 +430,64 @@ describe.sequential("durable encrypted photo delivery", () => {
     expect((await lifecycle().read(members[0]!, tripId)).status).toBe(
       "COMPLETE",
     );
+    expect(
+      await context.db
+        .selectFrom("user_active_trips")
+        .selectAll()
+        .where("trip_id", "=", tripId)
+        .execute(),
+    ).toHaveLength(0);
   });
+  it.each(["scheduled cleanup", "foreground read"] as const)(
+    "ends at the scheduled cutoff through %s and releases the slot after final sync",
+    async (trigger) => {
+      const endsAt = new Date(now.getTime() + 60_000);
+      await context.db
+        .updateTable("trips")
+        .set({
+          ends_at: endsAt,
+          hard_delete_at: new Date(endsAt.getTime() + 7 * 86_400_000),
+        })
+        .where("id", "=", tripId)
+        .execute();
+      for (const member of members)
+        await fixtures.activeTrip(member.userId, tripId);
+      await service.cleanup();
+      expect((await lifecycle().read(members[0]!, tripId)).status).toBe(
+        "ACTIVE",
+      );
+      // The scheduler may run after the cutoff; it must never extend capture.
+      now = new Date(endsAt.getTime() + 20_000);
+      if (trigger === "scheduled cleanup") await service.cleanup();
+      const ending = await lifecycle().read(members[0]!, tripId);
+      expect(ending).toMatchObject({
+        status: "ENDING",
+        participation: "LEAVING",
+        captureUntil: endsAt.toISOString(),
+      });
+      await expect(
+        service.createUpload(members[0]!, {
+          ...body,
+          capturedAt: now.toISOString(),
+        }),
+      ).rejects.toMatchObject({ kind: "INVALID_REQUEST" });
+      for (const member of members) {
+        const state = await lifecycle().read(member, tripId);
+        await lifecycle().drained(member, tripId, state.version);
+      }
+      for (const member of members) await lifecycle().read(member, tripId);
+      expect((await lifecycle().read(members[0]!, tripId)).status).toBe(
+        "COMPLETE",
+      );
+      expect(
+        await context.db
+          .selectFrom("user_active_trips")
+          .selectAll()
+          .where("trip_id", "=", tripId)
+          .execute(),
+      ).toHaveLength(0);
+    },
+  );
   it("ends automatically after the final participant leaves, and rejects outsiders", async () => {
     await expect(lifecycle().read(outsider, tripId)).rejects.toMatchObject({
       kind: "NOT_FOUND",
@@ -655,6 +858,159 @@ describe.sequential("durable encrypted photo delivery", () => {
           .executeTakeFirstOrThrow()
       ).state,
     ).toBe("EXPIRED");
+  });
+  it("reauthorizes after slow object verification so revoked senders cannot commit", async () => {
+    const commit = await uploaded();
+    const inspect = store.inspect;
+    let release!: () => void, entered!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    store.inspect = async (key) => {
+      entered();
+      await wait;
+      return inspect(key);
+    };
+    const result = service
+      .commit(members[0]!, body.assetId, commit)
+      .catch((error: unknown) => error);
+    await started;
+    try {
+      await context.db
+        .updateTable("devices")
+        .set({ revoked_at: now })
+        .where("id", "=", members[0]!.deviceId)
+        .execute();
+    } finally {
+      release();
+    }
+    expect(await result).toMatchObject({ kind: "AUTH_INVALID" });
+    expect(
+      await context.db.selectFrom("receipts").selectAll().execute(),
+    ).toEqual([]);
+  });
+  it("a slow retirement holds a recoverable claim without locking the trip or duplicating another cleanup pass", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .where("id", "=", tripId)
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    const remove = store.delete;
+    let release!: () => void,
+      entered!: () => void,
+      deletes = 0;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    store.delete = async (key) => {
+      deletes++;
+      entered();
+      await wait;
+      return remove(key);
+    };
+    const cleaning = service.cleanup();
+    await started;
+    try {
+      expect(await service.cleanup()).toBe(0);
+      expect(deletes).toBe(1);
+      const trip = await context.db
+        .transaction()
+        .execute((tx) =>
+          tx
+            .selectFrom("trips")
+            .select("id")
+            .where("id", "=", tripId)
+            .forUpdate()
+            .noWait()
+            .executeTakeFirstOrThrow(),
+        );
+      expect(trip.id).toBe(tripId);
+    } finally {
+      release();
+    }
+    expect(await cleaning).toBe(1);
+    expect(
+      await context.db.selectFrom("media_cleanup_claims").selectAll().execute(),
+    ).toEqual([]);
+  });
+  it("a failing object does not block unrelated cleanup and retries after its lease", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    const failingKeys = new Set(objects.keys());
+    body = {
+      ...body,
+      assetId: randomUUID(),
+      sourceAssetKey: `src_${randomBytes(24).toString("base64url")}`,
+    };
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .where("id", "=", tripId)
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    const remove = store.delete;
+    store.delete = async (key) => {
+      if (failingKeys.has(key)) throw new Error("injected storage failure");
+      return remove(key);
+    };
+    expect(await service.cleanup()).toBe(1);
+    expect(objects.size).toBe(2);
+    expect(await service.cleanup()).toBe(0);
+    store.delete = remove;
+    now = new Date(now.getTime() + 15_000);
+    expect(await service.cleanup()).toBe(1);
+    expect(objects.size).toBe(0);
+  });
+  it("reclaims an expired cleanup lease and fences the old worker's finalization", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .where("id", "=", tripId)
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    const remove = store.delete;
+    let release!: () => void,
+      entered!: () => void,
+      stalled = true;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    store.delete = async (key) => {
+      if (stalled) {
+        stalled = false;
+        entered();
+        await wait;
+      }
+      return remove(key);
+    };
+    const first = service.cleanup();
+    await started;
+    try {
+      now = new Date(now.getTime() + 121_000);
+      expect(await service.cleanup()).toBe(1);
+    } finally {
+      release();
+    }
+    expect(await first).toBe(0);
+    expect(objects.size).toBe(0);
+    expect(
+      await context.db.selectFrom("media_cleanup_claims").selectAll().execute(),
+    ).toEqual([]);
   });
   it("rejects photos outside the active capture window", async () => {
     await expect(

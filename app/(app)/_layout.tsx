@@ -7,7 +7,9 @@ export default function ProtectedAppLayout() {
   return (
     <Stack
       screenOptions={{
-        animation: theme.motion.navigation === 0 ? "none" : "default",
+        animation: theme.motion.navigation === 0 ? "none" : "slide_from_right",
+        animationDuration: theme.motion.navigation,
+        contentStyle: { backgroundColor: theme.background },
         headerShown: false,
       }}
     />

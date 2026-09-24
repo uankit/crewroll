@@ -1,5 +1,13 @@
 import { Image } from "expo-image";
-import { Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { useEffect } from "react";
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
 
 import {
   AppText,
@@ -7,6 +15,7 @@ import {
   TextField,
   useCrewRollTheme,
   FlowScreen,
+  FlowTransition,
   spacing,
   radius,
   onboardingGeometry,
@@ -29,6 +38,20 @@ export type AccountFlow = Readonly<{
 }>;
 
 export function AccountScreen({
+  flow,
+  onBack,
+}: Readonly<{ flow: AccountFlow; onBack: () => void }>) {
+  useEffect(() => {
+    Keyboard.dismiss();
+  }, [flow.verifying]);
+  return (
+    <FlowTransition step={flow.verifying ? "verify" : "email"}>
+      <AccountContents flow={flow} onBack={onBack} />
+    </FlowTransition>
+  );
+}
+
+function AccountContents({
   flow,
   onBack,
 }: Readonly<{ flow: AccountFlow; onBack: () => void }>) {

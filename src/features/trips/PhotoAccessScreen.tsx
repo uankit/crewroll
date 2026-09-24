@@ -1,8 +1,9 @@
 import { Image } from "expo-image";
-import { StyleSheet, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import {
   AppText,
   Button,
+  CrewRollWordmark,
   FlowScreen,
   Stack,
   radius,
@@ -16,27 +17,36 @@ export function PhotoAccessScreen({
   unavailable,
   onContinue,
   onLater,
+  error,
 }: Readonly<{
   checking: boolean;
   settingsRequired: boolean;
   unavailable: boolean;
   onContinue: () => void;
   onLater: () => void;
+  error?: string | null;
 }>) {
   const colors = useCrewRollTheme();
   return (
     <FlowScreen
       testID="photo-access-screen"
-      label="One last thing"
-      onBack={onLater}
+      centerContent
+      header={<CrewRollWordmark style={{ paddingTop: spacing.lg }} />}
       footer={
         <>
           <Button
-            label={settingsRequired ? "Open photo settings" : "Continue"}
+            label={
+              settingsRequired ? "Open photo settings" : "Allow photo access"
+            }
             loading={checking}
             onPress={onContinue}
           />
-          <Button label="Set up later" variant="text" onPress={onLater} />
+          <Button
+            label="Set up later"
+            variant="text"
+            disabled={checking}
+            onPress={onLater}
+          />
         </>
       }
     >
@@ -67,9 +77,10 @@ export function PhotoAccessScreen({
       </Stack>
       <Stack gap="md">
         <Stack gap="xxs">
-          <AppText variant="bodyStrong">Only this trip</AppText>
+          <AppText variant="bodyStrong">Only your trips</AppText>
           <AppText tone="secondary">
-            New eligible photos in the trip window. Your older photos stay out.
+            Sharing starts when you join a live trip. Your older photos stay
+            private.
           </AppText>
         </Stack>
         <Stack gap="xxs">
@@ -84,10 +95,16 @@ export function PhotoAccessScreen({
           Photo access could not be checked. Try again.
         </AppText>
       ) : null}
+      {error ? (
+        <AppText accessibilityRole="alert" tone="critical">
+          {error}
+        </AppText>
+      ) : null}
       {settingsRequired ? (
         <AppText tone="secondary">
-          Allow full photo access in Settings to find new trip photos and save
-          your crew’s originals.
+          {Platform.OS === "ios"
+            ? "In Settings, open Apps → CrewRoll → Photos and choose Full Access. Then return here."
+            : "In Settings, open CrewRoll → Permissions → Photos and videos and allow all photos. Then return here."}
         </AppText>
       ) : null}
     </FlowScreen>

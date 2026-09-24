@@ -16,6 +16,8 @@ public struct NativePhotoWork: Codable {
     public var ignored: Bool?
     public var blocker: String?
     public var previewPublished: Bool?
+    public var nextAttemptAt: Date?
+    public var retryAttempts: Int?
 }
 
 private struct TransferState: Codable {

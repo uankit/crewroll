@@ -1,3 +1,4 @@
+import { TripNotificationsSheet } from "@/bootstrap/TripNotificationsSheet";
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
 import { useTripContinuity } from "@/bootstrap/useTripContinuity";
 import {
@@ -7,7 +8,13 @@ import {
   useRouter,
 } from "expo-router";
 import { AppState, BackHandler } from "react-native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   useAppSession,
@@ -16,6 +23,7 @@ import {
   createPhotoReadinessReconciler,
   permissionForLobbyEntry,
   usePhotoReadinessEntryBoundary,
+  copyInviteCode,
 } from "@/bootstrap";
 import {
   BrandLoading,
@@ -53,26 +61,35 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
-        router.replace("/(app)");
+        router.dismissTo("/(app)");
         return true;
       },
     );
     return () => subscription.remove();
   }, [focused, router]);
   const session = useAppSession();
+  const galleryCache = session.galleryCache;
+  const gallery = useSyncExternalStore(
+    galleryCache.subscribe,
+    galleryCache.getSnapshot,
+    galleryCache.getSnapshot,
+  );
+  const filters = gallery.filters;
+  const setFilters = galleryCache.setFilters;
   const actions = session.actions;
   const projection = useTripProjection(tripId, { pollLobby: focused });
   const continuity = useTripContinuity(tripId, focused);
-  const [approvingMembershipId, setApprovingMembershipId] = useState<
-    string | undefined
-  >(undefined);
   const [starting, setStarting] = useState(false);
-  const [photoCount, setPhotoCount] = useState(0);
-  const [filters, setFilters] = useState(defaultGalleryFilters);
+  const photoCount = gallery.data?.snapshot.counts.discovered ?? 0;
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [savedInvite, setSavedInvite] = useState<string | null>(null);
+  const [inviteStatus, setInviteStatus] = useState<"loading" | "failed">(
+    "loading",
+  );
+  const [inviteAttempt, setInviteAttempt] = useState(0);
   const owner =
     projection.trip?.members.some(
       (member) => member.isCurrentMember && member.role === "OWNER",
@@ -82,21 +99,25 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   useEffect(() => {
     if (!owner || !inviteOpen || !actions) return;
     let cancelled = false;
-    void actions
-      .ensureOwnerInvite(tripId)
+    void Promise.resolve()
+      .then(() => {
+        if (cancelled) return null;
+        setInviteStatus("loading");
+        return actions.ensureOwnerInvite(tripId);
+      })
       .then((state) => {
-        if (!cancelled) setSavedInvite(state.ownerInviteCode);
+        if (!cancelled && state) {
+          setSavedInvite(state.ownerInviteCode);
+          if (!state.ownerInviteCode) setInviteStatus("failed");
+        }
       })
       .catch(() => {
-        if (!cancelled)
-          setActionError(
-            "Your trip is saved. Open Trip info to retry loading the invite code.",
-          );
+        if (!cancelled) setInviteStatus("failed");
       });
     return () => {
       cancelled = true;
     };
-  }, [actions, owner, inviteOpen, tripId]);
+  }, [actions, owner, inviteOpen, tripId, inviteAttempt]);
 
   const [retryingActivation, setRetryingActivation] = useState(false);
   const readinessReconciler = useRef(createPhotoReadinessReconciler());
@@ -165,7 +186,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           <Button
             label="Back to Home"
             variant="text"
-            onPress={() => router.replace("/(app)")}
+            onPress={() => router.dismissTo("/(app)")}
           />
         </Stack>
       </Screen>
@@ -203,53 +224,50 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     }
   }
 
-  const ownerInviteCode = savedInvite ?? session.ownerInviteCode;
+  const ownerInviteCode =
+    continuity.data?.ownerInviteCode ?? savedInvite ?? session.ownerInviteCode;
   return (
     <>
       <LobbyScreen
-        onBack={() => router.replace("/(app)")}
+        scrollRestoration={{
+          key: JSON.stringify([tripId, filters, gallery.cursor]),
+          offsetY: galleryCache.getScrollY(),
+          onChange: galleryCache.saveScrollY,
+        }}
+        onBack={() => router.dismissTo("/(app)")}
         actionError={actionError}
+        inviteStatus={inviteStatus}
+        onRetryInvite={() => setInviteAttempt((attempt) => attempt + 1)}
         hasPhotos={photoCount > 0}
         filterCount={galleryFilterCount(filters)}
         onOpenFilters={() => setFiltersOpen(true)}
         onOpenInfo={() => setInfoOpen(true)}
+        onOpenNotifications={() => setNotificationsOpen(true)}
         deviceRequestCount={continuity.data?.approvalRequests.length ?? 0}
         transferContent={
           activation?.kind === "ready" || trip.status === "ENDING" ? (
             <ActiveTripTransfers
               key={`${trip.id}:${JSON.stringify(galleryQuery(filters))}`}
               tripId={trip.id}
+              cache={galleryCache}
+              focused={focused}
               filters={filters}
               onClearFilters={() => setFilters(defaultGalleryFilters)}
-              onPhotoCountChange={setPhotoCount}
             />
           ) : undefined
         }
         {...(activation === undefined ? {} : { activation })}
-        {...(approvingMembershipId === undefined
-          ? {}
-          : { approvingMembershipId })}
         endsLabel={endsLabel(trip.endsAt)}
         {...(ownerInviteCode === null
           ? {}
           : {
               invite: {
                 code: ownerInviteCode,
-                onCopy: session.copyOwnerInvite,
+                onCopy: async () => {
+                  await copyInviteCode(ownerInviteCode);
+                },
               },
             })}
-        onApproveMember={async (membershipId) => {
-          if (actions === null) return;
-          setActionError(null);
-          setApprovingMembershipId(membershipId);
-          try {
-            await actions.approve(trip.id, membershipId);
-          } catch {
-            setActionError("Approval could not be confirmed. Try again.");
-          } finally {
-            setApprovingMembershipId(undefined);
-          }
-        }}
         onStart={async () => {
           if (actions === null) return;
           setActionError(null);
@@ -265,7 +283,12 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           }
         }}
         onOpenPhotoSettings={() => {
-          void actions?.openPhotoSettings().catch(() => undefined);
+          setActionError(null);
+          void actions?.openPhotoSettings().catch(() => {
+            setActionError(
+              "Settings couldn’t open. Open your phone’s Settings and find CrewRoll to change photo access.",
+            );
+          });
         }}
         onRequestPhotoAccess={() => {
           if (actions !== null)
@@ -273,14 +296,27 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
               .reconcile(actions, trip.id, true)
               .catch(() => undefined);
         }}
-        photoPermission={permissionForLobbyEntry(
-          focused && observedEntry.focused && observedEntry.tripId === tripId,
-          entryReconciled,
-          session.photoPermission,
-        )}
+        photoPermission={
+          trip.status === "ACTIVE" || trip.status === "ENDING"
+            ? session.photoPermission
+            : permissionForLobbyEntry(
+                focused &&
+                  observedEntry.focused &&
+                  observedEntry.tripId === tripId,
+                entryReconciled,
+                session.photoPermission,
+              )
+        }
         starting={starting}
         trip={trip}
       />
+      {notificationsOpen ? (
+        <TripNotificationsSheet
+          trip={trip}
+          onDismiss={() => setNotificationsOpen(false)}
+          onChanged={() => void projection.refresh()}
+        />
+      ) : null}
       {infoOpen ? (
         <TripInfoSheet
           trip={trip}

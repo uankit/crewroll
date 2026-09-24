@@ -1,0 +1,9 @@
+{
+  "kind": "Three paired controlled 100-original comparisons; final native implementation",
+  "trials": 3,
+  "oneDownloadMedianMs": 5361.99925,
+  "twoDownloadMedianMs": 2902.819959,
+  "twoDownloadSnapshotP95MedianMs": 7.535792,
+  "verifiedSavesPerRun": 100,
+  "elapsedReductionPercent": 45.86310397190003
+}

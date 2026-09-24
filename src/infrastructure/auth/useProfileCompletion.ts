@@ -162,9 +162,7 @@ export function useProfileCompletion({
       !isLoaded ||
       (accountId !== null &&
         canonicalName !== null &&
-        (!visible ||
-          (visible.ready && visible.name !== canonicalName) ||
-          visible.busy)),
+        (!visible || (visible.ready && visible.name !== canonicalName))),
     name: visible?.name ?? canonicalName ?? "",
     busy: visible?.busy ?? false,
     error: visible?.error ?? null,

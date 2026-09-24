@@ -2,6 +2,15 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { sessionUiStore } from "./state/sessionUiStore";
 
+export const TRIP_LIBRARY_FRESH_MS = 5_000;
+
+export function tripLibraryQueryKey(
+  opaqueAccountScope?: string,
+  deviceId?: string,
+) {
+  return ["trip-library", opaqueAccountScope, deviceId] as const;
+}
+
 export type TripQueryKey = readonly [
   "trip",
   opaqueAccountScope: string,

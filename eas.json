@@ -21,6 +21,7 @@
       "channel": "preview",
       "environment": "preview",
       "android": {
+        "autoIncrement": true,
         "buildType": "apk"
       }
     },
@@ -36,6 +37,15 @@
       "channel": "testflight",
       "environment": "preview"
     },
+    "play-testing": {
+      "extends": "production",
+      "distribution": "store",
+      "channel": "preview",
+      "environment": "preview",
+      "android": {
+        "buildType": "app-bundle"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production",
@@ -46,6 +56,12 @@
     "testflight": {
       "ios": {
         "ascAppId": "6797897853"
+      }
+    },
+    "play-testing": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "draft"
       }
     },
     "production": {}

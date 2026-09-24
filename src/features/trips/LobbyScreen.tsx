@@ -3,18 +3,20 @@ import { StyleSheet, View } from "react-native";
 import type { StartBlocker, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import {
+  AppIcon,
   AppText,
+  IconButton,
   Button,
   FlowScreen,
   MemberAvatar,
   Sheet,
   Stack,
-  TripPhotoGallery,
   radius,
   spacing,
   useCrewRollTheme,
 } from "../../design-system";
 import { PhotoAccessScreen } from "./PhotoAccessScreen";
+import type { ScrollRestoration } from "../../design-system";
 
 export type LobbyInvite = Readonly<{
   code: string;
@@ -41,8 +43,9 @@ export type LobbyScreenProps = Readonly<{
   trip: TripView;
   endsLabel: string;
   invite?: LobbyInvite;
-  onApproveMember?: (membershipId: string) => void;
-  approvingMembershipId?: string;
+  inviteStatus?: "loading" | "failed";
+  onRetryInvite?: () => void;
+  onOpenNotifications?: () => void;
   onStart?: () => void;
   starting?: boolean;
   actionError?: string | null;
@@ -55,6 +58,7 @@ export type LobbyScreenProps = Readonly<{
   activation?: LobbyActivationState;
   transferContent?: ReactNode;
   photoPermission: LobbyPhotoPermissionState;
+  scrollRestoration?: ScrollRestoration;
   onRequestPhotoAccess?: () => void;
   onOpenPhotoSettings?: () => void;
 }>;
@@ -78,8 +82,9 @@ export function LobbyScreen({
   trip,
   endsLabel,
   invite,
-  onApproveMember,
-  approvingMembershipId,
+  inviteStatus = "loading",
+  onRetryInvite,
+  onOpenNotifications,
   onStart,
   starting = false,
   activation,
@@ -94,9 +99,10 @@ export function LobbyScreen({
   onOpenFilters,
   onOpenInfo,
   onBack,
+  scrollRestoration,
 }: LobbyScreenProps) {
   const theme = useCrewRollTheme();
-  const [deferred, setDeferred] = useState(false);
+  const [photoSetupOpen, setPhotoSetupOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [copyState, setCopyState] = useState<
     "idle" | "copying" | "copied" | "failed"
@@ -116,12 +122,17 @@ export function LobbyScreen({
   );
   const owner = current?.role === "OWNER";
   const lobby = trip.status === "LOBBY";
-  const needsPermission =
-    current?.status === "ACTIVE" && photoPermission.kind !== "FULL";
   const checking = photoPermission.kind === "CHECKING";
-  if (needsPermission && !deferred && (!checking || !sawFullAccess))
+  const needsPermission =
+    current?.status === "ACTIVE" &&
+    !checking &&
+    photoPermission.kind !== "FULL";
+  // Initial setup belongs to account onboarding. A skipped/revoked grant must
+  // not replace the trip; let the user explicitly reopen the same explainer.
+  if (needsPermission && photoSetupOpen)
     return (
       <PhotoAccessScreen
+        {...(actionError ? { error: actionError } : {})}
         checking={checking}
         unavailable={photoPermission.kind === "UNAVAILABLE"}
         settingsRequired={photoPermission.kind === "SETTINGS_REQUIRED"}
@@ -130,18 +141,33 @@ export function LobbyScreen({
             ? (onOpenPhotoSettings ?? (() => {}))
             : (onRequestPhotoAccess ?? (() => {}))
         }
-        onLater={() => setDeferred(true)}
+        onLater={() => setPhotoSetupOpen(false)}
       />
     );
   const blocker = owner && lobby ? startBlockerFor(trip) : null;
   const pending = trip.members.filter((m) => m.status === "PENDING_KEY");
+  const joined = trip.members.filter((m) => m.status === "ACTIVE");
   const requestCount = deviceRequestCount + (owner ? pending.length : 0);
   const full = photoPermission.kind === "FULL";
-  const title = lobby && !owner ? "Waiting for your host." : trip.name;
+  const permissionSyncPending =
+    full && current?.fullPhotoLibraryAccess === false;
+  const alone = joined.length === 1 && pending.length === 0;
+  const startExplanation = checking
+    ? "Checking photo access on this phone…"
+    : needsPermission
+      ? "Allow full photo access before starting."
+      : blocker === "MEMBER_NEEDS_FULL_ACCESS" && permissionSyncPending
+        ? "Finishing photo setup on this phone…"
+        : blocker
+          ? startBlockerCopy(blocker)
+          : !onStart
+            ? "Connecting to your trip…"
+            : "Start whenever you’re ready. Others can join later.";
+  const title = lobby ? "Who’s coming along?" : trip.name;
   const description = lobby
     ? owner
-      ? "Invite your crew, then start when everyone’s here."
-      : "Photos will appear here when the trip begins."
+      ? "Send the invite. Your friends will appear here as they join."
+      : "Waiting for your host. Photos begin when the trip starts."
     : "Photos arrive here automatically.";
   async function copyCode() {
     if (!invite || copying.current) return;
@@ -159,60 +185,42 @@ export function LobbyScreen({
   return (
     <>
       <FlowScreen
+        {...(scrollRestoration ? { scrollRestoration } : {})}
         testID="lobby-screen"
         compact={!lobby}
-        centerContent={lobby}
         fillContent={!lobby && !hasPhotos}
         topContent={
-          <View style={styles.statusRow}>
-            <View
-              style={[
-                styles.badge,
-                {
-                  backgroundColor: lobby
-                    ? theme.accentSurface
-                    : theme.successSurface,
-                },
-              ]}
-            >
-              <AppText
-                variant="eyebrow"
-                style={{ color: lobby ? theme.action : theme.success }}
+          !lobby ? (
+            <View style={styles.statusRow}>
+              <View
+                style={[
+                  styles.badge,
+                  {
+                    backgroundColor: theme.successSurface,
+                  },
+                ]}
               >
-                {lobby
-                  ? "Not started"
-                  : trip.status === "ACTIVE"
+                <AppText variant="eyebrow" style={{ color: theme.success }}>
+                  {trip.status === "ACTIVE"
                     ? "Live"
                     : trip.status === "ENDING"
                       ? "Finishing"
                       : "Trip ended"}
-              </AppText>
-            </View>
-            {owner && lobby ? (
+                </AppText>
+              </View>
               <Button
-                variant="text"
-                label="Invite crew"
-                onPress={() => setInviteOpen(true)}
-                disabled={!invite}
-              />
-            ) : (
-              <Button
-                variant={lobby ? "text" : "secondary"}
-                style={
-                  !lobby
-                    ? {
-                        backgroundColor: theme.accentSurface,
-                        borderWidth: 0,
-                        minHeight: 48,
-                      }
-                    : undefined
-                }
+                variant="secondary"
+                style={{
+                  backgroundColor: theme.accentSurface,
+                  borderWidth: 0,
+                  minHeight: 48,
+                }}
                 label={filterCount ? `Filters · ${filterCount}` : "Filters"}
                 onPress={onOpenFilters ?? (() => {})}
                 disabled={!onOpenFilters}
               />
-            )}
-          </View>
+            </View>
+          ) : undefined
         }
         title={title}
         {...(lobby ? { description } : {})}
@@ -228,24 +236,57 @@ export function LobbyScreen({
             ) : (
               <View />
             )}
-            {onOpenInfo ? (
-              <Button
-                variant="text"
-                label={
-                  requestCount ? `Trip info · ${requestCount}` : "Trip info"
-                }
-                accessibilityLabel={
-                  requestCount
-                    ? `Trip info, ${requestCount} waiting requests`
-                    : "Trip info"
-                }
-                onPress={onOpenInfo}
-              />
-            ) : (
-              <AppText tone="secondary" variant="label">
-                {trip.name}
-              </AppText>
-            )}
+            <View style={styles.headerActions}>
+              {((!lobby && owner) || requestCount > 0) &&
+              onOpenNotifications ? (
+                <View>
+                  <IconButton
+                    label={
+                      requestCount
+                        ? `Notifications, ${requestCount} pending ${requestCount === 1 ? "request" : "requests"}`
+                        : "Notifications"
+                    }
+                    accessibilityHint="Review requests to join your trip and confirm phones"
+                    icon={<AppIcon name="bell" />}
+                    onPress={onOpenNotifications}
+                    style={{
+                      backgroundColor: theme.transparent,
+                      borderWidth: 0,
+                    }}
+                  />
+                  {requestCount > 0 ? (
+                    <View
+                      pointerEvents="none"
+                      accessible={false}
+                      style={[
+                        styles.requestBadge,
+                        {
+                          backgroundColor: theme.action,
+                          borderColor: theme.background,
+                        },
+                      ]}
+                    >
+                      <AppText
+                        variant="caption"
+                        tone="onAction"
+                        style={styles.requestCount}
+                      >
+                        {requestCount > 99 ? "99+" : requestCount}
+                      </AppText>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+              {onOpenInfo ? (
+                <IconButton
+                  label="Trip settings"
+                  accessibilityHint="Trip details, invite code, crew and sharing controls"
+                  icon={<AppIcon name="settings" />}
+                  onPress={onOpenInfo}
+                  style={{ backgroundColor: theme.transparent, borderWidth: 0 }}
+                />
+              ) : null}
+            </View>
           </View>
         }
         footer={
@@ -254,74 +295,157 @@ export function LobbyScreen({
               {needsPermission ? (
                 <Button
                   label="Set up photo access"
-                  onPress={() => setDeferred(false)}
+                  onPress={() => setPhotoSetupOpen(true)}
                 />
               ) : owner ? (
-                <Button
-                  label="Start trip"
-                  loading={starting}
-                  disabled={
-                    blocker !== null ||
-                    !full ||
-                    !!approvingMembershipId ||
-                    !onStart
-                  }
-                  onPress={onStart ?? (() => {})}
-                />
+                <>
+                  <Button
+                    label="Invite crew"
+                    onPress={() => setInviteOpen(true)}
+                  />
+                  <Button
+                    label="Start trip"
+                    variant="secondary"
+                    loading={starting}
+                    disabled={blocker !== null || !full || !onStart}
+                    accessibilityHint={startExplanation}
+                    onPress={onStart ?? (() => {})}
+                  />
+                </>
               ) : null}
               {actionError ? (
                 <AppText accessibilityRole="alert" tone="critical">
                   {actionError}
                 </AppText>
               ) : null}
-              <AppText tone="secondary" variant="caption" style={styles.center}>
-                {owner && blocker
-                  ? startBlockerCopy(blocker)
-                  : lobby && !owner
-                    ? "We’ll update this automatically when your host starts."
-                    : "Photos appear here automatically."}
-              </AppText>
+              {owner ? (
+                <AppText
+                  tone="secondary"
+                  variant="caption"
+                  style={styles.center}
+                >
+                  {startExplanation}
+                </AppText>
+              ) : !owner ? (
+                <AppText
+                  tone="secondary"
+                  variant="caption"
+                  style={styles.center}
+                >
+                  We’ll update this automatically when your host starts.
+                </AppText>
+              ) : null}
             </>
           ) : needsPermission ? (
             <Button
               label="Set up photo access"
-              onPress={() => setDeferred(false)}
+              onPress={() => setPhotoSetupOpen(true)}
             />
           ) : undefined
         }
       >
         {lobby ? (
-          <TripPhotoGallery photos={[]} emptyState="waiting" />
+          <Stack gap="lg" testID="lobby-crew">
+            {!alone ? (
+              <AppText
+                variant="caption"
+                tone="secondary"
+                accessibilityLiveRegion="polite"
+              >
+                {joined.length} joined
+                {pending.length ? ` · ${pending.length} waiting` : ""}
+              </AppText>
+            ) : null}
+            <View accessibilityLiveRegion="polite">
+              {[...joined, ...pending].map((member) => (
+                <View
+                  key={member.membershipId}
+                  style={[
+                    styles.member,
+                    styles.joinedMember,
+                    { borderBottomColor: theme.border },
+                  ]}
+                >
+                  <MemberAvatar
+                    displayName={
+                      member.isCurrentMember ? "You" : member.displayName
+                    }
+                  />
+                  <View style={styles.memberName}>
+                    <AppText variant="bodyStrong">
+                      {member.isCurrentMember ? "You" : member.displayName}
+                      {member.role === "OWNER" ? " · Host" : ""}
+                    </AppText>
+                  </View>
+                  <AppText
+                    variant="caption"
+                    tone="secondary"
+                    style={styles.readiness}
+                  >
+                    {member.status === "PENDING_KEY"
+                      ? "Waiting for approval"
+                      : member.isCurrentMember && checking
+                        ? "Checking photos…"
+                        : member.isCurrentMember && !full
+                          ? "Photo access needed"
+                          : !member.fullPhotoLibraryAccess
+                            ? member.isCurrentMember && full
+                              ? "Finishing setup…"
+                              : "Setting up photos"
+                            : member.deviceState === "MISSING"
+                              ? "Connecting…"
+                              : "Ready"}
+                  </AppText>
+                </View>
+              ))}
+              {alone ? (
+                <View
+                  testID="crew-placeholders"
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                >
+                  {[0, 1, 2].map((slot) => (
+                    <View
+                      key={slot}
+                      style={[styles.member, styles.placeholder]}
+                    >
+                      <View
+                        style={[
+                          styles.placeholderAvatar,
+                          { borderColor: theme.border },
+                        ]}
+                      />
+                      <View style={styles.placeholderLine}>
+                        {Array.from(
+                          { length: slot === 1 ? 12 : 16 },
+                          (_, dot) => (
+                            <View
+                              key={dot}
+                              style={[
+                                styles.placeholderDot,
+                                { backgroundColor: theme.border },
+                              ]}
+                            />
+                          ),
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          </Stack>
+        ) : checking && !sawFullAccess ? (
+          <AppText
+            variant="caption"
+            tone="secondary"
+            accessibilityLiveRegion="polite"
+          >
+            Loading photos…
+          </AppText>
         ) : (
           transferContent
         )}
-        {owner && lobby && pending.length > 0 ? (
-          <Stack gap="sm">
-            <AppText variant="bodyStrong">Join requests</AppText>
-            {pending.map((member) => (
-              <View key={member.membershipId} style={styles.member}>
-                <MemberAvatar displayName={member.displayName} />
-                <View style={styles.memberName}>
-                  <AppText variant="bodyStrong">{member.displayName}</AppText>
-                  <AppText variant="caption" tone="secondary">
-                    Wants to join your trip
-                  </AppText>
-                </View>
-                <Button
-                  accessibilityLabel={`Approve ${member.displayName}`}
-                  label="Approve"
-                  variant="text"
-                  loading={approvingMembershipId === member.membershipId}
-                  disabled={
-                    !!approvingMembershipId &&
-                    approvingMembershipId !== member.membershipId
-                  }
-                  onPress={() => onApproveMember?.(member.membershipId)}
-                />
-              </View>
-            ))}
-          </Stack>
-        ) : null}
         {activation?.kind === "failed" ? (
           <Stack gap="sm">
             <AppText accessibilityRole="alert" tone="critical">
@@ -335,7 +459,7 @@ export function LobbyScreen({
           </Stack>
         ) : null}
       </FlowScreen>
-      {invite ? (
+      {owner ? (
         <Sheet
           visible={inviteOpen}
           title="Invite your crew"
@@ -343,36 +467,47 @@ export function LobbyScreen({
           onDismiss={() => setInviteOpen(false)}
         >
           <AppText tone="secondary">
-            Send this code to everyone joining {trip.name}.
+            Send this code to everyone coming along.
           </AppText>
-          <AppText variant="label">
-            {trip.name} · {endsLabel}
+          <AppText variant="caption" tone="secondary">
+            {trip.name}
+            {"\n"}Sharing ends {endsLabel}
           </AppText>
-          <View style={[styles.code, { backgroundColor: theme.surfaceMuted }]}>
-            <AppText selectable variant="title2">
-              {invite.code.slice(0, 4)} {invite.code.slice(4)}
-            </AppText>
-          </View>
-          <Button
-            label={copyState === "copied" ? "Code copied" : "Copy code"}
-            loading={copyState === "copying"}
-            onPress={() => void copyCode()}
-          />
-          {copyState === "copied" ? (
-            <AppText
-              accessibilityLiveRegion="polite"
-              variant="caption"
-              tone="secondary"
-              style={styles.center}
-            >
-              Send it to your crew.
-            </AppText>
-          ) : null}
-          {copyState === "failed" ? (
-            <AppText accessibilityRole="alert" tone="critical">
-              The code couldn’t be copied. Try again.
-            </AppText>
-          ) : null}
+          {invite ? (
+            <>
+              <View
+                style={[styles.code, { backgroundColor: theme.surfaceMuted }]}
+              >
+                <AppText selectable variant="title2">
+                  {invite.code.slice(0, 4)} {invite.code.slice(4)}
+                </AppText>
+              </View>
+              <Button
+                label={copyState === "copied" ? "Code copied" : "Copy code"}
+                loading={copyState === "copying"}
+                onPress={() => void copyCode()}
+              />
+              {copyState === "failed" ? (
+                <AppText accessibilityRole="alert" tone="critical">
+                  The code couldn’t be copied. Try again.
+                </AppText>
+              ) : null}
+            </>
+          ) : (
+            <Stack gap="md">
+              <AppText tone="secondary" accessibilityLiveRegion="polite">
+                {inviteStatus === "failed"
+                  ? "The invite code couldn’t load. Your trip is saved."
+                  : "Getting your invite code…"}
+              </AppText>
+              <Button
+                label={inviteStatus === "failed" ? "Try again" : "Getting code"}
+                loading={inviteStatus === "loading"}
+                onPress={onRetryInvite ?? (() => {})}
+                disabled={!onRetryInvite}
+              />
+            </Stack>
+          )}
         </Sheet>
       ) : null}
     </>
@@ -387,11 +522,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  inviteAction: {
-    minHeight: 48,
-    paddingHorizontal: spacing.sm,
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xxs,
+  },
+  requestBadge: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    minWidth: 20,
+    minHeight: 20,
+    paddingHorizontal: spacing.xxs,
+    borderRadius: radius.pill,
+    borderWidth: 2,
+    alignItems: "center",
     justifyContent: "center",
   },
+  requestCount: { fontSize: 10, lineHeight: 14 },
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -413,4 +561,19 @@ const styles = StyleSheet.create({
   },
   member: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   memberName: { flex: 1 },
+  joinedMember: {
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  readiness: { maxWidth: 100, textAlign: "right" },
+  placeholder: { minHeight: 76, opacity: 0.8 },
+  placeholderAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderStyle: "dashed",
+  },
+  placeholderLine: { flexDirection: "row", gap: spacing.xs },
+  placeholderDot: { width: 3, height: 3, borderRadius: radius.pill },
 });

@@ -22,7 +22,7 @@ export default function CreateTripRoute() {
   return (
     <CreateTripScreen
       now={now}
-      onCancel={() => router.back()}
+      onCancel={() => router.dismissTo("/(app)")}
       onCreate={(input) => {
         if (actions === null) return;
         setState({ kind: "submitting" });
@@ -36,7 +36,7 @@ export default function CreateTripRoute() {
               kind: "unknown",
               onCheck: () => {
                 retry();
-                router.replace("/(app)");
+                router.dismissTo("/(app)");
               },
             });
           });

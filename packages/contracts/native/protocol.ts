@@ -204,6 +204,28 @@ export const DurableEngineSnapshotSchema = ClosedObject({
   cellularAllowed: Type.Optional(Type.Boolean()),
   counts: EngineCountsSchema,
   blockers: Type.Array(EngineBlockerSchema, { uniqueItems: true }),
+  sync: Type.Optional(
+    ClosedObject({
+      state: Type.Union(
+        [
+          "IDLE",
+          "CHECKING",
+          "TRANSFERRING",
+          "WAITING_NETWORK",
+          "RETRYING",
+          "NEEDS_ATTENTION",
+          "PAUSED",
+        ].map((state) => Type.Literal(state)),
+      ),
+      uploadsPending: Type.Integer({ minimum: 0 }),
+      downloadsPending: Type.Integer({ minimum: 0 }),
+      uploadsActive: Type.Integer({ minimum: 0, maximum: 1 }),
+      downloadsActive: Type.Integer({ minimum: 0, maximum: 2 }),
+      lastProgressAt: Type.Union([DateTimeSchema, Type.Null()]),
+      lastCheckedAt: Type.Union([DateTimeSchema, Type.Null()]),
+      nextRetryAt: Type.Union([DateTimeSchema, Type.Null()]),
+    }),
+  ),
 });
 export type DurableEngineSnapshot = Static<typeof DurableEngineSnapshotSchema>;
 
