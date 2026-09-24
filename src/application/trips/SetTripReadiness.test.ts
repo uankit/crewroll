@@ -83,6 +83,73 @@ function harness() {
 }
 
 describe("SetTripReadiness", () => {
+  it("retries a lost readiness response without restarting or replacing its command", async () => {
+    const { api, journal, service } = harness();
+    let retained: TripMutationJournalRecord | null = null;
+    journal.load.mockImplementation(async () => retained);
+    journal.save.mockImplementation(async (_scope, record) => {
+      if (retained) throw new Error("pending trip mutation exists");
+      retained = record;
+    });
+    journal.clear.mockImplementation(async (_scope, id) => {
+      if (retained?.commandId === id) retained = null;
+    });
+    api.setTripReadiness.mockRejectedValueOnce({
+      kind: "TRANSPORT_UNAVAILABLE",
+    });
+    const current = projectTrip(response(false), deviceId);
+    await expect(service.reconcile(current, true)).rejects.toMatchObject({
+      kind: "TRANSPORT_UNAVAILABLE",
+    });
+    expect(retained).not.toBeNull();
+    const result = await service.reconcile(current, true);
+    expect(result.members[0]?.fullPhotoLibraryAccess).toBe(true);
+    expect(retained).toBeNull();
+    expect(journal.save).toHaveBeenCalledTimes(1);
+    expect(api.setTripReadiness.mock.calls[1]).toEqual(
+      api.setTripReadiness.mock.calls[0],
+    );
+  });
+
+  it("clears an accepted retained command even if a newer poll already says ready", async () => {
+    const { api, journal, service } = harness();
+    journal.load.mockResolvedValue({
+      version: 1,
+      kind: "SET_READINESS",
+      tripId,
+      commandId,
+      body: { fullPhotoLibraryAccess: true },
+    });
+    const latest = projectTrip({ ...response(), version: 5 }, deviceId);
+    expect(await service.reconcile(latest, true)).toBe(latest);
+    expect(api.setTripReadiness).toHaveBeenCalledTimes(1);
+    expect(journal.clear).toHaveBeenCalledWith(scope, commandId);
+    expect(journal.save).not.toHaveBeenCalled();
+  });
+
+  it("finishes a retained grant before publishing a newer revocation", async () => {
+    const { api, journal, service } = harness();
+    journal.load.mockResolvedValue({
+      version: 1,
+      kind: "SET_READINESS",
+      tripId,
+      commandId,
+      body: { fullPhotoLibraryAccess: true },
+    });
+    api.setTripReadiness
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce({ ...response(false), version: 3 });
+    const result = await service.reconcile(
+      projectTrip(response(false), deviceId),
+      false,
+    );
+    expect(api.setTripReadiness.mock.calls.map((call) => call[3])).toEqual([
+      { fullPhotoLibraryAccess: true },
+      { fullPhotoLibraryAccess: false },
+    ]);
+    expect(result.members[0]?.fullPhotoLibraryAccess).toBe(false);
+  });
+
   it.each(["LOBBY", "ACTIVE"] as const)(
     "publishes newly granted access in %s, including a restored phone",
     async (status) => {

@@ -197,18 +197,36 @@ export function createSetTripReadiness(
     current: TripView,
     fullPhotoLibraryAccess: boolean,
   ): Promise<TripView> {
-    const member = current.members.find(
+    let member = current.members.find(
       (candidate) => candidate.membershipId === current.currentMembershipId,
     );
     // Approved late joiners and replacement phones also need to publish their
     // permission. Closed trips cannot change membership readiness.
     if (
       (current.status !== "LOBBY" && current.status !== "ACTIVE") ||
-      member?.status !== "ACTIVE" ||
-      member.fullPhotoLibraryAccess === fullPhotoLibraryAccess
+      member?.status !== "ACTIVE"
     ) {
       return current;
     }
+    // A timed-out write may already have reached the server. Resume its exact
+    // command before publishing anything else, including when a poll has since
+    // observed the accepted value. Otherwise the retained journal blocks every
+    // later permission update until the app is restarted.
+    let retained: TripMutationJournalRecord | null;
+    try {
+      retained = await journal.load(scope);
+    } catch {
+      throw internalProblem();
+    }
+    if (retained?.kind === "SET_READINESS" && retained.tripId === current.id) {
+      const replayed = await execute(retained);
+      if (replayed.version >= current.version) current = replayed;
+      member = current.members.find(
+        (candidate) => candidate.membershipId === current.currentMembershipId,
+      );
+    }
+    if (member?.fullPhotoLibraryAccess === fullPhotoLibraryAccess)
+      return current;
     return publish(current.id, fullPhotoLibraryAccess);
   }
 

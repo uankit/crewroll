@@ -1,69 +1,10 @@
 import { useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
-import {
-  AppIcon,
-  AppText,
-  IconButton,
-  MemberAvatar,
-  Sheet,
-  Stack,
-  spacing,
-  useCrewRollTheme,
-} from "../design-system";
+import { StyleSheet } from "react-native";
+import { AppIcon, AppText, Sheet, Stack, spacing } from "../design-system";
+import { JoinRequestRow } from "../features/trips/JoinRequestRow";
 import type { TripView } from "../domain/trips/model";
 import { useAppSession } from "./AppSessionProvider";
 import { useTripContinuity } from "./useTripContinuity";
-
-function RequestRow({
-  name,
-  description,
-  busy,
-  disabled,
-  onApprove,
-  onDecline,
-}: Readonly<{
-  name: string;
-  description?: string;
-  busy: "approve" | "decline" | null;
-  disabled: boolean;
-  onApprove: () => void;
-  onDecline: () => void;
-}>) {
-  const theme = useCrewRollTheme();
-  return (
-    <View style={[styles.row, { borderBottomColor: theme.border }]}>
-      <MemberAvatar displayName={name} muted />
-      <View style={styles.identity}>
-        <AppText variant="bodyStrong">{name}</AppText>
-        {description ? (
-          <AppText variant="caption" tone="secondary">
-            {description}
-          </AppText>
-        ) : null}
-      </View>
-      <View style={styles.actions}>
-        <IconButton
-          label={`Decline ${name}`}
-          icon={<AppIcon name="close" color={theme.textSecondary} size={20} />}
-          disabled={disabled}
-          loading={busy === "decline"}
-          onPress={onDecline}
-        />
-        <IconButton
-          label={`Approve ${name}`}
-          icon={<AppIcon name="check" color={theme.success} size={20} />}
-          disabled={disabled}
-          loading={busy === "approve"}
-          onPress={onApprove}
-          style={{
-            backgroundColor: theme.successSurface,
-            borderColor: theme.successSurface,
-          }}
-        />
-      </View>
-    </View>
-  );
-}
 
 export function TripNotificationsSheet({
   trip,
@@ -88,7 +29,7 @@ export function TripNotificationsSheet({
   const owner = trip.members.some(
     (m) => m.isCurrentMember && m.role === "OWNER",
   );
-  const open = trip.status === "LOBBY" || trip.status === "ACTIVE";
+  const open = trip.status === "ACTIVE";
   const pending =
     owner && open
       ? trip.members.filter(
@@ -149,7 +90,7 @@ export function TripNotificationsSheet({
             JOIN REQUESTS · {pending.length}
           </AppText>
           {pending.map((member) => (
-            <RequestRow
+            <JoinRequestRow
               key={member.membershipId}
               name={member.displayName}
               busy={busy?.id === member.membershipId ? busy.action : null}
@@ -171,7 +112,7 @@ export function TripNotificationsSheet({
           </AppText>
           {phones.map((request) => (
             <Stack gap="xs" key={request.requestId}>
-              <RequestRow
+              <JoinRequestRow
                 name={request.displayName}
                 description={
                   request.platform === "ios"
@@ -233,14 +174,5 @@ export function TripNotificationsSheet({
 }
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  identity: { flex: 1, minWidth: 0, gap: spacing.xxs },
-  actions: { flexDirection: "row", gap: spacing.xs },
   empty: { alignItems: "center", paddingVertical: spacing.xl },
 });

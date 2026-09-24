@@ -265,8 +265,10 @@ jest.mock("@expo-google-fonts/manrope", () => ({
   Manrope_600SemiBold: "Manrope_600SemiBold",
   Manrope_700Bold: "Manrope_700Bold",
   Manrope_800ExtraBold: "Manrope_800ExtraBold",
-  useFonts: () => [true, null],
+  useFonts: () => [mockFontsLoaded, null],
 }));
+
+let mockFontsLoaded = true;
 
 jest.mock("expo-splash-screen", () => ({
   hideAsync: jest.fn(async () => undefined),
@@ -315,6 +317,7 @@ async function renderActualRouter(initialUrl: string) {
 describe("Expo Router mobile journey", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFontsLoaded = true;
     mockSetupRequired = false;
     mockProjection = {
       failed: false,
@@ -442,6 +445,20 @@ describe("Expo Router mobile journey", () => {
     expect(screen.getByTestId("launch-busy")).toBeOnTheScreen();
     expect(SplashScreen.hideAsync).toHaveBeenCalled();
     await router.unmount();
+  });
+
+  it("does not leave a stalled font download covering the app with the native logo", async () => {
+    jest.useFakeTimers();
+    mockFontsLoaded = false;
+    setPhase("LOADING_FONTS_OR_CLERK");
+    const router = await renderActualRouter("/");
+    expect(SplashScreen.hideAsync).not.toHaveBeenCalled();
+    await act(async () => {
+      jest.advanceTimersByTime(2_000);
+    });
+    expect(SplashScreen.hideAsync).toHaveBeenCalled();
+    await router.unmount();
+    jest.useRealTimers();
   });
 
   it.each([
@@ -710,9 +727,7 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Close Invite your crew" }),
     );
 
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Notifications, 1 pending request" }),
-    );
+    expect(screen.queryByRole("button", { name: /Notifications/ })).toBeNull();
     await fireEvent.press(
       screen.getByRole("button", { name: "Approve Grace Hopper" }),
     );
@@ -722,9 +737,6 @@ describe("Expo Router mobile journey", () => {
         memberMembershipId,
       ),
     );
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Close Notifications" }),
-    );
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Start trip" })).toBeEnabled(),
     );
@@ -733,6 +745,37 @@ describe("Expo Router mobile journey", () => {
     await waitFor(() =>
       expect(screen.queryByText("Start trip")).not.toBeOnTheScreen(),
     );
+  });
+
+  it("opens the approved guest trip and publishes an existing grant without reopening the app", async () => {
+    setPhase("READY_PENDING_APPROVAL");
+    const router = await renderActualRouter("/");
+    expect(mockActions.publishPhotoReadiness).not.toHaveBeenCalled();
+    await act(async () => {
+      setPhase("READY_LOBBY");
+      mockProjection = {
+        ...mockProjection,
+        trip: {
+          ...pendingMemberTrip(),
+          members: pendingMemberTrip().members.map((member) => ({
+            ...member,
+            status: "ACTIVE" as const,
+          })),
+        },
+      };
+      mockPublish();
+    });
+    await waitFor(() => expect(router.getPathname()).toBe(`/trips/${tripId}`));
+    await waitFor(() =>
+      expect(mockActions.publishPhotoReadiness).toHaveBeenCalledWith(
+        tripId,
+        false,
+      ),
+    );
+    expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Back to Home" }));
+    await waitFor(() => expect(router.getPathname()).toBe("/"));
+    expect(mockActions.join).not.toHaveBeenCalled();
   });
 
   it("retries activation by hydration without issuing Start again", async () => {

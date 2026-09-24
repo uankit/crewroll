@@ -16,6 +16,8 @@ import android.os.Looper
 import android.provider.MediaStore
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
 
 internal object CrewRollSyncJobs {
   const val PERIODIC = 73101
@@ -53,10 +55,35 @@ internal object CrewRollSyncJobs {
 class CrewRollSyncJobService : JobService() {
   private val handler = Handler(Looper.getMainLooper())
   private val deadlines = mutableMapOf<Int, Runnable>()
+  private val operations = NativeOperationQueue()
+  private val requests = ConcurrentHashMap<Int, Any>()
   override fun onStartJob(params: JobParameters): Boolean {
-    val runtime = CrewRollNativeRuntime.get(applicationContext)
-    if (!runtime.beginJob(params.jobId)) return false
-    if (params.jobId == CrewRollSyncJobs.PERIODIC) CrewRollSyncJobs.armPhotos(applicationContext, runtime.cellular)
+    val request = Any()
+    requests[params.jobId] = request
+    showSyncNotification(params)
+    // JobService callbacks run on the main thread. Restoring a Keystore-backed
+    // session here can freeze a simultaneous cold launch on slower hardware.
+    operations.submit("beginJob") {
+      if (requests[params.jobId] !== request) return@submit
+      val runtime = CrewRollNativeRuntime.get(applicationContext)
+      val started = runtime.beginJob(params.jobId)
+      handler.post {
+        if (requests[params.jobId] !== request) return@post
+        if (!started) {
+          requests.remove(params.jobId, request)
+          jobFinished(params, false)
+        } else {
+          watchJob(params, runtime, request)
+        }
+      }
+    }.whenComplete { _, error ->
+      if (error != null) handler.post {
+        if (requests.remove(params.jobId, request)) jobFinished(params, true)
+      }
+    }
+    return true
+  }
+  private fun showSyncNotification(params: JobParameters) {
     if (Build.VERSION.SDK_INT >= 34 && params.jobId == CrewRollSyncJobs.USER) {
       val manager = getSystemService(NotificationManager::class.java)
       manager.createNotificationChannel(NotificationChannel("crewroll-sync", "Photo sync", NotificationManager.IMPORTANCE_LOW))
@@ -67,6 +94,9 @@ class CrewRollSyncJobService : JobService() {
       if (launch != null) notification.setContentIntent(PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
       setNotification(params, 73103, notification.build(), JOB_END_NOTIFICATION_POLICY_REMOVE)
     }
+  }
+  private fun watchJob(params: JobParameters, runtime: CrewRollNativeRuntime, request: Any) {
+    if (params.jobId == CrewRollSyncJobs.PERIODIC) CrewRollSyncJobs.armPhotos(applicationContext, runtime.cellular)
     val started = Instant.now()
     val expires = started.plusSeconds(if (params.jobId == CrewRollSyncJobs.USER) 300 else 120)
     // Finish a lease when this phone has drained its known work. A timeout is
@@ -75,11 +105,12 @@ class CrewRollSyncJobService : JobService() {
       override fun run() {
         runtime.engine.backgroundWork(started).whenComplete { work, error ->
           handler.post {
-            if (deadlines[params.jobId] !== this) return@post
+            if (deadlines[params.jobId] !== this || requests[params.jobId] !== request) return@post
             val drained = error == null && work.checked && !work.working && !work.pending
             if (drained || Instant.now() >= expires || !runtime.enabled) {
               deadlines.remove(params.jobId)
-              runtime.endJob(params.jobId)
+              requests.remove(params.jobId, request)
+              operations.submit("finishJob") { runtime.endJob(params.jobId) }
               jobFinished(params, !drained && runtime.enabled)
               if (drained && runtime.enabled && params.jobId == CrewRollSyncJobs.PHOTOS) {
                 getSystemService(JobScheduler::class.java).cancel(CrewRollSyncJobs.PHOTOS)
@@ -92,12 +123,26 @@ class CrewRollSyncJobService : JobService() {
     }
     deadlines[params.jobId] = check
     handler.postDelayed(check, 2_000)
-    return true
   }
   override fun onStopJob(params: JobParameters): Boolean {
+    requests.remove(params.jobId)
     deadlines.remove(params.jobId)?.let(handler::removeCallbacks)
-    val runtime = CrewRollNativeRuntime.get(applicationContext)
-    runtime.endJob(params.jobId)
-    return runtime.enabled
+    operations.submit("stopJob") { CrewRollNativeRuntime.get(applicationContext).endJob(params.jobId) }
+    // Work is resumable; an explicit pause cancels the scheduled jobs itself.
+    return true
+  }
+  override fun onDestroy() {
+    val jobIds = requests.keys.toList()
+    requests.clear()
+    deadlines.values.forEach(handler::removeCallbacks)
+    deadlines.clear()
+    operations.submit("destroyJobs") {
+      if (jobIds.isNotEmpty()) {
+        val runtime = CrewRollNativeRuntime.get(applicationContext)
+        jobIds.forEach(runtime::endJob)
+      }
+    }
+    operations.close()
+    super.onDestroy()
   }
 }

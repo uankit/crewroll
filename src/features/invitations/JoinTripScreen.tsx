@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { Keyboard, StyleSheet, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { BackHandler, Keyboard, StyleSheet, View } from "react-native";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import {
   AppText,
@@ -47,6 +47,21 @@ export function JoinTripScreen({
   const [error, setError] = useState<string | undefined>();
   const inFlight = useRef(false);
   const joining = useRef(false);
+  const submitting = state.kind === "submitting";
+  useEffect(() => {
+    if (!preview) return;
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => {
+        if (!submitting) {
+          setPreview(null);
+          joining.current = false;
+        }
+        return true;
+      },
+    );
+    return () => subscription.remove();
+  }, [preview, submitting]);
   async function findTrip() {
     if (inFlight.current) return;
     const normalized = normalizeCode(code);
@@ -115,7 +130,6 @@ export function JoinTripScreen({
         />
       </FlowTransition>
     );
-  const submitting = state.kind === "submitting";
   function backToCode() {
     if (submitting) return;
     setPreview(null);

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { StyleSheet, View } from "react-native";
+import { BackHandler, StyleSheet, View } from "react-native";
 import { CrewRollThemeProvider, darkColors } from "../../design-system";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import { JoinTripScreen, type JoinTripScreenProps } from "./index";
@@ -102,6 +102,27 @@ describe("JoinTripScreen", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Back" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onJoin).not.toHaveBeenCalled();
+  });
+  test("Android Back returns from the preview to the entered code without leaving the join flow", async () => {
+    let back!: () => boolean | null | undefined;
+    const subscription = jest
+      .spyOn(BackHandler, "addEventListener")
+      .mockImplementation((_event, handler) => {
+        back = () =>
+          handler({ type: "hardwareBackPress", timeStamp: Date.now() });
+        return { remove: jest.fn() };
+      });
+    const onCancel = jest.fn();
+    const view = await renderJoin({ initialCode: "ABCD2345", onCancel });
+    await fireEvent.press(view.getByRole("button", { name: "Find trip" }));
+    await waitFor(() => view.getByText("Arjun"));
+    await act(async () => {
+      expect(back()).toBe(true);
+    });
+    expect(view.getByLabelText("Invite code").props.value).toBe("ABCD2345");
+    expect(onCancel).not.toHaveBeenCalled();
+    await view.unmount();
+    subscription.mockRestore();
   });
   test.each(["INVITE_INVALID", "NETWORK_ERROR"])(
     "shows safe lookup errors for %s",

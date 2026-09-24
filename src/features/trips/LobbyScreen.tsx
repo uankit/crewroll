@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { BackHandler, StyleSheet, View } from "react-native";
 import type { StartBlocker, TripView } from "../../domain/trips/model";
 import { startBlockerFor } from "../../domain/trips/startEligibility";
 import {
@@ -16,6 +16,7 @@ import {
   useCrewRollTheme,
 } from "../../design-system";
 import { PhotoAccessScreen } from "./PhotoAccessScreen";
+import { JoinRequestRow } from "./JoinRequestRow";
 import type { ScrollRestoration } from "../../design-system";
 
 export type LobbyInvite = Readonly<{
@@ -46,6 +47,13 @@ export type LobbyScreenProps = Readonly<{
   inviteStatus?: "loading" | "failed";
   onRetryInvite?: () => void;
   onOpenNotifications?: () => void;
+  memberRequests?: Readonly<{
+    busy: { id: string; action: "approve" | "decline" } | null;
+    error: { id: string; message: string } | null;
+    onResolve: (membershipId: string, approve: boolean) => void;
+  }>;
+  photoReadinessFailed?: boolean;
+  onRetryPhotoReadiness?: () => void;
   onStart?: () => void;
   starting?: boolean;
   actionError?: string | null;
@@ -85,6 +93,9 @@ export function LobbyScreen({
   inviteStatus = "loading",
   onRetryInvite,
   onOpenNotifications,
+  memberRequests,
+  photoReadinessFailed = false,
+  onRetryPhotoReadiness,
   onStart,
   starting = false,
   activation,
@@ -127,6 +138,17 @@ export function LobbyScreen({
     current?.status === "ACTIVE" &&
     !checking &&
     photoPermission.kind !== "FULL";
+  useEffect(() => {
+    if (!photoSetupOpen || !needsPermission) return;
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => {
+        setPhotoSetupOpen(false);
+        return true;
+      },
+    );
+    return () => subscription.remove();
+  }, [needsPermission, photoSetupOpen]);
   // Initial setup belongs to account onboarding. A skipped/revoked grant must
   // not replace the trip; let the user explicitly reopen the same explainer.
   if (needsPermission && photoSetupOpen)
@@ -147,22 +169,25 @@ export function LobbyScreen({
   const blocker = owner && lobby ? startBlockerFor(trip) : null;
   const pending = trip.members.filter((m) => m.status === "PENDING_KEY");
   const joined = trip.members.filter((m) => m.status === "ACTIVE");
-  const requestCount = deviceRequestCount + (owner ? pending.length : 0);
+  const requestCount =
+    deviceRequestCount + (!lobby && owner ? pending.length : 0);
   const full = photoPermission.kind === "FULL";
   const permissionSyncPending =
     full && current?.fullPhotoLibraryAccess === false;
   const alone = joined.length === 1 && pending.length === 0;
-  const startExplanation = checking
-    ? "Checking photo access on this phone…"
-    : needsPermission
-      ? "Allow full photo access before starting."
-      : blocker === "MEMBER_NEEDS_FULL_ACCESS" && permissionSyncPending
-        ? "Finishing photo setup on this phone…"
-        : blocker
-          ? startBlockerCopy(blocker)
-          : !onStart
-            ? "Connecting to your trip…"
-            : "Start whenever you’re ready. Others can join later.";
+  const startExplanation = photoReadinessFailed
+    ? "Photo setup couldn’t sync. We’ll keep trying."
+    : checking
+      ? "Checking photo access on this phone…"
+      : needsPermission
+        ? "Allow full photo access before starting."
+        : blocker === "MEMBER_NEEDS_FULL_ACCESS" && permissionSyncPending
+          ? "Finishing photo setup on this phone…"
+          : blocker
+            ? startBlockerCopy(blocker)
+            : !onStart
+              ? "Connecting to your trip…"
+              : "Start whenever you’re ready. Others can join later.";
   const title = lobby ? "Who’s coming along?" : trip.name;
   const description = lobby
     ? owner
@@ -307,7 +332,12 @@ export function LobbyScreen({
                     label="Start trip"
                     variant="secondary"
                     loading={starting}
-                    disabled={blocker !== null || !full || !onStart}
+                    disabled={
+                      blocker !== null ||
+                      !full ||
+                      !onStart ||
+                      photoReadinessFailed
+                    }
                     accessibilityHint={startExplanation}
                     onPress={onStart ?? (() => {})}
                   />
@@ -317,6 +347,13 @@ export function LobbyScreen({
                 <AppText accessibilityRole="alert" tone="critical">
                   {actionError}
                 </AppText>
+              ) : null}
+              {photoReadinessFailed && onRetryPhotoReadiness ? (
+                <Button
+                  label="Retry photo setup"
+                  variant="text"
+                  onPress={onRetryPhotoReadiness}
+                />
               ) : null}
               {owner ? (
                 <AppText
@@ -332,7 +369,9 @@ export function LobbyScreen({
                   variant="caption"
                   style={styles.center}
                 >
-                  We’ll update this automatically when your host starts.
+                  {photoReadinessFailed
+                    ? "Photo setup couldn’t sync. We’ll keep trying."
+                    : "We’ll update this automatically when your host starts."}
                 </AppText>
               ) : null}
             </>
@@ -357,47 +396,77 @@ export function LobbyScreen({
               </AppText>
             ) : null}
             <View accessibilityLiveRegion="polite">
-              {[...joined, ...pending].map((member) => (
-                <View
-                  key={member.membershipId}
-                  style={[
-                    styles.member,
-                    styles.joinedMember,
-                    { borderBottomColor: theme.border },
-                  ]}
-                >
-                  <MemberAvatar
-                    displayName={
-                      member.isCurrentMember ? "You" : member.displayName
-                    }
-                  />
-                  <View style={styles.memberName}>
-                    <AppText variant="bodyStrong">
-                      {member.isCurrentMember ? "You" : member.displayName}
-                      {member.role === "OWNER" ? " · Host" : ""}
+              {[...joined, ...pending].map((member) =>
+                owner && member.status === "PENDING_KEY" && memberRequests ? (
+                  <View key={member.membershipId}>
+                    <JoinRequestRow
+                      name={member.displayName}
+                      description="Wants to join"
+                      busy={
+                        memberRequests.busy?.id === member.membershipId
+                          ? memberRequests.busy.action
+                          : null
+                      }
+                      disabled={memberRequests.busy !== null}
+                      onApprove={() =>
+                        memberRequests.onResolve(member.membershipId, true)
+                      }
+                      onDecline={() =>
+                        memberRequests.onResolve(member.membershipId, false)
+                      }
+                    />
+                    {memberRequests.error?.id === member.membershipId ? (
+                      <AppText
+                        variant="caption"
+                        tone="critical"
+                        accessibilityRole="alert"
+                      >
+                        {memberRequests.error.message}
+                      </AppText>
+                    ) : null}
+                  </View>
+                ) : (
+                  <View
+                    key={member.membershipId}
+                    style={[
+                      styles.member,
+                      styles.joinedMember,
+                      { borderBottomColor: theme.border },
+                    ]}
+                  >
+                    <MemberAvatar
+                      displayName={
+                        member.isCurrentMember ? "You" : member.displayName
+                      }
+                    />
+                    <View style={styles.memberName}>
+                      <AppText variant="bodyStrong">
+                        {member.isCurrentMember ? "You" : member.displayName}
+                        {member.role === "OWNER" ? " · Host" : ""}
+                      </AppText>
+                    </View>
+                    <AppText
+                      variant="caption"
+                      tone="secondary"
+                      style={styles.readiness}
+                    >
+                      {member.status === "PENDING_KEY"
+                        ? "Waiting for approval"
+                        : member.isCurrentMember && checking
+                          ? "Checking photos…"
+                          : member.isCurrentMember && !full
+                            ? "Photo access needed"
+                            : !member.fullPhotoLibraryAccess
+                              ? member.isCurrentMember && full
+                                ? "Finishing setup…"
+                                : "Setting up photos"
+                              : member.deviceState === "MISSING"
+                                ? "Connecting…"
+                                : "Ready"}
                     </AppText>
                   </View>
-                  <AppText
-                    variant="caption"
-                    tone="secondary"
-                    style={styles.readiness}
-                  >
-                    {member.status === "PENDING_KEY"
-                      ? "Waiting for approval"
-                      : member.isCurrentMember && checking
-                        ? "Checking photos…"
-                        : member.isCurrentMember && !full
-                          ? "Photo access needed"
-                          : !member.fullPhotoLibraryAccess
-                            ? member.isCurrentMember && full
-                              ? "Finishing setup…"
-                              : "Setting up photos"
-                            : member.deviceState === "MISSING"
-                              ? "Connecting…"
-                              : "Ready"}
-                  </AppText>
-                </View>
-              ))}
+                ),
+              )}
               {alone ? (
                 <View
                   testID="crew-placeholders"

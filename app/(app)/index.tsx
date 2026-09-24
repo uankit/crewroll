@@ -1,6 +1,6 @@
 import { DeviceRecoveryFlow } from "@/bootstrap/DeviceRecoveryFlow";
 import { AccountMenu } from "@/bootstrap/AccountMenu";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TripSummary } from "@/features/home";
 import { useTripLibrary } from "@/bootstrap/useTripLibrary";
 import { TripLifecycleControls } from "@/bootstrap/TripLifecycleControls";
@@ -16,6 +16,24 @@ export default function ProtectedHomeRoute() {
   const library = useTripLibrary(focused);
   const [selected, setSelected] = useState<TripSummary | null>(null);
   const { retry, snapshot, pendingTripPreview } = useAppSession();
+  const awaitingApproval = useRef(false);
+  const approvedTripId =
+    snapshot.phase === "READY_LOBBY" || snapshot.phase === "READY_ACTIVE"
+      ? snapshot.tripId
+      : null;
+  useEffect(() => {
+    if (snapshot.phase === "READY_PENDING_APPROVAL") {
+      awaitingApproval.current = true;
+    } else if (approvedTripId && awaitingApproval.current && focused) {
+      awaitingApproval.current = false;
+      setSelected(null);
+      // Entering the approved trip also publishes this phone's existing photo
+      // grant. Leaving the guest on Home kept the host waiting for readiness.
+      router.push(`/trips/${approvedTripId}`);
+    } else if (snapshot.phase === "READY_NO_TRIP") {
+      awaitingApproval.current = false;
+    }
+  }, [approvedTripId, focused, router, snapshot.phase]);
   const actions = {
     accountControl: <AccountMenu />,
     onCreateTrip: () => router.push("/trips/create"),
@@ -39,7 +57,8 @@ export default function ProtectedHomeRoute() {
       "READY_ACTIVE",
       "READY_PENDING_APPROVAL",
     ].includes(snapshot.phase) &&
-    (library.isPending || library.isError || !!library.data?.items.length)
+    (library.isPending || library.isError || !!library.data?.items.length) &&
+    !(snapshot.phase === "READY_PENDING_APPROVAL" && pendingTripPreview)
   ) {
     return (
       <>

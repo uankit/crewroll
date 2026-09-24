@@ -27,24 +27,28 @@ class CrewRollTransferModule : Module() {
     Name("CrewRollTransfer")
     Events("engineInvalidated")
     OnCreate {
-      runtime().listen(invalidation)
-      runtime().foreground(true)
-      commands.submit("startupCleanup") { runLifecycleCleanup() }
+      commands.submit("startup") {
+        runtime().listen(invalidation)
+        runLifecycleCleanup()
+        runtime().foreground(foreground)
+      }
     }
     OnActivityEntersForeground {
       foreground = true
       commands.submit("foregroundCleanup") {
         runLifecycleCleanup()
-        runtime().foreground(true)
+        runtime().foreground(foreground)
       }
     }
     OnActivityEntersBackground {
       foreground = false
-      runtime().foreground(false)
+      commands.submit("background") { runtime().foreground(foreground) }
     }
     OnDestroy {
-      runtimeValue?.unlisten(invalidation)
-      runtimeValue = null
+      commands.submit("detach") {
+        runtimeValue?.unlisten(invalidation)
+        runtimeValue = null
+      }
       commands.close()
     }
 

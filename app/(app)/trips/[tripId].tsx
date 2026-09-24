@@ -1,3 +1,4 @@
+import { usePhotoReadinessRecovery } from "@/bootstrap/photoReadinessReconciler";
 import { TripNotificationsSheet } from "@/bootstrap/TripNotificationsSheet";
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
 import { useTripContinuity } from "@/bootstrap/useTripContinuity";
@@ -7,22 +8,13 @@ import {
   useLocalSearchParams,
   useRouter,
 } from "expo-router";
-import { AppState, BackHandler } from "react-native";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   useAppSession,
   ActiveTripTransfers,
   useTripProjection,
-  createPhotoReadinessReconciler,
   permissionForLobbyEntry,
-  usePhotoReadinessEntryBoundary,
   copyInviteCode,
 } from "@/bootstrap";
 import {
@@ -56,17 +48,6 @@ function endsLabel(endsAt: string): string {
 function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const router = useRouter();
   const focused = useIsFocused();
-  useEffect(() => {
-    if (!focused) return;
-    const subscription = BackHandler.addEventListener(
-      "hardwareBackPress",
-      () => {
-        router.dismissTo("/(app)");
-        return true;
-      },
-    );
-    return () => subscription.remove();
-  }, [focused, router]);
   const session = useAppSession();
   const galleryCache = session.galleryCache;
   const gallery = useSyncExternalStore(
@@ -120,58 +101,41 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   }, [actions, owner, inviteOpen, tripId, inviteAttempt]);
 
   const [retryingActivation, setRetryingActivation] = useState(false);
-  const readinessReconciler = useRef(createPhotoReadinessReconciler());
-  const [observedEntry, setObservedEntry] = useState({
-    focused: false,
-    tripId,
-  });
-  const [entryReconciled, setEntryReconciled] = useState(false);
-  usePhotoReadinessEntryBoundary(
+  const readiness = usePhotoReadinessRecovery(
     actions,
-    focused,
     tripId,
+    focused,
     session.snapshot.phase === "READY_LOBBY" ||
       session.snapshot.phase === "READY_ACTIVE",
   );
-
-  const reconcilePhotoReadiness = useCallback(() => {
-    if (actions === null) return Promise.resolve();
-    return readinessReconciler.current.reconcile(actions, tripId);
-  }, [actions, tripId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.resolve().then(async () => {
-      if (cancelled) return;
-      setObservedEntry({ focused, tripId });
-      setEntryReconciled(false);
-      if (
-        !focused ||
-        (session.snapshot.phase !== "READY_LOBBY" &&
-          session.snapshot.phase !== "READY_ACTIVE")
-      )
-        return;
-      await reconcilePhotoReadiness().catch(() => undefined);
-      if (!cancelled) setEntryReconciled(true);
-    });
-    if (
-      !focused ||
-      (session.snapshot.phase !== "READY_LOBBY" &&
-        session.snapshot.phase !== "READY_ACTIVE")
-    ) {
-      return () => {
-        cancelled = true;
-      };
+  const [memberBusy, setMemberBusy] = useState<{
+    id: string;
+    action: "approve" | "decline";
+  } | null>(null);
+  const [memberError, setMemberError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
+  const resolvingMember = useRef(false);
+  async function resolveMember(id: string, approve: boolean) {
+    if (!actions || resolvingMember.current) return;
+    resolvingMember.current = true;
+    setMemberBusy({ id, action: approve ? "approve" : "decline" });
+    setMemberError(null);
+    try {
+      if (approve) await actions.approve(tripId, id);
+      else await actions.reject(tripId, id);
+      void projection.refresh();
+    } catch {
+      setMemberError({
+        id,
+        message: "The request couldn’t be updated. Try again.",
+      });
+    } finally {
+      resolvingMember.current = false;
+      setMemberBusy(null);
     }
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active")
-        void reconcilePhotoReadiness().catch(() => undefined);
-    });
-    return () => {
-      cancelled = true;
-      subscription.remove();
-    };
-  }, [focused, reconcilePhotoReadiness, session.snapshot.phase, tripId]);
+  }
 
   if (projection.failed) {
     return (
@@ -243,6 +207,18 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         onOpenFilters={() => setFiltersOpen(true)}
         onOpenInfo={() => setInfoOpen(true)}
         onOpenNotifications={() => setNotificationsOpen(true)}
+        {...(actions
+          ? {
+              memberRequests: {
+                busy: memberBusy,
+                error: memberError,
+                onResolve: (id: string, approve: boolean) =>
+                  void resolveMember(id, approve),
+              },
+            }
+          : {})}
+        photoReadinessFailed={readiness.failed}
+        onRetryPhotoReadiness={readiness.retry}
         deviceRequestCount={continuity.data?.approvalRequests.length ?? 0}
         transferContent={
           activation?.kind === "ready" || trip.status === "ENDING" ? (
@@ -297,20 +273,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
             );
           });
         }}
-        onRequestPhotoAccess={() => {
-          if (actions !== null)
-            void readinessReconciler.current
-              .reconcile(actions, trip.id, true)
-              .catch(() => undefined);
-        }}
+        onRequestPhotoAccess={readiness.request}
         photoPermission={
           trip.status === "ACTIVE" || trip.status === "ENDING"
             ? session.photoPermission
             : permissionForLobbyEntry(
-                focused &&
-                  observedEntry.focused &&
-                  observedEntry.tripId === tripId,
-                entryReconciled,
+                focused,
+                readiness.checked,
                 session.photoPermission,
               )
         }

@@ -280,12 +280,14 @@ describe("LobbyScreen", () => {
     expect(onOpenInfo).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Trip info")).toBeNull();
   });
-  test("copies the code from the owner sheet and opens requests separately", async () => {
+  test("copies the invite and approves directly in the crew list before the trip starts", async () => {
     const onCopy = jest.fn(async () => undefined);
     const onOpenNotifications = jest.fn();
+    const onResolve = jest.fn();
     const screen = await renderLobby({
       invite: invite({ onCopy }),
       onOpenNotifications,
+      memberRequests: { busy: null, error: null, onResolve },
     });
     expect(screen.queryByText("ABCD 2345")).toBeNull();
     await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
@@ -297,10 +299,12 @@ describe("LobbyScreen", () => {
     await fireEvent.press(
       screen.getByRole("button", { name: "Close Invite your crew" }),
     );
+    expect(screen.queryByRole("button", { name: /Notifications/ })).toBeNull();
     await fireEvent.press(
-      screen.getByRole("button", { name: "Notifications, 1 pending request" }),
+      screen.getByRole("button", { name: "Approve Grace Hopper" }),
     );
-    expect(onOpenNotifications).toHaveBeenCalledTimes(1);
+    expect(onResolve).toHaveBeenCalledWith(memberMembershipId, true);
+    expect(onOpenNotifications).not.toHaveBeenCalled();
     expect(
       screen.getByRole("button", { name: "Start trip" }).props
         .accessibilityState.disabled,
