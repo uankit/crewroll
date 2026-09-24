@@ -6,14 +6,14 @@ Public App Store and Google Play releases are not complete. Store preparation is
 
 The main readiness implementation was pushed to `origin/main` at `4bbfc497bc1f425baf5db73c00c69bce5f023b08`. The iOS and Android builds below contain that revision. Subsequent account-provider and site fixes are deployed independently of those binaries.
 
-| Destination | Verified state |
-| --- | --- |
-| iOS 1.0.4 (17) | EAS `8616f3c3-2851-41a2-ae9e-ff40b302b2be`; uploaded, Apple processed VALID, internal TestFlight IN_BETA_TESTING |
-| Apple build identifier | `b060b86f-1e0b-4ef0-91c5-38158334f341` |
-| iOS submission | `7c030998-fd85-443c-9878-81f526ba038f`, successful |
-| Android 1.0.4 (5) | EAS `6b98f623-cbf7-4223-b668-db86ae6d5fe0`, FINISHED; not yet uploaded to Google Play |
-| iOS OTA, runtime 1.0.4 | TestFlight channel, group `dbab7df8-affe-4619-82c0-b73f44df37cb` |
-| Android OTA, runtime 1.0.4 | Production channel, group `daaa0c73-2913-4a56-9377-8a1bee5b3b71` |
+| Destination                | Verified state                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| iOS 1.0.4 (17)             | EAS `8616f3c3-2851-41a2-ae9e-ff40b302b2be`; uploaded, Apple processed VALID, internal TestFlight IN_BETA_TESTING |
+| Apple build identifier     | `b060b86f-1e0b-4ef0-91c5-38158334f341`                                                                           |
+| iOS submission             | `7c030998-fd85-443c-9878-81f526ba038f`, successful                                                               |
+| Android 1.0.4 (5)          | EAS `6b98f623-cbf7-4223-b668-db86ae6d5fe0`, FINISHED; not yet uploaded to Google Play                            |
+| iOS OTA, runtime 1.0.4     | TestFlight channel, group `dbab7df8-affe-4619-82c0-b73f44df37cb`                                                 |
+| Android OTA, runtime 1.0.4 | Production channel, group `daaa0c73-2913-4a56-9377-8a1bee5b3b71`                                                 |
 
 Do not send runtime 1.0.4 changes to older 1.0.3 binaries. Build 16 remains in the external TestFlight review flow with its existing beta configuration. Do not overwrite its reviewer instructions with production-only credentials while it is still under review.
 
@@ -53,17 +53,17 @@ These checks are not proof of complete physical-device delivery, background sche
 
 Apple App Privacy was published and verified in App Store Connect on 24 September 2026. Eleven data types are declared for App Functionality, linked to an account or device, without tracking:
 
-| Data | Implementation/source |
-| --- | --- |
-| Name, email, user ID | Clerk account, CrewRoll profile and user records |
-| Coarse location | Clerk session activity derives city/country from sign-in IP addresses |
-| Photos or videos | OAuth may copy a user's profile picture into Clerk; this is separate from encrypted trip photos |
-| Customer support | Safety reports, optional report messages and support requests |
-| Other user content | Trip names, dates, membership and report text |
-| Device ID | Registered installation/device identifiers; Expo update installation token |
-| Product interaction | Trip approval/lifecycle, delivery/save status and authentication activity |
-| Crash data | Expo Updates; explicitly required by Expo's app-store guidance |
-| Other diagnostics | Update diagnostics and bounded service error/request records |
+| Data                 | Implementation/source                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------- |
+| Name, email, user ID | Clerk account, CrewRoll profile and user records                                                |
+| Coarse location      | Clerk session activity derives city/country from sign-in IP addresses                           |
+| Photos or videos     | OAuth may copy a user's profile picture into Clerk; this is separate from encrypted trip photos |
+| Customer support     | Safety reports, optional report messages and support requests                                   |
+| Other user content   | Trip names, dates, membership and report text                                                   |
+| Device ID            | Registered installation/device identifiers; Expo update installation token                      |
+| Product interaction  | Trip approval/lifecycle, delivery/save status and authentication activity                       |
+| Crash data           | Expo Updates; explicitly required by Expo's app-store guidance                                  |
+| Other diagnostics    | Update diagnostics and bounded service error/request records                                    |
 
 Contacts are not declared: CrewRoll does not read an address book or import a friends/contact graph. Trip participant records are disclosed as user identifiers and trip content. No precise live device location is requested. Original photo EXIF can contain location and is delivered inside end-to-end encrypted originals to invited trip members.
 
@@ -87,6 +87,20 @@ The published privacy policy now explains OAuth profile pictures, Clerk's approx
 - Google privacy URL, no ads, no government affiliation, no financial features and no health features saved.
 - Google category Photography and support contacts (`support@crewroll.app`, `https://crewroll.app`) saved.
 - Google IARC questionnaire completed: private user photo sharing is the primary content; blocking/reporting available; interactions limited to invited members. Generated ratings include Teen in North America, 12+ in most other regions and parental guidance in Europe.
+- Google Data Safety draft saved with ten collected data types: name, email, user IDs, approximate location, photos, app interactions, other user-generated content, crash logs, diagnostics, and device IDs. None declared shared under Google's service-provider/user-directed-sharing exemptions. Profile photos and other user content are optional. Crash logs and diagnostics include Google's Analytics purpose because its definition covers crash diagnosis and app health; no advertising/tracking purpose is selected. Account-deletion URL and encryption in transit are declared. Submission remains blocked by the target-audience prerequisite.
+- Google English listing copy saved as a draft. Prepared and visually checked the existing app icon at 512 × 512 and a 1024 × 500 feature graphic under `assets/store/`. Chrome rejected file access during upload; those two images have not uploaded. Current release screenshots remain pending.
+
+## Review sign-in implementation
+
+The native account flow now offers a password step only when Clerk advertises password as an available first factor for that account. Otherwise the existing email-code flow is used. Password accounts retain an email-code alternative and any required email second factor. Invalid passwords do not finalize a session; successful sign-in and changing the email clear the local password state.
+
+Seven authentication-hook tests pass, including wrong-password refusal, email-code fallback and second-factor enforcement. This implementation is covered by the 806-pass UI run above. Live production sign-in is still pending the Clerk configuration approval; neither uploaded build 17 nor Android build 5 contains this later UI change.
+
+## Encryption documentation preparation
+
+Source inspection confirms bundled libsodium encryption beyond Apple operating-system APIs: XChaCha20-Poly1305 media/manifest encryption and sealed-box key envelopes, plus the platform identity/key APIs. See `packages/contracts/crypto/FORMAT_V1.md` and the native Swift package dependency on `Clibsodium`. This is not an OS-only encryption app.
+
+Apple's current [documentation matrix](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption) distinguishes standard non-OS algorithms from proprietary algorithms. It requires a French encryption declaration for distribution in France when standard non-OS encryption is used; proprietary algorithms also require CCATS. The [declaration workflow](https://developer.apple.com/help/app-store-connect/manage-app-information/determine-and-upload-app-encryption-documentation) supplies questions and any required document upload before review. This technical inventory does not establish a legal export classification or replace a required government declaration.
 
 ## Remaining release dependencies
 
@@ -94,5 +108,5 @@ The published privacy policy now explains OAuth profile pictures, Clerk's approx
 - Two non-admin review accounts with strong generated passwords are stored only in the protected release-credentials directory. Production Clerk currently returns only the email-code first factor. Enabling optional password access is pending explicit approval; production Clerk test mode remains off. Do not claim the reviewer password flow works until it passes on-device.
 - App Store free pricing is prepared at zero in all 175 price regions, but not saved pending explicit owner approval requested by automatic review.
 - EU trader status needs the owner's factual declaration. Export compliance for bundled non-OS encryption still needs a verified classification; existing `ITSAppUsesNonExemptEncryption: false` is not evidence of an exemption. Do not make a new unverified export declaration.
-- Google reviewer access must be complete before its target-audience questionnaire can be finished. Data Safety and screenshot/listing work remain in progress.
+- Google reviewer access must be complete before its target-audience questionnaire can be finished. Data Safety and listing text are saved as drafts; screenshots, asset upload and final submission remain in progress.
 - The owner will provide the Android tester email list later. Google requires 12 closed testers continuously opted in for at least 14 days before production access can be requested; internal testing does not satisfy this requirement.

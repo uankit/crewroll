@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <rect width="1024" height="500" fill="#FAF8F3"/>
+  <g fill="#232B26" font-family="Manrope, sans-serif">
+    <text x="64" y="91" font-size="28" font-weight="800">CrewRoll</text>
+    <text x="64" y="222" font-size="52" font-weight="800">Your trip.</text>
+    <text x="64" y="289" font-size="52" font-weight="800">Everyone’s photos.</text>
+    <text x="64" y="393" font-size="22" font-weight="500" fill="#68716A">iPhone + Android</text>
+  </g>
+  <g transform="translate(748 156) scale(7.3)">
+    <rect x="2.33333" y="2.33333" width="16.3333" height="17.5" rx="4.66667" fill="#C64531"/>
+    <rect x="4.66667" y="4.66667" width="11.6667" height="12.8333" rx="2.33333" fill="#FAF8F3"/>
+    <rect x="9.33333" y="9.33333" width="16.3333" height="17.5" rx="4.66667" fill="#C64531"/>
+    <rect x="11.6667" y="11.6667" width="11.6667" height="12.8333" rx="2.33333" fill="#FAF8F3"/>
+    <circle cx="14.875" cy="14.875" r="1.45833" fill="#C64531"/>
+  </g>
+</svg>

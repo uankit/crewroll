@@ -19,6 +19,9 @@ const success = () => Promise.resolve({ error: null });
 function fixture() {
   const signIn = {
     create: jest.fn(success),
+    password: jest.fn(success),
+    supportedFirstFactors: [] as { strategy: string }[],
+    supportedSecondFactors: [] as { strategy: string }[],
     status: "complete",
     finalize: jest.fn(success),
     emailCode: { sendCode: jest.fn(success), verifyCode: jest.fn(success) },
@@ -42,6 +45,66 @@ function fixture() {
 }
 
 describe("account authentication", () => {
+  it("uses a configured password without sending an OTP and rejects incorrect passwords", async () => {
+    const { signIn } = fixture();
+    signIn.supportedFirstFactors = [
+      { strategy: "password" },
+      { strategy: "email_code" },
+    ];
+    const { result } = await renderHook(useAccountAuthentication);
+    await act(() => result.current.setEmail("reviewer@example.com"));
+    await act(() => result.current.submitEmail());
+    expect(result.current.passwordRequired).toBe(true);
+    expect(result.current.verifying).toBe(false);
+    expect(signIn.emailCode.sendCode).not.toHaveBeenCalled();
+    signIn.password.mockResolvedValueOnce({
+      error: { clerkError: true, code: "form_password_incorrect" },
+    } as never);
+    await act(() => result.current.setPassword("wrong-password"));
+    await act(() => result.current.submitPassword());
+    expect(result.current.error).toMatch(/password didn’t work/);
+    expect(signIn.finalize).not.toHaveBeenCalled();
+    await act(() => result.current.setPassword("accepted-password"));
+    await act(() => result.current.submitPassword());
+    expect(signIn.password).toHaveBeenLastCalledWith({
+      emailAddress: "reviewer@example.com",
+      password: "accepted-password",
+    });
+    expect(signIn.finalize).toHaveBeenCalledTimes(1);
+    expect(result.current.password).toBe("");
+  });
+
+  it("allows password accounts to use a verified email code instead", async () => {
+    const { signIn } = fixture();
+    signIn.supportedFirstFactors = [{ strategy: "password" }];
+    const { result } = await renderHook(useAccountAuthentication);
+    await act(() => result.current.setEmail("reviewer@example.com"));
+    await act(() => result.current.submitEmail());
+    await act(() => result.current.setPassword("discard-this"));
+    await act(() => result.current.useEmailCode());
+    expect(signIn.emailCode.sendCode).toHaveBeenCalledWith({
+      emailAddress: "reviewer@example.com",
+    });
+    expect(result.current.passwordRequired).toBe(false);
+    expect(result.current.verifying).toBe(true);
+    expect(result.current.password).toBe("");
+    expect(signIn.finalize).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass an email second factor after a correct password", async () => {
+    const { signIn } = fixture();
+    signIn.supportedFirstFactors = [{ strategy: "password" }];
+    signIn.supportedSecondFactors = [{ strategy: "email_code" }];
+    signIn.status = "needs_second_factor";
+    const { result } = await renderHook(useAccountAuthentication);
+    await act(() => result.current.setEmail("reviewer@example.com"));
+    await act(() => result.current.submitEmail());
+    await act(() => result.current.setPassword("accepted-password"));
+    await act(() => result.current.submitPassword());
+    expect(signIn.mfa.sendEmailCode).toHaveBeenCalledTimes(1);
+    expect(signIn.finalize).not.toHaveBeenCalled();
+    expect(result.current.verifying).toBe(true);
+  });
   it("signs a returning user in without creating another account", async () => {
     const { signIn, signUp } = fixture();
     const { result } = await renderHook(useAccountAuthentication);

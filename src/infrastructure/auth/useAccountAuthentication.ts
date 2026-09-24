@@ -26,6 +26,8 @@ function authMessage(error: unknown): string {
   const code = authCode(error);
   if (code === "form_code_incorrect")
     return "That code didn’t work. Check it and try again.";
+  if (code === "form_password_incorrect")
+    return "That password didn’t work. Try again or use an email code.";
   if (code === "verification_expired" || code === "verification_failed")
     return "That code has expired. Request a new one below.";
   if (code === "too_many_requests")
@@ -46,7 +48,10 @@ export function useAccountAuthentication() {
   const { startSSOFlow } = useSSO();
   const [email, setEmail] = useState("");
   const [code, setCodeValue] = useState("");
-  const [kind, setKind] = useState<"signin" | "signup" | "mfa" | null>(null);
+  const [password, setPasswordValue] = useState("");
+  const [kind, setKind] = useState<
+    "signin" | "signup" | "mfa" | "password" | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resendAt, setResendAt] = useState(0);
@@ -93,6 +98,15 @@ export function useAccountAuthentication() {
         if (sent.error) throw sent.error;
         setKind("signup");
       } else {
+        if (
+          signIn.supportedFirstFactors?.some(
+            (factor) => factor.strategy === "password",
+          )
+        ) {
+          setPasswordValue("");
+          setKind("password");
+          return;
+        }
         const sent = await signIn.emailCode.sendCode({ emailAddress: address });
         if (sent.error) throw sent.error;
         setKind("signin");
@@ -101,8 +115,29 @@ export function useAccountAuthentication() {
       cooldown();
     });
   }
+  async function completeAuthentication(signingUp = false) {
+    const resource = signingUp ? signUp : signIn;
+    if (resource.status === "complete") {
+      const finalized = await resource.finalize();
+      if (finalized.error) throw finalized.error;
+    } else if (
+      !signingUp &&
+      signIn.status === "needs_second_factor" &&
+      signIn.supportedSecondFactors?.some((f) => f.strategy === "email_code")
+    ) {
+      const sent = await signIn.mfa.sendEmailCode();
+      if (sent.error) throw sent.error;
+      setKind("mfa");
+      setCodeValue("");
+      cooldown();
+    } else {
+      setError(
+        "Your account needs another verification step. Try your connected Google or Apple account.",
+      );
+    }
+  }
   async function verify() {
-    if (!kind || code.length !== 6) return;
+    if (!kind || kind === "password" || code.length !== 6) return;
     await run(async () => {
       const result =
         kind === "signup"
@@ -111,29 +146,31 @@ export function useAccountAuthentication() {
             ? await signIn.mfa.verifyEmailCode({ code })
             : await signIn.emailCode.verifyCode({ code });
       if (result.error) throw result.error;
-      const resource = kind === "signup" ? signUp : signIn;
-      if (resource.status === "complete") {
-        const finalized = await resource.finalize();
-        if (finalized.error) throw finalized.error;
-      } else if (
-        kind !== "signup" &&
-        signIn.status === "needs_second_factor" &&
-        signIn.supportedSecondFactors?.some((f) => f.strategy === "email_code")
-      ) {
-        const sent = await signIn.mfa.sendEmailCode();
-        if (sent.error) throw sent.error;
-        setKind("mfa");
-        setCodeValue("");
-        cooldown();
-      } else {
-        setError(
-          "Your account needs another verification step. Try your connected Google or Apple account.",
-        );
-      }
+      await completeAuthentication(kind === "signup");
+    });
+  }
+  async function submitPassword() {
+    if (kind !== "password" || !password) return;
+    await run(async () => {
+      const result = await signIn.password({ emailAddress: email, password });
+      if (result.error) throw result.error;
+      setPasswordValue("");
+      await completeAuthentication();
+    });
+  }
+  async function useEmailCode() {
+    if (kind !== "password") return;
+    await run(async () => {
+      const sent = await signIn.emailCode.sendCode({ emailAddress: email });
+      if (sent.error) throw sent.error;
+      setPasswordValue("");
+      setCodeValue("");
+      setKind("signin");
+      cooldown();
     });
   }
   async function resend() {
-    if (!kind || Date.now() < resendAt) return;
+    if (!kind || kind === "password" || Date.now() < resendAt) return;
     await run(async () => {
       const result =
         kind === "signup"
@@ -164,16 +201,24 @@ export function useAccountAuthentication() {
   return {
     email,
     code,
-    verifying: kind !== null,
+    password,
+    passwordRequired: kind === "password",
+    verifying: kind !== null && kind !== "password",
     busy: busy || !isLoaded,
     error,
     resendSeconds: Math.max(0, Math.ceil((resendAt - now) / 1000)),
     setEmail,
+    setPassword(value: string) {
+      setPasswordValue(value);
+      setError(null);
+    },
     setCode(value: string) {
       setCodeValue(value.replace(/\D/g, "").slice(0, 6));
       setError(null);
     },
     submitEmail,
+    submitPassword,
+    useEmailCode,
     verify,
     resend,
     social,
@@ -181,6 +226,7 @@ export function useAccountAuthentication() {
       if (!working.current) {
         setKind(null);
         setCodeValue("");
+        setPasswordValue("");
         setError(null);
       }
     },

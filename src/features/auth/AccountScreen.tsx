@@ -25,13 +25,18 @@ import {
 export type AccountFlow = Readonly<{
   email: string;
   code: string;
+  password: string;
+  passwordRequired: boolean;
   verifying: boolean;
   busy: boolean;
   error: string | null;
   resendSeconds: number;
   setEmail(value: string): void;
   setCode(value: string): void;
+  setPassword(value: string): void;
   submitEmail(): Promise<void>;
+  submitPassword(): Promise<void>;
+  useEmailCode(): Promise<void>;
   verify(): Promise<void>;
   resend(): Promise<void>;
   editEmail(): void;
@@ -44,9 +49,13 @@ export function AccountScreen({
 }: Readonly<{ flow: AccountFlow; onBack: () => void }>) {
   useEffect(() => {
     Keyboard.dismiss();
-  }, [flow.verifying]);
+  }, [flow.verifying, flow.passwordRequired]);
   return (
-    <FlowTransition step={flow.verifying ? "verify" : "email"}>
+    <FlowTransition
+      step={
+        flow.passwordRequired ? "password" : flow.verifying ? "verify" : "email"
+      }
+    >
       <AccountContents flow={flow} onBack={onBack} />
     </FlowTransition>
   );
@@ -62,6 +71,47 @@ function AccountContents({
       {flow.error}
     </AppText>
   ) : null;
+  if (flow.passwordRequired)
+    return (
+      <FlowScreen
+        testID="password-screen"
+        label="Your account"
+        title="Welcome back."
+        description={flow.email}
+        onBack={flow.editEmail}
+        footer={
+          <Button
+            label="Sign in"
+            disabled={!flow.password}
+            loading={flow.busy}
+            onPress={() => void flow.submitPassword()}
+          />
+        }
+      >
+        <View style={styles.form}>
+          <TextField
+            label="Password"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            textContentType="password"
+            autoComplete="current-password"
+            value={flow.password}
+            onChangeText={flow.setPassword}
+            disabled={flow.busy}
+            {...(flow.error ? { errorMessage: flow.error } : {})}
+            onSubmitEditing={() => void flow.submitPassword()}
+            returnKeyType="go"
+          />
+          <Button
+            label="Use an email code"
+            variant="text"
+            disabled={flow.busy}
+            onPress={() => void flow.useEmailCode()}
+          />
+        </View>
+      </FlowScreen>
+    );
   if (flow.verifying)
     return (
       <FlowScreen
