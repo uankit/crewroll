@@ -11,9 +11,6 @@
     "ios": {
       "icon": "./assets/brand/app-icon.png",
       "bundleIdentifier": "app.crewroll.mobile",
-      "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      },
       "supportsTablet": false,
       "usesAppleSignIn": true
     },

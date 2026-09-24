@@ -129,6 +129,13 @@ export default {
         Allow: "GET, HEAD",
       });
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (path === "/google83c47cb2806192d6.html")
+      return reply(
+        request.method === "HEAD"
+          ? null
+          : "google-site-verification: google83c47cb2806192d6.html",
+        "text/html; charset=utf-8",
+      );
     if (path === "/style.css") return reply(css, "text/css; charset=utf-8");
     if (path === "/site.js")
       return reply(client, "text/javascript; charset=utf-8");
