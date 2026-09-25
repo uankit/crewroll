@@ -7,6 +7,6 @@
 - `testflight-1.0.4.txt`: current testing instructions saved to iOS build 20 and verified by API read-back. Build availability and review status are recorded in the release runbook.
 - `android/create-trip.png` and `android/invite-your-crew.png`: unmodified native screenshots from Android 1.0.4 (8), captured on 25 September 2026 at 1080 × 1920. Both satisfy Play's phone screenshot dimensions and show the current production app.
 
-The icon, feature graphic and two phone screenshots are staged for the owner's chosen manual upload in `/Users/uankit/Developer/CrewRoll-store-assets`. Chrome's upload API rejected local file access. The numbered files there map to App icon, Feature graphic and Phone screenshots in the Play listing.
+The owner uploaded the icon, feature graphic and two phone screenshots manually. Play Console verified all four assets in the completed English listing on 25 September 2026. The numbered upload copies remain in `/Users/uankit/Developer/CrewRoll-store-assets`. Current review and closed-test availability are recorded in the [release runbook](../../docs/runbooks/release-1.0.4-2026-09-25.md).
 
 Public App Store screenshots remain separate work. Do not substitute Android screenshots, old audit screenshots or fabricated product screens. iOS build 20's TestFlight availability is blocked by export compliance, not screenshots.

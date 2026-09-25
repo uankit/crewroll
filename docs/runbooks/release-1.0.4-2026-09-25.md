@@ -37,6 +37,7 @@ The Samsung S26 is not attached. These changes address identified startup blocke
 | Android OTA, production, runtime 1.0.4 | `01a0d544-5cec-718c-ace2-d79d3d61f325`; group `356a182c-e10b-4f63-94bf-290f82179d5b` | Published and served |
 | iOS OTA, testflight, runtime 1.0.4 | `01a0d545-1a71-7480-9613-04fdd869760d`; group `6ef8f960-4f5d-4431-9fed-65b6b172d80f` | Published and served |
 | Android 1.0.4 (8) | EAS `fbed5c4c-9bb4-4682-8eaa-f0cdddf79728`; Play internal release 3 | Available to internal testers; verified in Play Console, 25 September at 03:23 IST |
+| Android 1.0.4 (8), closed Alpha | Play track `4698875349550938055`, release 1 | Submitted on 25 September at approximately 10:10 IST; Publishing overview shows Changes in review, with automatic prechecks still running |
 | iOS 1.0.4 (20) | EAS `c9a6acf5-364c-4c5d-a895-8d17345fd923`; Apple build `c32d49ce-79e0-4d03-94b2-b26f9a139041` | Uploaded and processed VALID; internal and external status MISSING_EXPORT_COMPLIANCE |
 
 Android bundle: `/Users/uankit/Developer/CrewRoll-1.0.4-8.aab`, 90,343,760 bytes, SHA-256 `dc0248258953d34c325746fdd1dfc134f5c3e48789f33a77959554092c0da9b3`. Bundletool validation, ZIP integrity and signature verification passed. Its manifest retains `com.uankit53.airmesh`, version code 8 and target SDK 36. Play reports unchanged supported-device counts and no blocking release errors; its only warning is the absence of an optional deobfuscation file.
@@ -53,11 +54,30 @@ The Android native startup changes require the new binary. Existing build 6 can 
 - The owner selected adults 18+ for the initial release. Google Target Audience is saved.
 - Google Data Safety is saved, including all ten previously audited collected data types, encryption in transit, and the account-deletion URL. Google's optional separate data-deletion facility is not claimed.
 - The app name is saved as **CrewRoll: Shared Trip Photos**. Play explicitly states that the package-derived temporary name remains until initial setup and review complete. Renaming the immutable Android package is not required.
-- The Chrome upload API still returns `Not allowed`. The owner chose manual uploads. Public upload assets are staged in `/Users/uankit/Developer/CrewRoll-store-assets`: `01-play-icon.png`, `02-feature-graphic.png`, `03-create-trip.png` and `04-invite-your-crew.png`. The last two are actual 1080 × 1920 Android screenshots. Credentials are kept in a separate protected directory.
-- Google confirms 10 of 11 setup tasks complete. The missing task is the store listing, which needs its images uploaded and saved before review can be submitted. All prepared listing text is saved as a draft.
+- The owner uploaded the store assets manually. Play Console verifies the icon (1/1), feature graphic (1/1) and phone screenshots (2/8). The prepared listing text and uploaded assets are included in the initial review submission. Upload copies remain in `/Users/uankit/Developer/CrewRoll-store-assets`; credentials are kept in a separate protected directory.
+- Google's release validation required the photo-library declaration. The saved explanation describes automatic sharing of new camera photos during active trips, why frequent library access is core functionality and why a picker cannot detect new photos automatically. Only `READ_MEDIA_IMAGES` was requested in the declaration form.
+- Google's final precheck also required an Advertising ID declaration. Saved **No**, after checking the app dependencies and uploaded build 8's final merged manifest, which contains no `AD_ID` permission or advertising marker. This cleared the blocking issue.
+- All 15 publishing changes were sent for review, including Alpha build 8, countries, tester configuration, the English store listing, content rating, adults-only audience, privacy policy, ads declaration, Data Safety, Health apps declaration and Photography category. Private sign-in instructions and other app-content declarations accompany the submission. Managed publishing is off, so approved changes publish automatically.
 - Apple export compliance remains unresolved under support case **102974597698**. Replies go to the email used for the support request. No new exemption or export classification has been asserted.
-- Google requires a closed test with at least 12 opted-in testers for 14 continuous days before applying for public production access. The internal-test link is not that closed test.
+
+## Closed test handoff
+
+- **Track:** Closed testing — Alpha. Release name: `1.0.4 (8) — closed testing`. The already uploaded build 8 was selected from Play's artifact library; no new binary was built or uploaded.
+- **Countries:** All 177 available entries selected (176 named countries/regions plus Rest of world), following the owner's explicit preference. These are closed-test settings; production access remains unavailable.
+- **Testers:** The existing `CrewRoll internal testers` email list is selected for Alpha as well as internal testing. It currently contains two addresses. Add approved tester Google-account emails to this list; a CSV import replaces the list, so preserve existing members. Feedback is directed to `https://crewroll.app/support`, which returned HTTP 200.
+- **Closed opt-in link:** <https://play.google.com/apps/testing/com.uankit53.airmesh>. Play says the link becomes available when the app is published. Submission alone is not tester availability.
+- **Internal testers:** Anyone currently opted into the internal test must leave it first, then opt into the closed test. Merely sharing both links or adding someone to an email list does not move their enrollment. See [Google's testing guide](https://support.google.com/googleplay/android-developer/answer/9845334).
+- **Production prerequisite:** At least 12 testers must opt into the closed test and remain opted in continuously for 14 days before applying for production access. Adding 12 email addresses alone does not start or satisfy this period. See [Google's testing requirements](https://support.google.com/googleplay/android-developer/answer/14151465).
+- **Review state:** Publishing overview confirms **Changes in review**. Automatic checks were still running after submission, with no remaining blocking issue displayed. The initial review must finish before the closed test is live. Google displayed a typical review estimate of up to seven days, with longer reviews possible.
+
+Submitted photo-permission explanation (246 characters):
+
+> CrewRoll automatically shares new camera photos during active trips with approved members. Frequent photo-library access is essential; a picker cannot detect new photos automatically. Only eligible trip photos are shared. Users can pause sharing.
+
+Release notes:
+
+> Create a private trip, invite your crew and share new photos using your phone’s usual camera. This release includes in-lobby join approvals, photo-access recovery, improved Android startup and back navigation, and notifications for late join requests.
 
 ## Remaining work
 
-Finish the manual Play listing image upload, then complete the listing and submit initial review. Configure the closed test once Google unlocks that step; the current internal test does not start the 12-tester/14-day requirement. Complete iOS export compliance and latest beta-review submission when Apple's response provides the required basis. Public App Store screenshots, territory availability and applicable owner declarations remain distinct from beta testing. Retest the reported repeated-launch delay and gesture feel on the physical Samsung S26.
+Wait for Google's automatic checks and initial review, then confirm closed-test availability and enroll at least 12 testers for the required continuous period. No further owner asset upload or Android build is needed for this submission. Complete iOS export compliance and latest beta-review submission when Apple's response provides the required basis. Public App Store screenshots, territory availability and applicable owner declarations remain distinct from beta testing. Retest the reported repeated-launch delay and gesture feel on the physical Samsung S26.
