@@ -44,13 +44,13 @@ Android bundle: `/Users/uankit/Developer/CrewRoll-1.0.4-8.aab`, 90,343,760 bytes
 
 The owner uploaded the AAB manually. Build 8 was selected from the Play artifact library, added to internal release 3, reviewed and published. The existing tester list has two addresses and remains selected. Testers use the same [internal-test link](https://play.google.com/apps/internaltest/4700971440071305397).
 
-iOS submission `df03d401-ec8f-44e1-95ad-c5b464cdce59` finished successfully. Apple's API confirmed the processed/export-blocked state at `2026-09-24T21:57:55.799Z`. Build 20's What to Test notes are saved and verified. It has not been added to a tester group or submitted for latest beta review while export compliance is unresolved. The public TestFlight link must not be described as serving build 20.
+iOS submission `df03d401-ec8f-44e1-95ad-c5b464cdce59` finished successfully. Apple's API confirmed the processed/export-blocked state at `2026-09-24T21:57:55.799Z`, and again at `2026-09-26T17:28:51.708Z`. Build 20's What to Test notes are saved and verified. It has not been added to a tester group or submitted for latest beta review while export compliance is unresolved. The public TestFlight link must not be described as serving build 20. As of 26 September, its existing build 16 is now `BETA_APPROVED`.
 
 The Android native startup changes require the new binary. Existing build 6 can receive the JavaScript fixes through OTA. The initial Android attempt reserved code 7 but failed locally because disk space ran out. Disposable dependency caches, old exports and a duplicate old AAB were removed; source, credentials and simulator data were preserved. The initial iOS build 19 failed with Expo's `CREDENTIALS_TEMPORARY_NETWORK_ERROR`; the retry is build 20.
 
 ## Store setup
 
-- The owner explicitly approved saving the two dedicated reviewer credentials in both stores. Google now has separate host and guest instructions; the public App Store 1.0.4 review form also has verified private credentials. The older build 16 beta-review instructions remain unchanged while it is awaiting review.
+- The owner explicitly approved saving the two dedicated reviewer credentials in both stores. Google now has separate host and guest instructions; the public App Store 1.0.4 review form also has verified private credentials. The older build 16 beta-review instructions remain unchanged; its beta review was approved by the 26 September check.
 - The owner selected adults 18+ for the initial release. Google Target Audience is saved.
 - Google Data Safety is saved, including all ten previously audited collected data types, encryption in transit, and the account-deletion URL. Google's optional separate data-deletion facility is not claimed.
 - The app name is saved as **CrewRoll: Shared Trip Photos**. Play explicitly states that the package-derived temporary name remains until initial setup and review complete. Renaming the immutable Android package is not required.
@@ -59,6 +59,7 @@ The Android native startup changes require the new binary. Existing build 6 can 
 - Google's final precheck also required an Advertising ID declaration. Saved **No**, after checking the app dependencies and uploaded build 8's final merged manifest, which contains no `AD_ID` permission or advertising marker. This cleared the blocking issue.
 - All 15 publishing changes were sent for review, including Alpha build 8, countries, tester configuration, the English store listing, content rating, adults-only audience, privacy policy, ads declaration, Data Safety, Health apps declaration and Photography category. Private sign-in instructions and other app-content declarations accompany the submission. Managed publishing is off, so approved changes publish automatically.
 - Apple export compliance remains unresolved under support case **102974597698**. Replies go to the email used for the support request. No new exemption or export classification has been asserted.
+- On 26 September, the owner approved excluding France initially. Apple availability is saved for the other 174 current territories and was read back with France marked **Not Available**. An approved build 20 follow-up was sent in the existing Apple support case, and receipt was confirmed. The current unsaved questionnaire, with both algorithm categories and France excluded, requires an official BIS CCATS approval form. The prepared [technical brief and workflow record](encryption-export-1.0.4.md) supports clarification and must not be used as an official certificate.
 
 ## Closed test handoff
 
@@ -80,4 +81,4 @@ Release notes:
 
 ## Remaining work
 
-Wait for Google's automatic checks and initial review, then confirm closed-test availability and enroll at least 12 testers for the required continuous period. No further owner asset upload or Android build is needed for this submission. Complete iOS export compliance and latest beta-review submission when Apple's response provides the required basis. Public App Store screenshots, territory availability and applicable owner declarations remain distinct from beta testing. Retest the reported repeated-launch delay and gesture feel on the physical Samsung S26.
+Wait for Google's automatic checks and initial review, then confirm closed-test availability and enroll at least 12 testers for the required continuous period. No further owner asset upload or Android build is needed for this submission. Complete iOS export compliance and latest beta-review submission when Apple's response provides the required basis. Public App Store screenshots, copyright, build selection and applicable owner declarations remain separate work; territory availability is now configured. Retest the reported repeated-launch delay and gesture feel on the physical Samsung S26.

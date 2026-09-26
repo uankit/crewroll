@@ -1,21 +1,24 @@
 # CrewRoll TestFlight
 
-## Latest upload — September 24, 2026
+## Latest upload status — September 26, 2026
 
-**1.0.4 (18)** was uploaded successfully and Apple processed it as `VALID`.
+**1.0.4 (20)** was uploaded successfully and Apple processed it as `VALID`.
 Both internal and external testing currently report `MISSING_EXPORT_COMPLIANCE`.
 It is not yet available to testers or submitted for review. The current source
 omits the earlier unverified exemption flag, so the declaration must be completed
 through App Store Connect. Testing notes are saved and verified.
 
-- [App Store Connect build 1.0.4 (18)](https://appstoreconnect.apple.com/teams/51807f83-da72-480a-8be9-5f4c5d4d55c7/apps/6797897853/testflight/ios/6c52bfca-140e-4217-b1fe-7f40c86fefbb)
-- [EAS build 33c67f39](https://expo.dev/accounts/uankit53/projects/AirMesh/builds/33c67f39-eb75-4b5e-8141-b0145ed441b3)
-- [Current release readiness](release-1.0.4-2026-09-24.md)
+- [App Store Connect build 1.0.4 (20)](https://appstoreconnect.apple.com/teams/51807f83-da72-480a-8be9-5f4c5d4d55c7/apps/6797897853/testflight/ios/c32d49ce-79e0-4d03-94b2-b26f9a139041)
+- [EAS build c9a6acf5](https://expo.dev/accounts/uankit53/projects/AirMesh/builds/c9a6acf5-364c-4c5d-a895-8d17345fd923)
+- [Current release readiness](release-1.0.4-2026-09-25.md)
 - [Encryption implementation and classification question](encryption-export-1.0.4.md)
 
-The earlier **1.0.4 (17)** remains in internal testing. The public TestFlight
-group still contains **1.0.3 (16)** awaiting beta review; its link must not be
-described as providing build 18. The history below records prior release states.
+Apple's API was checked at `2026-09-26T17:28:51.708Z`. The earlier **1.0.4 (17)**
+remains in the internal group. **1.0.3 (16)** is now `BETA_APPROVED` and is the
+sole build in the public **CrewRoll Beta** group. The enabled
+[TestFlight link](https://testflight.apple.com/join/1SqZ9RdY) must not be described
+as providing build 20. Physical installation and testing are separate checks.
+The history below records prior release states.
 
 ## Historical UI and trip lifecycle beta — September 16, 2026
 
