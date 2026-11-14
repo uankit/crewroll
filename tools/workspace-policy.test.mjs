@@ -238,8 +238,8 @@ function assertRootLintPolicy(script) {
 function assertLintBuildPrerequisites(rootManifest, controlManifest) {
   assert.equal(
     rootManifest.scripts?.prelint,
-    contractsBuildCommand,
-    "root prelint must build contracts before root/mobile and workspace lint",
+    `${contractsBuildCommand} && npm run build --workspace @crewroll/control-plane`,
+    "root prelint must build contracts then control-plane before tooling and workspace lint",
   );
   assert.equal(
     controlManifest.scripts?.prelint,
@@ -646,7 +646,7 @@ test("root lint is exhaustive, uncached, warning-clean, and invokes both workspa
   assertRootLintPolicy(packageJson.scripts.lint);
 });
 
-test("root and control lint lifecycle build contracts first", () => {
+test("root lint builds tooling dependencies and control lint builds contracts first", () => {
   assertLintBuildPrerequisites(packageJson, controlPlanePackageJson);
 });
 
@@ -702,6 +702,23 @@ test("lint prerequisite policy rejects removal or a different dependency build",
           : /control prelint must build contracts/u,
       );
     }
+  }
+});
+
+test("root lint prerequisites reject missing, reordered, or substituted tooling build dependencies", () => {
+  const controlBuild = "npm run build --workspace @crewroll/control-plane";
+  for (const replacement of [
+    contractsBuildCommand,
+    `${controlBuild} && ${contractsBuildCommand}`,
+    `${contractsBuildCommand} && npm run typecheck --workspace @crewroll/control-plane`,
+    `${contractsBuildCommand} && ${controlBuild} || true`,
+  ]) {
+    const mutatedRoot = structuredClone(packageJson);
+    mutatedRoot.scripts.prelint = replacement;
+    assert.throws(
+      () => assertLintBuildPrerequisites(mutatedRoot, controlPlanePackageJson),
+      /root prelint must build contracts/u,
+    );
   }
 });
 

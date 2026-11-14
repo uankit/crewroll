@@ -71,7 +71,10 @@ const APPROVED_ROOT_SCRIPTS = new Map([
   ["preios:device", "npm run build --workspace @crewroll/contracts"],
   ["ios:device", "expo run:ios --device"],
   ["format:check", "prettier . --check --ignore-unknown"],
-  ["prelint", "npm run build --workspace @crewroll/contracts"],
+  [
+    "prelint",
+    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane",
+  ],
   [
     "lint",
     "expo lint app src modules __tests__ tests tools app.config.ts eslint.config.js vitest.config.ts --no-cache --max-warnings=0 -- --no-error-on-unmatched-pattern && npm run lint --workspace @crewroll/contracts && npm run lint --workspace @crewroll/control-plane",
