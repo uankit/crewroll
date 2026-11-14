@@ -626,7 +626,7 @@ async function reauthorizeForegroundActor(
     .select(["id", "clerk_subject", "deleted_at", "suspended_at"])
     .where("id", "=", actor.userId)
     .where("clerk_subject", "=", actor.clerkSubject)
-    .forUpdate()
+    .forNoKeyUpdate()
     .noWait()
     .executeTakeFirst();
   if (
@@ -640,7 +640,7 @@ async function reauthorizeForegroundActor(
     .selectFrom("devices")
     .select(["id", "user_id", "revoked_at"])
     .where("id", "=", actor.deviceId)
-    .forUpdate()
+    .forNoKeyUpdate()
     .noWait()
     .executeTakeFirst();
   if (device === undefined || device.user_id !== actor.userId) {
@@ -880,7 +880,7 @@ function transactionAdapter(
         .selectFrom("devices")
         .select(deviceSelect())
         .where("id", "=", deviceId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .noWait()
         .executeTakeFirst();
       return row === undefined ? null : mapDevice(row);
@@ -893,7 +893,7 @@ function transactionAdapter(
         .select(deviceSelect())
         .where("id", "in", uniqueIds)
         .orderBy("id")
-        .forUpdate()
+        .forNoKeyUpdate()
         .noWait()
         .execute();
       return rows.map(mapDevice);
@@ -959,7 +959,8 @@ function transactionAdapter(
         .selectFrom("trips")
         .select(tripSelect())
         .where("id", "=", tripId)
-        .forUpdate()
+        // Only non-key trip fields are mutated by ordinary commands.
+        .forNoKeyUpdate()
         .executeTakeFirst();
       return row === undefined ? null : mapTrip(row);
     },

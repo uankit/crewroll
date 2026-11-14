@@ -114,7 +114,8 @@ function rowLockGate(tableName: "devices" | "trips") {
         node.endModifiers?.some(
           (modifier) =>
             modifier.modifier === "ForUpdate" ||
-            modifier.modifier === "ForNoKeyUpdate",
+            modifier.modifier === "ForNoKeyUpdate" ||
+            modifier.modifier === "ForShare",
         )
       ) {
         armed = false;

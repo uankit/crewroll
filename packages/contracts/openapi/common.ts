@@ -177,7 +177,7 @@ export const Base64ExactSchema = (decodedBytes: number) => {
     "x-crewroll-decodedBytes": decodedBytes,
   });
 };
-export const Base64MaxSchema = (maximum: 4_096 | 65_536) => {
+export const Base64MaxSchema = (maximum: 784 | 4_096 | 65_536) => {
   const maximumEncodedLength = Math.ceil(maximum / 3) * 4;
   return Type.Union(
     [

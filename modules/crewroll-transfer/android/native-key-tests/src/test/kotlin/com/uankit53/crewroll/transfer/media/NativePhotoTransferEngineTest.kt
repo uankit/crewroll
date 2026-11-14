@@ -660,6 +660,7 @@ class NativePhotoTransferEngineTest {
         var downloads = 0
         var saves = 0
         var receipts = 0
+        val receiptCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
         var saved: ByteArray? = null
         var savedHook: (() -> Unit)? = null
         var originalDownloadHook: (() -> Unit)? = null
@@ -751,7 +752,8 @@ class NativePhotoTransferEngineTest {
                 path.endsWith("download-session") -> { downloadGrantHook?.invoke(context); JSONObject(grant.toString()) }
                 path.endsWith("saved-receipt") -> {
                     savedReceiptHook?.invoke(context)
-                    assertNotNull(saved); assertArrayEquals(source, saved); receipts++; acknowledged = true
+                    assertEquals("/v1/deliveries/$delivery/saved-receipt", path)
+                    assertNotNull(saved); assertArrayEquals(source, saved); receiptCommands.add(commandId); receipts++; acknowledged = true
                     if (receiptLost) { receiptLost = false; throw IOException("lost receipt response") }
                     JSONObject()
                 }
@@ -817,6 +819,63 @@ class NativePhotoTransferEngineTest {
             val second = f.engine(); f.start(second)
             assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(2, f.receipts)
             assertEquals(1, f.count(second, "originalsSaved")); assertArrayEquals(f.source, f.saved)
+        }
+    }
+    @Test fun `an existing saved original restores its durable gallery reference after journal loss`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.savedHook = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            f.previewFeedMissing = true
+            val first = f.engine()
+            try {
+                first.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val stopped = first.stop()
+                release.countDown(); stopped.get(5, TimeUnit.SECONDS)
+                assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(0, f.receipts)
+            } finally { release.countDown() }
+            f.savedHook = null
+
+            // OS Photos survives lost app-private state. The server still has
+            // the unacknowledged delivery, so recovery must recognize the photo.
+            val directory = File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            assertTrue(directory.deleteRecursively())
+            var localAtReceipt: String? = null
+            f.savedReceiptHook = { localAtReceipt = NativeTransferJournal(directory).record(f.delivery)?.optionalString("savedLocalId") }
+            val second = f.engine(); f.start(second)
+            val recovered = NativeTransferJournal(directory).record(f.delivery)!!
+            assertEquals("saved", localAtReceipt)
+            assertEquals("saved", recovered.getString("savedLocalId"))
+            assertTrue(recovered.getBoolean("complete"))
+            assertEquals(f.asset, recovered.getString("assetId"))
+            assertEquals(listOf(f.delivery), f.receiptCommands)
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+            assertArrayEquals(f.source, f.saved)
+            // Reopen the journal rather than relying on the receive worker's
+            // in-memory value. No server preview is available to hide the loss.
+            val third = f.engine()
+            third.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.count(third, "previewReady") == 1 }
+            val items = third.assets(10, null).get(5, TimeUnit.SECONDS)["items"] as List<*>
+            val photo = items.single() as Map<*, *>
+            assertEquals(f.asset, photo["assetId"])
+            assertEquals("SAVED", photo["originalStage"])
+            assertEquals("SAVED", photo["previewStage"])
+            assertTrue((photo["previewUri"] as String).startsWith("file:///"))
+            assertEquals(listOf(f.delivery), f.receiptCommands)
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+        }
+    }
+    @Test fun `an existing photo with invalid bytes is neither journalled as saved nor acknowledged`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf().apply { this[0] = (this[0].toInt() xor 1).toByte() }
+            val engine = f.engine(); f.start(engine)
+            val directory = File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            val work = NativeTransferJournal(directory).record(f.delivery)!!
+            assertNull(work.optionalString("savedLocalId"))
+            assertFalse(work.getBoolean("complete"))
+            assertEquals("INTEGRITY_FAILURE", work.getString("blocker"))
+            assertEquals(0, f.saves); assertEquals(0, f.downloads); assertEquals(0, f.receipts)
         }
     }
     @Test fun `lost commit response retries from journal without reencrypting or uploading again`() {

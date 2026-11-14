@@ -123,12 +123,19 @@ export function createKyselyMediaService(
       throw new DomainError("AUTH_INVALID");
     }
   }
-  async function tripFor(tx: Tx, actor: MediaActor, tripId: string) {
+  async function tripFor(
+    tx: Tx,
+    actor: MediaActor,
+    tripId: string,
+    readOnly = false,
+  ) {
     const trip = await tx
       .selectFrom("trips")
       .selectAll()
       .where("id", "=", tripId)
-      .forUpdate()
+      // Serialize trip state/recipient snapshots without excluding immutable FK references.
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     const member = await tx
       .selectFrom("trip_members")
@@ -149,7 +156,12 @@ export function createKyselyMediaService(
       throw new DomainError("TRIP_STATE_CONFLICT");
     return trip;
   }
-  async function ownedDelivery(tx: Tx, actor: MediaActor, deliveryId: string) {
+  async function ownedDelivery(
+    tx: Tx,
+    actor: MediaActor,
+    deliveryId: string,
+    readOnly = false,
+  ) {
     const delivery = await tx
       .selectFrom("deliveries")
       .selectAll()
@@ -163,7 +175,7 @@ export function createKyselyMediaService(
       .select("trip_id")
       .where("id", "=", delivery.asset_id)
       .executeTakeFirstOrThrow();
-    const trip = await tripFor(tx, actor, reference.trip_id);
+    const trip = await tripFor(tx, actor, reference.trip_id, readOnly);
     const asset = await tx
       .selectFrom("assets")
       .selectAll()
@@ -451,8 +463,8 @@ export function createKyselyMediaService(
       )
         throw new DomainError("INVALID_REQUEST");
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
-        await tripFor(tx, actor, tripId);
+        await authorize(tx, actor, true);
+        await tripFor(tx, actor, tripId, true);
         const rows = await tx
           .selectFrom("inbox_events as e")
           .innerJoin(
@@ -509,7 +521,7 @@ export function createKyselyMediaService(
     },
     async previewDownload(actor, assetId) {
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
+        await authorize(tx, actor, true);
         const session = await tx
           .selectFrom("upload_sessions")
           .select([
@@ -522,7 +534,7 @@ export function createKyselyMediaService(
           .where("client_asset_id", "=", assetId)
           .executeTakeFirst();
         if (!session) throw new DomainError("NOT_FOUND");
-        const trip = await tripFor(tx, actor, session.trip_id);
+        const trip = await tripFor(tx, actor, session.trip_id, true);
         const viewer = await tx
           .selectFrom("trip_members")
           .select(["leaving_at", "approved_at"])
@@ -1019,11 +1031,12 @@ export function createKyselyMediaService(
     async download(actor, deliveryId, body) {
       requireBody(CreateDownloadSessionBodySchema, body);
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
+        await authorize(tx, actor, true);
         const { delivery, asset, trip } = await ownedDelivery(
           tx,
           actor,
           deliveryId,
+          true,
         );
         const now = clock.now();
         if (

@@ -5,7 +5,7 @@ import { createOwnerInviteVault } from "../platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../db/trips/kyselyTripLifecycle.js";
 import { buildApp } from "../app/buildApp.js";
 import { loadEnvironment, type Environment } from "../config/env.js";
-import { createDatabase } from "../db/database.js";
+import { createDatabase, interactiveDatabaseTimeouts } from "../db/database.js";
 import { createKyselyMediaService } from "../db/media/kyselyMediaService.js";
 import { createFileCiphertextStore } from "../platform/localMedia/fileCiphertextStore.js";
 import { createLocalPushTokenProtector } from "../platform/localMedia/localPushTokenProtector.js";
@@ -56,12 +56,10 @@ function required<Value>(value: Value | undefined): Value {
 }
 
 function databaseHandle(environment: Environment) {
-  const database = createDatabase(environment.databaseUrl, {
-    queryTimeoutMillis: 15_000,
-    statementTimeoutMillis: 10_000,
-    lockTimeoutMillis: 5_000,
-    idleTransactionTimeoutMillis: 15_000,
-  });
+  const database = createDatabase(
+    environment.databaseUrl,
+    interactiveDatabaseTimeouts,
+  );
   return { database, destroy: () => database.destroy() };
 }
 

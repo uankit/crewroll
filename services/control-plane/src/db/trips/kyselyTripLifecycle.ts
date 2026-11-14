@@ -28,19 +28,21 @@ export function createKyselyTripLifecycle(
   db: Kysely<Database>,
   clock: Clock,
 ): TripLifecycleService {
-  async function authorize(tx: Tx, actor: LifecycleActor) {
+  async function authorize(tx: Tx, actor: LifecycleActor, readOnly = false) {
     // Fence revocation without blocking recipient FK checks in concurrent fan-out.
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
-      .forNoKeyUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
-      .forNoKeyUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     if (
       !user ||
@@ -61,7 +63,8 @@ export function createKyselyTripLifecycle(
       .selectFrom("trips")
       .selectAll()
       .where("id", "=", tripId)
-      .forUpdate()
+      // State/version writes do not change trips.id; FK references may proceed.
+      .forNoKeyUpdate()
       .executeTakeFirst();
     const member = await tx
       .selectFrom("trip_members")
@@ -284,7 +287,7 @@ export function createKyselyTripLifecycle(
       db.transaction().execute((tx) => state(tx, actor, tripId)),
     async list(actor) {
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
+        await authorize(tx, actor, true);
         const rows = await tx
           .selectFrom("trip_members as m")
           .innerJoin("trips as t", "t.id", "m.trip_id")

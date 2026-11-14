@@ -136,6 +136,48 @@ afterEach(async () => {
   await Promise.all(closeApps.splice(0).map((close) => close()));
 });
 
+it.each([false, true])(
+  "bounds transient database failures with a private 503 and no server retry (Worker: %s)",
+  async (isolateStartup) => {
+    const { dependencies } = createTestDependencies({
+      nodeEnvironment: "production",
+    });
+    const app = track(
+      buildApp(dependencies, { isolateStartup, scheduledMediaCleanup: false }),
+    );
+    let code = "55P03";
+    let calls = 0;
+    app.get("/database-failure-proof", () => {
+      calls += 1;
+      throw Object.assign(
+        new Error("private SQL and credential must stay hidden"),
+        {
+          code,
+          detail: "private database parameters",
+        },
+      );
+    });
+    for (const next of ["55P03", "57014", "25P03", "40P01", "40001"]) {
+      code = next;
+      const response = await app.inject({
+        method: "GET",
+        url: "/database-failure-proof",
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual(expectedProblem(503));
+      expect(response.body).not.toContain("private");
+      expect(response.body).not.toContain(next);
+    }
+    code = "23505";
+    const unrelated = await app.inject({
+      method: "GET",
+      url: "/database-failure-proof",
+    });
+    expect(unrelated.statusCode).toBe(500);
+    expect(calls).toBe(6);
+  },
+);
+
 function expectedProblem(
   status: 400 | 404 | 500 | 503,
 ): Record<string, unknown> {

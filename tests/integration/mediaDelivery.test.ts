@@ -6,7 +6,7 @@ import { createOwnerInviteVault } from "../../services/control-plane/src/platfor
 import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
 import { createKyselyPushWakeRepository } from "../../services/control-plane/src/db/push/kyselyPushWakeRepository.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -1922,6 +1922,81 @@ describe.sequential("durable encrypted photo delivery", () => {
       ).state,
     ).toBe("EXPIRED");
   });
+  it.each([
+    ["maximum v1 opaque manifest", 784, 201],
+    ["over-limit opaque manifest", 785, 400],
+    ["canonical encrypted v1 fixture", 303, 201],
+  ] as const)(
+    "enforces upload admission for %s at the authenticated HTTP boundary",
+    async (_name, bytes, status) => {
+      const token = `crb_${randomBytes(32).toString("base64url")}`;
+      await context.db
+        .updateTable("devices")
+        .set({
+          background_credential_hash: createHash("sha256")
+            .update(token)
+            .digest(),
+        })
+        .where("id", "=", members[0]!.deviceId)
+        .execute();
+      const clock = { now: () => now };
+      const app = buildApp({
+        ...createTestDependencies().dependencies,
+        clock,
+        media: {
+          service,
+          authenticator: createBackgroundDeviceAuthenticator({
+            clock,
+            unitOfWork: createKyselyDeviceUnitOfWork(context.db),
+          }),
+        },
+      });
+      const manifest =
+        bytes === 303
+          ? await readFile(
+              new URL(
+                "../../packages/contracts/crypto/vectors/v1/manifest-canonical.bin",
+                import.meta.url,
+              ),
+            )
+          : Buffer.alloc(bytes);
+      expect(manifest).toHaveLength(bytes);
+      try {
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/assets/upload-sessions",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-crewroll-device-id": members[0]!.deviceId,
+            "idempotency-key": randomUUID(),
+          },
+          payload: { ...body, encryptedManifest: manifest.toString("base64") },
+        });
+        expect(response.statusCode).toBe(status);
+        const sessions = await context.db
+          .selectFrom("upload_sessions")
+          .select("encrypted_manifest")
+          .execute();
+        expect(sessions).toHaveLength(status === 201 ? 1 : 0);
+        expect(
+          await context.db
+            .selectFrom("upload_objects")
+            .select("upload_session_id")
+            .execute(),
+        ).toHaveLength(status === 201 ? 2 : 0);
+        if (status === 201)
+          expect(Buffer.from(sessions[0]!.encrypted_manifest!)).toEqual(
+            manifest,
+          );
+        else
+          expect(response.json<{ code: string }>().code).toBe(
+            "INVALID_REQUEST",
+          );
+      } finally {
+        await app.close();
+      }
+    },
+  );
   it("runs the actual authenticated HTTP upload, download and receipt path with disk-backed ciphertext", async () => {
     const fifth = await fixtures.user();
     const fifthDevice = await fixtures.device(fifth.id);

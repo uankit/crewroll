@@ -1,4 +1,5 @@
 import { Type, type Static } from "@sinclair/typebox";
+import { MANIFEST_CIPHERTEXT_MAX_BYTES } from "../crypto/protocol.js";
 
 import {
   Base64ExactSchema,
@@ -31,7 +32,7 @@ export const CreateUploadSessionBodySchema = ClosedObject({
   capturedAt: DateTimeSchema,
   formatVersion: Type.Literal(1),
   keyEpoch: Type.Literal(1),
-  encryptedManifest: Base64MaxSchema(65_536),
+  encryptedManifest: Base64MaxSchema(MANIFEST_CIPHERTEXT_MAX_BYTES),
   objects: Type.Tuple([PreviewUploadObjectSchema, OriginalUploadObjectSchema]),
 });
 export type CreateUploadSessionBody = Static<

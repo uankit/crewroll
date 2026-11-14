@@ -22,6 +22,7 @@ import {
 import { tripRoutes } from "../modules/trips/index.js";
 import { mediaRoutes } from "../modules/media/index.js";
 import { accountRoutes } from "../modules/account/index.js";
+import { databaseFailureCode } from "../shared/observability/databaseFailure.js";
 
 const serializationFormats: Record<string, (value: string) => boolean> = {};
 installCrewRollFormats({
@@ -65,6 +66,7 @@ function sendProblem(
 
 function classifyError(error: unknown): DomainErrorKind {
   if (error instanceof DomainError) return error.kind;
+  if (databaseFailureCode(error)) return "DEPENDENCY_NOT_READY";
   if (
     typeof error === "object" &&
     error !== null &&
@@ -278,6 +280,18 @@ export function buildApp(
 
   app.setErrorHandler(async (error, request, reply) => {
     const kind = classifyError(error);
+    const databaseFailure = databaseFailureCode(error);
+    if (kind === "DEPENDENCY_NOT_READY" && databaseFailure) {
+      request.log.warn({
+        blockerCode: databaseFailure,
+        code: "INTERNAL_ERROR",
+        event: "http.database.unavailable",
+        method: request.method,
+        requestId: request.id,
+        route: request.routeOptions.url ?? "/unmatched",
+        statusCode: 503,
+      });
+    }
     if (kind === "INTERNAL_ERROR") {
       request.log.error({
         code: "INTERNAL_ERROR",
