@@ -1345,7 +1345,7 @@ describe("join Trip command", () => {
     ]);
   });
 
-  it("returns CONFLICT for a new command against an existing membership", async () => {
+  it("conclusively refuses a new command against an existing membership", async () => {
     const test = await setupJoin();
     successful(await executeJoin(test));
 
@@ -1357,7 +1357,7 @@ describe("join Trip command", () => {
           "850e8400-e29b-41d4-a716-446655440099",
         ),
       ),
-    ).toBe("CONFLICT");
+    ).toBe("TRIP_REJOIN_UNAVAILABLE");
   });
 
   it.each([

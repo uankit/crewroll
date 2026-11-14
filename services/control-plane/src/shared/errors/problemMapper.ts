@@ -176,7 +176,7 @@ const problemDefinitions = {
   TRIP_REJOIN_UNAVAILABLE: {
     code: "TRIP_REJOIN_UNAVAILABLE",
     detail:
-      "This participation has ended and cannot be rejoined. You can join a different trip.",
+      "A new participation cannot be created for this trip. Check your existing trips or join a different trip.",
     status: 409,
     title: "Trip rejoin unavailable",
   },

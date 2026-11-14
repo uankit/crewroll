@@ -25,6 +25,27 @@ import type {
 
 type Queryable = Kysely<Database> | Transaction<Database>;
 
+/** Both callers bind the fixed aliases trip/departed in their own snapshot.
+ * Preview is informational; admission repeats this under the trip/member locks.
+ */
+function lobbyRejoinSafety() {
+  return sql<boolean>`
+    trip.state = 'LOBBY' and trip.started_at is null
+    and trip.ending_started_at is null and trip.cancelled_at is null
+    and trip.completed_at is null
+    and departed.role = 'MEMBER' and departed.state in ('ACTIVE', 'PENDING_KEY')
+    and departed.left_at is not null and departed.leaving_at is not null
+    and departed.left_incomplete = false and departed.drained_at is null
+    and not exists(select 1 from upload_sessions where trip_id = trip.id)
+    and not exists(select 1 from assets where trip_id = trip.id)
+    and not exists(select 1 from trip_device_requests
+      where trip_id = trip.id and membership_id = departed.id)
+    and not exists(select 1 from trip_key_envelopes
+      where trip_id = trip.id and sender_device_id = departed.participating_device_id
+        and recipient_device_id <> departed.participating_device_id)
+  `;
+}
+
 function mapTrip(row: {
   cancelled_at: Date | null;
   completed_at: Date | null;
@@ -992,41 +1013,14 @@ function transactionAdapter(
       // The caller owns the trip lock. Never replace a participation that could
       // have captured, received or handed off media. A fresh member ID prevents
       // old approvals and JOIN commands from observing the new incarnation.
-      const trip = await transaction
-        .selectFrom("trips")
-        .select([
-          "state",
-          "started_at",
-          "ending_started_at",
-          "cancelled_at",
-          "completed_at",
-        ])
-        .where("id", "=", tripId)
+      const eligible = await transaction
+        .selectFrom("trip_members as departed")
+        .innerJoin("trips as trip", "trip.id", "departed.trip_id")
+        .select("departed.id")
+        .where("departed.id", "=", old.id)
+        .where(lobbyRejoinSafety())
         .executeTakeFirst();
-      if (
-        trip?.state !== "LOBBY" ||
-        trip.started_at !== null ||
-        trip.ending_started_at !== null ||
-        trip.cancelled_at !== null ||
-        trip.completed_at !== null ||
-        old.role !== "MEMBER" ||
-        old.leaving_at === null ||
-        old.left_incomplete ||
-        old.drained_at !== null ||
-        (old.state !== "ACTIVE" && old.state !== "PENDING_KEY")
-      )
-        return { kind: "UNAVAILABLE" };
-      const history = await sql<{ unsafe: boolean }>`
-        select exists(select 1 from upload_sessions where trip_id = ${tripId}::uuid)
-          or exists(select 1 from assets where trip_id = ${tripId}::uuid)
-          or exists(select 1 from trip_device_requests
-            where trip_id = ${tripId}::uuid and membership_id = ${old.id}::uuid)
-          or exists(select 1 from trip_key_envelopes
-            where trip_id = ${tripId}::uuid and sender_device_id = ${old.participating_device_id}::uuid
-              and recipient_device_id <> ${old.participating_device_id}::uuid)
-          as unsafe
-      `.execute(transaction);
-      if (history.rows[0]?.unsafe !== false) return { kind: "UNAVAILABLE" };
+      if (eligible === undefined) return { kind: "UNAVAILABLE" };
       return { kind: "REJOINABLE", membership: mapMembership(old) };
     },
     async retireDepartedLobbyMembership(membership) {
@@ -1263,7 +1257,11 @@ export function createKyselyTripUnitOfWork(
         join users as member_user on member_user.id = member.user_id and member_user.deleted_at is null
         where invite.invite_code_hmac = ${Buffer.from(inviteCodeHmac)}
           and invite.revoked_at is null and invite.expires_at > statement_timestamp()
-          and invite.uses_count < invite.max_uses
+          and (invite.uses_count < invite.max_uses or exists(
+            select 1 from trip_members as departed
+            where departed.trip_id = trip.id and departed.user_id = caller.id
+              and ${lobbyRejoinSafety()}
+          ))
           and trip.state in ('LOBBY', 'ACTIVE') and trip.ends_at > statement_timestamp()
           and trip.member_count < 10
         group by trip.id, trip.name, trip.started_at, trip.ends_at

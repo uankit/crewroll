@@ -1,4 +1,8 @@
-import type { TripLifecycleBody, TripTransferState } from "@crewroll/contracts";
+import type {
+  TripLifecycleBody,
+  TripListResponse,
+  TripTransferState,
+} from "@crewroll/contracts";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react-native";
@@ -26,6 +30,8 @@ const oldMember = "20000000-0000-4000-8000-000000000001";
 const newMember = "20000000-0000-4000-8000-000000000002";
 const hostDevice = "10000000-0000-4000-8000-000000000002";
 const scope = { clerkSubject: "test-guest", deviceId };
+const originalJoinCommand = "50000000-0000-4000-8000-000000000001";
+const freshJoinCommand = "50000000-0000-4000-8000-000000000002";
 const identity: NativeDeviceIdentity = {
   protocolVersion: 1,
   installationId: "30000000-0000-4000-8000-000000000001",
@@ -41,7 +47,12 @@ const identity: NativeDeviceIdentity = {
 // Actual API decoding, JoinTrip and durable store are composed with the real
 // session provider. Native/host/server behavior is an explicit test boundary;
 // backend re-enrollment authorization is independently covered by real PG tests.
-async function fixture() {
+async function fixture(
+  options: {
+    bootstrapMembership?: "ACTIVE" | "JOINING" | "REJECTED";
+    acceptedOriginalReplay?: boolean;
+  } = {},
+) {
   const values = new Map<string, string>();
   const storage = {
     getItemAsync: async (key: string) => values.get(key) ?? null,
@@ -58,11 +69,24 @@ async function fixture() {
       digest: { sha256: async () => "a".repeat(64) },
     });
   let store = makeStore();
-  await store.save(scope, {
-    state: "CONFIRMED",
-    tripId,
-    membershipId: oldMember,
-  });
+  let bootstrapMembership = options.bootstrapMembership;
+  await store.save(
+    scope,
+    bootstrapMembership === undefined
+      ? {
+          state: "CONFIRMED",
+          tripId,
+          membershipId: oldMember,
+        }
+      : {
+          state: "UNKNOWN_JOIN",
+          inviteCode: "ABCD2345",
+          deviceId,
+          commandId: options.acceptedOriginalReplay
+            ? originalJoinCommand
+            : freshJoinCommand,
+        },
+  );
   let left = false;
   let mode: "terminal" | "ambiguous" | "pending" | "active" = "terminal";
   let sequence = 0;
@@ -75,9 +99,14 @@ async function fixture() {
     )
       throw new Error("Unexpected test endpoint");
     expect(await input.json()).toEqual({ inviteCode: "ABCD2345", deviceId });
-    commands.push(input.headers.get("Idempotency-Key")!);
+    const command = input.headers.get("Idempotency-Key")!;
+    commands.push(command);
+    const acceptedReplay =
+      bootstrapMembership !== undefined &&
+      options.acceptedOriginalReplay === true &&
+      command === originalJoinCommand;
     if (mode === "ambiguous") throw new Error("test interrupted response");
-    if (mode === "terminal")
+    if (mode === "terminal" && !acceptedReplay)
       return new Response(
         JSON.stringify({
           code: "TRIP_REJOIN_UNAVAILABLE",
@@ -95,10 +124,16 @@ async function fixture() {
       );
     return new Response(
       JSON.stringify({
-        membershipId: newMember,
+        membershipId: acceptedReplay ? oldMember : newMember,
         tripId,
         deviceId,
-        status: mode === "active" ? "ACTIVE" : "PENDING_KEY",
+        status: acceptedReplay
+          ? bootstrapMembership === "JOINING"
+            ? "PENDING_KEY"
+            : "ACTIVE"
+          : mode === "active"
+            ? "ACTIVE"
+            : "PENDING_KEY",
         keyEpoch: 1,
         tripKeyEnvelope: null,
       }),
@@ -115,9 +150,10 @@ async function fixture() {
       id: tripId,
       version: mode === "active" ? 3 : 1,
       name: "Test trip",
-      status: "LOBBY",
+      status: bootstrapMembership === "ACTIVE" ? "ACTIVE" : "LOBBY",
       release: { mode: "IMMEDIATE" },
-      startsAt: null,
+      startsAt:
+        bootstrapMembership === "ACTIVE" ? "2030-01-01T00:00:00.000Z" : null,
       endsAt: "2030-01-02T00:00:00.000Z",
       ownerDeviceId: hostDevice,
       currentMembershipId: mode === "active" ? newMember : oldMember,
@@ -137,6 +173,36 @@ async function fixture() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity } },
   });
+  const hydrate = jest.fn(async () => trip());
+  const listTrips = jest.fn(async (): Promise<TripListResponse> => ({
+    items:
+      bootstrapMembership === "REJECTED"
+        ? []
+        : [
+            {
+              id: tripId,
+              name: "Test trip",
+              status: bootstrapMembership === "ACTIVE" ? "ACTIVE" : "LOBBY",
+              role: "MEMBER",
+              startsAt:
+                bootstrapMembership === "ACTIVE"
+                  ? "2030-01-01T00:00:00.000Z"
+                  : null,
+              endsAt: "2030-01-02T00:00:00.000Z",
+              leftAt: left ? "2030-01-01T00:00:00.000Z" : null,
+              participation:
+                bootstrapMembership === "JOINING"
+                  ? "JOINING"
+                  : left
+                    ? "LEFT"
+                    : "JOINED",
+              sharingPaused: false,
+              onThisDevice: true,
+              memberCount: 2,
+              savedPhotoCount: 0,
+            },
+          ],
+  }));
   const runtime: AppSessionRuntime = {
     invalidatePendingSetup: jest.fn(),
     provisionCurrentDevice: async () => ({ deviceId, identity }),
@@ -156,25 +222,8 @@ async function fixture() {
       const services: ScopedTripSession = {
         requestJoin: join.request,
         replayUnknownJoin: join.replayUnknownJoin,
-        hydrateTrip: async () => trip(),
-        listTrips: async () => ({
-          items: [
-            {
-              id: tripId,
-              name: "Test trip",
-              status: "LOBBY",
-              role: "MEMBER",
-              startsAt: null,
-              endsAt: "2030-01-02T00:00:00.000Z",
-              leftAt: left ? "2030-01-01T00:00:00.000Z" : null,
-              participation: left ? "LEFT" : "JOINED",
-              sharingPaused: false,
-              onThisDevice: true,
-              memberCount: 2,
-              savedPhotoCount: 0,
-            },
-          ],
-        }),
+        hydrateTrip: hydrate,
+        listTrips,
         retireTrip: async () => store.clear(scope),
         changeTripLifecycle: async (
           _id,
@@ -254,6 +303,8 @@ async function fixture() {
     client,
     commands,
     fetcher,
+    hydrate,
+    listTrips,
     current: () => current,
     mode(value: typeof mode) {
       mode = value;
@@ -373,5 +424,88 @@ it("keeps a legitimate fresh pre-Start rejoin pending until fresh host approval"
     f.client.clear();
     AppState.currentState = oldAppState;
     jest.useRealTimers();
+  }
+});
+
+it.each([
+  ["ACTIVE", "READY_ACTIVE"],
+  ["JOINING", "READY_PENDING_APPROVAL"],
+  ["REJECTED", "READY_NO_TRIP"],
+] as const)(
+  "clears only a refused fresh command, then restores the actual %s membership across retry/relaunch",
+  async (membership, phase) => {
+    const f = await fixture({ bootstrapMembership: membership });
+    let view = await f.mount();
+    try {
+      await waitFor(() => expect(f.current().snapshot.phase).toBe(phase));
+      expect(f.commands).toEqual([freshJoinCommand]);
+      await expect(f.load()).resolves.toBeNull();
+      expect(f.listTrips).toHaveBeenCalledTimes(1);
+      if (membership === "ACTIVE") {
+        expect(f.hydrate).toHaveBeenCalledWith(tripId);
+        expect(f.current().snapshot).toEqual({
+          phase: "READY_ACTIVE",
+          deviceId,
+          tripId,
+        });
+      } else if (membership === "JOINING") {
+        expect(f.hydrate).not.toHaveBeenCalled();
+        expect(f.current().snapshot).toEqual({
+          phase: "READY_PENDING_APPROVAL",
+          deviceId,
+          restoredPendingTripId: tripId,
+        });
+      } else {
+        expect(f.hydrate).not.toHaveBeenCalled();
+        expect(
+          screen.getByRole("button", { name: "Enter invite code" }),
+        ).toBeEnabled();
+        expect(
+          screen.getByText(
+            "You can’t rejoin this trip. You can join a different trip.",
+          ),
+        ).toBeOnTheScreen();
+      }
+      await act(() => f.current().retry());
+      await waitFor(() => expect(f.current().snapshot.phase).toBe(phase));
+      await view.unmount();
+      f.reopenStore();
+      view = await f.mount();
+      await waitFor(() => expect(f.current().snapshot.phase).toBe(phase));
+      expect(f.commands).toEqual([freshJoinCommand]);
+      await expect(f.load()).resolves.toBeNull();
+    } finally {
+      await view.unmount();
+      f.client.clear();
+    }
+  },
+);
+
+it("replays an accepted original command instead of applying the fresh-command refusal", async () => {
+  const f = await fixture({
+    bootstrapMembership: "ACTIVE",
+    acceptedOriginalReplay: true,
+  });
+  const view = await f.mount();
+  try {
+    await waitFor(() =>
+      expect(f.current().snapshot.phase).toBe("READY_ACTIVE"),
+    );
+    expect(f.commands).toEqual([originalJoinCommand]);
+    await expect(f.load()).resolves.toEqual({
+      state: "CONFIRMED",
+      tripId,
+      membershipId: oldMember,
+    });
+    expect(f.hydrate).toHaveBeenCalledWith(tripId);
+    expect(f.listTrips).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(
+        "You can’t rejoin this trip. You can join a different trip.",
+      ),
+    ).toBeNull();
+  } finally {
+    await view.unmount();
+    f.client.clear();
   }
 });
