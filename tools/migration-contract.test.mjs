@@ -375,6 +375,32 @@ test("allows the bounded pool adapter only as a regular repository file", async 
   assertFinding(result, { code: "MIGRATION_SYMLINK", path: adapter });
 });
 
+test("allows only the exact optional transaction dialect regular file", async (t) => {
+  const adapter =
+    "services/control-plane/src/db/transactionScopedPostgresDialect.ts";
+  for (const kind of ["absent", "regular", "symlink", "directory"]) {
+    await t.test(kind, async (subtest) => {
+      const rootPath = await fixture(subtest);
+      await makeComplete(rootPath);
+      if (kind === "regular") await writeText(rootPath, adapter);
+      if (kind === "symlink")
+        await symlink("database.ts", path.join(rootPath, adapter));
+      if (kind === "directory") await mkdir(path.join(rootPath, adapter));
+      const result = await classifyMigrationContract({ rootPath });
+      if (kind === "absent" || kind === "regular") {
+        assert.equal(result.state, "complete");
+        assert.deepEqual(result.findings, []);
+      } else {
+        assertPartial(result);
+        assertFinding(result, {
+          code: kind === "symlink" ? "MIGRATION_SYMLINK" : "MIGRATION_TOPOLOGY",
+          path: adapter,
+        });
+      }
+    });
+  }
+});
+
 test("rejects unclassified schema and migration topology while accepting only contiguous migrations", async (t) => {
   for (const [name, mutate, expected] of [
     [
@@ -525,6 +551,16 @@ test("nearby repository spellings never widen the DB root", async (t) => {
     ["media file", "services/control-plane/src/db/media.ts", "file"],
     ["push sibling", "services/control-plane/src/db/push-copy", "directory"],
     ["push file", "services/control-plane/src/db/push.ts", "file"],
+    [
+      "transaction dialect near-name file",
+      "services/control-plane/src/db/transactionScopedPostgresDialect-copy.ts",
+      "file",
+    ],
+    [
+      "transaction dialect near-name directory",
+      "services/control-plane/src/db/transactionScopedPostgresDialect",
+      "directory",
+    ],
   ];
 
   for (const [name, relativePath, kind] of cases) {
