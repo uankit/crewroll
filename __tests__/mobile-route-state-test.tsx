@@ -346,20 +346,27 @@ describe("Expo Router mobile journey", () => {
     "READY_PENDING_APPROVAL",
     "READY_UNKNOWN_CREATE",
     "READY_UNKNOWN_JOIN",
-  ] as const)("offers account sign-out from Home in %s", async (phase) => {
-    setPhase(phase);
-    await renderActualRouter("/");
-    await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
-    screen.getByText("Test Member");
-    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
-    expect(mockSignOut).not.toHaveBeenCalled();
-    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
-    expect(mockSignOut).toHaveBeenCalledTimes(1);
-    await screen.findByRole("button", { name: "Get started" });
-    expect(screen.queryByTestId("account-sheet")).toBeNull();
-    expect(screen.queryByTestId("trip-library-screen")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Your account" })).toBeNull();
-  });
+  ] as const)(
+    "offers account sign-out from Home in %s",
+    async (phase) => {
+      setPhase(phase);
+      await renderActualRouter("/");
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Your account" }),
+      );
+      screen.getByText("Test Member");
+      await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+      expect(mockSignOut).not.toHaveBeenCalled();
+      await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+      await screen.findByRole("button", { name: "Get started" });
+      expect(screen.queryByTestId("account-sheet")).toBeNull();
+      expect(screen.queryByTestId("trip-library-screen")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Your account" })).toBeNull();
+    },
+    // The first case includes cold real-router rendering on CI; query deadlines stay unchanged.
+    15_000,
+  );
 
   it("keeps sign-out available when all trips are past trips", async () => {
     mockProjection = {
