@@ -63,7 +63,9 @@ jobs:
       - run: npm run test:integration
 
   android-core:
-    runs-on: ubuntu-latest
+    # The shared conformance provider verifies pinned macOS sodium binaries.
+    # This JVM suite does not replace Android device acceptance.
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
