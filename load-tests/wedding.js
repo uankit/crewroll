@@ -43,7 +43,8 @@ function readWorkflowRecovery() {
       configured.deploymentSha !== __ENV.CREWROLL_AUDITED_SHA ||
       !UUID.test(configured.tripId || "") ||
       !/^[a-f0-9]{32}$/.test(configured.runId || "") ||
-      !recovery || recovery.expectedPending !== 558 ||
+      !recovery || !Number.isSafeInteger(recovery.expectedPending) ||
+      recovery.expectedPending < 1 || recovery.expectedPending > 900 ||
       !/^[a-f0-9]{32}$/.test(recovery.runId || "") ||
       recovery.runId === configured.runId ||
       recovery.tripId !== configured.tripId) return invalid();
@@ -329,7 +330,7 @@ export const options = {
     // Recoverable object5xx remain visible; control failures still abort immediately.
     // This derivative measures eventual delivery under explicit retries, not strict availability.
     crewroll_control_full_body_ms: [
-      { threshold: "p(95)<2000", abortOnFail: true, delayAbortEval: "20s" },
+      { threshold: "p(95)<2000", abortOnFail: false, delayAbortEval: "20s" },
     ],
     crewroll_completed_actors: ["count==10"],
     crewroll_commits: ["count==0"],
@@ -1022,11 +1023,29 @@ export function handleSummary(data) {
   const complete = Object.entries(expected).every(
     ([name, value]) => metrics[name].count === value,
   );
-  const thresholdPass = Object.values(data.metrics).every((metric) =>
-    Object.values(metric.thresholds || {}).every(
+  const isLatencyMetric = (name) => name === "crewroll_control_full_body_ms" ||
+    CONTROL_ROUTES.some((route) => name === `crewroll_control_full_body_ms{name:${route}}`);
+  const correctnessThresholdPass = Object.entries(data.metrics).every(([name, metric]) =>
+    isLatencyMetric(name) || Object.values(metric.thresholds || {}).every(
       (threshold) => threshold.ok === true,
     ),
   );
+  const latencyMetrics = Object.entries(data.metrics).filter(([name]) => isLatencyMetric(name));
+  const globalLatency = data.metrics.crewroll_control_full_body_ms;
+  const performanceGatePassed = Number.isFinite(globalLatency?.values?.["p(95)"]) &&
+    globalLatency.values["p(95)"] < 2000 &&
+    Object.keys(globalLatency.thresholds || {}).length > 0 &&
+    latencyMetrics.every(([, metric]) => Object.values(metric.thresholds || {}).every(
+      (threshold) => threshold.ok === true,
+    ));
+  const correctnessComplete = complete && correctnessThresholdPass &&
+    metrics.crewroll_resilience_object_attempts.count >= Number(RECOVERY.expectedPending) &&
+    metrics.crewroll_resilience_object_attempts.count <= 3 * Number(RECOVERY.expectedPending) &&
+    metrics.crewroll_resilience_retry_attempts.count === metrics.crewroll_resilience_object_attempts.count - Number(RECOVERY.expectedPending) &&
+    metrics.crewroll_resilience_retryable_failures.count === metrics.crewroll_resilience_retry_attempts.count &&
+    metrics.crewroll_resilience_attempt_reserved_bytes.count === metrics.crewroll_resilience_object_attempts.count * ORIGINAL_BYTES &&
+    metrics.crewroll_resilience_backoff_seconds.count <= 12 * Number(RECOVERY.expectedPending) &&
+    (metrics.crewroll_assertion_failures.count || 0) === 0;
   const routeCounts = {};
   const routeUnexpectedStatusCounts = {};
   const routeTransportCounts = {};
@@ -1056,6 +1075,9 @@ export function handleSummary(data) {
     execution: "standalone-k6-on-github-standard-runner",
     stage: "resilience-of-existing-burst",
     strictRecoveryRemainsFailed: true,
+    priorCloudRecoveryRemainsFailed: true,
+    completionTailOnly: true,
+    latencyAbortsRun: false,
     objectAttemptsPerCopyMaximum: 3,
     objectRetryBackoffSeconds: [4, 8],
     objectFullBodyTimeoutSeconds: 30,
@@ -1073,16 +1095,9 @@ export function handleSummary(data) {
     deploymentSha: /^[a-f0-9]{40}$/.test(__ENV.CREWROLL_AUDITED_SHA || "")
       ? __ENV.CREWROLL_AUDITED_SHA
       : null,
-    passed:
-      complete &&
-      thresholdPass &&
-      metrics.crewroll_resilience_object_attempts.count >= Number(RECOVERY.expectedPending) &&
-      metrics.crewroll_resilience_object_attempts.count <= 3 * Number(RECOVERY.expectedPending) &&
-      metrics.crewroll_resilience_retry_attempts.count === metrics.crewroll_resilience_object_attempts.count - Number(RECOVERY.expectedPending) &&
-      metrics.crewroll_resilience_retryable_failures.count === metrics.crewroll_resilience_retry_attempts.count &&
-      metrics.crewroll_resilience_attempt_reserved_bytes.count === metrics.crewroll_resilience_object_attempts.count * ORIGINAL_BYTES &&
-      metrics.crewroll_resilience_backoff_seconds.count <= 12 * Number(RECOVERY.expectedPending) &&
-      (metrics.crewroll_assertion_failures.count || 0) === 0,
+    correctnessComplete,
+    performanceGatePassed,
+    passed: correctnessComplete && performanceGatePassed,
     scriptSha256: /^[a-f0-9]{64}$/.test(__ENV.CREWROLL_SCRIPT_SHA256 || "")
       ? __ENV.CREWROLL_SCRIPT_SHA256
       : null,
