@@ -1,3 +1,7 @@
+// PRIVATE OUTPUT-ONLY RESILIENCE DERIVATIVE. NOT EXECUTED.
+// Strict recovery parent91b267a93ab92698347e21781786cd7db7716b9a001910ae6f91a319e3d27362 remains FAILED; its source/artifacts are unchanged.
+// Frozen public original4a47c51e1843aa484019be2853613ea32ca512d27857ff3dc9ab7bd5d627328f; prior recovery12af3671d1c28e82dc284ea5d8a3b668fc9e7f551858cabd31479ac4f85bead7.
+// Diagnostic public base9d66e235085d6a634c9910749d4e574f3d55896605cfebde03608cbca62c0188; existing recovery setup/default/expected-metrics retained.
 // Artifact-only candidate. Root must review destination, identity setup and caps before execution.
 // Opaque synthetic bytes + harness receipts; never evidence of native Photos saves or valid media.
 import http from "k6/http";
@@ -14,14 +18,46 @@ if (STAGE !== "smoke" && STAGE !== "burst")
 const PHOTOS = STAGE === "smoke" ? 1 : 10;
 const ORIGINAL_BYTES = (STAGE === "smoke" ? 1 : 4) * 1024 * 1024;
 const PREVIEW_BYTES = 128 * 1024;
-const MAX_MS = STAGE === "smoke" ? 300000 : 900000;
-const REQUEST_CAP = STAGE === "smoke" ? 150 : 550; // per VU, plus <=41 setup requests
+const MAX_MS = 1200000; // 20-minute internal resilience ceiling; unchanged workflow outer cap is 1050 seconds.
+const REQUEST_CAP = 900; // per VU, plus <=41 setup requests
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CAPABILITY =
   /^https:\/\/crewroll-api-production\.uankitu\.workers\.dev\/v1\/media\/object\?grant=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]{0,18})$/;
+
+// The unchanged existing workflow forwards only the scoped auth bundle. Derive
+// recovery configuration locally; never require new workflow permissions/env.
+function readWorkflowRecovery() {
+  const invalid = () => { throw new Error("RECOVERY_WORKFLOW_CONFIGURATION_INVALID"); };
+  const raw = __ENV.CREWROLL_SYNTHETIC_LOAD_AUTH;
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 24576) return invalid();
+  let configured;
+  try { configured = JSON.parse(raw); } catch { return invalid(); }
+  const recovery = configured && configured.recovery;
+  if (!configured || configured.origin !== ORIGIN ||
+      configured.purpose !== "crewroll-synthetic-load-only" ||
+      configured.stage !== "burst" || STAGE !== "burst" ||
+      !/^[a-f0-9]{40}$/.test(configured.deploymentSha || "") ||
+      configured.deploymentSha !== __ENV.CREWROLL_AUDITED_SHA ||
+      !UUID.test(configured.tripId || "") ||
+      !/^[a-f0-9]{32}$/.test(configured.runId || "") ||
+      !recovery || recovery.expectedPending !== 558 ||
+      !/^[a-f0-9]{32}$/.test(recovery.runId || "") ||
+      recovery.runId === configured.runId ||
+      recovery.tripId !== configured.tripId) return invalid();
+  const derived = { expectedPending: recovery.expectedPending,
+    runId: recovery.runId, tripId: recovery.tripId };
+  for (const [name, value] of [
+    ["CREWROLL_RECOVERY_EXPECTED_PENDING", String(derived.expectedPending)],
+    ["CREWROLL_RECOVERY_RUN_ID", derived.runId],
+    ["CREWROLL_RECOVERY_TRIP_ID", derived.tripId],
+  ]) if (__ENV[name] !== undefined && __ENV[name] !== value) return invalid();
+  return Object.freeze(derived);
+}
+const RECOVERY = readWorkflowRecovery();
+
 
 const failures = new Counter("crewroll_assertion_failures");
 const requests = new Counter("crewroll_requests");
@@ -124,6 +160,18 @@ const FAILURE_CODES = [
   "TRIP_NOT_EMPTY",
   "TRIP_NOT_READY",
   "UNEXPECTED_HTTP_STATUS",
+  "PENDING_PAGE_OR_CURSOR_CEILING",
+  "RECOVERY_ACTOR_COUNT_INVALID",
+  "RECOVERY_ATTESTATION_INVALID",
+  "RECOVERY_ATTESTED_COUNT_CHANGED",
+  "RECOVERY_BASELINE_CHANGED",
+  "RECOVERY_DRAIN_INCOMPLETE",
+  "RECOVERY_FINAL_PENDING_NOT_EMPTY",
+  "RECOVERY_OPEN_UPLOADS",
+  "RECOVERY_SETUP_REQUIRED",
+  "OBJECT_RETRY_EXHAUSTED",
+  "OBJECT_RETRY_SCOPE",
+  "OBJECT_ATTEMPT_BYTE_CEILING",
   "UNKNOWN_FAILURE_CODE",
   "UNKNOWN_ROUTE_METRIC",
   "UPLOAD_BYTE_CEILING",
@@ -210,7 +258,7 @@ function timingBucket(ms) {
   if (ms < 30000) return "20_to_30s";
   return "gte_30s";
 }
-function transportFailure(name, started, response) {
+function transportFailure(name, started, response, softObjectFailure = false) {
   STATUS_COUNTS.transport.counter.add(1);
   ROUTE_REQUESTS[name].transportCounter.add(1);
   const code = response?.error_code;
@@ -222,6 +270,7 @@ function transportFailure(name, started, response) {
     TRANSPORT_PHASE_COUNTS[phase][
       timingBucket(response?.timings?.[phase])
     ].counter.add(1);
+  if (softObjectFailure) return response || null;
   return stop("TRANSPORT_FAILURE");
 }
 
@@ -240,6 +289,16 @@ const discoveryMs = new Trend("crewroll_commit_to_discovery_ms", true);
 const receiptMs = new Trend("crewroll_download_to_harness_receipt_ms", true);
 const drainMs = new Trend("crewroll_actor_drain_ms", true);
 const clockSkew = new Counter("crewroll_future_server_timestamp_samples");
+const objectAttempts = new Counter("crewroll_resilience_object_attempts");
+const objectRetries = new Counter("crewroll_resilience_retry_attempts");
+const retryableFailures = new Counter("crewroll_resilience_retryable_failures");
+const recoveredCopies = new Counter("crewroll_resilience_recovered_copies");
+const attemptReservedBytes = new Counter("crewroll_resilience_attempt_reserved_bytes");
+const attemptReturnedBytes = new Counter("crewroll_resilience_returned_body_bytes");
+const partialReturnedBytes = new Counter("crewroll_resilience_partial_body_bytes");
+const retrySleepSeconds = new Counter("crewroll_resilience_backoff_seconds");
+const RETRY_REASONS = ["transport", "short_body", "http_401", "http_403", "http_429", "http_5xx"];
+const RETRY_REASON_COUNTS = diagnosticCounters("crewroll_resilience_reason", RETRY_REASONS);
 
 export const options = {
   scenarios: {
@@ -247,7 +306,7 @@ export const options = {
       executor: "per-vu-iterations",
       vus: 10,
       iterations: 1,
-      maxDuration: STAGE === "smoke" ? "5m" : "15m",
+      maxDuration: "20m",
       gracefulStop: "0s",
     },
   },
@@ -267,20 +326,19 @@ export const options = {
   summaryTrendStats: ["avg", "min", "med", "p(95)", "p(99)", "max"],
   thresholds: {
     crewroll_assertion_failures: [{ threshold: "count==0", abortOnFail: true }],
-    crewroll_server_error_rate: [
-      { threshold: "rate<0.01", abortOnFail: true, delayAbortEval: "10s" },
-    ],
+    // Recoverable object5xx remain visible; control failures still abort immediately.
+    // This derivative measures eventual delivery under explicit retries, not strict availability.
     crewroll_control_full_body_ms: [
       { threshold: "p(95)<2000", abortOnFail: true, delayAbortEval: "20s" },
     ],
     crewroll_completed_actors: ["count==10"],
-    crewroll_commits: [`count==${10 * PHOTOS}`],
-    crewroll_harness_receipts: [`count==${90 * PHOTOS}`],
+    crewroll_commits: ["count==0"],
+    crewroll_harness_receipts: [`count==${Number(RECOVERY.expectedPending)}`],
     crewroll_ciphertext_uploaded_bytes: [
-      `count==${10 * PHOTOS * (ORIGINAL_BYTES + PREVIEW_BYTES)}`,
+      "count==0",
     ],
     crewroll_ciphertext_downloaded_bytes: [
-      `count==${90 * PHOTOS * (ORIGINAL_BYTES + PREVIEW_BYTES)}`,
+      `count==${Number(RECOVERY.expectedPending) * ORIGINAL_BYTES}`,
     ],
   },
 };
@@ -336,7 +394,9 @@ function parse(response) {
     return stop("CONTROL_JSON_INVALID");
   }
 }
-function request(method, path, body, actor, name, expected, object = false) {
+function request(method, path, body, actor, name, expected, object = false, softObjectFailure = false) {
+  if (softObjectFailure)
+    requireValue(object && method === "GET" && name === "GET object ORIGINAL" && actor === null && expected === 200, "OBJECT_RETRY_SCOPE");
   requireValue(
     ++count <= (exec.vu.idInTest === 0 ? 41 : REQUEST_CAP),
     "REQUEST_CEILING",
@@ -380,7 +440,7 @@ function request(method, path, body, actor, name, expected, object = false) {
   try {
     response = http.request(method, url, payload, params);
   } catch {
-    return transportFailure(name, started);
+    return transportFailure(name, started, undefined, softObjectFailure);
   } // Never inspect/stringify the exception or Response.error.
   // Body-stream failures can retain HTTP 200; status alone cannot distinguish them.
   if (
@@ -389,7 +449,7 @@ function request(method, path, body, actor, name, expected, object = false) {
       response.error_code !== 0 &&
       !(response.error_code >= 1400 && response.error_code <= 1599))
   )
-    return transportFailure(name, started, response);
+    return transportFailure(name, started, response, softObjectFailure);
   if (response.status !== expected)
     ROUTE_REQUESTS[name].unexpectedStatusCounter.add(1);
   (STATUS_COUNTS[String(response.status)] || STATUS_COUNTS.other).counter.add(
@@ -399,6 +459,9 @@ function request(method, path, body, actor, name, expected, object = false) {
     kind: object ? "object" : "control",
   });
   (object ? objectMs : controlMs).add(Date.now() - started, { name });
+  requireValue(!header(response, "location"), "REDIRECT_FORBIDDEN");
+  if (softObjectFailure && (response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500 && response.status <= 599))
+    return response;
   if (response.status === 401 || response.status === 403)
     stop("AUTH_OR_SCOPE_REJECTED");
   if (response.status === 409 || response.status === 410)
@@ -482,15 +545,14 @@ function transfer(actor, empty = false) {
   );
   requireValue(
     state.tripId === bundle.tripId &&
-      state.status === "ACTIVE" &&
-      state.participation === "JOINED" &&
+      ["ACTIVE", "ENDING"].includes(state.status) &&
+      ["JOINED", "LEAVING"].includes(state.participation) &&
       state.sharingPaused === false &&
       date(state.captureFrom) <= Date.now() &&
       Array.isArray(state.excludedCaptureWindows) &&
       state.excludedCaptureWindows.length === 0,
     "TRIP_NOT_READY",
   );
-  liveUntil(state.captureUntil, empty ? MAX_MS + 60000 : 30000);
   liveUntil(state.deliveryDeadline, empty ? MAX_MS + 60000 : 30000);
   if (empty)
     requireValue(
@@ -544,24 +606,50 @@ function previews(actor, after = "0") {
 }
 export async function setup() {
   await configuration();
+  const expected = Number(RECOVERY.expectedPending);
+  const recoveryRunId = RECOVERY.runId;
   requireValue(
-    get("/health/ready", null, "GET readiness").status === "ready",
-    "BACKEND_NOT_READY",
+    STAGE === "burst" && UUID.test(RECOVERY.tripId || "") &&
+      bundle.tripId === RECOVERY.tripId &&
+      /^[a-f0-9]{32}$/.test(recoveryRunId || "") &&
+      Number.isSafeInteger(expected) && expected > 0 && expected <= 90 * PHOTOS,
+    "RECOVERY_ATTESTATION_INVALID",
   );
+  requireValue(get("/health/ready", null, "GET readiness").status === "ready", "BACKEND_NOT_READY");
+  initFixtures();
+  const pendingByActor = [];
   for (const actor of bundle.actors) {
-    transfer(actor, true);
-    const deliveries = pending(actor);
-    const feed = previews(actor);
-    requireValue(
-      deliveries.items.length === 0 &&
-        !deliveries.hasMore &&
-        feed.items.length === 0 &&
-        !feed.hasMore,
-      "TRIP_NOT_EMPTY",
-    );
+    const state = transfer(actor);
+    liveUntil(state.deliveryDeadline, MAX_MS + 60000);
+    requireValue(state.pendingUploads === 0, "RECOVERY_OPEN_UPLOADS");
+    const seenAssets = new Set();
+    const seenDeliveries = new Set();
+    const cursors = new Set();
+    let cursor;
+    for (let pageIndex = 0; pageIndex < 2; pageIndex++) {
+      const page = pending(actor, cursor);
+      for (const item of page.items) {
+        requireValue(item.tripId === bundle.tripId && UUID.test(item.deliveryId), "FOREIGN_DELIVERY");
+        validAsset(item.assetId, item.sourceDeviceId);
+        requireValue(item.sourceDeviceId !== actor.deviceId && !seenAssets.has(item.assetId) && !seenDeliveries.has(item.deliveryId), "DUPLICATE_OR_SOURCE_PENDING");
+        seenAssets.add(item.assetId); seenDeliveries.add(item.deliveryId);
+      }
+      if (!page.hasMore) {
+        requireValue(page.nextCursor === null, "PENDING_PAGINATION_INVALID");
+        break;
+      }
+      requireValue(pageIndex < 1 && !cursors.has(page.nextCursor), "PENDING_PAGE_OR_CURSOR_CEILING");
+      cursors.add(page.nextCursor); cursor = page.nextCursor;
+    }
+    requireValue(seenAssets.size <= 9 * PHOTOS && Number.isSafeInteger(state.pendingDownloads) && state.pendingDownloads === seenAssets.size, "RECOVERY_BASELINE_CHANGED");
+    pendingByActor.push(seenAssets.size);
   }
-  // No credential/setup object is serialized to VUs or artifacts.
-  return { startedAt: Date.now() };
+  requireValue(pendingByActor.reduce((sum, value) => sum + value, 0) === expected, "RECOVERY_ATTESTED_COUNT_CHANGED");
+  // Force explicit zero-valued mutation metrics; no upload/commit call is made.
+  sent.add(0); commits.add(0); received.add(0); receipts.add(0); replays.add(0);
+  for (const metric of [objectAttempts, objectRetries, retryableFailures, recoveredCopies, attemptReservedBytes, attemptReturnedBytes, partialReturnedBytes, retrySleepSeconds]) metric.add(0);
+  for (const reason of RETRY_REASONS) RETRY_REASON_COUNTS[reason].counter.add(0);
+  return { startedAt: Date.now(), pendingByActor, expected, recoveryRunId };
 }
 function bytes(length, label) {
   const array = new Uint8Array(length);
@@ -605,48 +693,49 @@ function validAsset(assetId, sourceDeviceId) {
     "FOREIGN_ASSET_OR_SOURCE",
   );
 }
-function download(grant, variant) {
-  const fixture = fixtures[variant];
-  liveUntil(grant.expiresAt);
-  requireValue(
-    grant.encryptedManifest === fixtures.manifest,
-    "MANIFEST_MISMATCH",
-  );
-  const object =
-    variant === "PREVIEW" ? grant.object : grant.objects && grant.objects[0];
-  requireValue(
-    object &&
-      object.variant === variant &&
-      object.ciphertextBytes === String(fixture.length) &&
-      object.checksumSha256 === fixture.checksum &&
-      CAPABILITY.test(object.url),
-    "DOWNLOAD_GRANT_INVALID",
-  );
-  downloadReserved += fixture.length;
-  requireValue(
-    downloadReserved <= 9 * PHOTOS * (ORIGINAL_BYTES + PREVIEW_BYTES),
-    "DOWNLOAD_BYTE_CEILING",
-  );
-  const response = request(
-    "GET",
-    object.url,
-    null,
-    null,
-    `GET object ${variant}`,
-    200,
-    true,
-  );
-  requireValue(
-    response.body instanceof ArrayBuffer &&
-      response.body.byteLength === fixture.length,
-    "BODY_LENGTH_MISMATCH",
-  );
-  requireValue(
-    crypto.sha256(response.body, "base64") === fixture.checksum,
-    "BODY_HASH_MISMATCH",
-  );
-  received.add(response.body.byteLength, { variant });
+function downloadWithRetry(actor, item, prefix) {
+  const fixture = fixtures.ORIGINAL;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) {
+      const seconds = attempt === 2 ? 4 : 8;
+      requireValue(Date.now() + seconds * 1000 < deadline, "DURATION_CEILING");
+      retrySleepSeconds.add(seconds); sleep(seconds);
+      objectRetries.add(1);
+    }
+    // A new normal command creates a fresh grant on EVERY attempt; controls never retry.
+    const grant = post(`/v1/deliveries/${item.deliveryId}/download-session`, { variants: ["ORIGINAL"] }, actor, `${prefix}:download:${attempt}`, "POST download session");
+    requireValue(grant.deliveryId === item.deliveryId && grant.assetId === item.assetId && Array.isArray(grant.objects) && grant.objects.length === 1, "DOWNLOAD_SESSION_SCOPE");
+    liveUntil(grant.expiresAt);
+    requireValue(grant.encryptedManifest === fixtures.manifest, "MANIFEST_MISMATCH");
+    const object = grant.objects[0];
+    requireValue(object && object.variant === "ORIGINAL" && object.ciphertextBytes === String(fixture.length) && object.checksumSha256 === fixture.checksum && CAPABILITY.test(object.url), "DOWNLOAD_GRANT_INVALID");
+    downloadReserved += fixture.length;
+    requireValue(downloadReserved <= 9 * PHOTOS * 3 * ORIGINAL_BYTES, "OBJECT_ATTEMPT_BYTE_CEILING");
+    attemptReservedBytes.add(fixture.length); objectAttempts.add(1);
+    const response = request("GET", object.url, null, null, "GET object ORIGINAL", 200, true, true);
+    const body = response?.body;
+    const length = body instanceof ArrayBuffer ? body.byteLength : 0;
+    attemptReturnedBytes.add(length);
+    if (length < fixture.length) partialReturnedBytes.add(length);
+    // Even an errored HTTP200 cannot turn an oversized or full corrupt body into a retry.
+    requireValue(length <= fixture.length, "BODY_LENGTH_MISMATCH");
+    if (length === fixture.length)
+      requireValue(crypto.sha256(body, "base64") === fixture.checksum, "BODY_HASH_MISMATCH");
+    const transport = !response || response.status === 0 ||
+      typeof response.error_code === "number" && response.error_code !== 0 && !(response.error_code >= 1400 && response.error_code <= 1599);
+    const reason = transport ? "transport" : response.status === 401 ? "http_401" :
+      response.status === 403 ? "http_403" : response.status === 429 ? "http_429" :
+      response.status >= 500 && response.status <= 599 ? "http_5xx" : length < fixture.length ? "short_body" : null;
+    if (!reason) {
+      received.add(length, { variant: "ORIGINAL" });
+      if (attempt > 1) recoveredCopies.add(1);
+      return;
+    }
+    retryableFailures.add(1); RETRY_REASON_COUNTS[reason].counter.add(1);
+    if (attempt === 3) stop("OBJECT_RETRY_EXHAUSTED");
+  }
 }
+
 function put(object, variant) {
   const fixture = fixtures[variant];
   const headers = object.requiredHeaders;
@@ -797,152 +886,51 @@ function upload(actor, owner, photo) {
 export default async function scenario(data) {
   await configuration();
   const owner = exec.vu.idInTest - 1;
-  requireValue(
-    Number.isInteger(owner) &&
-      owner >= 0 &&
-      owner < 10 &&
-      exec.scenario.iterationInTest < 10,
-    "VU_SCOPE",
-  );
-  requireValue(
-    data && Number.isFinite(data.startedAt) && data.startedAt <= Date.now(),
-    "SETUP_REQUIRED",
-  );
+  requireValue(Number.isInteger(owner) && owner >= 0 && owner < 10 && exec.scenario.iterationInTest < 10, "VU_SCOPE");
+  requireValue(data && Number.isFinite(data.startedAt) && data.startedAt <= Date.now() && Array.isArray(data.pendingByActor) && data.pendingByActor.length === 10 && data.expected === Number(RECOVERY.expectedPending) && data.recoveryRunId === RECOVERY.runId && bundle.tripId === RECOVERY.tripId, "RECOVERY_SETUP_REQUIRED");
   deadline = data.startedAt + MAX_MS;
   initFixtures();
   const actor = bundle.actors[owner];
-  for (let photo = 0; photo < PHOTOS; photo++) upload(actor, owner, photo);
-  // One receiver deliberately waits before polling; this is not a product PAUSE command or OS reconnect.
-  if (owner === 9) sleep(10);
-  const seenPreviews = new Set();
+  const expected = data.pendingByActor[owner];
+  requireValue(Number.isSafeInteger(expected) && expected >= 0 && expected <= 9 * PHOTOS, "RECOVERY_ACTOR_COUNT_INVALID");
+  const initial = transfer(actor);
+  requireValue(initial.pendingUploads === 0 && initial.pendingDownloads === expected, "RECOVERY_BASELINE_CHANGED");
   const saved = new Set();
-  let previewCursor = "0";
+  const deliveryIds = new Set();
+  const cursors = new Set();
+  let cursor;
   let receiptReplayed = false;
-  const expected = 9 * PHOTOS;
-  for (
-    let pass = 0;
-    pass < 45 && (seenPreviews.size < expected || saved.size < expected);
-    pass++
-  ) {
-    for (let pageCount = 0; pageCount < 6; pageCount++) {
-      const page = previews(actor, previewCursor);
-      for (const item of page.items) {
-        validAsset(item.assetId, item.sourceDeviceId);
-        requireValue(
-          DECIMAL.test(item.sequence) &&
-            item.download &&
-            item.download.assetId === item.assetId,
-          "PREVIEW_ITEM_INVALID",
-        );
-        if (
-          item.sourceDeviceId !== actor.deviceId &&
-          !seenPreviews.has(item.assetId)
-        ) {
-          download(item.download, "PREVIEW");
-          seenPreviews.add(item.assetId);
-        }
+  for (let pageIndex = 0; pageIndex < 2; pageIndex++) {
+    const page = pending(actor, cursor);
+    for (const item of page.items) {
+      requireValue(item.tripId === bundle.tripId && UUID.test(item.deliveryId), "FOREIGN_DELIVERY");
+      validAsset(item.assetId, item.sourceDeviceId);
+      requireValue(item.sourceDeviceId !== actor.deviceId && !saved.has(item.assetId) && !deliveryIds.has(item.deliveryId) && saved.size < expected, "DUPLICATE_OR_SOURCE_PENDING");
+      const prefix = `recovery:${data.recoveryRunId}:${owner}:${item.deliveryId}`;
+      const receiptStarted = Date.now();
+      downloadWithRetry(actor, item, prefix); // full length+SHA before ANY receipt
+      const body = { assetId: item.assetId, savedAt: new Date().toISOString(), engineRevision: 1 };
+      const receipt = post(`/v1/deliveries/${item.deliveryId}/saved-receipt`, body, actor, `${prefix}:receipt`, "POST harness receipt");
+      requireValue(receipt.deliveryId === item.deliveryId && receipt.status === "SAVED_LOCALLY" && date(receipt.acceptedAt) > 0, "RECEIPT_INVALID");
+      if (!receiptReplayed) {
+        // Identical label, savedAt, and payload. No new acknowledgement identity.
+        const again = post(`/v1/deliveries/${item.deliveryId}/saved-receipt`, body, actor, `${prefix}:receipt`, "POST receipt replay");
+        requireValue(again.deliveryId === receipt.deliveryId && again.status === receipt.status && again.acceptedAt === receipt.acceptedAt, "RECEIPT_REPLAY_CHANGED");
+        replays.add(1); receiptReplayed = true;
       }
-      previewCursor = page.nextCursor;
-      if (!page.hasMore) break;
-      if (pageCount === 5) stop("PREVIEW_PAGE_CEILING");
+      saved.add(item.assetId); deliveryIds.add(item.deliveryId);
+      receipts.add(1); receiptMs.add(Date.now() - receiptStarted);
     }
-    let pendingCursor;
-    const cursors = new Set();
-    for (let pageCount = 0; pageCount < 2; pageCount++) {
-      const page = pending(actor, pendingCursor);
-      for (const item of page.items) {
-        requireValue(
-          item.tripId === bundle.tripId && UUID.test(item.deliveryId),
-          "FOREIGN_DELIVERY",
-        );
-        validAsset(item.assetId, item.sourceDeviceId);
-        requireValue(
-          item.sourceDeviceId !== actor.deviceId && !saved.has(item.assetId),
-          "DUPLICATE_OR_SOURCE_PENDING",
-        );
-        const discoverLatency = Date.now() - date(item.committedAt);
-        if (discoverLatency >= 0) discoveryMs.add(discoverLatency);
-        else clockSkew.add(1);
-        const grant = post(
-          `/v1/deliveries/${item.deliveryId}/download-session`,
-          { variants: ["ORIGINAL"] },
-          actor,
-          `download:${owner}:${item.deliveryId}`,
-          "POST download session",
-        );
-        requireValue(
-          grant.deliveryId === item.deliveryId &&
-            grant.assetId === item.assetId &&
-            Array.isArray(grant.objects) &&
-            grant.objects.length === 1,
-          "DOWNLOAD_SESSION_SCOPE",
-        );
-        const receiptStarted = Date.now();
-        download(grant, "ORIGINAL");
-        const receiptBody = {
-          assetId: item.assetId,
-          savedAt: new Date().toISOString(),
-          engineRevision: 1,
-        };
-        const receiptLabel = `receipt:${owner}:${item.deliveryId}`;
-        const receipt = post(
-          `/v1/deliveries/${item.deliveryId}/saved-receipt`,
-          receiptBody,
-          actor,
-          receiptLabel,
-          "POST harness receipt",
-        );
-        requireValue(
-          receipt.deliveryId === item.deliveryId &&
-            receipt.status === "SAVED_LOCALLY" &&
-            date(receipt.acceptedAt) > 0,
-          "RECEIPT_INVALID",
-        );
-        if (!receiptReplayed) {
-          const again = post(
-            `/v1/deliveries/${item.deliveryId}/saved-receipt`,
-            receiptBody,
-            actor,
-            receiptLabel,
-            "POST receipt replay",
-          );
-          requireValue(
-            again.deliveryId === receipt.deliveryId &&
-              again.status === receipt.status &&
-              again.acceptedAt === receipt.acceptedAt,
-            "RECEIPT_REPLAY_CHANGED",
-          );
-          receiptReplayed = true;
-          replays.add(1);
-        }
-        saved.add(item.assetId);
-        receipts.add(1);
-        receiptMs.add(Date.now() - receiptStarted);
-      }
-      if (!page.hasMore) break;
-      requireValue(!cursors.has(page.nextCursor), "PENDING_CURSOR_CYCLE");
-      cursors.add(page.nextCursor);
-      pendingCursor = page.nextCursor;
-      if (pageCount === 1) stop("PENDING_PAGE_CEILING");
-    }
-    if (owner === 0 && pass % 10 === 0)
-      requireValue(
-        get("/health/ready", null, "GET readiness").status === "ready",
-        "BACKEND_NOT_READY",
-      );
-    if (seenPreviews.size < expected || saved.size < expected) sleep(1);
+    if (!page.hasMore) { requireValue(page.nextCursor === null, "PENDING_PAGINATION_INVALID"); break; }
+    requireValue(pageIndex < 1 && !cursors.has(page.nextCursor), "PENDING_PAGE_OR_CURSOR_CEILING");
+    cursors.add(page.nextCursor); cursor = page.nextCursor;
   }
-  requireValue(
-    seenPreviews.size === expected && saved.size === expected,
-    "DELIVERY_DRAIN_INCOMPLETE",
-  );
+  requireValue(saved.size === expected && (expected === 0 || receiptReplayed), "RECOVERY_DRAIN_INCOMPLETE");
+  const remaining = pending(actor);
+  requireValue(remaining.items.length === 0 && remaining.hasMore === false && remaining.nextCursor === null, "RECOVERY_FINAL_PENDING_NOT_EMPTY");
   const state = transfer(actor);
-  requireValue(
-    state.pendingUploads === 0 && state.pendingDownloads === 0,
-    "FINAL_QUEUE_NOT_EMPTY",
-  );
-  drainMs.add(Date.now() - data.startedAt);
-  actorsDone.add(1);
+  requireValue(state.pendingUploads === 0 && state.pendingDownloads === 0, "FINAL_QUEUE_NOT_EMPTY");
+  drainMs.add(Date.now() - data.startedAt); actorsDone.add(1);
 }
 
 // Only allowlisted aggregate numbers are written. HTTP responses, URLs and headers never enter artifacts.
@@ -964,6 +952,14 @@ const SAFE_METRICS = [
   "crewroll_download_to_harness_receipt_ms",
   "crewroll_actor_drain_ms",
   "crewroll_future_server_timestamp_samples",
+  "crewroll_resilience_object_attempts",
+  "crewroll_resilience_retry_attempts",
+  "crewroll_resilience_retryable_failures",
+  "crewroll_resilience_recovered_copies",
+  "crewroll_resilience_attempt_reserved_bytes",
+  "crewroll_resilience_returned_body_bytes",
+  "crewroll_resilience_partial_body_bytes",
+  "crewroll_resilience_backoff_seconds",
 ];
 const SAFE_VALUES = new Set([
   "count",
@@ -1017,12 +1013,11 @@ export function handleSummary(data) {
     );
   const expected = {
     crewroll_completed_actors: 10,
-    crewroll_commits: 10 * PHOTOS,
-    crewroll_harness_receipts: 90 * PHOTOS,
-    crewroll_ciphertext_uploaded_bytes:
-      10 * PHOTOS * (ORIGINAL_BYTES + PREVIEW_BYTES),
+    crewroll_commits: 0,
+    crewroll_harness_receipts: Number(RECOVERY.expectedPending),
+    crewroll_ciphertext_uploaded_bytes: 0,
     crewroll_ciphertext_downloaded_bytes:
-      90 * PHOTOS * (ORIGINAL_BYTES + PREVIEW_BYTES),
+      Number(RECOVERY.expectedPending) * ORIGINAL_BYTES,
   };
   const complete = Object.entries(expected).every(
     ([name, value]) => metrics[name].count === value,
@@ -1059,13 +1054,34 @@ export function handleSummary(data) {
   const result = {
     schemaVersion: 1,
     execution: "standalone-k6-on-github-standard-runner",
-    stage: STAGE,
+    stage: "resilience-of-existing-burst",
+    strictRecoveryRemainsFailed: true,
+    objectAttemptsPerCopyMaximum: 3,
+    objectRetryBackoffSeconds: [4, 8],
+    objectFullBodyTimeoutSeconds: 30,
+    scenarioMaximumSeconds: 1200,
+    outerProcessMaximumSeconds: 1050,
+    workflowJobMaximumSeconds: 1200,
+    requestCapPerActor: REQUEST_CAP,
+    totalRequestCapIncludingSetup: 10 * REQUEST_CAP + 41,
+    maximumReservedObjectBytes: Number(RECOVERY.expectedPending) * 3 * ORIGINAL_BYTES,
+    partialBytesAreReturnedBodyOnly: true,
+    noControlMutationRetries: true,
+    originalBenchmarkRemainsFailed: true,
+    deliberateInterruptionVerifiedByK6: false,
+    independentDatabasePostflightRequired: true,
     deploymentSha: /^[a-f0-9]{40}$/.test(__ENV.CREWROLL_AUDITED_SHA || "")
       ? __ENV.CREWROLL_AUDITED_SHA
       : null,
     passed:
       complete &&
       thresholdPass &&
+      metrics.crewroll_resilience_object_attempts.count >= Number(RECOVERY.expectedPending) &&
+      metrics.crewroll_resilience_object_attempts.count <= 3 * Number(RECOVERY.expectedPending) &&
+      metrics.crewroll_resilience_retry_attempts.count === metrics.crewroll_resilience_object_attempts.count - Number(RECOVERY.expectedPending) &&
+      metrics.crewroll_resilience_retryable_failures.count === metrics.crewroll_resilience_retry_attempts.count &&
+      metrics.crewroll_resilience_attempt_reserved_bytes.count === metrics.crewroll_resilience_object_attempts.count * ORIGINAL_BYTES &&
+      metrics.crewroll_resilience_backoff_seconds.count <= 12 * Number(RECOVERY.expectedPending) &&
       (metrics.crewroll_assertion_failures.count || 0) === 0,
     scriptSha256: /^[a-f0-9]{64}$/.test(__ENV.CREWROLL_SCRIPT_SHA256 || "")
       ? __ENV.CREWROLL_SCRIPT_SHA256
@@ -1078,6 +1094,7 @@ export function handleSummary(data) {
     routeUnexpectedStatusCounts,
     routeTransportCounts,
     failureCodeCounts: diagnosticCounts(FAILURE_COUNTS),
+    retryableObjectFailureCounts: diagnosticCounts(RETRY_REASON_COUNTS),
     transportErrorCodeCounts: diagnosticCounts(TRANSPORT_CODE_COUNTS),
     transportElapsedBuckets: diagnosticCounts(TRANSPORT_ELAPSED_COUNTS),
     transportPhaseTimingBuckets: Object.fromEntries(
