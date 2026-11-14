@@ -47,6 +47,7 @@ const canonicalProblemCodes = [
   "INVITE_CODE_CONFLICT",
   "TRIP_FULL",
   "INVITE_INVALID",
+  "TRIP_REJOIN_UNAVAILABLE",
   "TRIP_OWNER_REQUIRED",
   "MEMBERSHIP_FROZEN",
   "PENDING_JOIN_REQUESTS",
@@ -126,6 +127,29 @@ function harness() {
 
 describe("JoinTrip.request", () => {
   it.each(["request", "replay"] as const)(
+    "clears the exact join after authoritative TRIP_REJOIN_UNAVAILABLE during %s",
+    async (stage) => {
+      const { api, recoveryStore, service } = harness();
+      api.requestJoin.mockRejectedValueOnce(
+        new CrewRollApiProblem("TRIP_REJOIN_UNAVAILABLE", { status: 409 }),
+      );
+      await expect(
+        stage === "request"
+          ? service.request(inviteCode)
+          : service.replayUnknownJoin(),
+      ).rejects.toMatchObject({
+        name: "JoinTripTerminalProblem",
+        code: "TRIP_REJOIN_UNAVAILABLE",
+      });
+      expect(recoveryStore.clearPendingJoin).toHaveBeenCalledWith(
+        scope,
+        commandId,
+      );
+      expect(recoveryStore.clear).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["request", "replay"] as const)(
     "clears only the exact pending join after a conclusive server invalid invite during %s",
     async (stage) => {
       const { api, recoveryStore, service } = harness();
@@ -161,6 +185,10 @@ describe("JoinTrip.request", () => {
   });
 
   it.each([
+    new CrewRollApiProblem("TRIP_REJOIN_UNAVAILABLE"),
+    new CrewRollApiProblem("TRIP_REJOIN_UNAVAILABLE", { status: 500 }),
+    new CrewRollApiProblem("TRIP_REJOIN_UNAVAILABLE", { status: 400 }),
+    { kind: "API_PROBLEM", code: "TRIP_REJOIN_UNAVAILABLE", serverStatus: 409 },
     new CrewRollApiProblem("INVITE_INVALID"),
     new CrewRollApiProblem("INVITE_INVALID", { status: 500 }),
     new CrewRollApiProblem("CONFLICT", { status: 409 }),

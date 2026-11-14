@@ -120,7 +120,8 @@ interface TripIdempotencyBase {
 export type TripIdempotencyRecord =
   | (TripIdempotencyBase & Readonly<{ kind: "APPROVE"; membershipId: string }>)
   | (TripIdempotencyBase & Readonly<{ kind: "CREATE_COMMITTED" }>)
-  | (TripIdempotencyBase & Readonly<{ kind: "JOIN"; membershipId: string }>)
+  | (TripIdempotencyBase &
+      Readonly<{ kind: "JOIN"; membershipId: string; retired?: true }>)
   | (TripIdempotencyBase & Readonly<{ kind: "READINESS" }>)
   | (TripIdempotencyBase & Readonly<{ kind: "REJECT"; membershipId: string }>)
   | (TripIdempotencyBase & Readonly<{ kind: "START" }>)
@@ -244,6 +245,18 @@ export interface TripTransaction {
   reauthorizeForegroundActor(
     actor: ForegroundTripActor,
   ): Promise<ForegroundActorSnapshot>;
+  /** Under the trip lock, validate a departed pre-capture participation. */
+  lockLobbyRejoin(
+    tripId: string,
+    userId: string,
+  ): Promise<
+    | Readonly<{ kind: "NONE" | "UNAVAILABLE" }>
+    | Readonly<{ kind: "REJOINABLE"; membership: TripMembershipRecord }>
+  >;
+  /** Original JOIN references become terminal before the old member is removed. */
+  retireDepartedLobbyMembership(
+    membership: TripMembershipRecord,
+  ): Promise<void>;
   tryAcquireCreateCommandLock(
     identity: CreateCommandLockIdentity,
   ): Promise<boolean>;

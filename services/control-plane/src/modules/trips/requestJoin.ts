@@ -203,7 +203,20 @@ async function joinReplayResponse(
   trip: TripRecord,
   membershipId: string,
   now: Date,
+  retired = false,
 ): Promise<TripPolicyResult<MembershipResponse>> {
+  // A replaced participation is referenced only by its accepted original JOIN.
+  // Callers must verify actor, fingerprint and retention before this branch.
+  if (retired) {
+    return tripSuccess({
+      deviceId: actor.deviceId,
+      keyEpoch: 1,
+      membershipId,
+      status: "REJECTED",
+      tripId: trip.tripId,
+      tripKeyEnvelope: null,
+    });
+  }
   const replay = await transaction.lockJoinReplayMembership({
     deviceId: actor.deviceId,
     membershipId,
@@ -330,6 +343,7 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
                   trip,
                   prior.membershipId,
                   now,
+                  prior.retired,
                 ),
               } as const;
             },
@@ -379,6 +393,7 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
                   trip,
                   prior.membershipId,
                   now,
+                  prior.retired,
                 );
           }
 
@@ -406,6 +421,13 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
             )
           ) {
             return tripProblem("CONFLICT");
+          }
+          const rejoin = await transaction.lockLobbyRejoin(
+            trip.tripId,
+            input.actor.userId,
+          );
+          if (rejoin.kind === "UNAVAILABLE") {
+            return tripProblem("TRIP_REJOIN_UNAVAILABLE");
           }
           const capacity = tripCapacity(
             memberships.map((membership) => membership.state),
@@ -440,12 +462,15 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
           );
           if (activeTrip !== null) return tripProblem("ACTIVE_TRIP_EXISTS");
 
-          if (prior !== null) await transaction.deleteIdempotency(prior);
           const version = resultingTripVersion({
             currentVersion: trip.version,
             effect: "ADD_PENDING_MEMBER",
           });
           if (!version.ok) return tripProblem("INTERNAL_ERROR");
+          if (rejoin.kind === "REJOINABLE") {
+            await transaction.retireDepartedLobbyMembership(rejoin.membership);
+          }
+          if (prior !== null) await transaction.deleteIdempotency(prior);
           const membershipId = dependencies.ids.uuid();
           const eventId = dependencies.ids.uuid();
           const membership: TripMembershipRecord = {

@@ -68,6 +68,25 @@ export type AppSessionPublicErrorCode =
   | "INVITE_JOIN_FAILED"
   | "SESSION_TEARDOWN_FAILED";
 
+export function terminalJoinFailureReason(
+  error: unknown,
+): "invite-unavailable" | "rejoin-unavailable" | null {
+  if (!(error instanceof JoinTripTerminalProblem)) return null;
+  return error.code === "TRIP_REJOIN_UNAVAILABLE"
+    ? "rejoin-unavailable"
+    : "invite-unavailable";
+}
+
+function refusedJoinSnapshot(deviceId: string, error: JoinTripTerminalProblem) {
+  return {
+    phase: "READY_NO_TRIP" as const,
+    deviceId,
+    ...(terminalJoinFailureReason(error) === "rejoin-unavailable"
+      ? { rejoinUnavailable: true as const }
+      : { inviteUnavailable: true as const }),
+  };
+}
+
 type ReadyDeviceSnapshot = Readonly<{ deviceId: string }>;
 
 export type AppSessionSnapshot =
@@ -84,6 +103,7 @@ export type AppSessionSnapshot =
         phase: "READY_NO_TRIP";
         creationFailed?: true;
         inviteUnavailable?: true;
+        rejoinUnavailable?: true;
       }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_CREATE" }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_JOIN" }>)
@@ -115,11 +135,11 @@ export function resolveLaunchPhase(
   if (!input.signedIn) return "SIGNED_OUT";
   if (input.failure) return "RECOVERABLE_FAILURE";
   if (!input.provisioned) return "PROVISIONING_DEVICE";
+  if (input.recoveryState === "UNKNOWN_JOIN") return "READY_UNKNOWN_JOIN";
   if (input.activeNativeTripId !== null) return "READY_ACTIVE";
   if (input.recoveryState === "UNKNOWN_CREATE") {
     return "READY_UNKNOWN_CREATE";
   }
-  if (input.recoveryState === "UNKNOWN_JOIN") return "READY_UNKNOWN_JOIN";
   if (input.tripStatus === "ACTIVE") return "READY_ACTIVE";
   if (input.tripStatus !== null || input.recoveryState === "CONFIRMED") {
     return "READY_LOBBY";
@@ -707,11 +727,7 @@ export function AppSessionProvider({
           const device = currentDevice.current;
           if (device !== null) {
             setPendingTripPreview(null);
-            setSnapshot({
-              phase: "READY_NO_TRIP",
-              deviceId: device.deviceId,
-              inviteUnavailable: true,
-            });
+            setSnapshot(refusedJoinSnapshot(device.deviceId, error));
           }
         }
         throw error;
@@ -1212,11 +1228,49 @@ export function AppSessionProvider({
             return;
           }
 
-          if (
-            services.listTrips &&
-            recovery?.state !== "UNKNOWN_CREATE" &&
-            recovery?.state !== "UNKNOWN_JOIN"
-          ) {
+          let joinRefusal: JoinTripTerminalProblem | null = null;
+          if (recovery?.state === "UNKNOWN_JOIN") {
+            // The durable command is authoritative. A departed native trip
+            // may still be selected locally and must not prevent its replay.
+            setSnapshot({
+              phase: "READY_UNKNOWN_JOIN",
+              deviceId: device.deviceId,
+            });
+            let result: JoinTripResult | null = null;
+            try {
+              result = await services.replayUnknownJoin();
+            } catch (error) {
+              if (!isCurrent()) return;
+              if (!(error instanceof JoinTripTerminalProblem)) throw error;
+              joinRefusal = error;
+            }
+            if (!isCurrent()) return;
+            if (joinRefusal === null) {
+              if (result === null) throw unavailableSession();
+              if (result.status === "PENDING_KEY") {
+                setSnapshot({
+                  phase: "READY_PENDING_APPROVAL",
+                  deviceId: device.deviceId,
+                });
+                return;
+              }
+              if (result.status === "ACTIVE") {
+                await observeOperation(
+                  services.hydrateTrip(result.tripId),
+                  generation,
+                );
+                return;
+              }
+              // REJECTED also means the use case cleared this exact command.
+              joinRefusal = new JoinTripTerminalProblem();
+            }
+            setPendingTripPreview(null);
+            recovery = null;
+            // Continue normal library reconciliation below. Only its fresh
+            // server view may retire a stale native selection after departure.
+          }
+
+          if (services.listTrips && recovery?.state !== "UNKNOWN_CREATE") {
             const trips = await services.listTrips();
             if (!isCurrent()) return;
             // Home uses this same fresh, account-scoped response. Do not make
@@ -1261,7 +1315,16 @@ export function AppSessionProvider({
             }
             setOwnerInvite(null);
             setActivationFailureTripId(null);
-            setSnapshot({ phase: "READY_NO_TRIP", deviceId: device.deviceId });
+            setSnapshot(
+              joinRefusal
+                ? refusedJoinSnapshot(device.deviceId, joinRefusal)
+                : { phase: "READY_NO_TRIP", deviceId: device.deviceId },
+            );
+            return;
+          }
+
+          if (joinRefusal !== null) {
+            setSnapshot(refusedJoinSnapshot(device.deviceId, joinRefusal));
             return;
           }
 
@@ -1303,50 +1366,6 @@ export function AppSessionProvider({
               return;
             }
             await observeOperation(Promise.resolve(result), generation);
-            return;
-          }
-
-          if (recovery?.state === "UNKNOWN_JOIN") {
-            setSnapshot({
-              phase: "READY_UNKNOWN_JOIN",
-              deviceId: device.deviceId,
-            });
-            let result: JoinTripResult | null;
-            try {
-              result = await services.replayUnknownJoin();
-            } catch (error) {
-              if (!isCurrent()) return;
-              if (!(error instanceof JoinTripTerminalProblem)) throw error;
-              setPendingTripPreview(null);
-              setSnapshot({
-                phase: "READY_NO_TRIP",
-                deviceId: device.deviceId,
-                inviteUnavailable: true,
-              });
-              return;
-            }
-            if (!isCurrent()) return;
-            if (result === null) throw unavailableSession();
-            if (result.status === "PENDING_KEY") {
-              setSnapshot({
-                phase: "READY_PENDING_APPROVAL",
-                deviceId: device.deviceId,
-              });
-              return;
-            }
-            if (result.status === "REJECTED") {
-              setPendingTripPreview(null);
-              setSnapshot({
-                phase: "READY_NO_TRIP",
-                deviceId: device.deviceId,
-                inviteUnavailable: true,
-              });
-              return;
-            }
-            await observeOperation(
-              services.hydrateTrip(result.tripId),
-              generation,
-            );
             return;
           }
 
@@ -1594,11 +1613,7 @@ export function AppSessionProvider({
         if (!isCurrent()) return;
         if (error instanceof JoinTripTerminalProblem) {
           setPendingTripPreview(null);
-          setSnapshot({
-            phase: "READY_NO_TRIP",
-            deviceId: device!.deviceId,
-            inviteUnavailable: true,
-          });
+          setSnapshot(refusedJoinSnapshot(device!.deviceId, error));
           return;
         }
         if (isAuthFailure(error)) {

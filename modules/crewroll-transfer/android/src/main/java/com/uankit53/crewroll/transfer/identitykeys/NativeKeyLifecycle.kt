@@ -80,6 +80,10 @@ data class NativeMediaContext(val scope: NativeKeyScope, val session: DeviceSess
 }
 
 interface NativeKeyStore {
+  /** Synchronous scopes only: implementations erase their owned snapshot on exit.
+   * Read scopes reject mutations; command scopes preserve every durable save. */
+  fun <T> readSnapshot(body: () -> T): T = body()
+  fun <T> commandSnapshot(body: () -> T): T = body()
   fun expiredTrips(now: Instant): List<NativeExpiredTrip> = emptyList()
   fun nextTripRetentionDeadline(): Instant? = null
   fun tripRetentionDeadline(scope: NativeKeyScope, tripId: String): Instant? = null
@@ -464,7 +468,22 @@ class NativeKeyLifecycle(
   private val cleanupCoordinator = cleanupScheduler?.let {
     NativeKeyCleanupCoordinator(cleanupRunner, it)
   }
-  fun ensureDeviceIdentity(accountId: String): NativeDeviceIdentity {
+  private val commandDepth = ThreadLocal.withInitial { 0 }
+
+  // Prepare before acquiring the store scope: the cleanup coordinator owns the
+  // opposite (coordinator -> store) order. Nested lifecycle calls share only
+  // this synchronous command; no snapshot survives an await or bridge return.
+  private fun <T> keyCommand(readOnly: Boolean = false, body: () -> T): T {
+    if (commandDepth.get() == 0) prepare()
+    val operation = {
+      commandDepth.set(commandDepth.get() + 1)
+      try { body() } finally { commandDepth.set(commandDepth.get() - 1) }
+    }
+    return if (readOnly) store.readSnapshot(operation) else store.commandSnapshot(operation)
+  }
+
+  fun ensureDeviceIdentity(accountId: String): NativeDeviceIdentity = keyCommand { ensureIdentityInCommand(accountId) }
+  private fun ensureIdentityInCommand(accountId: String): NativeDeviceIdentity {
     prepare()
     val accountHash = hashAccountId(accountId)
     store.loadIdentity(accountHash)?.let { existing ->
@@ -505,7 +524,8 @@ class NativeKeyLifecycle(
       publicIdentity(persisted, scope)
     } finally { crypto.zeroize(persisted.e2eePrivateKey) }
   }
-  fun mediaContext(): NativeMediaContext? {
+  fun mediaContext(): NativeMediaContext? = keyCommand(readOnly = true) { mediaContextInCommand() }
+  private fun mediaContextInCommand(): NativeMediaContext? {
     prepare()
     val value = store.mediaContext() ?: return null
     try {
@@ -519,7 +539,10 @@ class NativeKeyLifecycle(
   }
 
   /** Match registration's seven-day renewal window; keep the old session and identity intact. */
-  fun restoreDeviceSession(accountId: String, installationId: String, apiBaseUrl: String): String? {
+  fun restoreDeviceSession(accountId: String, installationId: String, apiBaseUrl: String): String? = keyCommand(readOnly = true) {
+    restoreSessionInCommand(accountId, installationId, apiBaseUrl)
+  }
+  private fun restoreSessionInCommand(accountId: String, installationId: String, apiBaseUrl: String): String? {
     prepare()
     val accountHash = hashAccountId(accountId)
     if (!validInstallationId(installationId) || !apiBaseUrl.startsWith("https://")) {
@@ -532,12 +555,17 @@ class NativeKeyLifecycle(
         saved.session.expiresAt <= clock.now().plusSeconds(7 * 86_400L)
       ) return null
       withValidatedIdentity(saved.scope) { }
+      if (saved.session.expiresAt <= clock.now().plusSeconds(7 * 86_400L)) return null
       TripKeyEnvelopeV1.uuidBytes(saved.session.deviceId)
       return saved.session.deviceId
     } finally { crypto.zeroize(saved.session.backgroundBearer) }
   }
 
-  fun installDeviceSession(
+  fun installDeviceSession(accountId: String, installationId: String, deviceId: String, backgroundBearer: String,
+    expiresAt: Instant, apiBaseUrl: String) = keyCommand {
+    installSessionInCommand(accountId, installationId, deviceId, backgroundBearer, expiresAt, apiBaseUrl)
+  }
+  private fun installSessionInCommand(
     accountId: String,
     installationId: String,
     deviceId: String,
@@ -565,7 +593,11 @@ class NativeKeyLifecycle(
   }
 
   /** Caller holds the process command fence across this same-scope check and write. */
-  fun refreshDeviceSession(
+  fun refreshDeviceSession(accountId: String, installationId: String, deviceId: String, backgroundBearer: String,
+    expiresAt: Instant, apiBaseUrl: String): Boolean = keyCommand {
+    refreshSessionInCommand(accountId, installationId, deviceId, backgroundBearer, expiresAt, apiBaseUrl)
+  }
+  private fun refreshSessionInCommand(
     accountId: String,
     installationId: String,
     deviceId: String,
@@ -589,6 +621,13 @@ class NativeKeyLifecycle(
   }
 
   fun createTripKey(tripId: String, keyEpoch: Int): CreateTripKeyResult {
+    var createdExpiry: Instant? = null
+    val result = keyCommand { createTripKeyInCommand(tripId, keyEpoch) { createdExpiry = it } }
+    // Never acquire the coordinator while the store scope is held.
+    createdExpiry?.let { cleanupCoordinator?.schedule(it) }
+    return result
+  }
+  private fun createTripKeyInCommand(tripId: String, keyEpoch: Int, onCreated: (Instant) -> Unit): CreateTripKeyResult {
     val session = currentSession()
     requireV1(tripId, keyEpoch)
     requireRetainedTrip(session.scope, tripId)
@@ -605,12 +644,13 @@ class NativeKeyLifecycle(
     }
     if (result == TripCreateOutcome.TOMBSTONED) throw NativeKeyException.materialLost()
     if (result == TripCreateOutcome.CREATED) {
-      createdExpiry?.let { cleanupCoordinator?.schedule(it) }
+      createdExpiry?.let(onCreated)
     }
     return CreateTripKeyResult(tripId = tripId)
   }
 
-  fun discardProvisionalTripKey(tripId: String, keyEpoch: Int) {
+  fun discardProvisionalTripKey(tripId: String, keyEpoch: Int) = keyCommand { discardProvisionalInCommand(tripId, keyEpoch) }
+  private fun discardProvisionalInCommand(tripId: String, keyEpoch: Int) {
     val session = currentSession()
     requireV1(tripId, keyEpoch)
     if (store.discardProvisional(session.scope, tripId) == ProvisionalDiscardOutcome.PROTECTED) {
@@ -620,11 +660,15 @@ class NativeKeyLifecycle(
 
   fun collectExpiredProvisionalKeys() = reconcileCleanup()
 
-  fun runScheduledCleanup() = reconcileCleanup()
+  fun runScheduledCleanup() = prepare()
 
   fun cancelScheduledCleanup() = cleanupCoordinator?.cancel()
 
-  fun wrapTripKey(
+  fun wrapTripKey(tripId: String, keyEpoch: Int, recipientDeviceId: String, recipientE2eePublicKey: String,
+    recipientE2eeKeyVersion: Int): WrapTripKeyResult = keyCommand {
+    wrapTripKeyInCommand(tripId, keyEpoch, recipientDeviceId, recipientE2eePublicKey, recipientE2eeKeyVersion)
+  }
+  private fun wrapTripKeyInCommand(
     tripId: String,
     keyEpoch: Int,
     recipientDeviceId: String,
@@ -657,7 +701,12 @@ class NativeKeyLifecycle(
     }
   }
 
-  fun importTripKey(
+  fun importTripKey(tripId: String, keyEpoch: Int, algorithmVersion: Int, expectedSenderDeviceId: String,
+    recipientDeviceId: String, recipientE2eeKeyVersion: Int, wrappedKey: String, endsAt: String) = keyCommand {
+    importTripKeyInCommand(tripId, keyEpoch, algorithmVersion, expectedSenderDeviceId, recipientDeviceId,
+      recipientE2eeKeyVersion, wrappedKey, endsAt)
+  }
+  private fun importTripKeyInCommand(
     tripId: String,
     keyEpoch: Int,
     algorithmVersion: Int,
@@ -694,10 +743,12 @@ class NativeKeyLifecycle(
     }
   }
 
-  fun activateTrip(metadata: ActiveTripMetadata) {
+  fun activateTrip(metadata: ActiveTripMetadata) = keyCommand { activateTripInCommand(metadata) }
+  private fun activateTripInCommand(metadata: ActiveTripMetadata) {
     NativeCommandDecoder.validate(metadata)
     if (NativeTripRetention.deadline(metadata) <= clock.now()) throw NativeKeyException.materialLost()
     val session = currentSession()
+    if (NativeTripRetention.deadline(metadata) <= clock.now()) throw NativeKeyException.materialLost()
     store.activate(session.scope, metadata)
   }
 
@@ -716,13 +767,15 @@ class NativeKeyLifecycle(
     return hash
   }
 
-  fun deactivateTrip(tripId: String) {
+  fun deactivateTrip(tripId: String) = keyCommand { deactivateTripInCommand(tripId) }
+  private fun deactivateTripInCommand(tripId: String) {
     val session = currentSession()
     NativeCommandDecoder.requireTripId(tripId)
     store.deactivate(session.scope, tripId)
   }
 
   private fun prepare() {
+    if (commandDepth.get() > 0) return
     cleanupCoordinator?.reconcileIfDue(clock.now()) ?: cleanupRunner.run()
   }
   private fun reconcileCleanup() {

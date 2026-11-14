@@ -28,6 +28,7 @@ import {
   AppSessionProvider,
   permissionForVisibleTrip,
   resolveLaunchPhase,
+  terminalJoinFailureReason,
   useAppSession,
   useTripProjection,
   type AppSessionAuthSnapshot,
@@ -443,6 +444,24 @@ function Harness({
 }
 
 describe("resolveLaunchPhase", () => {
+  it("classifies only a cleared-command terminal brand, not a code-shaped failure", () => {
+    expect(
+      terminalJoinFailureReason(
+        new JoinTripTerminalProblem("TRIP_REJOIN_UNAVAILABLE"),
+      ),
+    ).toBe("rejoin-unavailable");
+    expect(terminalJoinFailureReason(new JoinTripTerminalProblem())).toBe(
+      "invite-unavailable",
+    );
+    for (const error of [
+      new CrewRollApiProblem("TRIP_REJOIN_UNAVAILABLE", { status: 409 }),
+      { kind: "API_PROBLEM", code: "TRIP_REJOIN_UNAVAILABLE" },
+      new CrewRollApiProblem("CONFLICT", { status: 409 }),
+    ]) {
+      expect(terminalJoinFailureReason(error)).toBeNull();
+    }
+  });
+
   it("bounds a stalled Settings launch without granting access or losing the session", async () => {
     jest.useFakeTimers();
     const client = createQueryClient();
@@ -920,6 +939,10 @@ describe("resolveLaunchPhase", () => {
     [{ failure: true }, "RECOVERABLE_FAILURE"],
     [{ recoveryState: "UNKNOWN_CREATE" }, "READY_UNKNOWN_CREATE"],
     [{ recoveryState: "UNKNOWN_JOIN" }, "READY_UNKNOWN_JOIN"],
+    [
+      { recoveryState: "UNKNOWN_JOIN", activeNativeTripId: tripId },
+      "READY_UNKNOWN_JOIN",
+    ],
     [{ tripStatus: "LOBBY" }, "READY_LOBBY"],
     [{ tripStatus: "ACTIVE" }, "READY_ACTIVE"],
     [{ activeNativeTripId: tripId }, "READY_ACTIVE"],
@@ -1441,9 +1464,60 @@ describe("AppSessionProvider", () => {
     }
   });
 
+  it("resolves the pending join before a stale departed native trip and returns a usable Home", async () => {
+    const events: string[] = [];
+    const replayJoin = jest.fn(async () => {
+      events.push("join");
+      throw new JoinTripTerminalProblem("TRIP_REJOIN_UNAVAILABLE");
+    });
+    const hydrate = jest.fn(async () => {
+      events.push("stale-hydrate");
+      throw new CrewRollApiProblem("DEVICE_NOT_PARTICIPANT");
+    });
+    const { runtime: base, scoped } = createRuntime({
+      activeTripId: tripId,
+      recovery: {
+        state: "UNKNOWN_JOIN",
+        inviteCode: "ABCD2345",
+        deviceId,
+        commandId: "40000000-0000-4000-8000-000000000001",
+      },
+      replayJoin,
+      hydrate,
+    });
+    const listTrips = jest.fn(async () => {
+      events.push("list");
+      return { items: [] };
+    });
+    const retireTrip = jest.fn(async () => {
+      events.push("retire");
+    });
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips, retireTrip }),
+    };
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <SnapshotProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(screen.getByTestId("snapshot-probe").props.children)
+          .snapshot,
+      ).toEqual({ phase: "READY_NO_TRIP", deviceId, rejoinUnavailable: true }),
+    );
+    expect(events).toEqual(["join", "list", "retire"]);
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(retireTrip).toHaveBeenCalledWith(tripId);
+    await view.unmount();
+  });
+
   it.each([
     ["startup", "invalid"],
     ["pending poll", "invalid"],
+    ["startup", "rejoin-unavailable"],
+    ["pending poll", "rejoin-unavailable"],
     ["startup", "rejected"],
     ["pending poll", "rejected"],
   ] as const)(
@@ -1455,6 +1529,10 @@ describe("AppSessionProvider", () => {
       const replay = jest
         .fn<Promise<JoinTripResult>, []>()
         .mockRejectedValue(new JoinTripTerminalProblem());
+      if (outcome === "rejoin-unavailable")
+        replay.mockRejectedValue(
+          new JoinTripTerminalProblem("TRIP_REJOIN_UNAVAILABLE"),
+        );
       if (outcome === "rejected")
         replay.mockResolvedValue({ status: "REJECTED" });
       if (stage === "pending poll")
@@ -1487,7 +1565,9 @@ describe("AppSessionProvider", () => {
         ).toEqual({
           phase: "READY_NO_TRIP",
           deviceId,
-          inviteUnavailable: true,
+          ...(outcome === "rejoin-unavailable"
+            ? { rejoinUnavailable: true }
+            : { inviteUnavailable: true }),
         });
         const count = replay.mock.calls.length;
         await act(() => jest.advanceTimersByTimeAsync(60_000));

@@ -23,8 +23,10 @@ export type JoinTripResult =
 
 /** The original command was conclusively refused and its recovery was cleared. */
 export class JoinTripTerminalProblem extends CrewRollApiProblem {
-  constructor() {
-    super("INVITE_INVALID");
+  constructor(
+    code: "INVITE_INVALID" | "TRIP_REJOIN_UNAVAILABLE" = "INVITE_INVALID",
+  ) {
+    super(code);
     this.name = "JoinTripTerminalProblem";
   }
 }
@@ -248,10 +250,12 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
     } catch (error) {
       if (
         error instanceof CrewRollApiProblem &&
-        error.code === "INVITE_INVALID" &&
-        error.serverStatus !== null &&
-        error.serverStatus >= 400 &&
-        error.serverStatus < 500
+        ((error.code === "INVITE_INVALID" &&
+          error.serverStatus !== null &&
+          error.serverStatus >= 400 &&
+          error.serverStatus < 500) ||
+          (error.code === "TRIP_REJOIN_UNAVAILABLE" &&
+            error.serverStatus === 409))
       ) {
         // The server replays an accepted original command before checking the
         // current invite. This refusal is definitive for this exact command.
@@ -265,7 +269,11 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
           throw internalProblem();
         }
         if (!cleared) throw internalProblem();
-        throw new JoinTripTerminalProblem();
+        throw new JoinTripTerminalProblem(
+          error.code === "TRIP_REJOIN_UNAVAILABLE"
+            ? error.code
+            : "INVITE_INVALID",
+        );
       }
       throw sanitizeApiFailure(error);
     }

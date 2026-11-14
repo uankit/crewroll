@@ -1,3 +1,4 @@
+import { toUserFacingProblem } from "../../application/problems/userFacingProblem";
 import { useCallback, useMemo, type ReactNode } from "react";
 import { FlashList, type ListRenderItem } from "@shopify/flash-list";
 import type { TripSummary } from "../../domain/trips/model";
@@ -35,6 +36,7 @@ export function TripLibraryScreen({
   error = false,
   canCreateTrip = true,
   inviteUnavailable = false,
+  rejoinUnavailable = false,
   onRetry,
 }: Readonly<{
   accountControl?: ReactNode;
@@ -46,6 +48,7 @@ export function TripLibraryScreen({
   error?: boolean;
   canCreateTrip?: boolean;
   inviteUnavailable?: boolean;
+  rejoinUnavailable?: boolean;
   onRetry: () => void;
 }>) {
   const theme = useCrewRollTheme();
@@ -107,6 +110,11 @@ export function TripLibraryScreen({
             <AppText accessibilityRole="header" variant="title1">
               Your trips.
             </AppText>
+            {rejoinUnavailable ? (
+              <AppText accessibilityRole="alert" tone="secondary">
+                {toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message}
+              </AppText>
+            ) : null}
             {inviteUnavailable ? (
               <AppText accessibilityRole="alert" tone="secondary">
                 This invite is no longer available. Ask your host for a new

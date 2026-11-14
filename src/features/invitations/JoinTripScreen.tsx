@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { BackHandler, Keyboard, StyleSheet, View } from "react-native";
+import { toUserFacingProblem } from "../../application/problems/userFacingProblem";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import {
   AppText,
@@ -17,6 +18,7 @@ import {
 export type JoinTripScreenState =
   | Readonly<{ kind: "editing" | "submitting" }>
   | Readonly<{ kind: "invalid" | "rejected"; onUseAnotherCode: () => void }>
+  | Readonly<{ kind: "rejoin-unavailable"; onReturnHome: () => void }>
   | Readonly<{
       kind: "failed" | "unknown";
       onRetry: () => void;
@@ -105,6 +107,20 @@ export function JoinTripScreen({
               loading={state.retrying ?? false}
               onPress={state.onRetry}
             />
+          }
+        />
+      </FlowTransition>
+    );
+  if (state.kind === "rejoin-unavailable")
+    return (
+      <FlowTransition step="rejoin-unavailable">
+        <FlowScreen
+          testID="join-trip-screen"
+          title="Can’t rejoin this trip."
+          description={toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message}
+          onBack={state.onReturnHome}
+          footer={
+            <Button label="Back to your trips" onPress={state.onReturnHome} />
           }
         />
       </FlowTransition>

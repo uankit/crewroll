@@ -17,6 +17,7 @@ export const ProblemCodeSchema = Type.Union([
   Type.Literal("INVITE_CODE_CONFLICT"),
   Type.Literal("TRIP_FULL"),
   Type.Literal("INVITE_INVALID"),
+  Type.Literal("TRIP_REJOIN_UNAVAILABLE"),
   Type.Literal("TRIP_OWNER_REQUIRED"),
   Type.Literal("MEMBERSHIP_FROZEN"),
   Type.Literal("PENDING_JOIN_REQUESTS"),

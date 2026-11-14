@@ -13,15 +13,20 @@ internal interface ScopedDatabasePersistence {
 
 internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePersistence) : NativeKeyStore {
   private val lock = ReentrantLock()
-  override fun expiredTrips(now: Instant): List<NativeExpiredTrip> = read { database ->
-    database.scopes.values.flatMap { state ->
-      state.trips.keys.mapNotNull { tripId ->
-        state.cleanupDeadline(tripId)?.takeIf { it <= now }?.let { NativeExpiredTrip(state.scope, tripId, it) }
-      }
-    }
+  // Only identifiers and deadlines survive a synchronous command. No identity,
+  // session bearer, trip key, or decrypted database is retained between calls.
+  private var retentionIndex: List<NativeExpiredTrip>? = null
+  private class Snapshot(var database: AndroidScopedDatabase? = null, var readOnly: Boolean)
+  private var snapshot: Snapshot? = null
+
+  override fun <T> readSnapshot(body: () -> T): T = withSnapshot(true, body)
+  override fun <T> commandSnapshot(body: () -> T): T = withSnapshot(false, body)
+
+  override fun expiredTrips(now: Instant): List<NativeExpiredTrip> = lock.withLock {
+    retentionIndex().filter { it.deadline <= now }
   }
-  override fun nextTripRetentionDeadline(): Instant? = read { database ->
-    database.scopes.values.flatMap { state -> state.trips.keys.mapNotNull(state::cleanupDeadline) }.minOrNull()
+  override fun nextTripRetentionDeadline(): Instant? = lock.withLock {
+    retentionIndex().minOfOrNull { it.deadline }
   }
   override fun tripRetentionDeadline(scope: NativeKeyScope, tripId: String): Instant? = read { database ->
     database.scopes[androidScopeKey(scope)]?.authoritativeDeadline(tripId)
@@ -184,10 +189,9 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     ProvisionalDiscardOutcome.DISCARDED
   }
 
-  override fun collectExpiredProvisional(now: Instant): Instant? = lock.withLock {
-    val database = persistence.load()
-    try {
+  override fun collectExpiredProvisional(now: Instant): Instant? {
     var changed = false
+    return transaction(persistWhen = { changed }) { database ->
     database.scopes.values.forEach { state ->
       state.trips.toMap().forEach { (tripId, snapshot) ->
         val metadata = state.frozenMetadata[tripId] ?: state.activeMetadata?.takeIf { it.tripId == tripId }
@@ -216,7 +220,6 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
         }
       }
     }
-    if (changed) persistence.save(database)
     database.scopes.values.asSequence()
       .flatMap { it.trips.values.asSequence() }
       .filter { it.state == KeyState.PROVISIONAL }
@@ -224,7 +227,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
         it.provisionalExpiresAt ?: throw NativeKeyException.materialLost()
       }
       .minOrNull()
-    } finally { database.zeroize() }
+    }
   }
 
   override fun importTrip(
@@ -233,7 +236,9 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     key: ByteArray,
     endsAt: String,
     now: Instant,
-  ): TripImportOutcome = transaction { database ->
+  ): TripImportOutcome {
+    var changed = false
+    return transaction(persistWhen = { changed }) { database ->
     if (key.size != 32) throw NativeKeyException.invalidEnvelope()
     val state = database.scopes.getOrPut(androidScopeKey(scope)) { AndroidScopedState(scope) }
     val deadline = NativeTripRetention.deadline(endsAt)
@@ -248,20 +253,25 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
       if (!MessageDigest.isEqual(existing.key, key)) return@transaction TripImportOutcome.CONFLICT
       if (existing.state == KeyState.PROVISIONAL) {
         state.trips[tripId] = existing.copy(state = KeyState.INSTALLED)
+        changed = true
       }
-      state.tripEndsAt[tripId] = endsAt
-      state.legacyReconciliationDeadlines.remove(tripId)
-      state.tombstones.remove(tripId)
+      if (state.tripEndsAt[tripId] != endsAt) { state.tripEndsAt[tripId] = endsAt; changed = true }
+      if (state.legacyReconciliationDeadlines.remove(tripId) != null) changed = true
+      if (state.tombstones.remove(tripId)) changed = true
       return@transaction TripImportOutcome.EXISTING
     }
     state.trips[tripId] = TripKeyRecord(key.copyOf(), KeyState.INSTALLED)
     state.tripEndsAt[tripId] = endsAt
     state.legacyReconciliationDeadlines.remove(tripId)
     state.tombstones.remove(tripId)
+    changed = true
     TripImportOutcome.INSTALLED
+    }
   }
 
-  override fun activate(scope: NativeKeyScope, metadata: ActiveTripMetadata) = transaction { database ->
+  override fun activate(scope: NativeKeyScope, metadata: ActiveTripMetadata) {
+    var changed = false
+    transaction(persistWhen = { changed }) { database ->
     val state = database.scopes[androidScopeKey(scope)] ?: throw NativeKeyException.materialLost()
     val target = state.trips[metadata.tripId] ?: throw NativeKeyException.materialLost()
     if (target.state != KeyState.INSTALLED && target.state != KeyState.ACTIVE) {
@@ -272,12 +282,16 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     state.frozenMetadata[metadata.tripId]?.takeIf { it != metadata }?.let {
       throw NativeKeyException.invalidState()
     }
+    if (target.state == KeyState.ACTIVE && state.activeMetadata == metadata &&
+      state.frozenMetadata[metadata.tripId] == metadata) return@transaction
     state.activeMetadata?.tripId?.takeIf { it != metadata.tripId }?.let { priorId ->
       state.trips[priorId]?.let { prior -> state.trips[priorId] = prior.copy(state = KeyState.INSTALLED) }
     }
     state.trips[metadata.tripId] = target.copy(state = KeyState.ACTIVE)
     state.frozenMetadata[metadata.tripId] = metadata
     state.activeMetadata = metadata
+    changed = true
+    }
   }
 
   override fun deactivate(scope: NativeKeyScope, tripId: String) = transaction { database ->
@@ -288,19 +302,64 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
   }
 
   private fun <T> read(body: (AndroidScopedDatabase) -> T): T = lock.withLock {
-    val database = persistence.load()
-    try { body(database) } finally { database.zeroize() }
+    val scope = snapshot
+    val database = scope?.database ?: load().also { scope?.database = it }
+    try { body(database) } finally { if (scope == null) database.zeroize() }
   }
 
-  private fun <T> transaction(body: (AndroidScopedDatabase) -> T): T = lock.withLock {
-    val database = persistence.load()
+  private fun <T> transaction(persistWhen: (T) -> Boolean = { true }, body: (AndroidScopedDatabase) -> T): T = lock.withLock {
+    val scope = snapshot
+    if (scope?.readOnly == true) throw NativeKeyException.invalidState()
+    val database = scope?.database ?: load().also { scope?.database = it }
     try {
       val result = body(database)
-      persistence.save(database)
+      // Never defer or coalesce saves: pending identity reservation and every
+      // other existing mutation remain individually crash-durable.
+      if (persistWhen(result)) persistence.save(database)
+      updateRetentionIndex(database)
       result
-    } finally { database.zeroize() }
+    } catch (error: Throwable) {
+      retentionIndex = null
+      if (scope != null) { database.zeroize(); scope.database = null }
+      throw error
+    } finally { if (scope == null) database.zeroize() }
   }
 
+  private fun <T> withSnapshot(readOnly: Boolean, body: () -> T): T = lock.withLock {
+    val existing = snapshot
+    if (existing != null) {
+      if (!readOnly && existing.readOnly) throw NativeKeyException.invalidState()
+      val previousReadOnly = existing.readOnly
+      existing.readOnly = existing.readOnly || readOnly
+      try { return@withLock body() } finally { existing.readOnly = previousReadOnly }
+    }
+    val owned = Snapshot(readOnly = readOnly)
+    snapshot = owned
+    try { body() }
+    catch (error: Throwable) { retentionIndex = null; throw error }
+    finally { owned.database?.zeroize(); snapshot = null }
+  }
+
+  private fun load(): AndroidScopedDatabase {
+    retentionIndex = null
+    val database = persistence.load()
+    try { updateRetentionIndex(database); return database }
+    catch (error: Throwable) { database.zeroize(); throw error }
+  }
+
+  private fun retentionIndex(): List<NativeExpiredTrip> {
+    retentionIndex?.let { return it }
+    read { }
+    return retentionIndex ?: throw NativeKeyException.materialLost()
+  }
+
+  private fun updateRetentionIndex(database: AndroidScopedDatabase) {
+    retentionIndex = database.scopes.values.flatMap { state ->
+      state.trips.keys.mapNotNull { tripId ->
+        state.cleanupDeadline(tripId)?.let { NativeExpiredTrip(state.scope, tripId, it) }
+      }
+    }
+  }
 
 }
 

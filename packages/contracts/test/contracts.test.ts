@@ -836,6 +836,7 @@ describe("sync and error contracts", () => {
       "INVITE_CODE_CONFLICT",
       "TRIP_FULL",
       "INVITE_INVALID",
+      "TRIP_REJOIN_UNAVAILABLE",
       "TRIP_OWNER_REQUIRED",
       "MEMBERSHIP_FROZEN",
       "PENDING_JOIN_REQUESTS",

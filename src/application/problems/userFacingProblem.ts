@@ -74,6 +74,10 @@ export const userFacingProblems = {
     tone: "critical",
     message: "That invite is invalid or has expired.",
   },
+  TRIP_REJOIN_UNAVAILABLE: {
+    tone: "warning",
+    message: "You can’t rejoin this trip. You can join a different trip.",
+  },
   TRIP_OWNER_REQUIRED: {
     tone: "warning",
     message: "Only the trip owner can do that.",

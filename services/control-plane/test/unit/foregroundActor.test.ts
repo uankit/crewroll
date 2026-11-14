@@ -227,6 +227,8 @@ const transactionMethodNames = [
   "lockTrip",
   "readProjection",
   "reauthorizeForegroundActor",
+  "lockLobbyRejoin",
+  "retireDepartedLobbyMembership",
   "tryAcquireCreateCommandLock",
   "updateInvite",
   "updateMembership",

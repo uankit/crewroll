@@ -160,6 +160,25 @@ describe("JoinTripScreen", () => {
       expect(onUseAnotherCode).toHaveBeenCalledTimes(1);
     },
   );
+  test("gives a proven terminal rejoin refusal an ordinary way Home without retrying", async () => {
+    const onReturnHome = jest.fn();
+    const view = await renderJoin({
+      state: { kind: "rejoin-unavailable", onReturnHome },
+    });
+    expect(
+      view.getByRole("header", { name: "Can’t rejoin this trip." }),
+    ).toBeOnTheScreen();
+    expect(
+      view.queryByRole("button", {
+        name: /retry|check join request|use another code/i,
+      }),
+    ).toBeNull();
+    await fireEvent.press(
+      view.getByRole("button", { name: "Back to your trips" }),
+    );
+    expect(onReturnHome).toHaveBeenCalledTimes(1);
+  });
+
   test("keeps an unknown join recoverable without clearing or replacing it", async () => {
     const onRetry = jest.fn();
     const screen = await renderJoin({ state: { kind: "unknown", onRetry } });

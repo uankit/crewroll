@@ -1,20 +1,22 @@
 import { Redirect, useRouter } from "expo-router";
 import { useState } from "react";
 
-import { useAppSession } from "@/bootstrap";
+import { terminalJoinFailureReason, useAppSession } from "@/bootstrap";
 import {
   JoinTripScreen,
   type JoinTripScreenState,
 } from "@/features/invitations";
 
-function safeFailureKind(error: unknown): "INVALID" | "UNKNOWN" | "FAILED" {
+function safeFailureKind(
+  error: unknown,
+): "INVALID" | "REJOIN_UNAVAILABLE" | "UNKNOWN" | "FAILED" {
   try {
+    const terminal = terminalJoinFailureReason(error);
+    if (terminal === "invite-unavailable") return "INVALID";
+    if (terminal === "rejoin-unavailable") return "REJOIN_UNAVAILABLE";
     if (typeof error !== "object" || error === null) return "FAILED";
     const value = error as Readonly<Record<string, unknown>>;
     if (value.kind === "TRANSPORT_UNAVAILABLE") return "UNKNOWN";
-    if (value.kind === "API_PROBLEM" && value.code === "INVITE_INVALID") {
-      return "INVALID";
-    }
   } catch {
     return "FAILED";
   }
@@ -63,6 +65,12 @@ export default function JoinTripRoute() {
                 setEditingAttempt((value) => value + 1);
                 setState({ kind: "editing" });
               },
+            });
+            return;
+          case "REJOIN_UNAVAILABLE":
+            setState({
+              kind: "rejoin-unavailable",
+              onReturnHome: () => router.dismissTo("/(app)"),
             });
             return;
           case "UNKNOWN":
