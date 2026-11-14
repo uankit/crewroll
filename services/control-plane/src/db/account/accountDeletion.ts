@@ -203,12 +203,41 @@ export async function eraseAccountRecords(tx: Tx, userId: string) {
     );
   // Coordination JSON includes names and identifiers; remove every affected
   // trip's transient events and cached responses, not just indexed actor rows.
+  // The final erasure transaction runs after provider/storage work. Reacquire
+  // every affected trip before deleting deliveries or assets: receipt writers
+  // now share the trip fence and serialize asset -> delivery locally. Without
+  // this trip-first fence, a non-owner source eraser can invert that order.
   const affected = await tx
-    .selectFrom("trip_members")
-    .select("trip_id")
-    .where("user_id", "=", userId)
+    .selectFrom("trips")
+    .select("id")
+    .where((eb) =>
+      eb.or([
+        eb("owner_user_id", "=", userId),
+        eb(
+          "id",
+          "in",
+          tx
+            .selectFrom("trip_members")
+            .select("trip_id")
+            .where("user_id", "=", userId),
+        ),
+        eb("id", "in", assets.clearSelect().select("trip_id")),
+        eb("id", "in", uploads.clearSelect().select("trip_id")),
+        eb(
+          "id",
+          "in",
+          tx
+            .selectFrom("deliveries as d")
+            .innerJoin("assets as a", "a.id", "d.asset_id")
+            .select("a.trip_id")
+            .where("d.recipient_user_id", "=", userId),
+        ),
+      ]),
+    )
+    .orderBy("id")
+    .forUpdate()
     .execute();
-  const affectedIds = affected.map((row) => row.trip_id);
+  const affectedIds = affected.map((row) => row.id);
   if (affectedIds.length) {
     await tx
       .deleteFrom("inbox_events")

@@ -160,7 +160,7 @@ export function createKyselyMediaService(
     tx: Tx,
     actor: MediaActor,
     deliveryId: string,
-    readOnly = false,
+    mode: "download" | "receipt",
   ) {
     const delivery = await tx
       .selectFrom("deliveries")
@@ -174,13 +174,33 @@ export function createKyselyMediaService(
       .selectFrom("assets")
       .select("trip_id")
       .where("id", "=", delivery.asset_id)
-      .executeTakeFirstOrThrow();
-    const trip = await tripFor(tx, actor, reference.trip_id, readOnly);
+      .executeTakeFirst();
+    if (!reference) throw new DomainError("NOT_FOUND");
+    const trip = await tripFor(tx, actor, reference.trip_id, true);
     const asset = await tx
       .selectFrom("assets")
       .selectAll()
       .where("id", "=", delivery.asset_id)
-      .executeTakeFirstOrThrow();
+      // Receipts serialize only the asset's all-recipients-saved transition.
+      // Take this fence before locking a delivery; lifecycle/erasure fence trips first.
+      .$if(mode === "receipt", (query) => query.forNoKeyUpdate())
+      .executeTakeFirst();
+    if (!asset) throw new DomainError("NOT_FOUND");
+    if (mode === "receipt") {
+      // Another receipt may have completed while this transaction waited for
+      // the asset. Read its delivery again only after acquiring that asset lock.
+      const current = await tx
+        .selectFrom("deliveries")
+        .selectAll()
+        .where("id", "=", deliveryId)
+        .where("asset_id", "=", asset.id)
+        .where("recipient_device_id", "=", actor.deviceId)
+        .where("recipient_user_id", "=", actor.userId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!current) throw new DomainError("NOT_FOUND");
+      return { delivery: current, asset, trip };
+    }
     return { delivery, asset, trip };
   }
   async function inspectUpload(
@@ -1036,7 +1056,7 @@ export function createKyselyMediaService(
           tx,
           actor,
           deliveryId,
-          true,
+          "download",
         );
         const now = clock.now();
         if (
@@ -1077,21 +1097,32 @@ export function createKyselyMediaService(
     async saved(actor, deliveryId, eventId, body) {
       requireBody(SavedReceiptBodySchema, body);
       return db.transaction().execute(async (tx) => {
-        await authorize(tx, actor);
-        const { delivery, asset } = await ownedDelivery(tx, actor, deliveryId);
+        // Shared identity/trip fences still exclude revocation, END and erase,
+        // while unrelated assets and read-only download grants can proceed.
+        await authorize(tx, actor, true);
+        const { delivery, asset, trip } = await ownedDelivery(
+          tx,
+          actor,
+          deliveryId,
+          "receipt",
+        );
         if (body.assetId !== asset.id) throw new DomainError("INVALID_REQUEST");
         const prior = await tx
           .selectFrom("receipts")
           .selectAll()
           .where("delivery_id", "=", deliveryId)
           .executeTakeFirst();
+        // Asset serialization may have waited past this immutable deadline.
+        // Check after the wait for both new receipts and exact replays.
+        const now = clock.now();
+        if (trip.hard_delete_at <= now)
+          throw new DomainError("TRIP_STATE_CONFLICT");
         if (prior)
           return {
             deliveryId,
             status: "SAVED_LOCALLY" as const,
             acceptedAt: prior.accepted_at.toISOString(),
           };
-        const now = clock.now();
         if (
           delivery.state !== "READY" ||
           delivery.available_at > now ||
@@ -1105,7 +1136,7 @@ export function createKyselyMediaService(
           .where("client_event_id", "=", eventId)
           .executeTakeFirst();
         if (reused) throw new DomainError("IDEMPOTENCY_CONFLICT");
-        await tx
+        const inserted = await tx
           .insertInto("receipts")
           .values({
             id: randomUUID(),
@@ -1115,7 +1146,15 @@ export function createKyselyMediaService(
             client_observed_at: new Date(body.savedAt),
             accepted_at: now,
           })
-          .execute();
+          // Independent assets may reuse a client event concurrently after the
+          // absence check. Preserve the public typed conflict without leaking
+          // a PostgreSQL unique violation or mutating the losing delivery.
+          .onConflict((conflict) =>
+            conflict.column("client_event_id").doNothing(),
+          )
+          .returning("id")
+          .executeTakeFirst();
+        if (!inserted) throw new DomainError("IDEMPOTENCY_CONFLICT");
         await tx
           .updateTable("deliveries")
           .set({ state: "SAVED_LOCALLY", saved_at: now })
