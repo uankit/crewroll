@@ -8,7 +8,10 @@ import { AppState, Text, type AppStateStatus } from "react-native";
 
 import { CrewRollApiProblem } from "../application/problems/crewRollApiProblem";
 import { createCrewRollApi } from "../infrastructure/api/crewRollApi";
-import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
+import {
+  createProvisionCurrentDevice,
+  type ProvisionedDevice,
+} from "../application/auth/ProvisionDevice";
 import {
   createRefreshDeviceSession,
   type RefreshDeviceSessionInput,
@@ -1199,7 +1202,11 @@ describe("AppSessionProvider", () => {
       const snapshotReads = (runtime.getNativeSnapshot as jest.Mock).mock.calls
         .length;
       await act(() =>
-        finishOld({ deviceId: "old-device-must-not-be-published", identity }),
+        finishOld({
+          deviceId: "old-device-must-not-be-published",
+          identity,
+          activeTripId: tripId,
+        }),
       );
       expect(screen.getByTestId("retry-setup").props.children).toContain(
         deviceId,
@@ -1296,6 +1303,160 @@ describe("AppSessionProvider", () => {
     await act(async () => undefined);
     expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
     expect(runtime.createScopedTripSession).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, tripId])(
+    "uses a prepared public trip hint (%s) without a second native snapshot read",
+    async (activeTripId) => {
+      const { runtime, scoped } = createRuntime({
+        provision: async () => ({ deviceId, identity, activeTripId }),
+      });
+      const snapshotRead = jest.fn(async () => {
+        throw new Error("redundant protected read");
+      });
+      await render(
+        <Harness
+          auth={signedIn}
+          runtime={{ ...runtime, getNativeSnapshot: snapshotRead }}
+        >
+          <SessionProbe />
+        </Harness>,
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByText(
+            activeTripId === null ? "READY_NO_TRIP" : `READY_LOBBY:${tripId}`,
+          ),
+        ).toBeOnTheScreen(),
+      );
+      expect(snapshotRead).not.toHaveBeenCalled();
+      expect(runtime.loadRecovery).toHaveBeenCalledWith({
+        clerkSubject: signedIn.userId,
+        deviceId,
+      });
+      if (activeTripId !== null)
+        expect(scoped.hydrateTrip).toHaveBeenCalledWith(tripId);
+    },
+  );
+
+  it("uses the prepared hint only once and rereads native state on a recovery retry", async () => {
+    const { runtime: base } = createRuntime({
+      provision: async () => ({ deviceId, identity, activeTripId: null }),
+      activeTripId: tripId,
+    });
+    const loadRecovery = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("journal unavailable"))
+      .mockResolvedValue(null);
+    const runtime = { ...base, loadRecovery };
+    function RetryHint() {
+      const session = useAppSession();
+      return (
+        <Text testID="retry-hint" onPress={session.retry}>
+          {session.snapshot.phase}
+        </Text>
+      );
+    }
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <RetryHint />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("retry-hint").props.children).toBe(
+        "RECOVERABLE_FAILURE",
+      ),
+    );
+    expect(base.getNativeSnapshot).not.toHaveBeenCalled();
+    await act(() => screen.getByTestId("retry-hint").props.onPress());
+    await waitFor(() =>
+      expect(screen.getByTestId("retry-hint").props.children).toBe(
+        "READY_LOBBY",
+      ),
+    );
+    expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(base.getNativeSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("rereads and retires a preserved old selection after native preparation requires renewal", async () => {
+    const events: string[] = [];
+    const nextTripId = "0191a203-227b-7011-9213-141516171819";
+    const provision = createProvisionCurrentDevice({
+      native: {
+        prepareDeviceSession: async () => ({
+          protocolVersion: 1,
+          identity,
+          restoredSession: null,
+          activeTripId: null,
+        }),
+        ensureDeviceIdentity: jest.fn(),
+        installDeviceSession: async () => {
+          events.push("install");
+        },
+      },
+      random: { getBytes: async (length) => new Uint8Array(length) },
+      registration: {
+        registerDevice: async () => ({
+          deviceId,
+          backgroundBearer: `crb_${"A".repeat(43)}`,
+          backgroundBearerExpiresAt: "2030-01-01T00:00:00.000Z",
+        }),
+      },
+    });
+    const { runtime: base, scoped } = createRuntime({
+      provision: () =>
+        provision({
+          accountId: userId,
+          apiBaseUrl: "https://api.crewroll.test",
+          appVersion: "0.2.0",
+          platform: "ios",
+        }),
+      activeTripId: tripId,
+      hydrate: async (id) => {
+        events.push(`hydrate:${id}`);
+        return { ...lobby, id };
+      },
+    });
+    const listTrips = async (): Promise<TripListResponse> => ({
+      items: [
+        {
+          id: nextTripId,
+          name: "Next trip",
+          status: "LOBBY",
+          participation: "JOINED",
+          role: "OWNER",
+          startsAt: null,
+          endsAt: lobby.endsAt,
+          leftAt: null,
+          sharingPaused: false,
+          onThisDevice: true,
+          memberCount: 1,
+          savedPhotoCount: 0,
+        },
+      ],
+    });
+    const retireTrip = jest.fn(async (id) => {
+      events.push(`retire:${id}`);
+    });
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips, retireTrip }),
+    };
+    await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <SessionProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(`READY_LOBBY:${nextTripId}`)).toBeOnTheScreen(),
+    );
+    expect(base.getNativeSnapshot).toHaveBeenCalledTimes(1);
+    expect(events.slice(0, 3)).toEqual([
+      "install",
+      `retire:${tripId}`,
+      `hydrate:${nextTripId}`,
+    ]);
+    expect(retireTrip).toHaveBeenCalledWith(tripId);
   });
 
   it("delegates UNKNOWN_CREATE only to Task 7 reconciliation", async () => {

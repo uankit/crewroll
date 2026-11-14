@@ -22,6 +22,32 @@ export function createPreparedTripNative(
     return result;
   };
   return Object.freeze({
+    get importAndActivateTrip() {
+      const operation = native.importAndActivateTrip;
+      if (operation === undefined) return undefined;
+      return (
+        command: Parameters<
+          NonNullable<ActiveTripNativePort["importAndActivateTrip"]>
+        >[0],
+      ) => {
+        const imported = JSON.stringify(command.envelope);
+        const activated = JSON.stringify(command.activation);
+        const result = tail.then(async () => {
+          if (
+            confirmed.get("import") === imported &&
+            confirmed.get("activate") === activated
+          )
+            return;
+          confirmed.delete("import");
+          confirmed.delete("activate");
+          await operation.call(native, command);
+          confirmed.set("import", imported);
+          confirmed.set("activate", activated);
+        });
+        tail = result.catch(() => undefined);
+        return result;
+      };
+    },
     importTripKey: (
       command: Parameters<ActiveTripNativePort["importTripKey"]>[0],
     ) => run("import", command, () => native.importTripKey(command)),

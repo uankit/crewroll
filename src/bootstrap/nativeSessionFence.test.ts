@@ -113,3 +113,51 @@ describe("native session fence", () => {
     expect(native.refreshDeviceSession).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each(["prepareDeviceSession", "importAndActivateTrip"] as const)(
+  "rejects late and queued %s completions across an account change",
+  async (name) => {
+    const { native, fence } = fixture();
+    let complete!: (value: never) => void;
+    const completion = new Promise<never>((resolve) => {
+      complete = resolve;
+    });
+    const operation = jest.fn(() => completion);
+    native[name] = operation;
+    const old = fence.capture();
+    const command = {
+      protocolVersion: 1,
+      envelope: {},
+      activation: {},
+    } as never;
+    const dispatch = old[name]!;
+    const pending = dispatch(command);
+    const rejected = expect(pending).rejects.toThrow("Native session ended");
+    await Promise.resolve();
+    const queued = dispatch(command);
+    const rejectedQueued = expect(queued).rejects.toThrow(
+      "Native session ended",
+    );
+    fence.invalidate();
+    complete(undefined as never);
+    await rejected;
+    await rejectedQueued;
+    expect(operation).toHaveBeenCalledTimes(
+      name === "prepareDeviceSession" ? 2 : 1,
+    );
+    await expect(dispatch(command)).rejects.toThrow("Native session ended");
+    expect(() => old[name]).toThrow("Native session ended");
+  },
+);
+
+it("keeps optional capability discovery lazy when creating/capturing the account fence", () => {
+  const { native } = fixture();
+  const discover = jest.fn(() => undefined);
+  Object.defineProperty(native, "prepareDeviceSession", { get: discover });
+  Object.defineProperty(native, "importAndActivateTrip", { get: discover });
+  const fence = createNativeSessionFence(native);
+  const captured = fence.capture();
+  expect(discover).not.toHaveBeenCalled();
+  expect(captured.prepareDeviceSession).toBeUndefined();
+  expect(captured.importAndActivateTrip).toBeUndefined();
+});

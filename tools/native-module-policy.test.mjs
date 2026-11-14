@@ -120,6 +120,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     "utf8",
   );
   const keyMethodNames = [
+    "prepareDeviceSession",
     "ensureDeviceIdentity",
     "restoreDeviceSession",
     "installDeviceSession",
@@ -130,6 +131,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     "discardProvisionalTripKey",
     "wrapTripKey",
     "importTripKey",
+    "importAndActivateTrip",
     "activateTrip",
     "deactivateTrip",
   ];

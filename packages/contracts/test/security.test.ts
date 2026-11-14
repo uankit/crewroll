@@ -195,7 +195,7 @@ describe("SEC-001 key lifecycle", () => {
     const document = readSecurityDocument("key-lifecycle.md");
 
     expectAllMarkers(document, "key lifecycle", [
-      "`importTripKey` is the only operation",
+      "`importTripKey` owns envelope unwrap",
       "`activateTrip` only selects an already-installed key",
       "`discardProvisionalTripKey`",
       "24 hours",

@@ -35,6 +35,38 @@ public final class CrewRollTransferModule: Module {
       self.pushObserver = nil
     }
 
+    AsyncFunction("prepareDeviceSession") { (command: [String: Any], promise: Promise) in
+      do {
+        try NativeCommandDecoder.require(command, for: .prepareDeviceSession)
+        let epoch = self.transferCommands.advance()
+        let lifecycle = try self.lifecycle()
+        let prepared = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.prepareDeviceSession(accountID: Self.string(command, "accountId"),
+            apiBaseURL: Self.string(command, "apiBaseUrl"))
+        }
+        let identity = prepared.identity
+        var result: [String: Any] = [
+          "protocolVersion": 1,
+          "identity": [
+            "protocolVersion": identity.protocolVersion,
+            "installationId": identity.installationID,
+            "authenticationKeyAlgorithm": identity.authenticationKeyAlgorithm,
+            "authenticationPublicKey": identity.authenticationPublicKey,
+            "authenticationKeyVersion": identity.authenticationKeyVersion,
+            "e2eeKeyAlgorithm": identity.e2eeKeyAlgorithm,
+            "e2eePublicKey": identity.e2eePublicKey,
+            "e2eeKeyVersion": identity.e2eeKeyVersion,
+          ],
+          "restoredSession": NSNull(),
+          "activeTripId": NSNull(),
+        ]
+        if let deviceID = prepared.restoredDeviceID {
+          result["restoredSession"] = ["protocolVersion": 1, "deviceId": deviceID]
+        }
+        if let tripID = prepared.activeTripID { result["activeTripId"] = tripID }
+        promise.resolve(result)
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("ensureDeviceIdentity") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .ensureDeviceIdentity)
@@ -236,6 +268,28 @@ public final class CrewRollTransferModule: Module {
         promise.resolve(nil)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
+    AsyncFunction("importAndActivateTrip") { (command: [String: Any], promise: Promise) in
+      do {
+        try NativeCommandDecoder.require(command, for: .importAndActivateTrip)
+        let epoch = self.transferCommands.advance()
+        let runtime = try CrewRollAppleRuntime.get()
+        try self.transferCommands.withCurrent(epoch) {
+          try runtime.lifecycle.importAndActivateTrip(command)
+          runtime.policy(enabled: true, cellular: true)
+        }
+        let engine = runtime.engine
+        // Preserve import's independent retention wake without holding the
+        // selection fence across an engine await.
+        Task { try? await engine.reconcileRetention(force: true) }
+        Task {
+          do {
+            await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
+            try self.transferCommands.withCurrent(epoch) { }
+            promise.resolve(nil)
+          } catch { promise.reject(Self.bridgeException(NativeKeyError.tripActivationFailed)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("activateTrip") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .activateTrip)
@@ -374,7 +428,7 @@ public final class CrewRollTransferModule: Module {
       return "KEY_MATERIAL_LOST"
     }
     switch nativeError.code {
-    case "KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST", "KEY_ENVELOPE_INVALID":
+    case "KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST", "KEY_ENVELOPE_INVALID", "ERR_CREWROLL_TRIP_ACTIVATION":
       return nativeError.code
     default:
       return "KEY_ENVELOPE_INVALID"

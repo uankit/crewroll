@@ -3,6 +3,12 @@ import { join } from "node:path";
 
 const root = process.cwd();
 const read = (path: string) => readFileSync(join(root, path), "utf8");
+const asyncFunctionBlock = (source: string, method: string) => {
+  const start = source.indexOf(`AsyncFunction("${method}")`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf("AsyncFunction(", start + 1);
+  return source.slice(start, next < 0 ? source.length : next);
+};
 
 describe("native identity and trip-key production policy", () => {
   it("maps the identity commands to real iOS and Android lifecycle services", () => {
@@ -242,10 +248,7 @@ describe("native identity and trip-key production policy", () => {
         "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/CrewRollTransferModule.kt",
       ),
     ]) {
-      const activation = source.slice(
-        source.indexOf('AsyncFunction("activateTrip")'),
-        source.indexOf('AsyncFunction("deactivateTrip")'),
-      );
+      const activation = asyncFunctionBlock(source, "activateTrip");
       expect(activation).not.toMatch(/wrapped|envelope/i);
       expect(source).not.toContain('["backgroundBearer":');
       expect(source).not.toContain('"backgroundBearer" to');
@@ -259,19 +262,34 @@ describe("native identity and trip-key production policy", () => {
     const kotlin = read(
       "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/CrewRollTransferModule.kt",
     );
-    expect(
-      swift.match(/NativeCommandDecoder\.require\(command, for:/g),
-    ).toHaveLength(10);
+    // Each shell must validate its own command; a total count could hide a
+    // missing decoder in one method behind a duplicate in another.
+    for (const [method, kind] of [
+      ["prepareDeviceSession", "PREPARE_DEVICE_SESSION"],
+      ["ensureDeviceIdentity", "ENSURE_DEVICE_IDENTITY"],
+      ["restoreDeviceSession", "RESTORE_DEVICE_SESSION"],
+      ["installDeviceSession", "INSTALL_DEVICE_SESSION"],
+      ["refreshDeviceSession", "REFRESH_DEVICE_SESSION"],
+      ["createTripKey", "CREATE_TRIP_KEY"],
+      ["discardProvisionalTripKey", "DISCARD_PROVISIONAL_TRIP_KEY"],
+      ["wrapTripKey", "WRAP_TRIP_KEY"],
+      ["importTripKey", "IMPORT_TRIP_KEY"],
+      ["importAndActivateTrip", "IMPORT_AND_ACTIVATE_TRIP"],
+      ["activateTrip", "ACTIVATE_TRIP"],
+      ["deactivateTrip", "DEACTIVATE_TRIP"],
+    ] as const) {
+      expect(asyncFunctionBlock(swift, method)).toContain(
+        `NativeCommandDecoder.require(command, for: .${method})`,
+      );
+      expect(asyncFunctionBlock(kotlin, method)).toContain(
+        `NativeCommandDecoder.require(command, NativeCommandKind.${kind})`,
+      );
+    }
     expect(swift).toContain("NativeCommandDecoder.activation");
     expect(
       swift.slice(0, swift.indexOf('AsyncFunction("setTransferPolicy")')),
     ).not.toContain("NativeCommandDecoder.requireProtocol(command)");
     expect(swift).not.toContain('command["releaseAt"] as? String');
-    expect(
-      kotlin.match(
-        /NativeCommandDecoder\.require\(command, NativeCommandKind\./g,
-      ),
-    ).toHaveLength(10);
     expect(kotlin).toContain("NativeCommandDecoder.activation");
     expect(
       kotlin.slice(0, kotlin.indexOf('AsyncFunction("setTransferPolicy")')),

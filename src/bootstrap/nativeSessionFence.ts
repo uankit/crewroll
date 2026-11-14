@@ -34,8 +34,27 @@ export function createNativeSessionFence(native: CrewRollTransferPort) {
       const prepared = createPreparedTripNative({
         importTripKey: guard(native.importTripKey.bind(native)),
         activateTrip: guard(native.activateTrip.bind(native)),
+        get importAndActivateTrip() {
+          check();
+          const operation = native.importAndActivateTrip;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
       });
       return Object.freeze({
+        get prepareDeviceSession() {
+          check();
+          const operation = native.prepareDeviceSession;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
+        get importAndActivateTrip() {
+          check();
+          const operation = prepared.importAndActivateTrip;
+          return operation === undefined ? undefined : guard(operation);
+        },
         restoreDeviceSession: guard(
           async (command: RestoreDeviceSessionCommand) =>
             native.restoreDeviceSession?.(command) ?? null,

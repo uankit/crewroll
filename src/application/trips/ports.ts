@@ -15,6 +15,7 @@ import type {
   CreateTripKeyResult,
   DiscardProvisionalTripKeyCommand,
   ImportTripKeyCommand,
+  ImportAndActivateTripCommand,
   WrapTripKeyCommand,
   WrapTripKeyResult,
 } from "@crewroll/contracts/native/protocol";
@@ -156,4 +157,14 @@ export interface HydrateTripNativePort {
 
 export interface ActiveTripNativePort extends HydrateTripNativePort {
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTrip?:
+    ((command: ImportAndActivateTripCommand) => Promise<void>) | undefined;
+}
+
+/** A validated native boundary reports this only after import has succeeded. */
+export class ImportedTripActivationFailed extends Error {
+  constructor() {
+    super("Imported trip could not be activated.");
+    this.name = "ImportedTripActivationFailed";
+  }
 }

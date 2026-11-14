@@ -7,6 +7,11 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.concurrent.thread
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import com.uankit53.crewroll.crypto.VerifiedSodiumProvider
+import com.uankit53.crewroll.transfer.media.*
+import java.io.File
+import java.nio.file.Files
+import org.json.JSONObject
 
 class AccountScopedLifecycleTest {
   private val accountA = "user_A-1"
@@ -17,6 +22,176 @@ class AccountScopedLifecycleTest {
   private val tripB = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140"
   private val deviceA = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150"
   private val deviceB = "018f0d98-76fa-7d1a-b4b4-1f742c2e3160"
+
+  @Test fun `composite cold startup includes the first engine wake in three reads or two without a trip`() {
+    listOf(false, true).forEach { active ->
+      val fixture = ScopedFixture(mapOf(accountA to hashA), Instant.parse("2030-01-01T00:00:00Z"))
+      val metadata = fixture.metadata(tripA).copy(startsAt = "2030-01-01T00:00:00Z", endsAt = "2030-01-02T00:00:00Z")
+      val disk = StartupCountingPersistence()
+      val original = NativeKeyLifecycle(fixture.clock, AccountScopedKeyStore(disk), fixture.crypto, fixture.p256,
+        fixture.hasher, ScopedCleanupScheduler())
+      val identity = original.ensureDeviceIdentity(accountA)
+      original.installDeviceSession(accountA, identity.installationId, deviceA, "crb_fixture_write_only",
+        fixture.clock.now.plusSeconds(8 * 86_400), "https://api.crewroll.app")
+      val command = if (active) {
+        original.createTripKey(tripA, 1)
+        val wrapped = original.wrapTripKey(tripA, 1, deviceA, identity.e2eePublicKey, 1).wrappedKey
+        original.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped, metadata.endsAt)
+        original.activateTrip(metadata)
+        startupComposite(wrapped, metadata)
+      } else null
+      val subject = NativeKeyLifecycle(fixture.clock, AccountScopedKeyStore(disk), fixture.crypto, fixture.p256,
+        fixture.hasher, ScopedCleanupScheduler())
+      val media = NativeMediaSession({ subject.mediaContext() }, { fixture.clock.now })
+      val fence = NativeTransferCommandFence()
+      disk.reads = 0; disk.writes = 0; disk.loaded.clear()
+      repeat(2) { subject.runScheduledCleanup(); subject.expiredTrips(); subject.nextTripRetentionDeadline() }
+      val bootstrapEpoch = fence.advance()
+      val prepared = fence.runIfCurrent(bootstrapEpoch) {
+        media.changeAndPrime({ subject.prepareDeviceSession(accountA, "https://api.crewroll.app") }, { it.context })
+      }
+      assertEquals(identity, prepared.identity)
+      assertEquals(deviceA, prepared.restoredDeviceId)
+      assertEquals(if (active) tripA else null, prepared.activeTripId)
+      assertTrue(prepared.context?.tripKey?.all { it == 0.toByte() } != false)
+      if (command != null) {
+        val epoch = fence.advance()
+        fence.runIfCurrent(epoch) { media.changeAndPrime({ subject.importAndActivateTrip(command) }, { it }) }
+      }
+      StartupEngineProbe(media, subject).use { probe ->
+        probe.engine.activate().get(3, TimeUnit.SECONDS)
+        assertTrue(probe.firstContext.await(3, TimeUnit.SECONDS), "exercise a real engine wake after priming")
+        val snapshot = probe.engine.snapshot().get(3, TimeUnit.SECONDS)
+        assertEquals(if (active) tripA else null, snapshot["activeTripId"])
+        assertEquals(if (active) 3 else 2, disk.reads,
+          "first engine wake and journal projection must reuse the validated lease")
+        assertEquals(0, disk.writes)
+      }
+      disk.loaded.forEach(::assertDatabaseSecretsErased)
+    }
+  }
+
+  private fun startupComposite(wrapped: String, metadata: ActiveTripMetadata): Map<String, Any?> = mapOf(
+    "protocolVersion" to 1,
+    "envelope" to mapOf("protocolVersion" to 1, "tripId" to metadata.tripId, "keyEpoch" to metadata.keyEpoch,
+      "algorithmVersion" to 1, "expectedSenderDeviceId" to deviceA, "recipientDeviceId" to deviceA,
+      "recipientE2eeKeyVersion" to 1, "wrappedKey" to wrapped, "endsAt" to metadata.endsAt),
+    "activation" to mapOf("protocolVersion" to 1, "tripId" to metadata.tripId, "membershipId" to metadata.membershipId,
+      "startsAt" to metadata.startsAt, "endsAt" to metadata.endsAt, "releaseAt" to metadata.releaseAt, "keyEpoch" to metadata.keyEpoch))
+
+  private data class CompositeCase(val fixture: ScopedFixture, val disk: StartupCountingPersistence,
+    val store: AccountScopedKeyStore, val subject: NativeKeyLifecycle, val identity: NativeDeviceIdentity,
+    val metadata: ActiveTripMetadata, val command: Map<String, Any?>)
+  private fun compositeCase(activate: Boolean): CompositeCase {
+    val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB), Instant.parse("2030-01-01T00:00:00Z"))
+    val disk = StartupCountingPersistence()
+    val store = AccountScopedKeyStore(disk)
+    val subject = NativeKeyLifecycle(fixture.clock, store, fixture.crypto, fixture.p256, fixture.hasher, ScopedCleanupScheduler())
+    val identity = subject.ensureDeviceIdentity(accountA)
+    subject.installDeviceSession(accountA, identity.installationId, deviceA, "crb_fixture_write_only",
+      fixture.clock.now.plusSeconds(8 * 86_400), "https://api.crewroll.app")
+    val metadata = fixture.metadata(tripA).copy(startsAt = "2030-01-01T00:00:00Z", endsAt = "2030-01-02T00:00:00Z")
+    subject.createTripKey(tripA, 1)
+    val wrapped = subject.wrapTripKey(tripA, 1, deviceA, identity.e2eePublicKey, 1).wrappedKey
+    if (activate) {
+      subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped, metadata.endsAt)
+      subject.activateTrip(metadata)
+    }
+    return CompositeCase(fixture, disk, store, subject, identity, metadata, startupComposite(wrapped, metadata))
+  }
+
+  @Test fun `prepared bootstrap never exposes a selected trip across accounts endpoints or credential renewal`() {
+    val f = compositeCase(true)
+    val writes = f.disk.writes
+    f.disk.reads = 0
+    listOf("http://api.crewroll.app", "https://", "https:///missing-host", "https://user:password@api.crewroll.app", "https://api.crewroll.app/#fragment").forEach { invalid ->
+      assertThrows(NativeKeyException::class.java) { f.subject.prepareDeviceSession(accountA, invalid) }
+    }
+    assertEquals(writes, f.disk.writes)
+    assertEquals(0, f.disk.reads)
+    listOf(accountB to "https://api.crewroll.app", accountA to "https://other.crewroll.app").forEach { (account, api) ->
+      val media = NativeMediaSession({ f.subject.mediaContext() }, { f.fixture.clock.now })
+      val result = media.changeAndPrime({ f.subject.prepareDeviceSession(account, api) }, { it.context })
+      assertNull(result.restoredDeviceId)
+      assertNull(result.activeTripId)
+      assertNull(media.read(), "the old account's selected context cannot leak through a primed null result")
+      media.close()
+    }
+    f.fixture.clock.now = f.fixture.clock.now.plusSeconds(86_400)
+    val renewing = f.subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
+    assertEquals(f.identity, renewing.identity)
+    assertNull(renewing.restoredDeviceId)
+    assertNull(renewing.context)
+    assertNull(renewing.activeTripId)
+    f.fixture.p256.remove(NativeKeyScope(hashA, f.identity.installationId))
+    assertEquals("KEY_MATERIAL_LOST", assertThrows(NativeKeyException::class.java) {
+      f.subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
+    }.code, "corrupt identity is a visible error, not a no-trip fallback")
+    f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+  }
+
+  @Test fun `bootstrap discards its trip lease if renewal becomes due during final context validation`() {
+    val f = compositeCase(true)
+    var validations = 0
+    f.fixture.p256.onLoad = {
+      validations++
+      if (validations == 3) f.fixture.clock.now = f.fixture.clock.now.plusSeconds(86_400)
+    }
+    val prepared = f.subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
+    assertEquals(3, validations)
+    assertEquals(f.identity, prepared.identity)
+    assertNull(prepared.restoredDeviceId)
+    assertNull(prepared.context)
+    assertNull(prepared.activeTripId)
+    f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+  }
+
+  @Test fun `composite command rejects mismatched or open nested input before import writes`() {
+    val f = compositeCase(false)
+    val activation = NativeCommandDecoder.objectValue(f.command, "activation")
+    val envelope = NativeCommandDecoder.objectValue(f.command, "envelope")
+    val writes = f.disk.writes
+    f.disk.reads = 0
+    listOf(
+      f.command + ("unexpected" to true),
+      f.command + ("envelope" to (envelope + ("unexpected" to true))),
+      f.command + ("activation" to (activation + ("unexpected" to true))),
+      f.command + ("activation" to (activation + ("tripId" to tripB))),
+      f.command + ("activation" to (activation + ("keyEpoch" to 2))),
+      f.command + ("activation" to (activation + ("endsAt" to "2030-01-03T00:00:00Z"))),
+      f.command + ("activation" to (activation - "membershipId")),
+    ).forEach { invalid -> assertThrows(NativeKeyException::class.java) { f.subject.importAndActivateTrip(invalid) } }
+    assertEquals(writes, f.disk.writes)
+    assertEquals(0, f.disk.reads)
+    f.fixture.crypto.rejectOpen = true
+    assertEquals("KEY_ENVELOPE_INVALID", assertThrows(NativeKeyException::class.java) {
+      f.subject.importAndActivateTrip(f.command)
+    }.code)
+    assertEquals(writes, f.disk.writes)
+    assertEquals(KeyState.PROVISIONAL, f.store.loadTrip(NativeKeyScope(hashA, f.identity.installationId), tripA)!!.state)
+  }
+
+  @Test fun `composite activation failure keeps durable imported key and retry completes without repeating its write`() {
+    val f = compositeCase(false)
+    val writes = f.disk.writes
+    f.disk.failWriteAttempt = f.disk.writeAttempts + 2 // import succeeds; activation fails
+    val media = NativeMediaSession({ f.subject.mediaContext() }, { f.fixture.clock.now })
+    assertEquals("ERR_CREWROLL_TRIP_ACTIVATION", assertThrows(NativeKeyException::class.java) {
+      media.changeAndPrime<NativeMediaContext>({ f.subject.importAndActivateTrip(f.command) }, { it })
+    }.code)
+    assertEquals(writes + 1, f.disk.writes, "import is durable even though activation did not commit")
+    assertNull(media.read(), "failed activation must not retain a usable selected lease")
+    val state = AccountScopedKeyStore(f.disk).loadTrip(NativeKeyScope(hashA, f.identity.installationId), tripA)!!
+    assertEquals(KeyState.INSTALLED, state.state)
+    state.key.fill(0)
+    f.disk.failWriteAttempt = null
+    media.changeAndPrime<NativeMediaContext>({ f.subject.importAndActivateTrip(f.command) }, { it })
+    assertEquals(writes + 2, f.disk.writes, "retry writes activation only, not the unchanged imported key")
+    val active = media.read()!!
+    assertEquals(f.metadata, active.metadata)
+    active.erase(); media.close()
+    f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+  }
 
   @Test fun `cold startup and first foreground share retention metadata without retaining decrypted secrets`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA))
@@ -873,6 +1048,42 @@ class AccountScopedLifecycleTest {
     restarted.discardProvisionalTripKey(tripB, 1)
     assertNull(fixture.store.trip(scope, tripB))
     assertTrue(fixture.store.hasTombstone(scope, tripB))
+  }
+}
+
+private class StartupEngineProbe(private val media: NativeMediaSession, lifecycle: NativeKeyLifecycle) : AutoCloseable {
+  private val provider = VerifiedSodiumProvider.open()
+  private val root = Files.createTempDirectory("crewroll-startup-engine-").toFile()
+  val firstContext = CountDownLatch(1)
+  private val photos = object : NativePhotoLibraryPort {
+    override fun observe(changed: (() -> Unit)?) { }
+    override fun discover(startsAt: Instant, endsAt: Instant, excluding: Set<String>, limit: Int) = emptyList<DiscoveredPhoto>()
+    override fun exportOriginal(localId: String, destination: File): PhotoMetadata = error("no synthetic capture")
+    override fun preview(source: File, destination: File): PhotoMetadata = error("no synthetic preview")
+    override fun findSaved(assetId: String): String? = null
+    override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, allocated: (String) -> Unit): String = error("no synthetic save")
+    override fun verify(localId: String, bytes: Long, checksum: ByteArray) { error("no synthetic verify") }
+  }
+  private val network = object : NativePhotoTransportPort {
+    override fun cancel() { }
+    override fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject {
+      throw java.io.IOException("offline fixture")
+    }
+    override fun upload(url: String, headers: Map<String, String>, source: File): String = error("no upload")
+    override fun download(url: String, destination: File, expectedBytes: Long) { error("no download") }
+  }
+  val engine = NativePhotoTransferEngine(root, {
+    val value = media.read()
+    firstContext.countDown()
+    value
+  }, photos, NativePhotoCrypto(provider.sodium), { network }, {},
+    expiredTrips = lifecycle::expiredTrips, nextRetentionDeadline = lifecycle::nextTripRetentionDeadline)
+  override fun close() {
+    engine.stop().get(3, TimeUnit.SECONDS)
+    engine.close()
+    media.close()
+    provider.close()
+    root.deleteRecursively()
   }
 }
 
