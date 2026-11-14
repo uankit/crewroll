@@ -11,6 +11,9 @@ import {
   EngineBlockerSchema,
   EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
+  ImportAndActivateTripCommandSchema,
+  PrepareDeviceSessionCommandSchema,
+  PreparedDeviceSessionSchema,
   InstallDeviceSessionCommandSchema,
   NativeDeviceIdentitySchema,
   ReconcileNowCommandSchema,
@@ -356,4 +359,91 @@ describe("native bridge protocol", () => {
       }),
     ).toBe(false);
   });
+});
+
+it("closes combined preparation inputs and exposes only validated public session projection", () => {
+  const command = {
+    protocolVersion: 1,
+    accountId,
+    apiBaseUrl: "https://api.crewroll.app",
+  };
+  const identity = {
+    protocolVersion: 1,
+    installationId,
+    authenticationKeyAlgorithm: "P-256",
+    authenticationPublicKey: P256_PUBLIC_KEY,
+    authenticationKeyVersion: 1,
+    e2eeKeyAlgorithm: "X25519",
+    e2eePublicKey: X25519_PUBLIC_KEY,
+    e2eeKeyVersion: 1,
+  };
+  const result = {
+    protocolVersion: 1,
+    identity,
+    restoredSession: { protocolVersion: 1, deviceId },
+    activeTripId: tripId,
+  };
+  expect(Value.Check(PrepareDeviceSessionCommandSchema, command)).toBe(true);
+  expect(Value.Check(PreparedDeviceSessionSchema, result)).toBe(true);
+  expect(
+    Value.Check(PreparedDeviceSessionSchema, {
+      ...result,
+      restoredSession: null,
+      activeTripId: null,
+    }),
+  ).toBe(true);
+  for (const invalid of [
+    { ...command, protocolVersion: 2 },
+    { ...command, accountId: "email@example.com" },
+    { ...command, backgroundBearer: BACKGROUND_BEARER },
+  ])
+    expect(Value.Check(PrepareDeviceSessionCommandSchema, invalid)).toBe(false);
+  for (const invalid of [
+    { ...result, backgroundBearer: BACKGROUND_BEARER },
+    {
+      ...result,
+      restoredSession: {
+        ...result.restoredSession,
+        backgroundBearer: BACKGROUND_BEARER,
+      },
+    },
+    { ...result, identity: { ...identity, privateKey: "private" } },
+    { ...result, activeTripId: "not-a-trip" },
+  ])
+    expect(Value.Check(PreparedDeviceSessionSchema, invalid)).toBe(false);
+});
+
+it("requires closed nested import/activation commands without changing either existing format", () => {
+  const command = {
+    protocolVersion: 1,
+    envelope: {
+      protocolVersion: 1,
+      tripId,
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      expectedSenderDeviceId: deviceId,
+      recipientDeviceId: deviceId,
+      recipientE2eeKeyVersion: 1,
+      endsAt: "2026-09-02T12:00:00.000Z",
+      wrappedKey: TRIP_ENVELOPE,
+    },
+    activation: {
+      protocolVersion: 1,
+      tripId,
+      membershipId,
+      startsAt: "2026-09-01T12:00:00.000Z",
+      endsAt: "2026-09-02T12:00:00.000Z",
+      releaseAt: null,
+      keyEpoch: 1,
+    },
+  };
+  expect(Value.Check(ImportAndActivateTripCommandSchema, command)).toBe(true);
+  for (const invalid of [
+    { ...command, extra: true },
+    { ...command, envelope: { ...command.envelope, privateKey: "private" } },
+    { ...command, activation: { ...command.activation, keyEpoch: 2 } },
+  ])
+    expect(Value.Check(ImportAndActivateTripCommandSchema, invalid)).toBe(
+      false,
+    );
 });

@@ -16,9 +16,12 @@ import {
   DurableEngineSnapshotSchema,
   EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
+  ImportAndActivateTripCommandSchema,
   InstallDeviceSessionCommandSchema,
   ListAssetsQuerySchema,
   NativeDeviceIdentitySchema,
+  PrepareDeviceSessionCommandSchema,
+  PreparedDeviceSessionSchema,
   ReconcileNowCommandSchema,
   RefreshDeviceSessionCommandSchema,
   RetryCommandSchema,
@@ -38,9 +41,12 @@ import {
   type DurableEngineSnapshot,
   type EnsureDeviceIdentityCommand,
   type ImportTripKeyCommand,
+  type ImportAndActivateTripCommand,
   type InstallDeviceSessionCommand,
   type ListAssetsQuery,
   type NativeDeviceIdentity,
+  type PrepareDeviceSessionCommand,
+  type PreparedDeviceSession,
   type ReconcileNowCommand,
   type RefreshDeviceSessionCommand,
   type RetryCommand,
@@ -61,6 +67,7 @@ import {
 } from "../../../modules/crewroll-transfer";
 
 import { createSingleFlightRead } from "./singleFlightRead";
+import { ImportedTripActivationFailed } from "../../application/trips/ports";
 
 installCrewRollFormats(FormatRegistry);
 
@@ -85,6 +92,9 @@ function parse<Schema extends TSchema>(
 }
 
 export interface CrewRollTransferPort {
+  prepareDeviceSession?:
+    | ((command: PrepareDeviceSessionCommand) => Promise<PreparedDeviceSession>)
+    | undefined;
   eraseAccount?(command: EraseAccountCommand): Promise<void>;
   restoreDeviceSession?(
     command: RestoreDeviceSessionCommand,
@@ -102,6 +112,8 @@ export interface CrewRollTransferPort {
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTrip?:
+    ((command: ImportAndActivateTripCommand) => Promise<void>) | undefined;
   deactivateTrip(command: DeactivateTripCommand): Promise<void>;
   setTransferPolicy(command: SetTransferPolicyCommand): Promise<void>;
   reconcileNow(command: ReconcileNowCommand): Promise<void>;
@@ -128,6 +140,77 @@ export function createCrewRollTransferPort(
     pages.invalidate();
   };
   return {
+    // Capability discovery is lazy: constructing the port must not load Expo's
+    // native module. Only an absent method permits the older binary path.
+    get prepareDeviceSession() {
+      const native = getNativeModule();
+      const operation = native.prepareDeviceSession;
+      if (operation === undefined) return undefined;
+      if (typeof operation !== "function")
+        throw new CrewRollTransferProtocolError(
+          "prepareDeviceSession capability",
+        );
+      return async (command: PrepareDeviceSessionCommand) => {
+        const parsed = parse(
+          PrepareDeviceSessionCommandSchema,
+          command,
+          "prepareDeviceSession command",
+        );
+        changed();
+        const result = parse(
+          PreparedDeviceSessionSchema,
+          await operation.call(native, parsed),
+          "prepareDeviceSession result",
+        );
+        if (result.restoredSession === null && result.activeTripId !== null)
+          throw new CrewRollTransferProtocolError(
+            "prepareDeviceSession context",
+          );
+        return result;
+      };
+    },
+    get importAndActivateTrip() {
+      const native = getNativeModule();
+      const operation = native.importAndActivateTrip;
+      if (operation === undefined) return undefined;
+      if (typeof operation !== "function")
+        throw new CrewRollTransferProtocolError(
+          "importAndActivateTrip capability",
+        );
+      return async (command: ImportAndActivateTripCommand) => {
+        const parsed = parse(
+          ImportAndActivateTripCommandSchema,
+          command,
+          "importAndActivateTrip command",
+        );
+        if (
+          parsed.envelope.tripId !== parsed.activation.tripId ||
+          parsed.envelope.keyEpoch !== parsed.activation.keyEpoch ||
+          parsed.envelope.endsAt !== parsed.activation.endsAt
+        )
+          throw new CrewRollTransferProtocolError(
+            "importAndActivateTrip context",
+          );
+        changed();
+        try {
+          const result: unknown = await operation.call(native, parsed);
+          if (result !== undefined && result !== null)
+            throw new CrewRollTransferProtocolError(
+              "importAndActivateTrip result",
+            );
+        } catch (error) {
+          // No arbitrary code-shaped object or getter can assert a later stage.
+          // Expo's native rejection is an Error with its own finite code value.
+          if (
+            error instanceof Error &&
+            Object.getOwnPropertyDescriptor(error, "code")?.value ===
+              "ERR_CREWROLL_TRIP_ACTIVATION"
+          )
+            throw new ImportedTripActivationFailed();
+          throw error;
+        }
+      };
+    },
     subscribeToPushHints(listener) {
       return getNativeModule().addListener("pushHint", (event) => {
         // OS payloads are untrusted; malformed/unknown hints are ignored rather

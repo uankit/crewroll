@@ -9,6 +9,7 @@ public struct NativeKeyError: Error, Equatable, CustomStringConvertible {
     public static let invalidEnvelope = Self(code: "KEY_ENVELOPE_INVALID")
     public static let invalidState = Self(code: "ERR_CREWROLL_KEY_STATE")
     public static let invalidCommand = Self(code: "ERR_CREWROLL_NATIVE_PROTOCOL")
+    public static let tripActivationFailed = Self(code: "ERR_CREWROLL_TRIP_ACTIVATION")
 }
 
 public protocol NativeKeyClock { var now: Date { get } }
@@ -207,6 +208,13 @@ public struct NativeDeviceIdentity: Equatable, Sendable {
     public let e2eeKeyVersion = 1
 }
 
+/// Only public, verified bootstrap facts may cross the JavaScript boundary.
+public struct PreparedDeviceSession: Equatable, Sendable {
+    public let identity: NativeDeviceIdentity
+    public let restoredDeviceID: String?
+    public let activeTripID: String?
+}
+
 public struct CreateTripKeyResult: Equatable, Sendable {
     public let protocolVersion = 1
     public let tripID: String
@@ -287,6 +295,7 @@ public enum TripKeyEnvelopeV1 {
 }
 
 public enum NativeCommandKind: CaseIterable, Sendable {
+    case prepareDeviceSession
     case ensureDeviceIdentity
     case restoreDeviceSession
     case installDeviceSession
@@ -295,11 +304,14 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     case discardProvisionalTripKey
     case wrapTripKey
     case importTripKey
+    case importAndActivateTrip
     case activateTrip
     case deactivateTrip
 
     fileprivate var exactKeys: Set<String> {
         switch self {
+        case .prepareDeviceSession:
+            return ["protocolVersion", "accountId", "apiBaseUrl"]
         case .ensureDeviceIdentity:
             return ["protocolVersion", "accountId"]
         case .restoreDeviceSession:
@@ -337,6 +349,8 @@ public enum NativeCommandKind: CaseIterable, Sendable {
                 "wrappedKey",
                 "endsAt",
             ]
+        case .importAndActivateTrip:
+            return ["protocolVersion", "envelope", "activation"]
         case .activateTrip:
             return [
                 "protocolVersion",
@@ -353,7 +367,8 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     }
 
     fileprivate var hasTripID: Bool {
-        self != .ensureDeviceIdentity && self != .installDeviceSession && self != .restoreDeviceSession && self != .refreshDeviceSession
+        self != .prepareDeviceSession && self != .ensureDeviceIdentity && self != .installDeviceSession &&
+            self != .restoreDeviceSession && self != .refreshDeviceSession && self != .importAndActivateTrip
     }
 }
 
@@ -366,6 +381,19 @@ public enum NativeCommandDecoder {
             throw NativeKeyError.invalidCommand
         }
         try requireProtocol(command)
+        if kind == .importAndActivateTrip {
+            guard let envelope = command["envelope"] as? [String: Any],
+                  let activation = command["activation"] as? [String: Any] else {
+                throw NativeKeyError.invalidCommand
+            }
+            try require(envelope, for: .importTripKey)
+            let metadata = try self.activation(activation)
+            guard try string(envelope, "tripId") == metadata.tripID,
+                  try integer(envelope, "keyEpoch") == metadata.keyEpoch,
+                  try string(envelope, "endsAt") == metadata.endsAt else {
+                throw NativeKeyError.invalidCommand
+            }
+        }
         if kind == .importTripKey { _ = try date(command, "endsAt") }
         if kind.hasTripID {
             try requireTripID(string(command, "tripId"))
@@ -738,10 +766,50 @@ public final class NativeKeyLifecycle {
         return try publicIdentity(validating: persisted, scope: scope)
     }
 
+    /// Restore a coherent public startup view without projecting the photo journal.
+    /// iOS keeps its existing Keychain-backed lifetime; no secret cache is added.
+    public func prepareDeviceSession(accountID: String, apiBaseURL: String) throws -> PreparedDeviceSession {
+        guard let url = URL(string: apiBaseURL), url.scheme == "https", let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil, url.fragment == nil else {
+            throw NativeKeyError.invalidCommand
+        }
+        let identity = try ensureDeviceIdentity(accountID: accountID)
+        guard let restored = try validatedRestoredDeviceSession(accountID: accountID,
+            installationID: identity.installationID, apiBaseURL: apiBaseURL) else {
+            return PreparedDeviceSession(identity: identity, restoredDeviceID: nil, activeTripID: nil)
+        }
+        guard var context = try mediaContext() else {
+            return PreparedDeviceSession(identity: identity,
+                restoredDeviceID: restored.expiresAt > clock.now.addingTimeInterval(7 * 86_400) ? restored.deviceID : nil,
+                activeTripID: nil)
+        }
+        defer {
+            crypto.zeroize(&context.tripKey)
+            crypto.zeroize(&context.session.backgroundBearer)
+        }
+        guard context.scope == NativeKeyScope(accountHash: try hashAccountID(accountID),
+                  installationID: identity.installationID),
+              context.session.deviceID == restored.deviceID, context.session.apiBaseURL == apiBaseURL else {
+            throw NativeKeyError.materialLost
+        }
+        guard restored.expiresAt > clock.now.addingTimeInterval(7 * 86_400),
+              context.session.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else {
+            return PreparedDeviceSession(identity: identity, restoredDeviceID: nil, activeTripID: nil)
+        }
+        return PreparedDeviceSession(identity: identity, restoredDeviceID: restored.deviceID,
+            activeTripID: context.metadata.tripID)
+    }
+
     /// Reads only the public device ID; bearer and key material stay native.
     /// Match registration's seven-day renewal window without clearing the old
     /// session or identity when an authenticated registration is required.
     public func restoreDeviceSession(accountID: String, installationID: String, apiBaseURL: String) throws -> String? {
+        try validatedRestoredDeviceSession(accountID: accountID, installationID: installationID,
+            apiBaseURL: apiBaseURL)?.deviceID
+    }
+
+    private func validatedRestoredDeviceSession(accountID: String, installationID: String,
+        apiBaseURL: String) throws -> (deviceID: String, expiresAt: Date)? {
         try prepare()
         let accountHash = try hashAccountID(accountID)
         guard validInstallationID(installationID), URL(string: apiBaseURL)?.scheme == "https" else {
@@ -753,8 +821,9 @@ public final class NativeKeyLifecycle {
               saved.session.apiBaseURL == apiBaseURL,
               saved.session.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else { return nil }
         try withValidatedIdentity(scope: saved.scope) { _ in () }
+        guard saved.session.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else { return nil }
         _ = try TripKeyEnvelopeV1.encodeUUID(saved.session.deviceID)
-        return saved.session.deviceID
+        return (saved.session.deviceID, saved.session.expiresAt)
     }
 
     public func installDeviceSession(
@@ -988,7 +1057,43 @@ public final class NativeKeyLifecycle {
         try NativeCommandDecoder.validate(metadata)
         guard try NativeTripRetention.deadline(metadata) > clock.now else { throw NativeKeyError.materialLost }
         let session = try currentSession()
+        guard try NativeTripRetention.deadline(metadata) > clock.now else { throw NativeKeyError.materialLost }
         try store.activate(scope: session.scope, metadata: metadata)
+    }
+
+    /// The bridge owns the selection fence across both existing durable steps.
+    /// An activation failure never rolls back a successfully imported key.
+    public func importAndActivateTrip(_ command: [String: Any]) throws {
+        try NativeCommandDecoder.require(command, for: .importAndActivateTrip)
+        guard let envelope = command["envelope"] as? [String: Any],
+              let activation = command["activation"] as? [String: Any] else {
+            throw NativeKeyError.invalidCommand
+        }
+        let metadata = try NativeCommandDecoder.activation(activation)
+        try importTripKey(
+            tripID: NativeCommandDecoder.string(envelope, "tripId"),
+            keyEpoch: NativeCommandDecoder.integer(envelope, "keyEpoch"),
+            algorithmVersion: NativeCommandDecoder.integer(envelope, "algorithmVersion"),
+            expectedSenderDeviceID: NativeCommandDecoder.string(envelope, "expectedSenderDeviceId"),
+            recipientDeviceID: NativeCommandDecoder.string(envelope, "recipientDeviceId"),
+            recipientE2EEKeyVersion: NativeCommandDecoder.integer(envelope, "recipientE2eeKeyVersion"),
+            wrappedKey: NativeCommandDecoder.string(envelope, "wrappedKey"),
+            endsAt: NativeCommandDecoder.string(envelope, "endsAt")
+        )
+        do {
+            try activateTrip(metadata)
+            guard var context = try mediaContext() else { throw NativeKeyError.materialLost }
+            defer {
+                crypto.zeroize(&context.tripKey)
+                crypto.zeroize(&context.session.backgroundBearer)
+            }
+            guard context.metadata == metadata,
+                  context.session.deviceID == (try NativeCommandDecoder.string(envelope, "recipientDeviceId")) else {
+                throw NativeKeyError.materialLost
+            }
+        } catch {
+            throw NativeKeyError.tripActivationFailed
+        }
     }
 
     public func clearDeviceSession() throws { try store.clearSession() }

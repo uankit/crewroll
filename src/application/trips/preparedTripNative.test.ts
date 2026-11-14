@@ -68,3 +68,59 @@ it("import deduplication includes authoritative expiry and never masks a dated b
   expect(native.importTripKey).toHaveBeenCalledTimes(2);
   expect(native.activateTrip).not.toHaveBeenCalled();
 });
+
+it("serializes combined restoration once and invalidates its confirmation after a changed separate activation", async () => {
+  const native = {
+    ...harness(),
+    importAndActivateTrip: jest.fn().mockResolvedValue(undefined),
+  };
+  const prepared = createPreparedTripNative(native);
+  const envelope = {
+    protocolVersion: 1,
+    tripId: command.tripId,
+    keyEpoch: 1,
+    algorithmVersion: 1,
+    expectedSenderDeviceId: command.membershipId,
+    recipientDeviceId: command.membershipId,
+    recipientE2eeKeyVersion: 1,
+    endsAt: command.endsAt,
+    wrappedKey: Buffer.alloc(148, 9).toString("base64"),
+  } as const;
+  const combined = {
+    protocolVersion: 1,
+    envelope,
+    activation: command,
+  } as const;
+  await Promise.all(
+    Array.from({ length: 20 }, () => prepared.importAndActivateTrip!(combined)),
+  );
+  expect(native.importAndActivateTrip).toHaveBeenCalledTimes(1);
+  await prepared.importTripKey(envelope);
+  await prepared.activateTrip(command);
+  expect(native.importTripKey).not.toHaveBeenCalled();
+  expect(native.activateTrip).not.toHaveBeenCalled();
+  await prepared.activateTrip({ ...command, endsAt: "2026-09-13T00:00:00Z" });
+  await prepared.importAndActivateTrip!(combined);
+  expect(native.importAndActivateTrip).toHaveBeenCalledTimes(2);
+  native.importAndActivateTrip.mockRejectedValueOnce(
+    new Error("activation incomplete"),
+  );
+  const changed = {
+    ...combined,
+    activation: {
+      ...command,
+      membershipId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3151",
+    },
+  };
+  await expect(prepared.importAndActivateTrip!(changed)).rejects.toThrow(
+    "activation incomplete",
+  );
+  await prepared.importAndActivateTrip!(changed);
+  expect(native.importAndActivateTrip).toHaveBeenCalledTimes(4);
+});
+
+it("does not advertise a combined operation on an older binary", () => {
+  expect(
+    createPreparedTripNative(harness()).importAndActivateTrip,
+  ).toBeUndefined();
+});

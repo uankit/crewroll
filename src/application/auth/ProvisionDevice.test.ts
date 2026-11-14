@@ -360,3 +360,119 @@ describe("provisionCurrentDevice", () => {
     },
   );
 });
+
+describe("combined device preparation", () => {
+  beforeEach(() => {
+    jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-09-28T11:00:00.000Z"));
+  });
+  afterEach(() => jest.restoreAllMocks());
+  it("uses one preparation command for restored identity and active-trip hint without older reads or registration", async () => {
+    const { native, random, registration } = harness();
+    const activeTripId = "0191a203-227b-7011-9213-141516171819";
+    const combined = {
+      ...native,
+      restoreDeviceSession: jest.fn(),
+      prepareDeviceSession: jest.fn().mockResolvedValue({
+        protocolVersion: 1,
+        identity,
+        restoredSession: { protocolVersion: 1, deviceId },
+        activeTripId,
+      }),
+    };
+    const provision = createProvisionCurrentDevice({
+      native: combined,
+      random,
+      registration,
+    });
+    await expect(provision(input)).resolves.toEqual({
+      deviceId,
+      identity,
+      activeTripId,
+    });
+    expect(combined.prepareDeviceSession).toHaveBeenCalledTimes(1);
+    expect(combined.prepareDeviceSession).toHaveBeenCalledWith({
+      protocolVersion: 1,
+      accountId,
+      apiBaseUrl,
+    });
+    expect(native.ensureDeviceIdentity).not.toHaveBeenCalled();
+    expect(combined.restoreDeviceSession).not.toHaveBeenCalled();
+    expect(registration.registerDevice).not.toHaveBeenCalled();
+    expect(native.installDeviceSession).not.toHaveBeenCalled();
+  });
+
+  it("renews a preparation miss through the existing exact registration/install path without trusting an old selection", async () => {
+    const { native, random, registration } = harness();
+    const combined = {
+      ...native,
+      prepareDeviceSession: jest.fn().mockResolvedValue({
+        protocolVersion: 1,
+        identity,
+        restoredSession: null,
+        activeTripId: null,
+      }),
+    };
+    const provision = createProvisionCurrentDevice({
+      native: combined,
+      random,
+      registration,
+    });
+    await expect(provision(input)).resolves.toEqual({
+      deviceId,
+      identity,
+    });
+    expect(registration.registerDevice).toHaveBeenCalledWith(
+      commandId,
+      registrationBody,
+    );
+    expect(native.installDeviceSession).toHaveBeenCalledWith(installCommand);
+    expect(native.ensureDeviceIdentity).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back when a present preparation rejects or returns undefined", async () => {
+    for (const malformed of [false, true]) {
+      const { native, random, registration } = harness();
+      const failure = new Error("native unavailable");
+      const prepareDeviceSession = malformed
+        ? jest.fn().mockResolvedValue(undefined)
+        : jest.fn().mockRejectedValue(failure);
+      const provision = createProvisionCurrentDevice({
+        native: { ...native, prepareDeviceSession },
+        random,
+        registration,
+      });
+      await expect(provision(input)).rejects.toBeInstanceOf(Error);
+      expect(native.ensureDeviceIdentity).not.toHaveBeenCalled();
+      expect(registration.registerDevice).not.toHaveBeenCalled();
+      expect(native.installDeviceSession).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retains the accepted registration command across a combined preparation/install retry", async () => {
+    const { native, random, registration } = harness();
+    native.installDeviceSession.mockRejectedValueOnce(
+      new Error("install incomplete"),
+    );
+    const prepareDeviceSession = jest.fn().mockResolvedValue({
+      protocolVersion: 1,
+      identity,
+      restoredSession: null,
+      activeTripId: null,
+    });
+    const provision = createProvisionCurrentDevice({
+      native: { ...native, prepareDeviceSession },
+      random,
+      registration,
+    });
+    await expect(provision(input)).rejects.toThrow("install incomplete");
+    await expect(provision(input)).resolves.toEqual({
+      deviceId,
+      identity,
+    });
+    expect(prepareDeviceSession).toHaveBeenCalledTimes(2);
+    expect(registration.registerDevice).toHaveBeenCalledTimes(1);
+    expect(native.installDeviceSession).toHaveBeenCalledTimes(2);
+  });
+});

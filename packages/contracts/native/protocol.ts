@@ -84,6 +84,23 @@ export const RestoredDeviceSessionSchema = Type.Union([
 ]);
 export type RestoredDeviceSession = Static<typeof RestoredDeviceSessionSchema>;
 
+/** Prepares one account-scoped identity/session without exposing its credential. */
+export const PrepareDeviceSessionCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+  apiBaseUrl: UriSchema,
+});
+export type PrepareDeviceSessionCommand = Static<
+  typeof PrepareDeviceSessionCommandSchema
+>;
+export const PreparedDeviceSessionSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  identity: NativeDeviceIdentitySchema,
+  restoredSession: RestoredDeviceSessionSchema,
+  activeTripId: Type.Union([TripIdSchema, Type.Null()]),
+});
+export type PreparedDeviceSession = Static<typeof PreparedDeviceSessionSchema>;
+
 export const CreateTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
@@ -152,6 +169,16 @@ export const ActivateTripCommandSchema = ClosedObject({
   keyEpoch: Type.Literal(1),
 });
 export type ActivateTripCommand = Static<typeof ActivateTripCommandSchema>;
+
+/** Import is durably saved before activation; this command is not atomic. */
+export const ImportAndActivateTripCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  envelope: ImportTripKeyCommandSchema,
+  activation: ActivateTripCommandSchema,
+});
+export type ImportAndActivateTripCommand = Static<
+  typeof ImportAndActivateTripCommandSchema
+>;
 
 export const DeactivateTripCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,

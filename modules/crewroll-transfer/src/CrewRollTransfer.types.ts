@@ -10,9 +10,12 @@ import type {
   DurableEngineSnapshot,
   EnsureDeviceIdentityCommand,
   ImportTripKeyCommand,
+  ImportAndActivateTripCommand,
   InstallDeviceSessionCommand,
   ListAssetsQuery,
   NativeDeviceIdentity,
+  PrepareDeviceSessionCommand,
+  PreparedDeviceSession,
   ReconcileNowCommand,
   RefreshDeviceSessionCommand,
   RetryCommand,
@@ -29,6 +32,9 @@ export type CrewRollTransferEventSubscription = Readonly<{
 }>;
 
 export interface CrewRollTransferNativeModule {
+  prepareDeviceSession?(
+    command: PrepareDeviceSessionCommand,
+  ): Promise<PreparedDeviceSession>;
   eraseAccount?(command: EraseAccountCommand): Promise<void>;
   restoreDeviceSession?(
     command: RestoreDeviceSessionCommand,
@@ -46,6 +52,7 @@ export interface CrewRollTransferNativeModule {
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTrip?(command: ImportAndActivateTripCommand): Promise<void>;
   deactivateTrip(command: DeactivateTripCommand): Promise<void>;
   setTransferPolicy(command: SetTransferPolicyCommand): Promise<void>;
   reconcileNow(command: ReconcileNowCommand): Promise<void>;

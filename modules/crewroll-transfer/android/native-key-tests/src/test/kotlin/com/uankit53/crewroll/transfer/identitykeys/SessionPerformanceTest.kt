@@ -30,6 +30,62 @@ class SessionPerformanceTest {
     assertTrue(source.session.backgroundBearer.all { it == 0.toByte() })
   }
 
+  @Test fun `priming owns buffers and completion preserves only a verified current composite lease`() {
+    var loads = 0
+    val session = NativeMediaSession({ loads++; context() }, { Instant.EPOCH })
+    val fence = NativeTransferCommandFence()
+    val epoch = fence.advance()
+    val source = context()
+    fence.runIfCurrent(epoch) { session.changeAndPrime({ source }, { it }) }
+    assertTrue(source.tripKey.all { it == 0.toByte() })
+    session.completeCommand(fence, epoch, clearLease = false)
+    val owned = session.read()!!
+    assertEquals(9.toByte(), owned.tripKey[0]); owned.erase()
+    assertEquals(0, loads)
+    session.completeCommand(fence, epoch, clearLease = true) // default/pause completion
+    session.read()!!.erase()
+    assertEquals(1, loads)
+
+    val replacement = context().let { it.copy(scope = scope.copy(accountHash = "b".repeat(64))) }
+    val next = fence.advance()
+    fence.runIfCurrent(next) { session.changeAndPrime({ replacement }, { it }) }
+    listOf(false, true).forEach { clear ->
+      assertEquals("ERR_CREWROLL_KEY_STATE", assertThrows(NativeKeyException::class.java) { session.completeCommand(fence, epoch, clear) }.code)
+      val current = session.read()!!
+      assertEquals("b".repeat(64), current.scope.accountHash)
+      current.erase()
+    }
+    assertEquals("ERR_CREWROLL_TRIP_ACTIVATION", assertThrows(NativeKeyException::class.java) {
+      session.failPreparedCommand(fence, epoch)
+    }.code, "post-import failure keeps its stage even after ownership changes")
+    val retained = session.read()!!
+    assertEquals("b".repeat(64), retained.scope.accountHash)
+    retained.erase()
+    assertEquals(1, loads, "late old completions must neither clear nor reload the replacement account")
+    assertEquals("ERR_CREWROLL_TRIP_ACTIVATION", assertThrows(NativeKeyException::class.java) {
+      session.failPreparedCommand(fence, next)
+    }.code)
+    session.read()!!.erase()
+    assertEquals(2, loads, "a current failed composite erases its lease before any later use")
+    session.close()
+  }
+
+  @Test fun `priming errors and expiry never leave a usable credential lease`() {
+    var now = Instant.EPOCH
+    val session = NativeMediaSession({ null }, { now })
+    val old = context()
+    session.changeAndPrime({ old }, { it })
+    assertThrows(IllegalStateException::class.java) { session.changeAndPrime<NativeMediaContext>({ error("activation failed") }, { it }) }
+    assertNull(session.read())
+    val expired = context()
+    now = expired.session.expiresAt
+    assertThrows(NativeKeyException::class.java) { session.changeAndPrime<NativeMediaContext>({ expired }, { it }) }
+    assertTrue(expired.tripKey.all { it == 0.toByte() })
+    assertTrue(expired.session.backgroundBearer.all { it == 0.toByte() })
+    assertNull(session.read())
+    session.close()
+  }
+
   @Test fun `session mutations never serve a previous account and failures invalidate too`() {
     var stored: NativeMediaContext? = context()
     val previous = stored!!

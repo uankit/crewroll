@@ -1,6 +1,7 @@
 package com.uankit53.crewroll.transfer.identitykeys
 
 import java.nio.ByteBuffer
+import java.net.URI
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.Duration
@@ -19,6 +20,7 @@ class NativeKeyException(val code: String) : RuntimeException(code) {
     fun invalidEnvelope() = NativeKeyException("KEY_ENVELOPE_INVALID")
     fun invalidState() = NativeKeyException("ERR_CREWROLL_KEY_STATE")
     fun invalidCommand() = NativeKeyException("ERR_CREWROLL_NATIVE_PROTOCOL")
+    fun activationFailed() = NativeKeyException("ERR_CREWROLL_TRIP_ACTIVATION")
   }
 }
 
@@ -77,6 +79,12 @@ data class NativeExpiredTrip(val scope: NativeKeyScope, val tripId: String, val 
 
 data class NativeMediaContext(val scope: NativeKeyScope, val session: DeviceSessionRecord, val metadata: ActiveTripMetadata, val tripKey: ByteArray) {
   fun erase() { tripKey.fill(0); session.backgroundBearer.fill(0) }
+}
+
+/** Private context never crosses the bridge; the media lease takes its own copy. */
+data class NativePreparedDeviceSession(val identity: NativeDeviceIdentity, val restoredDeviceId: String?,
+  val context: NativeMediaContext?) {
+  val activeTripId get() = context?.metadata?.tripId
 }
 
 interface NativeKeyStore {
@@ -207,6 +215,8 @@ object TripKeyEnvelopeV1 {
 }
 
 enum class NativeCommandKind(val exactKeys: Set<String>, val hasTripId: Boolean) {
+  PREPARE_DEVICE_SESSION(setOf("protocolVersion", "accountId", "apiBaseUrl"), false),
+  IMPORT_AND_ACTIVATE_TRIP(setOf("protocolVersion", "envelope", "activation"), false),
   ENSURE_DEVICE_IDENTITY(setOf("protocolVersion", "accountId"), false),
   RESTORE_DEVICE_SESSION(setOf("protocolVersion", "accountId", "installationId", "apiBaseUrl"), false),
   INSTALL_DEVICE_SESSION(setOf(
@@ -264,6 +274,22 @@ object NativeCommandDecoder {
     requireProtocol(command)
     if (kind == NativeCommandKind.IMPORT_TRIP_KEY) instant(command, "endsAt")
     if (kind.hasTripId) requireTripId(string(command, "tripId"))
+    if (kind == NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP) {
+      val envelope = objectValue(command, "envelope")
+      val activation = objectValue(command, "activation")
+      require(envelope, NativeCommandKind.IMPORT_TRIP_KEY)
+      require(activation, NativeCommandKind.ACTIVATE_TRIP)
+      if (string(envelope, "tripId") != string(activation, "tripId") ||
+        integer(envelope, "keyEpoch") != integer(activation, "keyEpoch") ||
+        string(envelope, "endsAt") != string(activation, "endsAt")) throw NativeKeyException.invalidCommand()
+      validate(NativeCommandDecoder.activation(activation))
+    }
+  }
+
+  fun objectValue(command: Map<String, Any?>, key: String): Map<String, Any?> {
+    val value = command[key] as? Map<*, *> ?: throw NativeKeyException.invalidCommand()
+    if (value.keys.any { it !is String }) throw NativeKeyException.invalidCommand()
+    return value.entries.associate { (name, item) -> (name as String) to item }
   }
 
   fun requireProtocol(command: Map<String, Any?>) {
@@ -480,6 +506,50 @@ class NativeKeyLifecycle(
       try { body() } finally { commandDepth.set(commandDepth.get() - 1) }
     }
     return if (readOnly) store.readSnapshot(operation) else store.commandSnapshot(operation)
+  }
+
+  fun prepareDeviceSession(accountId: String, apiBaseUrl: String): NativePreparedDeviceSession {
+    val uri = try { URI(apiBaseUrl) } catch (_: Throwable) { throw NativeKeyException.invalidCommand() }
+    if (uri.scheme != "https" || uri.host.isNullOrEmpty() || uri.rawUserInfo != null || uri.fragment != null)
+      throw NativeKeyException.invalidCommand()
+    return keyCommand {
+    val identity = ensureDeviceIdentity(accountId)
+    val restored = restoreDeviceSession(accountId, identity.installationId, apiBaseUrl)
+    val context = if (restored != null) mediaContext() else null
+    try {
+      if (context != null && (context.scope != NativeKeyScope(hashAccountId(accountId), identity.installationId) ||
+        context.session.deviceId != restored || context.session.apiBaseUrl != apiBaseUrl)) throw NativeKeyException.materialLost()
+      // Context validation can itself wait on protected identity access. Recheck
+      // the renewal boundary at the final public result, without another load.
+      if (restored != null) {
+        val saved = store.activeSession() ?: throw NativeKeyException.materialLost()
+        try {
+          if (saved.session.expiresAt <= clock.now().plusSeconds(7 * 86_400L)) {
+            context?.erase()
+            return@keyCommand NativePreparedDeviceSession(identity, null, null)
+          }
+        } finally { crypto.zeroize(saved.session.backgroundBearer) }
+      }
+      NativePreparedDeviceSession(identity, restored, context)
+    } catch (error: Throwable) { context?.erase(); throw error }
+    }
+  }
+
+  /** One protected read, with the original durable import and activation saves. */
+  fun importAndActivateTrip(command: Map<String, Any?>): NativeMediaContext {
+    NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP)
+    return keyCommand {
+    val envelope = NativeCommandDecoder.objectValue(command, "envelope")
+    val activation = NativeCommandDecoder.activation(NativeCommandDecoder.objectValue(command, "activation"))
+    importTripKey(NativeCommandDecoder.string(envelope, "tripId"), NativeCommandDecoder.integer(envelope, "keyEpoch"),
+      NativeCommandDecoder.integer(envelope, "algorithmVersion"), NativeCommandDecoder.string(envelope, "expectedSenderDeviceId"),
+      NativeCommandDecoder.string(envelope, "recipientDeviceId"), NativeCommandDecoder.integer(envelope, "recipientE2eeKeyVersion"),
+      NativeCommandDecoder.string(envelope, "wrappedKey"), NativeCommandDecoder.string(envelope, "endsAt"))
+    try {
+      activateTrip(activation)
+      mediaContext() ?: throw NativeKeyException.materialLost()
+    } catch (_: Throwable) { throw NativeKeyException.activationFailed() }
+    }
   }
 
   fun ensureDeviceIdentity(accountId: String): NativeDeviceIdentity = keyCommand { ensureIdentityInCommand(accountId) }

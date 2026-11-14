@@ -1,5 +1,7 @@
 import type { TripResponse } from "@crewroll/contracts";
 
+import { ImportedTripActivationFailed } from "./ports";
+
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import {
   createActivateObservedTrip,
@@ -339,4 +341,59 @@ describe("ActivateObservedTrip.activateObserved", () => {
     expect(native.importTripKey).not.toHaveBeenCalled();
     expect(native.activateTrip).not.toHaveBeenCalled();
   });
+});
+
+describe("combined accepted-trip restoration", () => {
+  it.each(["ACTIVE", "ENDING"] as const)(
+    "uses the optional native composite only for a server-confirmed %s trip",
+    async (status) => {
+      const { native } = harness();
+      const importAndActivateTrip = jest.fn().mockResolvedValue(undefined);
+      const service = createActivateObservedTrip({
+        device: { deviceId, identity },
+        native: { ...native, importAndActivateTrip },
+      });
+      const view = await service.activateObserved(activeResponse({ status }));
+      expect(view.status).toBe(status);
+      expect(importAndActivateTrip).toHaveBeenCalledTimes(1);
+      expect(importAndActivateTrip.mock.calls[0]![0]).toMatchObject({
+        protocolVersion: 1,
+        envelope: { tripId, recipientDeviceId: deviceId, endsAt, wrappedKey },
+        activation: {
+          tripId,
+          membershipId: memberMembershipId,
+          startsAt,
+          endsAt,
+          keyEpoch: 1,
+        },
+      });
+      expect(native.importTripKey).not.toHaveBeenCalled();
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [new ImportedTripActivationFailed(), "INTERNAL_ERROR"],
+    [new Error("import refused"), "KEY_ENVELOPE_INVALID"],
+    [{ code: "ERR_CREWROLL_TRIP_ACTIVATION" }, "KEY_ENVELOPE_INVALID"],
+  ] as const)(
+    "preserves the accepted view and stage classification on composite failure %#",
+    async (failure, code) => {
+      const { native } = harness();
+      const importAndActivateTrip = jest.fn().mockRejectedValue(failure);
+      const service = createActivateObservedTrip({
+        device: { deviceId, identity },
+        native: { ...native, importAndActivateTrip },
+      });
+      await expect(
+        service.activateObserved(activeResponse()),
+      ).rejects.toMatchObject({
+        name: "TripActivationFailed",
+        code,
+        trip: { id: tripId },
+      });
+      expect(native.importTripKey).not.toHaveBeenCalled();
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -470,7 +470,12 @@ export function AppSessionProvider({
   const queryScope = useRef<QueryScope | null>(null);
   const recoveryScope = useRef<TripRecoveryScope | null>(null);
   const provisioned = useRef<
-    Readonly<{ key: string; attempt: Promise<ProvisionedDevice> }> | undefined
+    | {
+        readonly key: string;
+        readonly attempt: Promise<ProvisionedDevice>;
+        nativeHintConsumed: boolean;
+      }
+    | undefined
   >(undefined);
   const scopedSession = useRef<ScopedTripSession | null>(null);
   const galleryCacheRef = useRef<TripGalleryCache | null>(null);
@@ -1155,6 +1160,7 @@ export function AppSessionProvider({
         if (attempt?.key !== sessionKey) {
           attempt = {
             key: sessionKey,
+            nativeHintConsumed: false,
             attempt: runtime.provisionCurrentDevice({
               accountId: authUserId,
               apiBaseUrl: provisionInput.apiBaseUrl,
@@ -1193,8 +1199,16 @@ export function AppSessionProvider({
         let activeTripId: string | null;
         let recovery: TripRecoveryRecord | null;
         try {
+          // This hint belongs to the preparation just completed, not later
+          // retries after a trip mutation. Those must read current native state.
+          const preparedTripHint = attempt.nativeHintConsumed
+            ? undefined
+            : device.activeTripId;
+          attempt.nativeHintConsumed = true;
           const [nativeSnapshot, savedRecovery] = await Promise.all([
-            runtime.getNativeSnapshot(),
+            preparedTripHint === undefined
+              ? runtime.getNativeSnapshot()
+              : Promise.resolve({ activeTripId: preparedTripHint }),
             runtime.loadRecovery(scope),
           ]);
           if (!isCurrent()) return;

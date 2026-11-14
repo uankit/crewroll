@@ -1,4 +1,5 @@
 import type { RevisionInvalidation } from "@crewroll/contracts/native/protocol";
+import { ImportedTripActivationFailed } from "../../application/trips/ports";
 
 import {
   createCrewRollTransferPort,
@@ -117,9 +118,11 @@ describe("CrewRoll native transfer boundary", () => {
       "ensureDeviceIdentity",
       "eraseAccount",
       "getSnapshot",
+      "importAndActivateTrip",
       "importTripKey",
       "installDeviceSession",
       "listAssets",
+      "prepareDeviceSession",
       "reconcileNow",
       "refreshDeviceSession",
       "restoreDeviceSession",
@@ -866,5 +869,203 @@ describe("CrewRoll native transfer boundary", () => {
     await expect(
       port.ensureDeviceIdentity({ protocolVersion: 1, accountId }),
     ).rejects.toBe(unavailable);
+  });
+});
+
+const prepareCommand = {
+  protocolVersion: 1,
+  accountId,
+  apiBaseUrl: "https://api.crewroll.app",
+} as const;
+const combinedCommand = {
+  protocolVersion: 1,
+  envelope: {
+    protocolVersion: 1,
+    tripId,
+    keyEpoch: 1,
+    algorithmVersion: 1,
+    expectedSenderDeviceId: deviceId,
+    recipientDeviceId: deviceId,
+    recipientE2eeKeyVersion: 1,
+    endsAt: "2026-09-28T12:00:00.000Z",
+    wrappedKey: TRIP_ENVELOPE,
+  },
+  activation: {
+    protocolVersion: 1,
+    tripId,
+    membershipId,
+    keyEpoch: 1,
+    startsAt: "2026-09-27T12:00:00.000Z",
+    endsAt: "2026-09-28T12:00:00.000Z",
+    releaseAt: null,
+  },
+} as const;
+
+describe("optional combined native startup boundary", () => {
+  it("does not load a native module until a capability is requested, and only absence returns unavailable", () => {
+    const { module } = nativeModule();
+    const load = jest.fn(() => module);
+    const port = createCrewRollTransferPort(load);
+    expect(load).not.toHaveBeenCalled();
+    Object.keys(port);
+    expect(load).not.toHaveBeenCalled();
+    expect(port.prepareDeviceSession).toBeUndefined();
+    expect(port.importAndActivateTrip).toBeUndefined();
+    for (const malformed of [null, false, {}, "available"]) {
+      const broken = createCrewRollTransferPort(
+        () =>
+          nativeModule({
+            prepareDeviceSession: malformed,
+            importAndActivateTrip: malformed,
+          }).module,
+      );
+      expect(() => broken.prepareDeviceSession).toThrow(
+        CrewRollTransferProtocolError,
+      );
+      expect(() => broken.importAndActivateTrip).toThrow(
+        CrewRollTransferProtocolError,
+      );
+    }
+  });
+
+  it("validates the prepared closed public result and preserves native receiver binding", async () => {
+    const result = {
+      protocolVersion: 1,
+      identity,
+      restoredSession: { protocolVersion: 1, deviceId },
+      activeTripId: tripId,
+    };
+    const { module } = nativeModule({
+      prepareDeviceSession: async function (
+        this: CrewRollTransferNativeModule,
+      ) {
+        expect(this).toBe(module);
+        return result;
+      },
+    });
+    await expect(
+      createCrewRollTransferPort(() => module).prepareDeviceSession!(
+        prepareCommand,
+      ),
+    ).resolves.toEqual(result);
+    for (const invalid of [
+      undefined,
+      null,
+      {},
+      { ...result, backgroundBearer: BACKGROUND_BEARER },
+      { ...result, identity: { ...identity, privateKey: "private" } },
+      { ...result, restoredSession: null },
+      { ...result, activeTripId: deviceId.replace("7d1a", "4d1a") },
+    ]) {
+      const broken = createCrewRollTransferPort(
+        () =>
+          nativeModule({
+            prepareDeviceSession: async () => invalid,
+          }).module,
+      );
+      await expect(
+        broken.prepareDeviceSession!(prepareCommand),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    }
+  });
+
+  it("rejects nested/context mismatches before combined side effects", async () => {
+    const operation = jest.fn();
+    const port = createCrewRollTransferPort(
+      () => nativeModule({ importAndActivateTrip: operation }).module,
+    );
+    for (const invalid of [
+      { ...combinedCommand, extra: true },
+      {
+        ...combinedCommand,
+        envelope: { ...combinedCommand.envelope, rawKey: "private" },
+      },
+      {
+        ...combinedCommand,
+        activation: {
+          ...combinedCommand.activation,
+          tripId: "0191a203-227b-7011-9213-141516171819",
+        },
+      },
+      {
+        ...combinedCommand,
+        activation: {
+          ...combinedCommand.activation,
+          endsAt: "2026-09-29T12:00:00.000Z",
+        },
+      },
+      {
+        ...combinedCommand,
+        activation: { ...combinedCommand.activation, keyEpoch: 2 },
+      },
+    ]) {
+      await expect(
+        port.importAndActivateTrip!(invalid as typeof combinedCommand),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    }
+    expect(operation).not.toHaveBeenCalled();
+    await port.importAndActivateTrip!(combinedCommand);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(operation).toHaveBeenCalledWith(combinedCommand);
+  });
+
+  it("rejects a malformed present composite result instead of treating it as native readiness", async () => {
+    for (const result of [false, {}, "done"]) {
+      const port = createCrewRollTransferPort(
+        () =>
+          nativeModule({ importAndActivateTrip: async () => result }).module,
+      );
+      await expect(
+        port.importAndActivateTrip!(combinedCommand),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    }
+  });
+
+  it("maps only an own fixed native Error code after import and never forwards its raw cause", async () => {
+    const lateFailure = Object.assign(new Error("private native details"), {
+      code: "ERR_CREWROLL_TRIP_ACTIVATION",
+      cause: "private",
+    });
+    const port = createCrewRollTransferPort(
+      () =>
+        nativeModule({
+          importAndActivateTrip: async () => {
+            throw lateFailure;
+          },
+        }).module,
+    );
+    const failure: unknown = await port.importAndActivateTrip!(
+      combinedCommand,
+    ).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ImportedTripActivationFailed);
+    expect(failure).not.toBe(lateFailure);
+    expect(failure).not.toHaveProperty("cause");
+    expect(failure).not.toHaveProperty("code");
+    expect(String(failure)).not.toContain("private");
+    for (const error of [
+      { code: "ERR_CREWROLL_TRIP_ACTIVATION" },
+      Object.assign(new Error("unknown"), { code: "ERR_UNKNOWN" }),
+      Object.assign(new Error("malformed"), {
+        code: ["ERR_CREWROLL_TRIP_ACTIVATION"],
+      }),
+      Object.create({ code: "ERR_CREWROLL_TRIP_ACTIVATION" }),
+      Object.defineProperty(new Error("getter"), "code", {
+        get() {
+          throw new Error("must not execute");
+        },
+      }),
+    ]) {
+      const unchanged = createCrewRollTransferPort(
+        () =>
+          nativeModule({
+            importAndActivateTrip: async () => {
+              throw error;
+            },
+          }).module,
+      );
+      await expect(
+        unchanged.importAndActivateTrip!(combinedCommand),
+      ).rejects.toBe(error);
+    }
   });
 });

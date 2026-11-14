@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture
 import com.uankit53.crewroll.transfer.media.NativePhotoTransferEngine
 import android.util.Log
 import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
+import com.uankit53.crewroll.transfer.identitykeys.NativeDeviceIdentity
 
 class CrewRollTransferModule : Module() {
   private var runtimeValue: CrewRollNativeRuntime? = null
@@ -54,6 +55,23 @@ class CrewRollTransferModule : Module() {
         runtimeValue = null
       }
       commands.close()
+    }
+
+    AsyncFunction("prepareDeviceSession") { command: Map<String, Any?>, promise: Promise ->
+      val epoch = transferCommands.advance()
+      commands.submit("prepareDeviceSession") {
+        transferCommands.runIfCurrent(epoch) {
+          NativeCommandDecoder.require(command, NativeCommandKind.PREPARE_DEVICE_SESSION)
+          val prepared = mediaSession.changeAndPrime({
+            lifecycle().prepareDeviceSession(string(command, "accountId"), string(command, "apiBaseUrl"))
+          }, { it.context })
+          mapOf("protocolVersion" to 1, "identity" to identityMap(prepared.identity),
+            "restoredSession" to prepared.restoredDeviceId?.let { mapOf("protocolVersion" to 1, "deviceId" to it) },
+            "activeTripId" to prepared.activeTripId)
+        }
+      }.whenComplete { value, error ->
+        if (error == null) promise.resolve(value) else reject(promise, error)
+      }
     }
 
     AsyncFunction("ensureDeviceIdentity") { command: Map<String, Any?>, promise: Promise ->
@@ -201,6 +219,28 @@ class CrewRollTransferModule : Module() {
         null
       }
     }
+    AsyncFunction("importAndActivateTrip") { command: Map<String, Any?>, promise: Promise ->
+      future("importAndActivateTrip", promise, clearLeaseOnCompletion = false) { epoch ->
+        NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP)
+        var imported = false
+        try {
+          mediaSession.changeAndPrime<com.uankit53.crewroll.transfer.identitykeys.NativeMediaContext>(
+            { lifecycle().importAndActivateTrip(command).also { imported = true } }, { it })
+          runtime().policy(true, cellular = true)
+          engine().activate { transferCommands.matches(epoch) }.handle { _, error ->
+            if (error != null) {
+              mediaSession.failPreparedCommand(transferCommands, epoch)
+            }
+            null
+          }
+        } catch (error: Throwable) {
+          if (imported) {
+            mediaSession.failPreparedCommand(transferCommands, epoch)
+          }
+          throw error
+        }
+      }
+    }
     AsyncFunction("activateTrip") { command: Map<String, Any?>, promise: Promise ->
       future("activateTrip", promise) { epoch ->
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
@@ -262,7 +302,7 @@ class CrewRollTransferModule : Module() {
     if (command.keys != keys) throw NativeKeyException.invalidCommand()
     NativeCommandDecoder.requireProtocol(command)
   }
-  private fun future(name: String, promise: Promise, changesSession: Boolean = true, operation: (Long) -> CompletableFuture<*>) {
+  private fun future(name: String, promise: Promise, changesSession: Boolean = true, clearLeaseOnCompletion: Boolean = true, operation: (Long) -> CompletableFuture<*>) {
     val started = System.nanoTime()
     val epoch = if (changesSession) transferCommands.advance() else transferCommands.current()
     commands.submit("dispatch_$name") {
@@ -275,7 +315,7 @@ class CrewRollTransferModule : Module() {
       else pending.whenComplete { value, error ->
         var completionError = error
         if (completionError == null) {
-          try { transferCommands.runIfCurrent(epoch) { if (changesSession) mediaSession.clear() } }
+          try { mediaSession.completeCommand(transferCommands, epoch, changesSession && clearLeaseOnCompletion) }
           catch (stale: Throwable) { completionError = stale }
         }
         val elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
@@ -309,9 +349,15 @@ class CrewRollTransferModule : Module() {
   }
 
   private fun publicErrorCode(error: NativeKeyException) = when (error.code) {
-    "KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST", "KEY_ENVELOPE_INVALID" -> error.code
+    "KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST", "KEY_ENVELOPE_INVALID", "ERR_CREWROLL_TRIP_ACTIVATION" -> error.code
     else -> "KEY_ENVELOPE_INVALID"
   }
+
+  private fun identityMap(identity: NativeDeviceIdentity) = mapOf(
+    "protocolVersion" to identity.protocolVersion, "installationId" to identity.installationId,
+    "authenticationKeyAlgorithm" to identity.authenticationKeyAlgorithm, "authenticationPublicKey" to identity.authenticationPublicKey,
+    "authenticationKeyVersion" to identity.authenticationKeyVersion, "e2eeKeyAlgorithm" to identity.e2eeKeyAlgorithm,
+    "e2eePublicKey" to identity.e2eePublicKey, "e2eeKeyVersion" to identity.e2eeKeyVersion)
 
   private fun string(command: Map<String, Any?>, key: String): String =
     NativeCommandDecoder.string(command, key)

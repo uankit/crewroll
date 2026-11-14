@@ -1,6 +1,8 @@
 import type { DeviceResponse, RegisterDeviceBody } from "@crewroll/contracts";
 import type {
   NativeDeviceIdentity,
+  PrepareDeviceSessionCommand,
+  PreparedDeviceSession,
   RestoreDeviceSessionCommand,
   RestoredDeviceSession,
 } from "@crewroll/contracts/native/protocol";
@@ -27,6 +29,8 @@ export type ProvisionCurrentDeviceInput = Readonly<{
 export type ProvisionedDevice = Readonly<{
   deviceId: string;
   identity: NativeDeviceIdentity;
+  /** Present only after account-scoped native preparation; absent on older binaries. */
+  activeTripId?: string | null;
 }>;
 
 type EnsureDeviceIdentityCommand = Readonly<{
@@ -45,6 +49,9 @@ type InstallDeviceSessionCommand = Readonly<{
 }>;
 
 export interface ProvisioningNativePort {
+  prepareDeviceSession?:
+    | ((command: PrepareDeviceSessionCommand) => Promise<PreparedDeviceSession>)
+    | undefined;
   restoreDeviceSession?(
     command: RestoreDeviceSessionCommand,
   ): Promise<RestoredDeviceSession>;
@@ -165,7 +172,30 @@ export function createProvisionCurrentDevice({
       pendingAttempt = attempt;
     }
 
-    if (attempt.identity === undefined) {
+    const prepare = native.prepareDeviceSession;
+    const prepared =
+      prepare === undefined
+        ? undefined
+        : await prepare.call(native, {
+            protocolVersion: 1,
+            accountId: context.accountId,
+            apiBaseUrl: context.apiBaseUrl,
+          });
+    if (prepare !== undefined) {
+      if (prepared === undefined)
+        throw new CrewRollApiProblem("INTERNAL_ERROR");
+      if (
+        attempt.identity !== undefined &&
+        JSON.stringify(
+          createDeviceRegistrationBody(attempt.identity, context),
+        ) !==
+          JSON.stringify(
+            createDeviceRegistrationBody(prepared.identity, context),
+          )
+      )
+        throw new CrewRollApiProblem("INTERNAL_ERROR");
+      attempt.identity = prepared.identity;
+    } else if (attempt.identity === undefined) {
       attempt.identity = await native.ensureDeviceIdentity({
         protocolVersion: 1,
         accountId: context.accountId,
@@ -173,15 +203,25 @@ export function createProvisionCurrentDevice({
     }
 
     const identity = attempt.identity;
-    const restored = await native.restoreDeviceSession?.({
-      protocolVersion: 1,
-      accountId: context.accountId,
-      installationId: identity.installationId,
-      apiBaseUrl: context.apiBaseUrl,
-    });
+    if (identity === undefined) throw new CrewRollApiProblem("INTERNAL_ERROR");
+    const restored =
+      prepared === undefined
+        ? await native.restoreDeviceSession?.({
+            protocolVersion: 1,
+            accountId: context.accountId,
+            installationId: identity.installationId,
+            apiBaseUrl: context.apiBaseUrl,
+          })
+        : prepared.restoredSession;
     if (restored) {
       if (pendingAttempt === attempt) pendingAttempt = undefined;
-      return { deviceId: restored.deviceId, identity };
+      return {
+        deviceId: restored.deviceId,
+        identity,
+        ...(prepared === undefined
+          ? {}
+          : { activeTripId: prepared.activeTripId }),
+      };
     }
     attempt.registrationBody ??= createDeviceRegistrationBody(
       identity,
@@ -213,6 +253,8 @@ export function createProvisionCurrentDevice({
     });
 
     if (pendingAttempt === attempt) pendingAttempt = undefined;
+    // Installing a renewed session may preserve native trip metadata. A miss is
+    // not an authoritative empty selection: keep the fresh snapshot path.
     return { deviceId: response.deviceId, identity };
   }
 

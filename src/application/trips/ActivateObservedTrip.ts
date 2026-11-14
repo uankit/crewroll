@@ -4,7 +4,10 @@ import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { isClosedTripResponse } from "./ApproveMember";
-import type { ActiveTripNativePort } from "./ports";
+import {
+  ImportedTripActivationFailed,
+  type ActiveTripNativePort,
+} from "./ports";
 import { projectTrip } from "./projectTrip";
 
 export type ActivateObservedTripDependencies = Readonly<{
@@ -109,37 +112,49 @@ export function createActivateObservedTrip(
       throw new TripActivationFailed("KEY_ENVELOPE_MISSING", view);
     }
 
+    const imported = Object.freeze({
+      protocolVersion: 1,
+      tripId: response.id,
+      keyEpoch: envelope.keyEpoch,
+      algorithmVersion: envelope.algorithmVersion,
+      expectedSenderDeviceId: envelope.senderDeviceId ?? response.ownerDeviceId,
+      recipientDeviceId: device.deviceId,
+      recipientE2eeKeyVersion: nomination.e2eeKeyVersion,
+      endsAt: response.endsAt,
+      wrappedKey: envelope.wrappedKey,
+    } as const);
+    const activation = Object.freeze({
+      protocolVersion: 1,
+      tripId: response.id,
+      membershipId: response.currentMembershipId,
+      startsAt: response.startsAt,
+      endsAt: response.endsAt,
+      releaseAt: null,
+      keyEpoch: 1,
+    } as const);
+
     try {
-      await native.importTripKey(
-        Object.freeze({
-          protocolVersion: 1,
-          tripId: response.id,
-          keyEpoch: envelope.keyEpoch,
-          algorithmVersion: envelope.algorithmVersion,
-          expectedSenderDeviceId:
-            envelope.senderDeviceId ?? response.ownerDeviceId,
-          recipientDeviceId: device.deviceId,
-          recipientE2eeKeyVersion: nomination.e2eeKeyVersion,
-          endsAt: response.endsAt,
-          wrappedKey: envelope.wrappedKey,
-        }),
-      );
-    } catch {
+      const combined = native.importAndActivateTrip;
+      if (combined !== undefined) {
+        await combined.call(
+          native,
+          Object.freeze({
+            protocolVersion: 1,
+            envelope: imported,
+            activation,
+          }),
+        );
+        return view;
+      }
+      await native.importTripKey(imported);
+    } catch (error) {
+      if (error instanceof ImportedTripActivationFailed)
+        throw new TripActivationFailed(internalProblem().code, view);
       throw new TripActivationFailed(envelopeProblem().code, view);
     }
 
     try {
-      await native.activateTrip(
-        Object.freeze({
-          protocolVersion: 1,
-          tripId: response.id,
-          membershipId: response.currentMembershipId,
-          startsAt: response.startsAt,
-          endsAt: response.endsAt,
-          releaseAt: null,
-          keyEpoch: 1,
-        }),
-      );
+      await native.activateTrip(activation);
     } catch {
       throw new TripActivationFailed(internalProblem().code, view);
     }
