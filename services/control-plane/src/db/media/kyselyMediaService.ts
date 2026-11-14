@@ -95,20 +95,21 @@ export function createKyselyMediaService(
   const randomUUID = () => crypto.randomUUID();
   // Match device/trip command lock order. Recheck authorization inside every
   // mutation, so revocation cannot race a previously authenticated request.
+  // NO KEY UPDATE also permits the KEY SHARE locks required by recipient FKs.
   async function authorize(tx: Tx, actor: MediaActor, readOnly = false) {
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
       .$if(readOnly, (query) => query.forShare())
-      .$if(!readOnly, (query) => query.forUpdate())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
       .$if(readOnly, (query) => query.forShare())
-      .$if(!readOnly, (query) => query.forUpdate())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     if (
       !user ||

@@ -28,7 +28,9 @@ export function createKyselyAccountService(
       .selectFrom("users")
       .selectAll()
       .where("clerk_subject", "=", subject)
-      .forUpdate()
+      // Exclude suspension/deletion updates without blocking another member's
+      // FK KEY SHARE while that transaction holds the shared trip lock.
+      .forNoKeyUpdate()
       .executeTakeFirst();
     if (!row || row.deleted_at || row.suspended_at)
       throw new DomainError("AUTH_INVALID");
@@ -110,7 +112,7 @@ export function createKyselyAccountService(
           .selectFrom("users")
           .selectAll()
           .where("clerk_subject", "=", subject)
-          .forUpdate()
+          .forNoKeyUpdate()
           .executeTakeFirst();
         const existing = await tx
           .selectFrom("account_deletions")
