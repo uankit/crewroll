@@ -66,11 +66,24 @@ data class ActiveTripMetadata(
   val keyEpoch: Int,
 )
 
+object NativeTripRetention {
+  const val RECONCILIATION_GRACE_SECONDS = 7 * 86_400L
+  fun deadline(endsAt: String): Instant =
+    NativeCommandDecoder.instant(mapOf("endsAt" to endsAt), "endsAt").plusSeconds(7 * 86_400L)
+  fun deadline(metadata: ActiveTripMetadata): Instant = deadline(metadata.endsAt)
+}
+
+data class NativeExpiredTrip(val scope: NativeKeyScope, val tripId: String, val deadline: Instant)
+
 data class NativeMediaContext(val scope: NativeKeyScope, val session: DeviceSessionRecord, val metadata: ActiveTripMetadata, val tripKey: ByteArray) {
   fun erase() { tripKey.fill(0); session.backgroundBearer.fill(0) }
 }
 
 interface NativeKeyStore {
+  fun expiredTrips(now: Instant): List<NativeExpiredTrip> = emptyList()
+  fun nextTripRetentionDeadline(): Instant? = null
+  fun tripRetentionDeadline(scope: NativeKeyScope, tripId: String): Instant? = null
+  fun purgeExpiredTrip(trip: NativeExpiredTrip, now: Instant, beforeKeyRemoval: () -> Unit = {}): Boolean = false
   fun eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) -> Unit) { throw NativeKeyException.invalidCommand() }
   fun mediaContext(): NativeMediaContext? = null
   fun loadIdentity(accountHash: String): DeviceIdentityMaterial?
@@ -84,7 +97,7 @@ interface NativeKeyStore {
   fun loadTrip(scope: NativeKeyScope, tripId: String): TripKeyRecord?
   fun discardProvisional(scope: NativeKeyScope, tripId: String): ProvisionalDiscardOutcome
   fun collectExpiredProvisional(now: Instant): Instant?
-  fun importTrip(scope: NativeKeyScope, tripId: String, key: ByteArray): TripImportOutcome
+  fun importTrip(scope: NativeKeyScope, tripId: String, key: ByteArray, endsAt: String, now: Instant): TripImportOutcome
   fun activate(scope: NativeKeyScope, metadata: ActiveTripMetadata)
   fun deactivate(scope: NativeKeyScope, tripId: String)
 }
@@ -201,6 +214,10 @@ enum class NativeCommandKind(val exactKeys: Set<String>, val hasTripId: Boolean)
     "backgroundBearerExpiresAt",
     "apiBaseUrl",
   ), false),
+  REFRESH_DEVICE_SESSION(setOf(
+    "protocolVersion", "accountId", "installationId", "deviceId",
+    "backgroundBearer", "backgroundBearerExpiresAt", "apiBaseUrl",
+  ), false),
   CREATE_TRIP_KEY(setOf("protocolVersion", "tripId", "keyEpoch"), true),
   DISCARD_PROVISIONAL_TRIP_KEY(setOf("protocolVersion", "tripId", "keyEpoch"), true),
   WRAP_TRIP_KEY(setOf(
@@ -219,7 +236,7 @@ enum class NativeCommandKind(val exactKeys: Set<String>, val hasTripId: Boolean)
     "expectedSenderDeviceId",
     "recipientDeviceId",
     "recipientE2eeKeyVersion",
-    "wrappedKey",
+    "wrappedKey", "endsAt",
   ), true),
   ACTIVATE_TRIP(setOf(
     "protocolVersion",
@@ -241,6 +258,7 @@ object NativeCommandDecoder {
   fun require(command: Map<String, Any?>, kind: NativeCommandKind) {
     if (command.keys != kind.exactKeys) throw NativeKeyException.invalidCommand()
     requireProtocol(command)
+    if (kind == NativeCommandKind.IMPORT_TRIP_KEY) instant(command, "endsAt")
     if (kind.hasTripId) requireTripId(string(command, "tripId"))
   }
 
@@ -492,13 +510,15 @@ class NativeKeyLifecycle(
     val value = store.mediaContext() ?: return null
     try {
       withValidatedIdentity(value.scope) { }
-      if (value.tripKey.size != 32 || value.session.expiresAt <= clock.now()) throw NativeKeyException.materialLost()
+      if (value.tripKey.size != 32 || value.session.expiresAt <= clock.now() ||
+        NativeTripRetention.deadline(value.metadata) <= clock.now()
+      ) throw NativeKeyException.materialLost()
       NativeCommandDecoder.validate(value.metadata)
       return value
     } catch (error: Throwable) { value.erase(); throw error }
   }
 
-  /** Never exposes the saved bearer. A near-expiry credential must be renewed. */
+  /** Match registration's seven-day renewal window; keep the old session and identity intact. */
   fun restoreDeviceSession(accountId: String, installationId: String, apiBaseUrl: String): String? {
     prepare()
     val accountHash = hashAccountId(accountId)
@@ -509,7 +529,7 @@ class NativeKeyLifecycle(
     try {
       if (saved.scope != NativeKeyScope(accountHash, installationId) ||
         saved.session.apiBaseUrl != apiBaseUrl ||
-        saved.session.expiresAt <= clock.now().plusSeconds(300)
+        saved.session.expiresAt <= clock.now().plusSeconds(7 * 86_400L)
       ) return null
       withValidatedIdentity(saved.scope) { }
       TripKeyEnvelopeV1.uuidBytes(saved.session.deviceId)
@@ -544,9 +564,34 @@ class NativeKeyLifecycle(
     } finally { crypto.zeroize(identity.e2eePrivateKey) }
   }
 
+  /** Caller holds the process command fence across this same-scope check and write. */
+  fun refreshDeviceSession(
+    accountId: String,
+    installationId: String,
+    deviceId: String,
+    backgroundBearer: String,
+    expiresAt: Instant,
+    apiBaseUrl: String,
+  ): Boolean {
+    prepare()
+    val scope = NativeKeyScope(hashAccountId(accountId), installationId)
+    val saved = store.activeSession() ?: throw NativeKeyException.materialLost()
+    try {
+      if (saved.scope != scope || saved.session.deviceId != deviceId ||
+        saved.session.apiBaseUrl != apiBaseUrl || expiresAt <= clock.now() ||
+        expiresAt < saved.session.expiresAt
+      ) throw NativeKeyException.materialLost()
+      installDeviceSession(accountId, installationId, deviceId, backgroundBearer, expiresAt, apiBaseUrl)
+      val installedBearer = backgroundBearer.toByteArray()
+      return try { !crypto.constantTimeEquals(saved.session.backgroundBearer, installedBearer) }
+      finally { crypto.zeroize(installedBearer) }
+    } finally { crypto.zeroize(saved.session.backgroundBearer) }
+  }
+
   fun createTripKey(tripId: String, keyEpoch: Int): CreateTripKeyResult {
     val session = currentSession()
     requireV1(tripId, keyEpoch)
+    requireRetainedTrip(session.scope, tripId)
     var createdExpiry: Instant? = null
     val result = store.createTrip(session.scope, tripId) {
       val key = crypto.randomBytes(32)
@@ -588,6 +633,7 @@ class NativeKeyLifecycle(
   ): WrapTripKeyResult {
     val session = currentSession()
     requireV1(tripId, keyEpoch)
+    requireRetainedTrip(session.scope, tripId)
     val record = store.loadTrip(session.scope, tripId) ?: throw NativeKeyException.materialLost()
     val tripKey = record.key
     var plaintext = ByteArray(0)
@@ -619,6 +665,7 @@ class NativeKeyLifecycle(
     recipientDeviceId: String,
     recipientE2eeKeyVersion: Int,
     wrappedKey: String,
+    endsAt: String,
   ) {
     var envelope = ByteArray(0)
     var plaintext = ByteArray(0)
@@ -626,6 +673,7 @@ class NativeKeyLifecycle(
     try {
       val session = currentSession()
       requireV1(tripId, keyEpoch)
+      if (NativeTripRetention.deadline(endsAt) <= clock.now()) throw NativeKeyException.materialLost()
       if (algorithmVersion != 1 || recipientE2eeKeyVersion != 1 || session.deviceId != recipientDeviceId) {
         throw NativeKeyException.invalidEnvelope()
       }
@@ -634,7 +682,7 @@ class NativeKeyLifecycle(
         crypto.open(envelope, identity.e2eePublicKey, identity.e2eePrivateKey)
       }
       key = TripKeyEnvelopeV1.decode(plaintext, tripId, expectedSenderDeviceId, recipientDeviceId, 1)
-      if (store.importTrip(session.scope, tripId, key) == TripImportOutcome.CONFLICT) {
+      if (store.importTrip(session.scope, tripId, key, endsAt, clock.now()) == TripImportOutcome.CONFLICT) {
         throw NativeKeyException.invalidEnvelope()
       }
     } catch (error: NativeKeyException) {
@@ -648,11 +696,20 @@ class NativeKeyLifecycle(
 
   fun activateTrip(metadata: ActiveTripMetadata) {
     NativeCommandDecoder.validate(metadata)
+    if (NativeTripRetention.deadline(metadata) <= clock.now()) throw NativeKeyException.materialLost()
     val session = currentSession()
     store.activate(session.scope, metadata)
   }
 
   fun clearDeviceSession() { store.clearSession() }
+  fun expiredTrips(): List<NativeExpiredTrip> {
+    // Retention preflight migrates legacy records without loading media or
+    // requiring any active account/session or JavaScript initialization.
+    prepare()
+    return store.expiredTrips(clock.now())
+  }
+  fun nextTripRetentionDeadline(): Instant? = store.nextTripRetentionDeadline()
+  fun purgeExpiredTrip(trip: NativeExpiredTrip, beforeKeyRemoval: () -> Unit = {}): Boolean = store.purgeExpiredTrip(trip, clock.now(), beforeKeyRemoval)
   fun eraseAccount(accountId: String): String {
     val hash = hashAccountId(accountId)
     store.eraseAccount(hash) { p256.removeIdentity(it) }
@@ -721,5 +778,20 @@ class NativeKeyLifecycle(
   private fun requireV1(tripId: String, keyEpoch: Int) {
     if (keyEpoch != 1) throw NativeKeyException.invalidCommand()
     NativeCommandDecoder.requireTripId(tripId)
+  }
+  private fun requireRetainedTrip(scope: NativeKeyScope, tripId: String) {
+    store.tripRetentionDeadline(scope, tripId)?.let { deadline ->
+      if (deadline <= clock.now()) throw NativeKeyException.materialLost()
+      return
+    }
+    // Provisional owner keys retain their own 24h deadline. Undated imported
+    // keys remain quarantined until an authenticated import backfills endsAt.
+    store.loadTrip(scope, tripId)?.let { record ->
+      try {
+        if (record.state != KeyState.PROVISIONAL ||
+          record.provisionalExpiresAt?.let { it > clock.now() } != true)
+          throw NativeKeyException.materialLost()
+      } finally { crypto.zeroize(record.key) }
+    }
   }
 }

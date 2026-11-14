@@ -1,17 +1,26 @@
 package com.uankit53.crewroll.transfer
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.goterl.lazysodium.SodiumAndroid
 import com.uankit53.crewroll.transfer.identitykeys.AndroidNativeKeyInfrastructure
 import com.uankit53.crewroll.transfer.identitykeys.NativeMediaSession
+import com.uankit53.crewroll.transfer.identitykeys.NativeTransferCommandFence
 import com.uankit53.crewroll.transfer.media.AndroidPhotoLibrary
 import com.uankit53.crewroll.transfer.media.NativePhotoCrypto
 import com.uankit53.crewroll.transfer.media.NativePhotoTransferEngine
 import com.uankit53.crewroll.transfer.media.NativePhotoTransport
+import com.uankit53.crewroll.transfer.media.NativePushHint
+import com.uankit53.crewroll.transfer.media.NativePushWakeGate
+import com.uankit53.crewroll.transfer.media.NativePhotoAccess
+import com.uankit53.crewroll.transfer.media.nativePhotoAccess
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicLong
 
 /** One journal writer per process, shared by Expo and OS jobs. No JS runtime is
  * needed to reopen the protected native session after the OS kills the process. */
@@ -23,6 +32,9 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
   @Volatile var foreground = false
     private set
   private val jobs = mutableSetOf<Int>()
+  private val pushGate = NativePushWakeGate()
+  private val policyRevision = AtomicLong()
+  private val leaseRevision = AtomicLong()
   val enabled get() = preferences.getBoolean("enabled", false)
   val cellular get() = preferences.getBoolean("cellular", true)
   init {
@@ -40,36 +52,71 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
         capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
           (cellular || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
       }
-    }, { revision -> listeners.forEach { it(revision) } })
+    }, { revision -> listeners.forEach { it(revision) } },
+    expiredTrips = { lifecycle.expiredTrips() },
+    purgeTripKey = { trip, cleanup -> mediaSession.change { lifecycle.purgeExpiredTrip(trip, cleanup) } },
+    nextRetentionDeadline = { lifecycle.nextTripRetentionDeadline() })
 
   fun listen(listener: (Long) -> Unit) { listeners.add(listener) }
   fun unlisten(listener: (Long) -> Unit) { listeners.remove(listener) }
-  @Synchronized fun foreground(value: Boolean) {
-    foreground = value
+  fun foreground(value: Boolean) {
+    val epoch = synchronized(this) { foreground = value; leaseRevision.incrementAndGet(); policyRevision.get() }
+    val selection = transferCommands.current()
     engine.foreground(value)
-    if (value && enabled) engine.activate()
-    if (!value && enabled) CrewRollSyncJobs.schedule(context, cellular)
+    if (value && enabled) engine.activate { foreground && enabled && policyRevision.get() == epoch && transferCommands.matches(selection) }
+    synchronized(this) { if (!foreground && enabled) CrewRollSyncJobs.schedule(context, cellular) }
   }
   @Synchronized fun policy(enabled: Boolean, cellular: Boolean = this.cellular) {
+    policyRevision.incrementAndGet()
+    leaseRevision.incrementAndGet()
     // Only scheduling flags live here. Credentials and keys stay in Keystore.
     check(preferences.edit().putBoolean("enabled", enabled).putBoolean("cellular", cellular).commit())
     if (enabled) CrewRollSyncJobs.schedule(context, cellular)
     else { jobs.clear(); CrewRollSyncJobs.cancel(context) }
   }
-  @Synchronized fun beginJob(id: Int): Boolean {
-    if (!enabled) return false
+  fun beginJob(id: Int, hints: List<NativePushHint>? = null): Boolean {
+    val epoch = synchronized(this) { if (!enabled) return false; policyRevision.get() }
+    val selection = transferCommands.current()
+    // This preflight also collects old non-selected trips on background wakes.
+    engine.reconcileRetention()
+    if (hints != null) {
+      if (!pushGate.accept(hints, enabled, photosAllowed()) {
+        val active = try { mediaSession.read() } catch (_: Exception) { null }
+        active?.let { try { Pair(it.session.deviceId, it.metadata.tripId) } finally { it.erase() } }
+      }) return false
+    }
     val active = try { mediaSession.read() } catch (_: Exception) { null } ?: return false
     active.erase()
-    jobs.add(id)
+    synchronized(this) {
+      if (!enabled || policyRevision.get() != epoch) return false
+      jobs.add(id)
+      leaseRevision.incrementAndGet()
+    }
     // An OS lease joins existing work without cancelling another transfer.
-    engine.activate().thenRun { engine.requestReconcile() }
+    val current = {
+      enabled && policyRevision.get() == epoch && transferCommands.matches(selection) && (hints == null || (photosAllowed() && matches(hints)))
+    }
+    engine.activate(current).thenRun { if (current()) engine.requestReconcile() }
     return true
   }
-  @Synchronized fun endJob(id: Int) {
-    jobs.remove(id)
-    if (!foreground && jobs.isEmpty()) engine.stop()
+  private fun photosAllowed(): Boolean {
+    val read = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+    return nativePhotoAccess(Build.VERSION.SDK_INT,
+      context.checkSelfPermission(read) == PackageManager.PERMISSION_GRANTED,
+      Build.VERSION.SDK_INT >= 34 && context.checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED,
+      context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) == NativePhotoAccess.FULL
+  }
+  private fun matches(hints: List<NativePushHint>): Boolean {
+    val active = try { mediaSession.read() } catch (_: Exception) { null } ?: return false
+    return try { hints.any { it.deviceId == active.session.deviceId && it.tripId == active.metadata.tripId } }
+    finally { active.erase() }
+  }
+  fun endJob(id: Int) {
+    val (stop, epoch) = synchronized(this) { jobs.remove(id); Pair(!foreground && jobs.isEmpty(), leaseRevision.incrementAndGet()) }
+    if (stop) engine.stop { !foreground && leaseRevision.get() == epoch }
   }
   companion object {
+    val transferCommands = NativeTransferCommandFence()
     @Volatile private var instance: CrewRollNativeRuntime? = null
     @Synchronized fun get(context: Context): CrewRollNativeRuntime = instance ?: CrewRollNativeRuntime(context.applicationContext).also { instance = it }
   }

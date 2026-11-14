@@ -53,6 +53,11 @@ const CONTROL_TARGET =
   /(?:^|[\s'"=])(?:\.\/)?(?:services\/control-plane\/)?(?:src|dist)\//u;
 const ROOT_CONTROL_TARGET = /services\/control-plane\/(?:src|dist)\//u;
 const APPROVED_ROOT_SCRIPTS = new Map([
+  ["postinstall", "node tools/query-string-decoder-compat.cjs --apply"],
+  [
+    "verify:router-decoder",
+    "node tools/query-string-decoder-compat.cjs --check",
+  ],
   ["prestart", "npm run build --workspace @crewroll/contracts"],
   ["start", "expo start --dev-client"],
   ["prestart:clean", "npm run build --workspace @crewroll/contracts"],
@@ -69,7 +74,7 @@ const APPROVED_ROOT_SCRIPTS = new Map([
   ["prelint", "npm run build --workspace @crewroll/contracts"],
   [
     "lint",
-    "expo lint app src modules __tests__ tests tools eslint.config.js vitest.config.ts --no-cache --max-warnings=0 -- --no-error-on-unmatched-pattern && npm run lint --workspace @crewroll/contracts && npm run lint --workspace @crewroll/control-plane",
+    "expo lint app src modules __tests__ tests tools app.config.ts eslint.config.js vitest.config.ts --no-cache --max-warnings=0 -- --no-error-on-unmatched-pattern && npm run lint --workspace @crewroll/contracts && npm run lint --workspace @crewroll/control-plane",
   ],
   [
     "typecheck",
@@ -78,7 +83,7 @@ const APPROVED_ROOT_SCRIPTS = new Map([
   ["test", "npm run test:unit"],
   [
     "test:unit",
-    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
+    "npm run verify:router-decoder && npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
   ],
   [
     "test:production-resolution",
@@ -86,10 +91,16 @@ const APPROVED_ROOT_SCRIPTS = new Map([
   ],
   ["test:tools", 'node --test "tools/*.test.mjs"'],
   ["test:ui", "jest --runInBand"],
+  ["test:ui:android", "jest --runInBand --preset jest-expo/android"],
   ["test:ui:watch", "jest --watch"],
   ["test:integration", "node tools/run-future-suite.mjs integration"],
   ["test:native:ios", "node tools/run-future-suite.mjs native-ios"],
   ["test:native:android", "node tools/run-future-suite.mjs native-android"],
+  [
+    "test:native:ios:run",
+    "swift test --package-path modules/crewroll-transfer/ios/IdentityKeys --disable-index-store --jobs 1",
+  ],
+  ["test:native:android:run", "node tools/run-android-native-tests.mjs"],
   ["test:e2e", "node tools/run-future-suite.mjs e2e"],
   ["test:load", "node tools/run-future-suite.mjs load"],
   ["generate:mobile-api", "node tools/generate-mobile-api.mjs"],
@@ -103,9 +114,12 @@ const APPROVED_ROOT_SCRIPTS = new Map([
   ],
   [
     "check",
-    "npm run verify:identity && npm run format:check && npm run lint && npm run typecheck && npm run --ignore-scripts migrations:check && npm run test:unit && npm run doctor",
+    "npm run verify:router-decoder && npm run verify:identity && npm run format:check && npm run lint && npm run typecheck && npm run --ignore-scripts migrations:check && npm run test:unit && npm run doctor",
   ],
-  ["eas-build-post-install", "npm run build --workspace @crewroll/contracts"],
+  [
+    "eas-build-post-install",
+    "node tools/query-string-decoder-compat.cjs --apply && npm run build --workspace @crewroll/contracts",
+  ],
   [
     "build:dev:android",
     "npx --yes eas-cli@22.4.0 build --profile development --platform android",
@@ -134,7 +148,7 @@ const APPROVED_CONTRACT_SCRIPTS = new Map([
   ],
   [
     "lint",
-    "eslint crypto fixtures generator native openapi storage test vitest.config.ts --max-warnings=0",
+    "eslint crypto fixtures generator native openapi test vitest.config.ts --max-warnings=0",
   ],
   ["typecheck", "tsc -p tsconfig.json --noEmit"],
   ["test", "npm run build && vitest run"],
@@ -151,9 +165,12 @@ const APPROVED_CONTROL_SCRIPTS = new Map([
     "build",
     "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
   ],
-  ["typecheck", "tsc -p tsconfig.json --noEmit"],
+  [
+    "typecheck",
+    "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
+  ],
   ["prelint", "npm run build --workspace @crewroll/contracts"],
-  ["lint", "eslint src test --max-warnings=0"],
+  ["lint", "eslint src test worker --max-warnings=0"],
   ["test", "npm run build && vitest run"],
   ["test:coverage", "npm run build && vitest run --coverage"],
   ["start:api", "node dist/src/api/main.js"],

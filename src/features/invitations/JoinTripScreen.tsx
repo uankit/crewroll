@@ -207,8 +207,9 @@ export function JoinTripScreen({
             </Stack>
           </View>
           <AppText tone="secondary">
-            Your roll starts when {preview.hostDisplayName.split(" ")[0]}{" "}
-            approves. Photos from before that moment stay private.
+            Sharing starts after {preview.hostDisplayName.split(" ")[0]}{" "}
+            approves and the trip is live. Photos from before that moment stay
+            private.
           </AppText>
         </FlowScreen>
       </FlowTransition>

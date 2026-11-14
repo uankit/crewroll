@@ -1,7 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
 
-import { sessionUiStore } from "./state/sessionUiStore";
-
 export const TRIP_LIBRARY_FRESH_MS = 5_000;
 
 export function tripLibraryQueryKey(
@@ -33,16 +31,12 @@ export const queryClient = new QueryClient({
   },
 });
 
-export async function clearForegroundSessionState(
-  client: QueryClient,
-): Promise<void> {
-  await clearForegroundQueryState(client);
-  sessionUiStore.getState().clear();
-}
-
 export async function clearForegroundQueryState(
   client: QueryClient,
 ): Promise<void> {
-  await client.cancelQueries();
+  const cancellation = client.cancelQueries();
+  // Clear this scope synchronously: cancellation can finish after a new account
+  // has already populated the shared client, and must not erase that new data.
   client.clear();
+  await cancellation;
 }

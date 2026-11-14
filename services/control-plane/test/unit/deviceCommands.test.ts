@@ -209,6 +209,122 @@ describe("device foreground commands", () => {
     });
   });
 
+  it.each(["newer-token", null])(
+    "does not let a stalled older PATCH overwrite the newer successful token %s",
+    async (newerToken) => {
+      const test = await registeredHarness();
+      let release!: () => void;
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const fingerprint = (token: string) =>
+        Buffer.alloc(32, token === "older-token" ? 1 : 2);
+      const update = createUpdateDevicePushToken({
+        ...test.dependencies,
+        protector: {
+          fingerprint,
+          async protect(token) {
+            if (token === "older-token") {
+              entered();
+              await blocked;
+            }
+            return {
+              encryptedToken: Buffer.from(token),
+              fingerprint: fingerprint(token),
+            };
+          },
+        },
+      });
+      const input = {
+        clerkSubject,
+        deviceId: fixedDeviceId,
+        headerDeviceId: fixedDeviceId,
+      };
+      const older = update.execute({
+        ...input,
+        body: { appVersion: "1.0.1", pushToken: "older-token" },
+        idempotencyKey: commandKey,
+      });
+      await started;
+      await update.execute({
+        ...input,
+        body: { appVersion: "1.0.2", pushToken: newerToken },
+        idempotencyKey: "018f0d98-76fa-7d1a-b4b4-1f742c2e3172",
+      });
+      release();
+      await older;
+      expect(test.findDevice(fixedDeviceId)).toMatchObject({
+        appVersion: "1.0.2",
+        encryptedPushToken:
+          newerToken === null ? null : Buffer.from(newerToken),
+        pushTokenHash: newerToken === null ? null : fingerprint(newerToken),
+      });
+      // The superseded request is still idempotently complete, including replay.
+      await update.execute({
+        ...input,
+        body: { appVersion: "1.0.1", pushToken: "older-token" },
+        idempotencyKey: commandKey,
+      });
+      expect(test.findDevice(fixedDeviceId).appVersion).toBe("1.0.2");
+      expect(test.wasProtectCalledInsideTransaction()).toBe(false);
+    },
+  );
+
+  it("allows an earlier valid token to commit when a newer request fails protection", async () => {
+    const test = await registeredHarness();
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const update = createUpdateDevicePushToken({
+      ...test.dependencies,
+      protector: {
+        fingerprint: () => Buffer.alloc(32, 1),
+        async protect(token) {
+          if (token === "newer-token")
+            throw new Error("protection unavailable");
+          entered();
+          await blocked;
+          return {
+            encryptedToken: Buffer.from(token),
+            fingerprint: Buffer.alloc(32, 1),
+          };
+        },
+      },
+    });
+    const input = {
+      clerkSubject,
+      deviceId: fixedDeviceId,
+      headerDeviceId: fixedDeviceId,
+    };
+    const older = update.execute({
+      ...input,
+      body: { appVersion: "1.0.1", pushToken: "older-token" },
+      idempotencyKey: commandKey,
+    });
+    await started;
+    await expect(
+      update.execute({
+        ...input,
+        body: { appVersion: "1.0.2", pushToken: "newer-token" },
+        idempotencyKey: "018f0d98-76fa-7d1a-b4b4-1f742c2e3172",
+      }),
+    ).rejects.toThrow("protection unavailable");
+    release();
+    await older;
+    expect(test.findDevice(fixedDeviceId).encryptedPushToken).toEqual(
+      Buffer.from("older-token"),
+    );
+  });
+
   it.each(["unknown", "deleted", "revoked", "conflict"] as const)(
     "rejects %s PATCH state before fingerprint/KMS",
     async (state) => {

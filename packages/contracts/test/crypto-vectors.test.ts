@@ -4,12 +4,14 @@ import {
   access,
   lstat,
   mkdir,
+  mkdtemp,
   readdir,
   readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, posix, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import sodium from "libsodium-wrappers";
@@ -315,6 +317,19 @@ function fixtureRngBoundaryViolations(
 }
 
 async function loadMaintainedSourceEntries(): Promise<MaintainedSourceEntry[]> {
+  // The index still lists intentional working-tree deletions before commit.
+  // Exclude only Git-confirmed deletions; other missing/unreadable files still
+  // fail the security scan rather than being silently skipped.
+  const deletedPaths = new Set(
+    execFileSync(
+      "git",
+      ["-C", repositoryDirectory, "ls-files", "--deleted", "-z"],
+      {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    ).split("\0"),
+  );
   const listedPaths = execFileSync(
     "git",
     [
@@ -329,7 +344,10 @@ async function loadMaintainedSourceEntries(): Promise<MaintainedSourceEntry[]> {
     { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
   )
     .split("\0")
-    .filter((path) => path.length > 0 && isMaintainedPath(path))
+    .filter(
+      (path) =>
+        path.length > 0 && !deletedPaths.has(path) && isMaintainedPath(path),
+    )
     .sort();
   const entries: MaintainedSourceEntry[] = [];
 
@@ -680,57 +698,74 @@ describe("direct all-language conformance runner", () => {
     expect(allArguments.join(" ")).not.toMatch(/vectors\/generator/u);
   });
 
-  it("removes isolated Swift and Kotlin build output after success", async () => {
+  it("removes isolated output while preserving pre-existing default build caches", async () => {
     const runner = await loadConformanceRunner();
+    const fixtureRoot = await mkdtemp(
+      join(tmpdir(), "crewroll-conformance-test-"),
+    );
+    const inputFiles = [
+      "node_modules/.bin/vitest",
+      "packages/contracts/crypto/conformance/swift/Package.swift",
+      "packages/contracts/crypto/conformance/kotlin/gradlew",
+      "packages/contracts/crypto/conformance/kotlin/gradle.lockfile",
+      "packages/contracts/crypto/conformance/kotlin/gradle/verification-metadata.xml",
+    ];
+    const defaultCaches = [
+      "packages/contracts/crypto/conformance/swift/.build",
+      "packages/contracts/crypto/conformance/kotlin/build",
+    ].map((path) => resolve(fixtureRoot, path));
     let runDirectory: string | undefined;
-
-    await runner.runCryptoConformance({
-      repositoryDirectory,
-      execute: async (invocation) => {
-        const scratchIndex = invocation.args.indexOf("--scratch-path");
-        if (scratchIndex >= 0) {
-          const scratch = invocation.args[scratchIndex + 1] as string;
-          runDirectory = dirname(scratch);
-          await mkdir(scratch, { recursive: true });
-          await writeFile(resolve(scratch, "swift-output.json"), "{}\n");
-        }
-        const buildArgument = invocation.args.find((argument) =>
-          argument.startsWith("-PcrewrollConformanceBuildDirectory="),
+    try {
+      for (const relativePath of inputFiles) {
+        const path = resolve(fixtureRoot, relativePath);
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, "preflight fixture\n", { mode: 0o700 });
+      }
+      for (const cache of defaultCaches) {
+        await mkdir(cache, { recursive: true });
+        await writeFile(
+          resolve(cache, "existing-output"),
+          "user-owned cached build\n",
         );
-        if (buildArgument !== undefined) {
-          const buildDirectory = buildArgument.slice(
-            "-PcrewrollConformanceBuildDirectory=".length,
+      }
+      await runner.runCryptoConformance({
+        repositoryDirectory: fixtureRoot,
+        execute: async (invocation) => {
+          const scratchIndex = invocation.args.indexOf("--scratch-path");
+          if (scratchIndex >= 0) {
+            const scratch = invocation.args[scratchIndex + 1] as string;
+            runDirectory = dirname(scratch);
+            await mkdir(scratch, { recursive: true });
+            await writeFile(resolve(scratch, "swift-output.json"), "{}\n");
+          }
+          const buildArgument = invocation.args.find((argument) =>
+            argument.startsWith("-PcrewrollConformanceBuildDirectory="),
           );
-          expect(dirname(buildDirectory)).toBe(runDirectory);
-          await mkdir(buildDirectory, { recursive: true });
-          await writeFile(
-            resolve(buildDirectory, "kotlin-report.json"),
-            "{}\n",
-          );
-        }
-        return 0;
-      },
-      resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
-    });
-
-    expect(runDirectory).toBeDefined();
-    await expect(access(runDirectory as string)).rejects.toThrow();
-    await expect(
-      access(
-        resolve(
-          repositoryDirectory,
-          "packages/contracts/crypto/conformance/swift/.build",
-        ),
-      ),
-    ).rejects.toThrow();
-    await expect(
-      access(
-        resolve(
-          repositoryDirectory,
-          "packages/contracts/crypto/conformance/kotlin/build",
-        ),
-      ),
-    ).rejects.toThrow();
+          if (buildArgument !== undefined) {
+            const buildDirectory = buildArgument.slice(
+              "-PcrewrollConformanceBuildDirectory=".length,
+            );
+            expect(dirname(buildDirectory)).toBe(runDirectory);
+            await mkdir(buildDirectory, { recursive: true });
+            await writeFile(
+              resolve(buildDirectory, "kotlin-report.json"),
+              "{}\n",
+            );
+          }
+          return 0;
+        },
+        resolveExecutable: (name) => Promise.resolve(`/fake/${name}`),
+      });
+      expect(runDirectory).toBeDefined();
+      await expect(access(runDirectory as string)).rejects.toThrow();
+      for (const cache of defaultCaches) {
+        await expect(
+          readFile(resolve(cache, "existing-output"), "utf8"),
+        ).resolves.toBe("user-owned cached build\n");
+      }
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("removes isolated build output when a language command fails", async () => {

@@ -3,6 +3,7 @@ import type { TripTransferState } from "@crewroll/contracts";
 import type { Database, TripMemberTable, TripTable } from "../schema/tables.js";
 import { DomainError } from "../../shared/errors/domainError.js";
 import type { Clock } from "../../shared/time/clock.js";
+import { insertTripLifecycleWake } from "../push/insertTripLifecycleWake.js";
 
 import type {
   LifecycleActor,
@@ -43,6 +44,7 @@ export function createKyselyTripLifecycle(
     if (
       !user ||
       user.deleted_at ||
+      user.suspended_at ||
       (actor.clerkSubject && user.clerk_subject !== actor.clerkSubject) ||
       !device ||
       device.user_id !== actor.userId ||
@@ -77,6 +79,7 @@ export function createKyselyTripLifecycle(
       .set({ version: sql`version + 1`, updated_at: clock.now() })
       .where("id", "=", tripId)
       .execute();
+    await insertTripLifecycleWake(tx, tripId, clock.now());
   }
   async function counts(tx: Tx, trip: Trip, member: Member) {
     const cutoff = member.leaving_at ?? trip.ending_started_at ?? trip.ends_at;

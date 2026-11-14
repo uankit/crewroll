@@ -78,7 +78,10 @@ export function createResolveCreateTripOutcome(
                   ? "DEVICE_REVOKED"
                   : projection.kind === "DEVICE_NOT_PARTICIPANT"
                     ? "DEVICE_NOT_PARTICIPANT"
-                    : "INTERNAL_ERROR",
+                    : projection.kind === "NOT_FOUND" &&
+                        projection.reason === "EXPIRED"
+                      ? "NOT_FOUND"
+                      : "INTERNAL_ERROR",
               );
             }
             return tripSuccess({

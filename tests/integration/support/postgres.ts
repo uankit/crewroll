@@ -11,6 +11,7 @@ const EXTERNAL_POSTGRES_URL =
 const PROCESS_LOCK_KEY = 1_123_955_636;
 
 const OWNED_TABLES = [
+  "push_wakeups",
   "account_deletion_objects",
   "account_deletions",
   "account_deleted_subjects",

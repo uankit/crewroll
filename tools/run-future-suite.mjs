@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -98,14 +98,6 @@ async function mapProbe(probe, executable, args, options) {
   return result.status === 0 ? "available" : "unavailable";
 }
 
-async function inspectDirectory(path) {
-  try {
-    return (await stat(path)).isDirectory() ? "available" : "unavailable";
-  } catch {
-    return "unavailable";
-  }
-}
-
 async function checkAvailability({ definition, root, env, platform, probe }) {
   const npmExecPath = env?.npm_execpath;
   if (!nonemptyEnvironmentValue(npmExecPath)) return "unavailable";
@@ -115,6 +107,7 @@ async function checkAvailability({ definition, root, env, platform, probe }) {
     shell: false,
     stdio: "ignore",
     windowsHide: true,
+    env,
   };
   const npmResult = await mapProbe(
     probe,
@@ -139,18 +132,12 @@ async function checkAvailability({ definition, root, env, platform, probe }) {
       return mapProbe(probe, "xcodebuild", ["-version"], probeOptions);
     }
     case "native-android": {
-      const java = await mapProbe(probe, "java", ["-version"], probeOptions);
-      if (java !== "available") return java;
-      const sdkRoots = [env?.ANDROID_HOME, env?.ANDROID_SDK_ROOT].filter(
-        nonemptyEnvironmentValue,
-      );
-      if (sdkRoots.length === 0) return "unavailable";
-
-      for (const sdkRoot of sdkRoots) {
-        const directory = await inspectDirectory(sdkRoot);
-        if (directory === "available") return "available";
-      }
-      return "unavailable";
+      // These are pure JVM tests. Requiring an Android SDK would hide the
+      // existing harness on developer machines and Linux CI for no reason.
+      const java = nonemptyEnvironmentValue(env?.JAVA_HOME)
+        ? join(env.JAVA_HOME, "bin", platform === "win32" ? "java.exe" : "java")
+        : "java";
+      return mapProbe(probe, java, ["-version"], probeOptions);
     }
     case "e2e":
       return mapProbe(probe, "maestro", ["--version"], probeOptions);

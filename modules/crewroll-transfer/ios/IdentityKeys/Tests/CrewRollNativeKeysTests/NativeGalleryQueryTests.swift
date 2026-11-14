@@ -27,6 +27,14 @@ final class NativeGalleryQueryTests: XCTestCase {
         XCTAssertEqual(try NativeGalleryQuery().page(rows, revision: 1, limit: 24, cursor: nil).items.count, 2)
         XCTAssertEqual(try NativeGalleryQuery(sourceMembershipID: b).page(rows, revision: 1, limit: 24, cursor: nil).items.count, 1)
     }
+    func testSortingUsesActualInstantsWithStableAssetTieBreakAcrossPages() throws {
+        let rows = [row(1, a, "2026-09-16T12:00:00Z"), row(2, a, "2026-09-16T17:30:00+05:30"), row(3, a, "2026-09-16T11:59:59.999Z")]
+        let query = try NativeGalleryQuery()
+        let first = try query.page(rows, revision: 4, limit: 2, cursor: nil)
+        XCTAssertEqual(first.items.compactMap { $0["assetId"] as? String }, ["0002", "0001"])
+        XCTAssertEqual(try query.page(rows, revision: 4, limit: 2, cursor: first.nextCursor).items.compactMap { $0["assetId"] as? String }, ["0003"])
+        XCTAssertEqual(try NativeGalleryQuery(order: "OLDEST").page(rows, revision: 4, limit: 3, cursor: nil).items.compactMap { $0["assetId"] as? String }, ["0003", "0001", "0002"])
+    }
     func testStaleCursorAndInvalidQueryAreRejected() throws {
         let rows = (0..<5).map { row($0, a) }
         let cursor = try NativeGalleryQuery().page(rows, revision: 1, limit: 2, cursor: nil).nextCursor

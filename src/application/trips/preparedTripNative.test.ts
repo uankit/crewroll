@@ -45,3 +45,26 @@ it("changed activation metadata is dispatched, never masked by an earlier succes
   await prepared.activateTrip(command);
   expect(native.activateTrip).toHaveBeenCalledTimes(3);
 });
+
+it("import deduplication includes authoritative expiry and never masks a dated backfill", async () => {
+  const native = harness();
+  const prepared = createPreparedTripNative(native);
+  const imported: Parameters<ActiveTripNativePort["importTripKey"]>[0] = {
+    protocolVersion: 1,
+    tripId: command.tripId,
+    keyEpoch: 1,
+    algorithmVersion: 1,
+    expectedSenderDeviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+    recipientDeviceId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3150",
+    recipientE2eeKeyVersion: 1,
+    endsAt: command.endsAt,
+    wrappedKey: Buffer.alloc(148, 9).toString("base64"),
+  };
+  await Promise.all(
+    Array.from({ length: 100 }, () => prepared.importTripKey(imported)),
+  );
+  expect(native.importTripKey).toHaveBeenCalledTimes(1);
+  await prepared.importTripKey({ ...imported, endsAt: "2026-09-13T00:00:00Z" });
+  expect(native.importTripKey).toHaveBeenCalledTimes(2);
+  expect(native.activateTrip).not.toHaveBeenCalled();
+});

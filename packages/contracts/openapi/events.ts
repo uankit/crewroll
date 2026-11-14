@@ -6,7 +6,22 @@ import {
   DecimalSequenceSchema,
 } from "./common.js";
 import { DeliveryStatusSchema, TripStatusSchema } from "./enums.js";
-import { AssetIdSchema, DeliveryIdSchema, TripIdSchema } from "./ids.js";
+import {
+  AssetIdSchema,
+  DeliveryIdSchema,
+  TripIdSchema,
+  DeviceIdSchema,
+  UuidSchema,
+} from "./ids.js";
+
+/** Opaque wake-up only; never authority to activate a trip or disclose media. */
+export const PushSyncHintSchema = ClosedObject({
+  type: Type.Literal("crewroll.sync.v1"),
+  deviceId: DeviceIdSchema,
+  tripId: TripIdSchema,
+  eventId: UuidSchema,
+});
+export type PushSyncHint = Static<typeof PushSyncHintSchema>;
 
 export const AssetCommittedEventSchema = ClosedObject({
   type: Type.Literal("ASSET_COMMITTED"),
@@ -40,10 +55,3 @@ export const InboxEventSchema = Type.Union([
   TripChangedEventSchema,
 ]);
 export type InboxEvent = Static<typeof InboxEventSchema>;
-
-export const SyncAvailablePushHintSchema = ClosedObject({
-  type: Type.Literal("SYNC_AVAILABLE"),
-  tripId: TripIdSchema,
-  sequence: DecimalSequenceSchema,
-});
-export type SyncAvailablePushHint = Static<typeof SyncAvailablePushHintSchema>;

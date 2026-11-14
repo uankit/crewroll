@@ -220,6 +220,7 @@ const transactionMethodNames = [
   "lockDevice",
   "lockDevices",
   "lockInvite",
+  "lockJoinReplayMembership",
   "lockMembership",
   "lockMembershipForUser",
   "lockMemberships",

@@ -53,6 +53,7 @@ function nativeModule(overrides: NativeOverrides = {}) {
   const module = {
     ensureDeviceIdentity: async () => identity,
     installDeviceSession: async () => undefined,
+    refreshDeviceSession: async () => undefined,
     clearDeviceSession: async () => undefined,
     createTripKey: async () => ({
       protocolVersion: 1,
@@ -120,15 +121,67 @@ describe("CrewRoll native transfer boundary", () => {
       "installDeviceSession",
       "listAssets",
       "reconcileNow",
+      "refreshDeviceSession",
       "restoreDeviceSession",
       "retry",
       "setTransferPolicy",
       "subscribeToInvalidations",
+      "subscribeToPushHints",
       "wrapTripKey",
     ]);
     expect(port).not.toHaveProperty("downloadBytes");
     expect(port).not.toHaveProperty("uploadChunk");
     expect(port).not.toHaveProperty("tripKey");
+  });
+
+  it("fails closed when refresh is absent from an older native binary without falling back to selection", async () => {
+    const installDeviceSession = jest.fn();
+    const native = nativeModule({
+      refreshDeviceSession: undefined,
+      installDeviceSession,
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+    await expect(
+      port.refreshDeviceSession?.({
+        protocolVersion: 1,
+        accountId,
+        installationId: identity.installationId,
+        deviceId,
+        backgroundBearer: BACKGROUND_BEARER,
+        backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
+        apiBaseUrl: "https://api.crewroll.app",
+      }),
+    ).rejects.toThrow("refreshDeviceSession unavailable");
+    expect(installDeviceSession).not.toHaveBeenCalled();
+  });
+
+  it("drops malformed or unknown-version native push hints before scoped listeners", () => {
+    let received: ((value: unknown) => void) | undefined;
+    const remove = jest.fn();
+    const native = nativeModule({
+      addListener: (event: string, listener: (value: unknown) => void) => {
+        expect(event).toBe("pushHint");
+        received = listener;
+        return { remove };
+      },
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+    const listener = jest.fn();
+    const subscription = port.subscribeToPushHints?.(listener);
+    const hint = {
+      type: "crewroll.sync.v1",
+      deviceId,
+      tripId,
+      eventId: membershipId,
+    };
+    received?.({ ...hint, type: "crewroll.sync.v2" });
+    received?.({ ...hint, url: "https://example.test/private" });
+    received?.({ ...hint, deviceId: "other" });
+    expect(listener).not.toHaveBeenCalled();
+    received?.(hint);
+    expect(listener).toHaveBeenCalledWith(hint);
+    subscription?.remove();
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 
   it("validates and forwards the closed account identity command", async () => {
@@ -278,6 +331,7 @@ describe("CrewRoll native transfer boundary", () => {
         expectedSenderDeviceId: deviceId,
         recipientDeviceId: deviceId,
         recipientE2eeKeyVersion: 1,
+        endsAt: "2026-09-02T12:00:00.000Z",
         wrappedKey: TRIP_ENVELOPE,
       }),
     ).resolves.toBeUndefined();
@@ -403,6 +457,7 @@ describe("CrewRoll native transfer boundary", () => {
       expectedSenderDeviceId: deviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt: "2026-09-02T12:00:00.000Z",
       wrappedKey: TRIP_ENVELOPE,
     } as const;
     const activation = {
@@ -434,6 +489,19 @@ describe("CrewRoll native transfer boundary", () => {
           port.installDeviceSession(
             command as Parameters<
               CrewRollTransferPort["installDeviceSession"]
+            >[0],
+          ),
+      },
+      {
+        name: "refreshDeviceSession",
+        nativeMethod: "refreshDeviceSession",
+        validCommand: session,
+        invalidCommand: { ...session, accountId: "another@example.com" },
+        nativeResult: undefined,
+        invoke: (port, command) =>
+          port.refreshDeviceSession!(
+            command as Parameters<
+              NonNullable<CrewRollTransferPort["refreshDeviceSession"]>
             >[0],
           ),
       },

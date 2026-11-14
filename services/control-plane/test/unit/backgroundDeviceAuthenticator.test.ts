@@ -141,11 +141,31 @@ describe("backgroundDeviceAuthenticator", () => {
     ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
   });
 
+  it("rejects a suspended owner without updating the device", async () => {
+    const test = await registeredHarness();
+    const before = test.findDevice(fixedDeviceId).lastSeenAt;
+    const user = test.users.get("background_subject")!;
+    test.users.set("background_subject", { ...user, suspended: true });
+    const authenticate = createBackgroundDeviceAuthenticator({
+      clock: test.dependencies.clock,
+      unitOfWork: test.dependencies.unitOfWork,
+    });
+
+    await expect(
+      authenticate.authenticate({
+        authorization: `Bearer ${bearer}`,
+        headerDeviceId: fixedDeviceId,
+      }),
+    ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
+    expect(test.findDevice(fixedDeviceId).lastSeenAt).toEqual(before);
+  });
+
   it("returns no actor when the last-seen write fails", async () => {
     const test = await registeredHarness();
     const authenticate = createBackgroundDeviceAuthenticator({
       clock: test.dependencies.clock,
       unitOfWork: {
+        ...test.dependencies.unitOfWork,
         run: (operation) =>
           test.dependencies.unitOfWork.run((transaction) =>
             operation({

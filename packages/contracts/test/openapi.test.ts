@@ -19,7 +19,16 @@ const OPENAPI_P256_PUBLIC_KEY =
 const UUID_V7 =
   "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const CREATE_OUTCOME_PATH = "/v1/trips/create-outcome";
-const PROBLEM_STATUSES = ["400", "401", "403", "404", "409", "429", "500"];
+const PROBLEM_STATUSES = [
+  "400",
+  "401",
+  "403",
+  "404",
+  "409",
+  "429",
+  "500",
+  "503",
+];
 const EXACT_PROBLEM_CODES = [
   "AUTH_REQUIRED",
   "AUTH_INVALID",
@@ -660,7 +669,6 @@ describe("canonical OpenAPI artifact", () => {
       readiness?.responses["200"]?.content?.["application/json"]?.schema,
     ).toEqual({ $ref: "#/components/schemas/TripResponse" });
 
-    const problemStatuses = ["400", "401", "403", "404", "409", "429", "500"];
     for (const { method, path, operation } of operations(document)) {
       const label = `${method.toUpperCase()} ${path}`;
       const nonSuccess = Object.entries(operation.responses).filter(
@@ -669,7 +677,7 @@ describe("canonical OpenAPI artifact", () => {
       expect(
         nonSuccess.map(([status]) => status),
         label,
-      ).toEqual(problemStatuses);
+      ).toEqual(PROBLEM_STATUSES);
       for (const [status, response] of nonSuccess) {
         expect(
           Object.keys(response.content ?? {}),

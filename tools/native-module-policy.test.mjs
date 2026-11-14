@@ -78,6 +78,26 @@ test("Expo autolinking discovers only the canonical CrewRoll native shells", () 
   ]);
 });
 
+test("Android Expo dependencies support precompiled publications and source projects", () => {
+  const gradle = readFileSync(
+    path.join(root, "modules", "crewroll-transfer", "android", "build.gradle"),
+    "utf8",
+  );
+
+  // SDK 57 may omit Expo source projects when autolinking selects their Maven
+  // publications. The module plugin resolves the dependency for either graph.
+  assert.match(gradle, /id\s+['"]expo-module-gradle-plugin['"]/);
+  assert.match(
+    gradle,
+    /implementation\s+expoModule\.getExpoDependency\(['"]expo-notifications['"]\)/,
+  );
+  assert.doesNotMatch(
+    gradle,
+    /\bproject\s*\(\s*['"]:expo-[^'"]+['"]\s*\)/,
+    "Expo modules must not require source projects absent from publication builds",
+  );
+});
+
 test("native bridges keep the closed protocol and wire only implemented transfer engines", () => {
   const moduleRoot = path.join(root, "modules", "crewroll-transfer");
   const swift = readFileSync(
@@ -103,6 +123,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     "ensureDeviceIdentity",
     "restoreDeviceSession",
     "installDeviceSession",
+    "refreshDeviceSession",
     "clearDeviceSession",
     "eraseAccount",
     "createTripKey",
@@ -120,17 +141,83 @@ test("native bridges keep the closed protocol and wire only implemented transfer
   const mutationNames = [...keyMethodNames, ...pendingEngineMethodNames];
   const allMethodNames = [...mutationNames, "getSnapshot", "listAssets"];
 
-  for (const source of [swift, kotlin]) {
+  for (const [platform, source] of [
+    ["iOS", swift],
+    ["Android", kotlin],
+  ]) {
+    const registrations = [...source.matchAll(/AsyncFunction\("([^"]+)"\)/g)];
     assert.deepEqual(
-      [...source.matchAll(/AsyncFunction\("([^"]+)"\)/g)].map(
-        (match) => match[1],
-      ),
+      registrations.map((match) => match[1]),
       allMethodNames,
     );
+    const events = [...source.matchAll(/\bEvents\s*\(([^)]*)\)/g)];
     assert.equal(
-      (source.match(/Events\("engineInvalidated"\)/g) ?? []).length,
+      events.length,
       1,
+      `${platform} must have one canonical event registration`,
     );
+    assert.match(
+      events[0][1],
+      /^\s*"[^"]+"(?:\s*,\s*"[^"]+")*\s*$/,
+      `${platform} event registration must use a closed literal list`,
+    );
+    assert.deepEqual(
+      [...events[0][1].matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+      ["engineInvalidated", "pushHint"],
+      `${platform} may expose only revision invalidations and opaque push hints`,
+    );
+    // Fencing may wrap lifecycle calls, but every command still has to enter a
+    // closed decoder in its own registration. A validator elsewhere in the
+    // module must not make an unvalidated bridge method pass this policy.
+    for (let index = 0; index < registrations.length; index += 1) {
+      const registration = registrations[index];
+      const method = registration[1];
+      if (method === "getSnapshot") continue; // No command argument.
+      const body = source.slice(
+        registration.index,
+        registrations[index + 1]?.index ?? source.length,
+      );
+      if (platform === "iOS") {
+        const decoder = [
+          "clearDeviceSession",
+          "eraseAccount",
+          ...pendingEngineMethodNames,
+          "listAssets",
+        ].includes(method)
+          ? /Self\.require\(\s*command,\s*keys:/
+          : new RegExp(
+              `NativeCommandDecoder\\.require\\(\\s*command,\\s*for:\\s*\\.${method}\\s*\\)`,
+            );
+        assert.match(
+          body,
+          decoder,
+          `${platform} ${method} must validate its closed command`,
+        );
+      } else if (method === "setTransferPolicy") {
+        assert.match(body, /NativeCommandDecoder\.requireProtocol\(command\)/);
+        assert.match(
+          body,
+          /command\.keys\s*!=\s*setOf\("protocolVersion",\s*"paused",\s*"cellularAllowed"\)/,
+        );
+      } else {
+        const decoder = [
+          "clearDeviceSession",
+          "eraseAccount",
+          "reconcileNow",
+          "retry",
+          "listAssets",
+        ].includes(method)
+          ? /requireCommand\(\s*command,\s*setOf\(/
+          : new RegExp(
+              `NativeCommandDecoder\\.require\\(\\s*command,\\s*NativeCommandKind\\.${method.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}\\s*\\)`,
+            );
+        assert.match(
+          body,
+          decoder,
+          `${platform} ${method} must validate its closed command`,
+        );
+      }
+    }
     assert.doesNotMatch(source, /ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED/);
     assert.equal(
       (source.match(/AsyncFunction\("discardProvisionalTripKey"\)/g) ?? [])

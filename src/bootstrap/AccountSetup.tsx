@@ -82,8 +82,12 @@ export function AccountSetupProvider({
         <PhotoAccessScreen
           checking={photo.busy}
           unavailable={photo.unavailable}
+          reason={photo.reason}
           settingsRequired={photo.settingsRequired}
-          onContinue={() => void photo.request()}
+          onContinue={() => {
+            if (photo.unavailable) photo.retry();
+            else void photo.request();
+          }}
           onLater={photo.defer}
         />
       )}

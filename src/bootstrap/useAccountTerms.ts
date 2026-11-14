@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AccountApi } from "../infrastructure/api/crewRollApi";
+import { withDeadline } from "../application/shared/withDeadline";
+
+const POLICY_DEADLINE_MS = 15_000;
 
 export function useAccountTerms(
-  api: AccountApi,
+  api: Pick<AccountApi, "getAccountPolicy" | "acceptAccountTerms">,
   accountId: string | null,
   profileReady: boolean,
 ) {
@@ -14,11 +17,13 @@ export function useAccountTerms(
     error: null as string | null,
   });
   const generation = useRef(0);
+  const accepting = useRef(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const current = ++generation.current;
+    accepting.current = false;
     if (!accountId || !profileReady) return;
-    void api.getAccountPolicy().then(
+    void withDeadline(() => api.getAccountPolicy(), POLICY_DEADLINE_MS).then(
       (policy) => {
         if (generation.current === current)
           setState({
@@ -45,14 +50,23 @@ export function useAccountTerms(
       generation.current = current + 1;
     };
   }, [api, accountId, profileReady, attempt]);
-  const accepting = useRef(false);
   const accept = useCallback(async () => {
-    if (!accountId || accepting.current) return;
+    if (
+      !accountId ||
+      accepting.current ||
+      state.accountId !== accountId ||
+      state.checking ||
+      state.accepted
+    )
+      return;
     const current = generation.current;
     accepting.current = true;
     setState((value) => ({ ...value, busy: true, error: null }));
     try {
-      const result = await api.acceptAccountTerms();
+      const result = await withDeadline(
+        () => api.acceptAccountTerms(),
+        POLICY_DEADLINE_MS,
+      );
       if (generation.current === current)
         setState({
           accountId,
@@ -69,9 +83,9 @@ export function useAccountTerms(
           error: "Couldn’t save your choice. Please try again.",
         }));
     } finally {
-      accepting.current = false;
+      if (generation.current === current) accepting.current = false;
     }
-  }, [api, accountId]);
+  }, [api, accountId, state.accountId, state.checking, state.accepted]);
   return {
     ...state,
     checking: state.accountId !== accountId || state.checking,

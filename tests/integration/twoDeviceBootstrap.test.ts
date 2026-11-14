@@ -41,7 +41,7 @@ describe("two-device bootstrap", () => {
     await context.stop();
   });
 
-  it("registers, rotates, authenticates, and revokes two offline native devices", async () => {
+  it("registers, rotates, authenticates, and revokes two simulated HTTP device identities", async () => {
     const clerk = await createLocalClerkFixture();
     const authorizationA = `Bearer ${await clerk.sign({ subject: "user_phone_a" })}`;
     const authorizationB = `Bearer ${await clerk.sign({ subject: "user_phone_b" })}`;
@@ -134,6 +134,25 @@ describe("two-device bootstrap", () => {
       }>();
       expect(deviceA.deviceId).not.toBe(deviceB.deviceId);
       expect(deviceA.backgroundBearer).not.toBe(deviceB.backgroundBearer);
+      const deviceTimestamps = await context.db
+        .selectFrom("devices")
+        .select(["created_at", "background_credential_expires_at"])
+        .orderBy("id")
+        .execute();
+      expect(deviceTimestamps).toEqual([
+        {
+          created_at: now,
+          background_credential_expires_at: new Date(
+            now.getTime() + 30 * 86_400_000,
+          ),
+        },
+        {
+          created_at: now,
+          background_credential_expires_at: new Date(
+            now.getTime() + 30 * 86_400_000,
+          ),
+        },
+      ]);
 
       const secondA = await register(
         authorizationA,

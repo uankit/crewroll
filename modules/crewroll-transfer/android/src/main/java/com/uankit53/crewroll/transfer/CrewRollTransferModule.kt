@@ -17,17 +17,20 @@ import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
 class CrewRollTransferModule : Module() {
   private var runtimeValue: CrewRollNativeRuntime? = null
   private val invalidation: (Long) -> Unit = { revision -> sendEvent("engineInvalidated", mapOf("protocolVersion" to 1, "type" to "ENGINE_INVALIDATED", "revision" to revision)) }
+  private val pushHint: (com.uankit53.crewroll.transfer.media.NativePushHint) -> Unit = { hint -> sendEvent("pushHint", hint.data()) }
   @Volatile private var foreground = true
   private val commands = NativeOperationQueue { name, state, ms ->
     Log.i("CrewRollSession", "operation=$name state=$state durationMs=$ms")
   }
   private val mediaSession get() = runtime().mediaSession
+  private val transferCommands get() = CrewRollNativeRuntime.transferCommands
 
   override fun definition() = ModuleDefinition {
     Name("CrewRollTransfer")
-    Events("engineInvalidated")
+    Events("engineInvalidated", "pushHint")
     OnCreate {
       commands.submit("startup") {
+        CrewRollPushEvents.listen(pushHint)
         runtime().listen(invalidation)
         runLifecycleCleanup()
         runtime().foreground(foreground)
@@ -46,6 +49,7 @@ class CrewRollTransferModule : Module() {
     }
     OnDestroy {
       commands.submit("detach") {
+        CrewRollPushEvents.unlisten(pushHint)
         runtimeValue?.unlisten(invalidation)
         runtimeValue = null
       }
@@ -53,7 +57,7 @@ class CrewRollTransferModule : Module() {
     }
 
     AsyncFunction("ensureDeviceIdentity") { command: Map<String, Any?>, promise: Promise ->
-      bridge("ensureDeviceIdentity", promise) {
+      bridge("ensureDeviceIdentity", promise, changesSelection = true) {
         NativeCommandDecoder.require(command, NativeCommandKind.ENSURE_DEVICE_IDENTITY)
         val lifecycle = lifecycle()
         val identity = lifecycle.ensureDeviceIdentity(string(command, "accountId"))
@@ -70,7 +74,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("restoreDeviceSession") { command: Map<String, Any?>, promise: Promise ->
-      bridge("restoreDeviceSession", promise) {
+      bridge("restoreDeviceSession", promise, changesSelection = true) {
         NativeCommandDecoder.require(command, NativeCommandKind.RESTORE_DEVICE_SESSION)
         val deviceId = lifecycle().restoreDeviceSession(
           string(command, "accountId"), string(command, "installationId"), string(command, "apiBaseUrl"),
@@ -79,7 +83,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("installDeviceSession") { command: Map<String, Any?>, promise: Promise ->
-      bridge("installDeviceSession", promise) {
+      bridge("installDeviceSession", promise, changesSelection = true) {
         NativeCommandDecoder.require(command, NativeCommandKind.INSTALL_DEVICE_SESSION)
         val lifecycle = lifecycle()
         lifecycle.installDeviceSession(
@@ -93,22 +97,47 @@ class CrewRollTransferModule : Module() {
         null
       }
     }
+    AsyncFunction("refreshDeviceSession") { command: Map<String, Any?>, promise: Promise ->
+      var changed = false
+      bridge("refreshDeviceSession", promise, after = {
+        if (changed) {
+          val epoch = transferCommands.current()
+          engine().credentialRefreshed(string(command, "deviceId")) { transferCommands.matches(epoch) }
+        }
+      }) {
+        NativeCommandDecoder.require(command, NativeCommandKind.REFRESH_DEVICE_SESSION)
+        val lifecycle = lifecycle()
+        changed = lifecycle.refreshDeviceSession(
+          accountId = string(command, "accountId"),
+          installationId = string(command, "installationId"),
+          deviceId = string(command, "deviceId"),
+          backgroundBearer = string(command, "backgroundBearer"),
+          expiresAt = instant(command, "backgroundBearerExpiresAt"),
+          apiBaseUrl = string(command, "apiBaseUrl"),
+        )
+        null
+      }
+    }
     AsyncFunction("clearDeviceSession") { command: Map<String, Any?>, promise: Promise ->
-      future("clearDeviceSession", promise) {
+      future("clearDeviceSession", promise) { epoch ->
         requireCommand(command, setOf("protocolVersion"))
         val lifecycle = lifecycle()
         runtime().policy(false)
-        engine().stop().thenApply { mediaSession.change { lifecycle.clearDeviceSession() }; null }
+        engine().stop { transferCommands.matches(epoch) }.thenApply {
+          transferCommands.runIfCurrent(epoch) { mediaSession.change { lifecycle.clearDeviceSession() } }; null
+        }
       }
     }
     AsyncFunction("eraseAccount") { command: Map<String, Any?>, promise: Promise ->
-      future("eraseAccount", promise) {
+      future("eraseAccount", promise) { epoch ->
         requireCommand(command, setOf("protocolVersion", "accountId"))
         val accountId = string(command, "accountId")
         runtime().policy(false)
-        engine().stop().thenCompose {
-          val hash = mediaSession.change { lifecycle().eraseAccount(accountId) }
-          engine().eraseAccount(hash)
+        engine().stop { transferCommands.matches(epoch) }.thenCompose {
+          transferCommands.runIfCurrent(epoch) {
+            val hash = mediaSession.change { lifecycle().eraseAccount(accountId) }
+            engine().eraseAccount(hash, protectedMutation = { mutation -> transferCommands.runIfCurrent(epoch, mutation) }) { transferCommands.matches(epoch) }
+          }
         }.thenApply { null }
       }
     }
@@ -156,7 +185,7 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("importTripKey") { command: Map<String, Any?>, promise: Promise ->
-      bridge("importTripKey", promise) {
+      bridge("importTripKey", promise, after = { engine().reconcileRetention() }) {
         NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_TRIP_KEY)
         val lifecycle = lifecycle()
         lifecycle.importTripKey(
@@ -167,36 +196,37 @@ class CrewRollTransferModule : Module() {
           recipientDeviceId = string(command, "recipientDeviceId"),
           recipientE2eeKeyVersion = integer(command, "recipientE2eeKeyVersion"),
           wrappedKey = string(command, "wrappedKey"),
+          endsAt = string(command, "endsAt"),
         )
         null
       }
     }
     AsyncFunction("activateTrip") { command: Map<String, Any?>, promise: Promise ->
-      future("activateTrip", promise) {
+      future("activateTrip", promise) { epoch ->
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
         val lifecycle = lifecycle()
-        lifecycle.activateTrip(NativeCommandDecoder.activation(command))
+        mediaSession.change { lifecycle.activateTrip(NativeCommandDecoder.activation(command)) }
         runtime().policy(true, cellular = true)
-        engine().activate().thenApply { null }
+        engine().activate { transferCommands.matches(epoch) }.thenApply { null }
       }
     }
     AsyncFunction("deactivateTrip") { command: Map<String, Any?>, promise: Promise ->
-      future("deactivateTrip", promise) {
+      future("deactivateTrip", promise) { epoch ->
         NativeCommandDecoder.require(command, NativeCommandKind.DEACTIVATE_TRIP)
         val lifecycle = lifecycle()
-        lifecycle.deactivateTrip(string(command, "tripId"))
+        mediaSession.change { lifecycle.deactivateTrip(string(command, "tripId")) }
         runtime().policy(false)
-        engine().stop().thenApply { null }
+        engine().stop { transferCommands.matches(epoch) }.thenApply { null }
       }
     }
     AsyncFunction("setTransferPolicy") { command: Map<String, Any?>, promise: Promise ->
-      future("setTransferPolicy", promise) {
+      future("setTransferPolicy", promise) { epoch ->
         NativeCommandDecoder.requireProtocol(command)
         if (command.keys != setOf("protocolVersion", "paused", "cellularAllowed") || command["paused"] !is Boolean || command["cellularAllowed"] !is Boolean) {
           throw NativeKeyException.invalidCommand()
         }
         runtime().policy(!(command["paused"] as Boolean), command["cellularAllowed"] as Boolean)
-        engine().policy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean).thenApply { null }
+        engine().policy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean) { transferCommands.matches(epoch) }.thenApply { null }
       }
     }
     AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
@@ -232,17 +262,25 @@ class CrewRollTransferModule : Module() {
     if (command.keys != keys) throw NativeKeyException.invalidCommand()
     NativeCommandDecoder.requireProtocol(command)
   }
-  private fun future(name: String, promise: Promise, changesSession: Boolean = true, operation: () -> CompletableFuture<*>) {
+  private fun future(name: String, promise: Promise, changesSession: Boolean = true, operation: (Long) -> CompletableFuture<*>) {
     val started = System.nanoTime()
+    val epoch = if (changesSession) transferCommands.advance() else transferCommands.current()
     commands.submit("dispatch_$name") {
-      if (changesSession) mediaSession.change(operation) else operation()
+      // Never hold the credential-cache lock while calling the runtime/engine:
+      // engine policy predicates and OS jobs may read that same cache. Actual
+      // lifecycle mutations below are individually wrapped in change().
+      transferCommands.runIfCurrent(epoch) { operation(epoch) }
     }.whenComplete { pending, queueError ->
       if (queueError != null) reject(promise, queueError)
       else pending.whenComplete { value, error ->
-        if (changesSession) mediaSession.clear()
+        var completionError = error
+        if (completionError == null) {
+          try { transferCommands.runIfCurrent(epoch) { if (changesSession) mediaSession.clear() } }
+          catch (stale: Throwable) { completionError = stale }
+        }
         val elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
-        Log.i("CrewRollSession", "operation=$name state=${if (error == null) "completed" else "failed"} durationMs=$elapsed")
-        if (error == null) promise.resolve(value) else reject(promise, error)
+        Log.i("CrewRollSession", "operation=$name state=${if (completionError == null) "completed" else "failed"} durationMs=$elapsed")
+        if (completionError == null) promise.resolve(value) else reject(promise, completionError)
       }
     }
   }
@@ -250,10 +288,16 @@ class CrewRollTransferModule : Module() {
   private fun runLifecycleCleanup() {
     // Errors are recorded by the queue and surfaced by the next session operation.
     lifecycle().runScheduledCleanup()
+    engine().reconcileRetention().join()
   }
 
-  private fun bridge(name: String, promise: Promise, operation: () -> Any?) {
-    commands.submit(name) { mediaSession.change(operation) }.whenComplete { value, error ->
+  private fun bridge(name: String, promise: Promise, after: () -> Unit = {}, changesSelection: Boolean = false, operation: () -> Any?) {
+    val epoch = if (changesSelection) transferCommands.advance() else transferCommands.current()
+    commands.submit(name) {
+      val result = transferCommands.runIfCurrent(epoch) { mediaSession.change(operation) }
+      transferCommands.runIfCurrent(epoch) { after() }
+      result
+    }.whenComplete { value, error ->
       if (error == null) promise.resolve(value) else reject(promise, error)
     }
   }

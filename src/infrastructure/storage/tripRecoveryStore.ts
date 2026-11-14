@@ -193,6 +193,35 @@ export class TripRecoveryStore {
     );
   }
 
+  async clearPendingJoin(
+    scope: TripRecoveryScope,
+    commandId: string,
+  ): Promise<boolean> {
+    validateScope(scope);
+    if (!isUuid(commandId)) throw new Error("invalid join recovery command");
+    const key = await this.storageKey(scope);
+    let cleared = false;
+    await this.serialized(key, async () => {
+      const serialized = await this.dependencies.secureStore.getItemAsync(key);
+      if (serialized === null) return;
+      let record: TripRecoveryRecord | null;
+      try {
+        record = validateRecord(JSON.parse(serialized));
+      } catch {
+        return;
+      }
+      if (
+        record?.state !== "UNKNOWN_JOIN" ||
+        record.commandId !== commandId ||
+        record.deviceId !== scope.deviceId
+      )
+        return;
+      await this.dependencies.secureStore.deleteItemAsync(key);
+      cleared = true;
+    });
+    return cleared;
+  }
+
   private async storageKey(scope: TripRecoveryScope): Promise<string> {
     const scopeInput = JSON.stringify([scope.clerkSubject, scope.deviceId]);
     const digest = await this.dependencies.digest.sha256(scopeInput);

@@ -45,8 +45,7 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
     }
 
     public func json(path: String, method: String, body: Data?, context: NativeMediaContext, commandID: String) async throws -> Data {
-        guard let base = URL(string: context.session.apiBaseURL), base.scheme == "https",
-              let url = URL(string: path, relativeTo: base), url.host == base.host else { throw NativeKeyError.invalidState }
+        let url = try NativeTransferURLPolicy.apiURL(path: path, baseURL: context.session.apiBaseURL)
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
@@ -102,6 +101,30 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
     private func requireSuccess(_ response: URLResponse, authenticated: Bool) throws {
         guard let http = response as? HTTPURLResponse else { throw NativeKeyError.invalidEnvelope }
         guard (200..<300).contains(http.statusCode) else { throw NativeTransferHTTPError(status: http.statusCode, authenticated: authenticated) }
+    }
+}
+
+/// Account credentials are confined to the configured HTTPS origin. Object
+/// capabilities use a separate transport and never receive the account bearer.
+enum NativeTransferURLPolicy {
+    static func apiURL(path: String, baseURL: String) throws -> URL {
+        guard let base = URL(string: baseURL),
+              path.hasPrefix("/"), !path.hasPrefix("//"),
+              let url = URL(string: path, relativeTo: base)?.absoluteURL,
+              sameHTTPSOrigin(url, base) else { throw NativeKeyError.invalidState }
+        return url
+    }
+
+    static func sameHTTPSOrigin(_ candidate: URL?, _ expected: URL?) -> Bool {
+        guard let candidate, let expected,
+              candidate.scheme == "https", expected.scheme == "https",
+              let candidateHost = candidate.host, !candidateHost.isEmpty,
+              let expectedHost = expected.host, !expectedHost.isEmpty,
+              candidateHost.lowercased() == expectedHost.lowercased(),
+              (candidate.port ?? 443) == (expected.port ?? 443),
+              candidate.user == nil, candidate.password == nil, candidate.fragment == nil,
+              expected.user == nil, expected.password == nil, expected.fragment == nil else { return false }
+        return true
     }
 }
 

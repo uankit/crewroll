@@ -86,7 +86,7 @@ const controlPolicyOracle = new ownerDefinitions.control.ESLint({
   overrideConfigFile: true,
   overrideConfig: [
     {
-      files: ["src/**/*.{ts,tsx,js,mts}"],
+      files: ["src/**/*.{ts,tsx,js,mts}", "worker/**/*.{ts,tsx,js,mts}"],
       plugins: { boundaries: controlRequire("eslint-plugin-boundaries") },
       languageOptions: {
         parser: controlRequire("typescript-eslint").parser,
@@ -146,10 +146,9 @@ const fixtureFiles = {
     "openapi/__boundary-source.ts": "export {};\n",
     "openapi/__boundary-target.ts": "export const target = true;\n",
     "crypto/__boundary-target.ts": "export const target = true;\n",
+    "crypto/__boundary-source.ts": "export {};\n",
     "native/__boundary-source.ts": "export {};\n",
     "native/__boundary-target.ts": "export const target = true;\n",
-    "storage/__boundary-source.ts": "export {};\n",
-    "storage/__boundary-target.ts": "export const target = true;\n",
     "fixtures/__boundary-source.ts": "export {};\n",
     "fixtures/__boundary-target.ts": "export const target = true;\n",
     "generator/__boundary-source.ts": "export {};\n",
@@ -165,6 +164,7 @@ const fixtureFiles = {
     "src/worker/__boundary-source.ts": "export {};\n",
     "src/worker/__boundary-target.ts": "export const target = true;\n",
     "src/worker/__boundary-worker.ts": "export {};\n",
+    "worker/__boundary-worker.ts": "export {};\n",
     "src/app/__boundary-service.ts": "export {};\n",
     "src/app/__boundary-target.ts": "export const target = true;\n",
     "src/app/index.ts": 'export { target } from "./__boundary-target";\n',
@@ -537,8 +537,13 @@ function assertForbiddenInEveryDependencyForm(result, expectedCount) {
   const boundaryErrors = result.messages.filter(
     ({ ruleId }) => ruleId === "boundaries/dependencies",
   );
+  // v7.4 can report both the explicit type dependency and its configured AST
+  // dependency at one import location. Every distinct import must still fail.
+  const rejectedLocations = new Set(
+    boundaryErrors.map(({ line, column }) => `${line}:${column}`),
+  );
   assert.equal(
-    boundaryErrors.length,
+    rejectedLocations.size,
     expectedCount,
     `expected every dependency form to be rejected:\n${formatMessages(result)}`,
   );
@@ -652,7 +657,7 @@ test("effective configs independently wire the owning ESLint/plugin/resolver", a
       definition.configProbe,
     );
     assert.equal(definition.ESLint.version.split(".")[0], definition.version);
-    assert.equal(config.plugins.boundaries.meta.version, "7.2.0");
+    assert.equal(config.plugins.boundaries.meta.version, "7.4.2");
     assert.deepEqual(config.settings["import/resolver"].typescript, {
       alwaysTryTypes: true,
       project: definition.tsconfig,
@@ -1062,9 +1067,9 @@ test("every production layer class has an effective forbidden-edge mutation", as
       "openapi/__boundary-source.ts",
     ],
     [
-      "contracts native to storage",
+      "contracts native to fixture",
       "contracts",
-      'import "../storage/__boundary-target.js";\n',
+      'import "../fixtures/__boundary-target.js";\n',
       "native/__boundary-source.ts",
     ],
     [
@@ -1074,16 +1079,10 @@ test("every production layer class has an effective forbidden-edge mutation", as
       "native/__boundary-source.ts",
     ],
     [
-      "contracts storage to native",
+      "contracts crypto to native",
       "contracts",
       'import "../native/__boundary-target.js";\n',
-      "storage/__boundary-source.ts",
-    ],
-    [
-      "contracts storage to non-public openapi internal",
-      "contracts",
-      'import "../openapi/__boundary-target.js";\n',
-      "storage/__boundary-source.ts",
+      "crypto/__boundary-source.ts",
     ],
     [
       "control api to db",
@@ -1457,6 +1456,35 @@ test("the oracle never owns locked future control composition entrypoints", () =
       `${relativePath} must remain available for its planned implementation`,
     );
   }
+});
+
+test("the deployed Worker has narrow composition and storage adapter boundaries", async () => {
+  assertForbidden(
+    await lintControlPolicy(
+      'import "../src/db/__boundary-target.js";\n',
+      "worker/__boundary-worker.ts",
+    ),
+    "boundaries/dependencies",
+  );
+  assertAllowed(
+    await lintControlPolicy(
+      'import "../src/db/__boundary-target.js";\n',
+      "worker/requestRuntime.ts",
+    ),
+  );
+  assertAllowed(
+    await lintControlPolicy(
+      'import type { CiphertextStore } from "../src/modules/media/ports/mediaService.js";\n',
+      "worker/r2CiphertextStore.ts",
+    ),
+  );
+  assertForbidden(
+    await lintControlPolicy(
+      'import "../src/db/__boundary-target.js";\n',
+      "worker/r2CiphertextStore.ts",
+    ),
+    "boundaries/dependencies",
+  );
 });
 
 test("Trip commands keep constant-time byte comparison behind a platform port", async () => {
@@ -1887,12 +1915,6 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
       "native/__boundary-source.ts",
     ],
     [
-      "contracts storage to openapi schema",
-      "contracts",
-      'import "../openapi/index.js";\n',
-      "storage/__boundary-source.ts",
-    ],
-    [
       "contracts fixture to definition",
       "contracts",
       'import "../openapi/__boundary-target.js";\n',
@@ -1925,7 +1947,7 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
     [
       "contracts test to definition",
       "contracts",
-      'import "../storage/__boundary-target.js";\n',
+      'import "../native/__boundary-target.js";\n',
       "test/__boundary-source.ts",
     ],
     [
@@ -2064,7 +2086,6 @@ test("the existing source import graph stays green under effective configs", asy
         "openapi",
         "crypto",
         "native",
-        "storage",
         "fixtures",
         "generator",
         "test",

@@ -37,16 +37,20 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
         }.map { it.activityInfo.packageName }.filter { it != context.packageName }.toSet()
     }
     private fun permission() {
-        if (Build.VERSION.SDK_INT < 29) throw PhotoLibraryException("PHOTO_PERMISSION")
         val read = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
-        if (context.checkSelfPermission(read) != PackageManager.PERMISSION_GRANTED ||
-            context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED) throw PhotoLibraryException("PHOTO_PERMISSION")
+        val access = nativePhotoAccess(Build.VERSION.SDK_INT,
+            fullRead = context.checkSelfPermission(read) == PackageManager.PERMISSION_GRANTED,
+            selectedRead = Build.VERSION.SDK_INT >= 34 && context.checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED,
+            originalMetadata = context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED)
+        if (access != NativePhotoAccess.FULL) throw PhotoLibraryException("PHOTO_PERMISSION")
     }
     override fun observe(changed: (() -> Unit)?) {
-        observer?.let(resolver::unregisterContentObserver); observer = null
+        val previous = observer; observer = null
+        previous?.let(resolver::unregisterContentObserver)
         if (changed == null) return
-        observer = object : ContentObserver(Handler(Looper.getMainLooper())) { override fun onChange(selfChange: Boolean) { changed() } }
-        resolver.registerContentObserver(collection, true, observer!!)
+        val next = object : ContentObserver(Handler(Looper.getMainLooper())) { override fun onChange(selfChange: Boolean) { changed() } }
+        resolver.registerContentObserver(collection, true, next)
+        observer = next
     }
     override fun discover(startsAt: Instant, endsAt: Instant, excluding: Set<String>, limit: Int): List<DiscoveredPhoto> {
         permission()

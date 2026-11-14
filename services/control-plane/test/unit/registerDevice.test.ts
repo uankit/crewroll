@@ -208,36 +208,55 @@ describe("registerDevice", () => {
     expect(test.idempotencies.has(`${userId}:${retryKey}`)).toBe(true);
   });
 
-  it("preserves push ciphertext when omitted and refreshes credentials at seven days", async () => {
-    const test = createDeviceTestHarness();
-    const register = createRegisterDevice(test.dependencies);
-    const body = validRegisterDeviceBody();
-    await register.execute({
-      body,
-      clerkSubject: "user_clerk_subject",
-      idempotencyKey,
-    });
-    const stored = required(test.devices.get(body.installationId));
-    const priorCiphertext = stored.encryptedPushToken;
-    test.devices.set(body.installationId, {
-      ...stored,
-      backgroundCredentialExpiresAt: new Date("2026-09-06T00:00:00.000Z"),
-    });
-    const bodyWithoutPushToken = { ...body };
-    delete bodyWithoutPushToken.pushToken;
+  it.each([
+    { remainingDays: 8, renew: false },
+    { remainingDays: 7, renew: true },
+    { remainingDays: 6, renew: true },
+    { remainingDays: -1, renew: true },
+  ])(
+    "preserves device identity and push ciphertext with $remainingDays credential days left",
+    async ({ remainingDays, renew }) => {
+      const test = createDeviceTestHarness();
+      const register = createRegisterDevice(test.dependencies);
+      const body = validRegisterDeviceBody();
+      await register.execute({
+        body,
+        clerkSubject: "user_clerk_subject",
+        idempotencyKey,
+      });
+      const stored = required(test.devices.get(body.installationId));
+      const priorCiphertext = stored.encryptedPushToken;
+      const expiry = new Date(now.getTime() + remainingDays * 86_400_000);
+      test.devices.set(body.installationId, {
+        ...stored,
+        backgroundCredentialExpiresAt: expiry,
+      });
+      const bodyWithoutPushToken = { ...body };
+      delete bodyWithoutPushToken.pushToken;
 
-    const result = await register.execute({
-      body: bodyWithoutPushToken,
-      clerkSubject: "user_clerk_subject",
-      idempotencyKey: "018f0d98-76fa-7d1a-b4b4-1f742c2e3172",
-    });
+      const result = await register.execute({
+        body: bodyWithoutPushToken,
+        clerkSubject: "user_clerk_subject",
+        idempotencyKey: "018f0d98-76fa-7d1a-b4b4-1f742c2e3172",
+      });
 
-    expect(result.backgroundBearerExpiresAt).toBe("2026-09-29T00:00:00.000Z");
-    expect(
-      required(test.devices.get(body.installationId)).encryptedPushToken,
-    ).toEqual(priorCiphertext);
-    expect(test.calls.protect).toBe(1);
-  });
+      expect(result.backgroundBearerExpiresAt).toBe(
+        renew
+          ? new Date(now.getTime() + 30 * 86_400_000).toISOString()
+          : expiry.toISOString(),
+      );
+      expect(result.deviceId).toBe(stored.deviceId);
+      expect(required(test.devices.get(body.installationId))).toMatchObject({
+        authenticationPublicKey: stored.authenticationPublicKey,
+        e2eePublicKey: stored.e2eePublicKey,
+        deviceId: stored.deviceId,
+      });
+      expect(
+        required(test.devices.get(body.installationId)).encryptedPushToken,
+      ).toEqual(priorCiphertext);
+      expect(test.calls.protect).toBe(1);
+    },
+  );
 
   it("rejects a changed request under a live idempotency key before KMS", async () => {
     const test = createDeviceTestHarness();

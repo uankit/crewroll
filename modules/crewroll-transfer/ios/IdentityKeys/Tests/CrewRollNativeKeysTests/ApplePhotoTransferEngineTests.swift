@@ -5,6 +5,420 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testPendingPageArrivingAfterPauseCannotPublishWorkOrCursor() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let entered = expectation(description: "Pending delivery request in flight")
+        var response: CheckedContinuation<Data, Never>?
+        fixture.network.pendingPageOverride = { _ in
+            await withCheckedContinuation { response = $0; entered.fulfill() }
+        }
+        let engine = fixture.engine {}
+        await engine.activate()
+        await fulfillment(of: [entered], timeout: 5)
+        let stop = Task { await engine.stop() }
+        try await eventually { try await engine.snapshot()["paused"] as? Bool == true }
+        var page = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture.network.pending) as? [String: Any])
+        page["nextCursor"] = "late_page"; page["hasMore"] = true
+        response?.resume(returning: try JSONSerialization.data(withJSONObject: page)); response = nil
+        await stop.value
+        let ledger = try fixture.ledger()
+        XCTAssertTrue(ledger.snapshot().works.isEmpty)
+        XCTAssertNil(ledger.pendingDeliveryCursor(fixture.context.metadata.tripID))
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.receipts, 0)
+    }
+
+    func testMalformedPendingPagesCannotPublishWorkOrAdvanceDiscovery() async throws {
+        for kind in ["missing-cursor", "missing-has-more", "empty-more", "end-with-cursor", "unsafe-cursor", "same-cursor", "wrong-trip", "duplicate", "partial-invalid"] {
+            let fixture = try TransferFixture(); defer { fixture.cleanup() }
+            let trip = fixture.context.metadata.tripID
+            let ledger = try fixture.ledger()
+            let valid = try XCTUnwrap((JSONSerialization.jsonObject(with: fixture.network.pending) as? [String: Any])?["items"] as? [[String: Any]])
+            var items = valid
+            var page: [String: Any] = ["items": items, "hasMore": true, "nextCursor": "next_page"]
+            switch kind {
+            case "missing-cursor": page.removeValue(forKey: "nextCursor")
+            case "missing-has-more": page.removeValue(forKey: "hasMore")
+            case "empty-more": page["items"] = []
+            case "end-with-cursor": page["hasMore"] = false
+            case "unsafe-cursor": page["nextCursor"] = "bad&cursor=private"
+            case "same-cursor":
+                try ledger.admitPendingDeliveries([], tripID: trip, nextCursor: "next_page")
+            case "wrong-trip":
+                items[0]["tripId"] = "01990000-0000-7000-8000-000000000099"; page["items"] = items
+            case "duplicate": page["items"] = valid + valid
+            default:
+                var invalid = valid[0]; invalid["deliveryId"] = "not-a-uuid"
+                page["items"] = valid + [invalid]
+            }
+            let bytes = try JSONSerialization.data(withJSONObject: page)
+            fixture.network.pendingPageOverride = { _ in bytes }
+            let engine = fixture.engine {}
+            await engine.activate()
+            try await eventually {
+                (try await engine.snapshot()["blockers"] as? [String])?.contains("INTEGRITY_FAILURE") == true
+            }
+            await engine.stop()
+            XCTAssertFalse(fixture.network.pendingPaths.isEmpty, kind)
+            let reopened = try NativeTransferJournal(directory: ledger.directory)
+            XCTAssertTrue(reopened.snapshot().works.isEmpty, kind)
+            XCTAssertEqual(reopened.pendingDeliveryCursor(trip), kind == "same-cursor" ? "next_page" : nil, kind)
+            XCTAssertEqual(fixture.photos.saves, 0, kind)
+            XCTAssertEqual(fixture.network.receipts, 0, kind)
+            XCTAssertEqual(fixture.network.downloads, 0, kind)
+        }
+    }
+
+    func testBlockedFirstPageCannotStarveLaterOriginalAndDiscoveryResumesAfterRestart() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let ledger = try fixture.ledger()
+        let trip = fixture.context.metadata.tripID
+        var head: [[String: Any]] = []
+        for index in 0..<100 {
+            let id = String(format: "01990000-0000-4000-8001-%012d", index)
+            var work = NativePhotoWork(workID: id, assetID: id, tripID: trip,
+                capturedAt: Date(), sourceLocalID: nil, deliveryID: id)
+            work.blocker = "INTEGRITY_FAILURE"
+            try ledger.put(work)
+            head.append(["deliveryId": id, "assetId": id, "tripId": trip,
+                "sourceDeviceId": fixture.context.session.deviceID, "committedAt": "2026-09-08T12:00:00Z"])
+        }
+        let cursor = "blocked_page_1"
+        fixture.network.pendingPageOverride = { path in
+            if path.contains("after=\(cursor)") {
+                var last = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture.network.pending) as? [String: Any])
+                last["nextCursor"] = NSNull(); last["hasMore"] = false
+                return try JSONSerialization.data(withJSONObject: last)
+            }
+            return try JSONSerialization.data(withJSONObject: ["items": head,
+                "nextCursor": fixture.network.receipts == 0 ? cursor as Any : NSNull(),
+                "hasMore": fixture.network.receipts == 0])
+        }
+        let first = fixture.engine {}
+        await first.activate()
+        try await eventually { try fixture.readPendingDeliveryCursor() == cursor }
+        await first.stop()
+        let file = ledger.directory.appendingPathComponent("journal.json")
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual((stored["pendingDeliveryCursors"] as? [String: String])?[trip], cursor)
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.receipts, 0)
+        XCTAssertEqual(try fixture.readWorks().filter { $0.blocker == "INTEGRITY_FAILURE" }.count, 100)
+
+        let restarted = fixture.engine {}
+        await restarted.activate()
+        try await eventually { fixture.network.receipts == 1 }
+        await restarted.stop()
+        XCTAssertTrue(fixture.network.pendingPaths.contains("/v1/deliveries/pending?tripId=\(trip)&after=\(cursor)"))
+        XCTAssertEqual(fixture.photos.saves, 1)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+        let after = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertNil((after["pendingDeliveryCursors"] as? [String: String])?[trip])
+        XCTAssertEqual(try fixture.readWorks().filter { $0.blocker == "INTEGRITY_FAILURE" }.count, 100)
+    }
+
+    func testCredentialRotationRecoversPreinstallAndLateOldBearerRejections() async throws {
+        for lateFailure in [false, true] {
+            let fixture = try TransferFixture(); defer { fixture.cleanup() }
+            let selected = LockedTransferContext(fixture.context)
+            let requested = lateFailure ? expectation(description: "old credential request started") : nil
+            var release: CheckedContinuation<Void, Never>?
+            var rejected = false
+            let rejectOld: (NativeMediaContext) async throws -> Void = { context in
+                if context.session.backgroundBearer == fixture.context.session.backgroundBearer {
+                    if lateFailure { await withCheckedContinuation { release = $0; requested?.fulfill() } }
+                    rejected = true
+                    throw NativeTransferHTTPError(status: 401, authenticated: true)
+                }
+            }
+            if lateFailure { fixture.network.beforeSavedReceipt = rejectOld }
+            else { fixture.network.beforeDownloadGrant = rejectOld }
+            let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { selected.value }, invalidated: { _ in },
+                library: fixture.photos, transportFactory: { _ in fixture.network })
+            await engine.activate()
+            if let requested { await fulfillment(of: [requested], timeout: 5) }
+            else { try await eventually { (try? fixture.readWorks())?.contains { $0.blocker == "AUTH_REVOKED" } == true } }
+            var fresh = fixture.context
+            fresh.session = DeviceSessionRecord(deviceID: fresh.session.deviceID, backgroundBearer: Data("fresh-credential".utf8),
+                expiresAt: Date().addingTimeInterval(30 * 86_400), apiBaseURL: fresh.session.apiBaseURL)
+            selected.value = fresh
+            try await engine.credentialRefreshed(deviceID: fresh.session.deviceID)
+            release?.resume(); release = nil
+            try await eventually(timeout: 8) { fixture.network.receipts == 1 }
+            XCTAssertTrue(rejected)
+            XCTAssertEqual(fixture.photos.saves, 1)
+            XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+            XCTAssertFalse(try fixture.readWorks().contains { $0.blocker == "AUTH_REVOKED" })
+            let snapshot = try await engine.snapshot()
+            XCTAssertEqual(snapshot["paused"] as? Bool, false)
+            await engine.stop()
+        }
+    }
+
+    func testCurrentCredentialRejectionStaysBlockedAndRefreshDoesNotClearOtherFailuresOrResume() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let selected = LockedTransferContext(fixture.context)
+        let ledger = try fixture.ledger()
+        var unrelated = NativePhotoWork(workID: UUID().uuidString.lowercased(), assetID: UUID().uuidString.lowercased(),
+            tripID: fixture.context.metadata.tripID, capturedAt: Date(), sourceLocalID: nil, deliveryID: UUID().uuidString.lowercased())
+        unrelated.blocker = "INTEGRITY_FAILURE"; try ledger.put(unrelated)
+        var rejections = 0
+        fixture.network.beforeDownloadGrant = { _ in rejections += 1; throw NativeTransferHTTPError(status: 403, authenticated: true) }
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { selected.value }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network })
+        await engine.activate()
+        try await eventually { try fixture.readWorks().contains { $0.blocker == "AUTH_REVOKED" } }
+        await engine.stop()
+        let auth = try XCTUnwrap(fixture.readWorks().first { $0.blocker == "AUTH_REVOKED" })
+        // Stale refresh is ignored; an actual current-token rejection remains a
+        // genuine blocker unless a newly installed credential authorizes retry.
+        try await engine.credentialRefreshed(deviceID: fixture.context.session.deviceID, ifCurrent: { false })
+        XCTAssertEqual(try fixture.readWorks().first { $0.workID == auth.workID }?.blocker, "AUTH_REVOKED")
+        var fresh = fixture.context
+        fresh.session = DeviceSessionRecord(deviceID: fresh.session.deviceID, backgroundBearer: Data("fresh-rejected-credential".utf8),
+            expiresAt: Date().addingTimeInterval(30 * 86_400), apiBaseURL: fresh.session.apiBaseURL)
+        selected.value = fresh
+        try await engine.credentialRefreshed(deviceID: fixture.context.session.deviceID)
+        XCTAssertEqual(try fixture.readWorks().first { $0.workID == unrelated.workID }?.blocker, "INTEGRITY_FAILURE")
+        let snapshot = try await engine.snapshot()
+        XCTAssertEqual(snapshot["paused"] as? Bool, true)
+        XCTAssertEqual(fixture.network.receipts, 0)
+        XCTAssertEqual(fixture.photos.saves, 0)
+        await engine.activate()
+        try await eventually { try fixture.readWorks().first { $0.workID == auth.workID }?.blocker == "AUTH_REVOKED" }
+        XCTAssertEqual(rejections, 2, "the newly current rejected credential remains blocked instead of looping")
+        await engine.stop()
+    }
+
+    func testStaleAccountEraseCannotDeleteFilesAfterWaitingForPhotoSave() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let entered = expectation(description: "PhotoKit save in flight")
+        fixture.photos.suspendSave = { entered.fulfill() }
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { fixture.context }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network })
+        await engine.activate()
+        await fulfillment(of: [entered], timeout: 5)
+        // Inspect the path directly. Constructing a second journal while a save
+        // is in flight would run restart cleanup against its plaintext stage.
+        let directory = fixture.root.appendingPathComponent(fixture.context.scope.accountHash + "." + fixture.context.scope.installationID)
+        let fence = NativeTransferCommandFence()
+        let epoch = fence.advance()
+        let erase = Task { try await engine.eraseAccount(accountHash: fixture.context.scope.accountHash, ifCurrent: { fence.matches(epoch) },
+            protectedMutation: { work in try fence.withCurrent(epoch, work) }) }
+        try await eventually { try await engine.snapshot()["paused"] as? Bool == true }
+        _ = fence.advance()
+        fixture.photos.resumeSave?.resume(); fixture.photos.resumeSave = nil
+        do {
+            try await erase.value
+            XCTFail("an obsolete account command must fail before file removal")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+        await engine.stop()
+    }
+
+    func testSelectionChangingAfterErasePredicateCannotDeleteReplacementFiles() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let ledger = try fixture.ledger()
+        let fence = NativeTransferCommandFence()
+        let old = fence.advance()
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { nil }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network })
+        do {
+            try await engine.eraseAccount(accountHash: fixture.context.scope.accountHash, ifCurrent: { fence.matches(old) },
+                protectedMutation: { work in
+                    // A new same-account selection arrives after the actor's
+                    // final predicate but before its filesystem mutation.
+                    _ = fence.advance()
+                    try fence.withCurrent(old, work)
+                })
+            XCTFail("obsolete erase must reject")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ledger.directory.path))
+    }
+
+    func testRetentionRetryRestoresRunningTripButNeverOverridesANewerPause() async throws {
+        for (stopBetweenAttempts, clearBeforeFailure) in [(false, false), (true, false), (false, true), (true, true)] {
+            let fixture = try TransferFixture(); defer { fixture.cleanup() }
+            var expired: [NativeExpiredTrip] = []
+            var failOnce = true
+            let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { fixture.context }, invalidated: { _ in },
+                library: fixture.photos, transportFactory: { _ in fixture.network }, expiredTrips: { expired }, purgeExpiredKey: { _, cleanup in
+                    try cleanup()
+                    if failOnce {
+                        failOnce = false
+                        // The deletion can commit before a later error is
+                        // returned. Recovery must also work with an empty scan.
+                        if clearBeforeFailure { expired = [] }
+                        throw NativeKeyError.accessLocked
+                    }
+                    expired = []
+                    return true
+                })
+            await engine.activate()
+            try await eventually { fixture.network.receipts == 1 && fixture.network.previewFeedReads > 0 }
+            expired = [NativeExpiredTrip(scope: fixture.context.scope,
+                tripID: "01990000-0000-7000-8000-000000000099", deadline: Date().addingTimeInterval(-1))]
+            do {
+                try await engine.reconcileRetention(force: true)
+                XCTFail("the failed secure-storage write must stay visible")
+            } catch { XCTAssertEqual(error as? NativeKeyError, .accessLocked) }
+            let failed = try await engine.snapshot()
+            XCTAssertEqual(failed["paused"] as? Bool, true)
+            let before = fixture.network.previewFeedReads
+            if stopBetweenAttempts { await engine.stop() }
+            try await engine.reconcileRetention(force: true)
+            let recovered = try await engine.snapshot()
+            XCTAssertEqual(recovered["paused"] as? Bool, stopBetweenAttempts)
+            if stopBetweenAttempts {
+                await engine.foreground(true)
+                await engine.wakePreviews()
+                XCTAssertEqual(fixture.network.previewFeedReads, before)
+            } else {
+                try await eventually { fixture.network.previewFeedReads > before }
+            }
+            XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+            await engine.stop()
+        }
+    }
+
+    func testFailedPurgeAcknowledgmentRetriesOnTimerEvenWhenNoKeysRemain() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        var expired: [NativeExpiredTrip] = []
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { fixture.context }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network }, expiredTrips: { expired },
+            nextRetentionDeadline: { expired.first?.deadline }, purgeExpiredKey: { _, cleanup in
+                try cleanup()
+                expired = []
+                throw NativeKeyError.accessLocked
+            }, retentionRetryDelay: 0.05)
+        await engine.activate()
+        try await eventually { fixture.network.receipts == 1 && fixture.network.previewFeedReads > 0 }
+        expired = [NativeExpiredTrip(scope: fixture.context.scope, tripID: "01990000-0000-7000-8000-000000000099", deadline: Date().addingTimeInterval(-1))]
+        do { try await engine.reconcileRetention(force: true); XCTFail("failed purge must surface") }
+        catch { XCTAssertEqual(error as? NativeKeyError, .accessLocked) }
+        let failed = try await engine.snapshot()
+        XCTAssertEqual(failed["paused"] as? Bool, true)
+        try await eventually { try await engine.snapshot()["paused"] as? Bool == false }
+        await engine.stop()
+    }
+
+    func testKnownHardDeadlineIsReconciledWhileSharingIsPaused() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let deadline = Date().addingTimeInterval(0.1)
+        var erased = false
+        let expired = NativeExpiredTrip(scope: fixture.context.scope, tripID: fixture.context.metadata.tripID, deadline: deadline)
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { nil }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network },
+            expiredTrips: { !erased && Date() >= deadline ? [expired] : [] },
+            nextRetentionDeadline: { erased ? nil : deadline }, purgeExpiredKey: { _, cleanup in try cleanup(); erased = true; return true })
+        try await engine.reconcileRetention(force: true)
+        XCTAssertFalse(erased)
+        try await eventually { erased }
+        XCTAssertEqual(fixture.network.receipts, 0)
+        let snapshot = try await engine.snapshot()
+        XCTAssertEqual(snapshot["paused"] as? Bool, true)
+    }
+
+    func testReconciledStaleCandidatePreservesJournalAndStagesBeforeAnyKeyRemoval() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let ledger = try fixture.ledger()
+        let trip = fixture.context.metadata.tripID
+        var work = NativePhotoWork(workID: "new-work", assetID: "new-work", tripID: trip,
+            capturedAt: Date(), sourceLocalID: "source", deliveryID: nil)
+        work.directory = "stage-new"
+        try ledger.put(work)
+        let stage = ledger.directory.appendingPathComponent("stage-new")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false)
+        try Data([7]).write(to: stage.appendingPathComponent("original.ciphertext"))
+        let stale = NativeExpiredTrip(scope: fixture.context.scope, tripID: trip, deadline: Date().addingTimeInterval(-1))
+        var checked = false
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { nil }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network }, expiredTrips: { [stale] },
+            purgeExpiredKey: { candidate, _ in
+                XCTAssertEqual(candidate, stale)
+                // Authenticated backfill changed the store's effective deadline
+                // after the scan. The store skips the supplied cleanup closure.
+                checked = true
+                return false
+            })
+        try await engine.reconcileRetention(force: true)
+        XCTAssertTrue(checked)
+        XCTAssertNotNil(try fixture.ledger().record("new-work"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stage.appendingPathComponent("original.ciphertext").path))
+        XCTAssertEqual(fixture.network.receipts, 0)
+    }
+
+    func testRetentionPurgesOnlyExpiredTripFilesBeforeErasingItsKey() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        fixture.photos.bytes = fixture.plaintext
+        let ledger = try fixture.ledger()
+        let trip = fixture.context.metadata.tripID
+        let otherTrip = "01990000-0000-7000-8000-000000000099"
+        for (id, tripID, stage) in [("expired", trip, "stage-expired"), ("retained", otherTrip, "stage-retained")] {
+            var work = NativePhotoWork(workID: id, assetID: id, tripID: tripID, capturedAt: Date(), sourceLocalID: "source", deliveryID: nil)
+            work.directory = stage
+            try ledger.put(work)
+            let directory = ledger.directory.appendingPathComponent(stage)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            try Data([7]).write(to: directory.appendingPathComponent("original.ciphertext"))
+        }
+        let cache = try NativePreviewStore(directory: ledger.directory)
+        let grant = try XCTUnwrap(fixture.network.previewGrant)
+        try cache.enqueue([NativePreviewRecord(assetID: grant.assetId, tripID: trip, capturedAt: Date(), retainUntil: Date().addingTimeInterval(3600), grant: grant)], tripID: trip, cursor: "10")
+        var erased = false
+        var failOnce = true
+        let expired = NativeExpiredTrip(scope: fixture.context.scope, tripID: trip, deadline: Date().addingTimeInterval(-1))
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { nil }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network }, expiredTrips: { erased ? [] : [expired] }, purgeExpiredKey: { value, cleanup in
+                try cleanup()
+                XCTAssertEqual(value, expired)
+                let current = try fixture.ledger()
+                XCTAssertNil(current.record("expired"))
+                XCTAssertNotNil(current.record("retained"))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: current.directory.appendingPathComponent("stage-expired").path))
+                XCTAssertTrue(FileManager.default.fileExists(atPath: current.directory.appendingPathComponent("stage-retained/original.ciphertext").path))
+                let previews = try NativePreviewStore(directory: current.directory)
+                XCTAssertTrue(previews.snapshot(tripID: trip).records.isEmpty)
+                XCTAssertEqual(previews.cursor(trip), "0")
+                if failOnce { failOnce = false; throw NativeKeyError.accessLocked }
+                erased = true
+                return true
+            })
+        do {
+            try await engine.reconcileRetention(force: true)
+            XCTFail("a failed secure-storage purge must remain retryable")
+        } catch { XCTAssertEqual(error as? NativeKeyError, .accessLocked) }
+        XCTAssertFalse(erased)
+        try await engine.reconcileRetention(force: true)
+        try await engine.reconcileRetention(force: true)
+        XCTAssertTrue(erased)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext, "system-library originals survive retention cleanup")
+        XCTAssertEqual(fixture.network.receipts, 0)
+    }
+
+    func testRetentionDrainsAnInFlightPhotoSaveBeforeErasingKey() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let entered = expectation(description: "PhotoKit save in flight")
+        fixture.photos.suspendSave = { entered.fulfill() }
+        var expired: [NativeExpiredTrip] = []
+        var erased = false
+        let engine = ApplePhotoTransferEngine(root: fixture.root, contextProvider: { erased ? nil : fixture.context }, invalidated: { _ in },
+            library: fixture.photos, transportFactory: { _ in fixture.network }, expiredTrips: { expired }, purgeExpiredKey: { _, cleanup in try cleanup(); erased = true; expired = []; return true })
+        await engine.activate()
+        await fulfillment(of: [entered], timeout: 5)
+        expired = [NativeExpiredTrip(scope: fixture.context.scope, tripID: fixture.context.metadata.tripID, deadline: Date().addingTimeInterval(-1))]
+        let cleanup = Task { try await engine.reconcileRetention(force: true) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(erased)
+        fixture.photos.resumeSave?.resume(); fixture.photos.resumeSave = nil
+        try await cleanup.value
+        XCTAssertTrue(erased)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+        XCTAssertTrue(try fixture.ledger().snapshot().works.isEmpty)
+        await engine.stop()
+    }
+
     func testVerifiedOriginalRestoresPreviewWithoutExpiredServerGrant() async throws {
         let fixture = try TransferFixture(); defer { fixture.cleanup() }
         fixture.photos.bytes = fixture.plaintext
@@ -274,12 +688,12 @@ final class ApplePhotoTransferEngineTests: XCTestCase {
         XCTAssertEqual(try fixture.ledger().snapshot().works.first?.savedLocalID, "saved-placeholder")
         XCTAssertEqual(try fixture.ledger().snapshot().works.first?.complete, false)
     }
-    private func eventually(_ condition: () async throws -> Bool) async throws {
-        for _ in 0..<1000 {
+    private func eventually(timeout: TimeInterval = 5, _ condition: () async throws -> Bool) async throws {
+        for _ in 0..<Int(timeout * 200) {
             if try await condition() { return }
             try await Task.sleep(nanoseconds: 5_000_000)
         }
-        XCTFail("Native condition did not settle within five seconds")
+        XCTFail("Native condition did not settle within \(timeout) seconds")
     }
     func testPreviewIsVerifiedAndVisibleWhileOriginalDownloadIsSuspended() async throws {
         let fixture = try TransferFixture(); defer { fixture.cleanup() }
@@ -364,6 +778,12 @@ private final class TransferFixture {
         let path = root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID).appendingPathComponent("journal.json")
         return Array(try JSONDecoder().decode(Stored.self, from: Data(contentsOf: path)).works.values)
     }
+    func readPendingDeliveryCursor() throws -> String? {
+        let path = root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID).appendingPathComponent("journal.json")
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+        return (stored["pendingDeliveryCursors"] as? [String: String])?[context.metadata.tripID]
+    }
     func cleanup() { try? FileManager.default.removeItem(at: root) }
 }
 
@@ -427,6 +847,10 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
     var suspendOriginal: (() -> Void)?
     var suspendDownload: (() -> Void)?
     var resumeOriginal: CheckedContinuation<Void, Never>?
+    var beforeDownloadGrant: ((NativeMediaContext) async throws -> Void)?
+    var beforeSavedReceipt: ((NativeMediaContext) async throws -> Void)?
+    var pendingPageOverride: ((String) async throws -> Data)?
+    var pendingPaths: [String] = []
     init(ciphertext: Data, pending: Data, grant: Data) { self.ciphertext = ciphertext; self.pending = pending; self.grant = grant }
     func cancel() {}
     func json(path: String, method: String, body: Data?, context: NativeMediaContext, commandID: String) async throws -> Data {
@@ -448,7 +872,11 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
         if path.hasSuffix("/preview") && method == "POST" { previewPublications += 1; return Data("{}".utf8) }
         if path.hasSuffix("/preview") && purgedPreviewMetadata { previewMetadataFailures += 1; throw NativeTransferHTTPError(status: 404, authenticated: true) }
         if path.hasSuffix("/preview") && previewEnabled { return try JSONEncoder().encode(previewGrant) }
-        if path == "/v1/deliveries/pending" { return (outgoing && !receiveWhileSending) || receipts > 0 ? Data("{\"items\":[]}".utf8) : pending }
+        if path == "/v1/deliveries/pending" || path.hasPrefix("/v1/deliveries/pending?") {
+            pendingPaths.append(path)
+            if let pendingPageOverride { return try await pendingPageOverride(path) }
+            return (outgoing && !receiveWhileSending) || receipts > 0 ? Data("{\"items\":[]}".utf8) : pending
+        }
         if path == "/v1/assets/upload-sessions" {
             if rejectCapture { rejectedCaptures += 1; throw NativeTransferHTTPError(status: 409, authenticated: true) }
             uploadBody = body
@@ -461,8 +889,9 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
             if loseCommitOnce { loseCommitOnce = false; throw URLError(.networkConnectionLost) }
             return Data("{}".utf8)
         }
-        if path.hasSuffix("/download-session") { return grant }
+        if path.hasSuffix("/download-session") { try await beforeDownloadGrant?(context); return grant }
         if path.hasSuffix("/saved-receipt") {
+            try await beforeSavedReceipt?(context)
             receipts += 1
             if loseReceiptOnce { loseReceiptOnce = false; throw URLError(.networkConnectionLost) }
             return Data("{}".utf8)
@@ -487,6 +916,16 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
         if let suspendDownload { await withCheckedContinuation { resumeOriginal = $0; suspendDownload() } }
         if let suspendOriginal { await withCheckedContinuation { resumeOriginal = $0; suspendOriginal() } }
         downloads += 1; try ciphertext.write(to: destination)
+    }
+}
+
+private final class LockedTransferContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: NativeMediaContext
+    init(_ value: NativeMediaContext) { stored = value }
+    var value: NativeMediaContext {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); defer { lock.unlock() }; stored = newValue }
     }
 }
 #endif

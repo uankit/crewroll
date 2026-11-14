@@ -230,8 +230,10 @@ test("app config registers only installed, required greenfield plugins", () => {
     "expo-media-library",
     "expo-secure-store",
     "@clerk/expo",
+    "expo-notifications",
     "./modules/crewroll-transfer/plugin/withCrewRollTransfer",
     "expo-web-browser",
     "expo-apple-authentication",
+    "expo-font",
   ]);
 });

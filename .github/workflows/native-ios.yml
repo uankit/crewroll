@@ -1,0 +1,20 @@
+name: iOS native core
+
+# macOS runners are explicit to avoid recurring paid runner usage.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --global npm@10.9.2
+      - run: npm run test:native:ios

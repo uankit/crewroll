@@ -165,7 +165,7 @@ export type TripProjectionRead =
   | Readonly<{ kind: "DEVICE_REVOKED" }>
   | Readonly<{ kind: "FOUND"; projection: TripProjection }>
   | Readonly<{ kind: "INVARIANT_ERROR" }>
-  | Readonly<{ kind: "NOT_FOUND" }>;
+  | Readonly<{ kind: "NOT_FOUND"; reason?: "EXPIRED" }>;
 
 export interface InboxInsert {
   readonly aggregateId: string;
@@ -215,6 +215,18 @@ export interface TripTransaction {
     deviceIds: readonly string[],
   ): Promise<readonly TripDeviceRecord[]>;
   lockInvite(inviteId: string): Promise<TripInviteRecord | null>;
+  /** Original-command recovery may read its own retired membership, never authorize mutations. */
+  lockJoinReplayMembership(
+    input: Readonly<{
+      deviceId: string;
+      membershipId: string;
+      tripId: string;
+      userId: string;
+    }>,
+  ): Promise<Readonly<{
+    leftAt: Date | null;
+    membership: TripMembershipRecord;
+  }> | null>;
   lockMembership(
     tripId: string,
     membershipId: string,

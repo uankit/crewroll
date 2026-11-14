@@ -115,13 +115,6 @@ export function validImmediateTripBody(): CreateTripBody {
   };
 }
 
-export function validNightlyTripBody(): CreateTripBody {
-  return {
-    ...validImmediateTripBody(),
-    release: { mode: "NIGHTLY", timeZone: "Asia/Kolkata", localTime: "21:30" },
-  };
-}
-
 export function validCreateJoinRequestBody(): CreateJoinRequestBody {
   return { inviteCode: "ABCD2345", deviceId: IDS.device };
 }

@@ -7,6 +7,7 @@ import type {
 import type { Database } from "../schema/tables.js";
 import type { Clock } from "../../shared/time/clock.js";
 import { DomainError } from "../../shared/errors/domainError.js";
+import { insertTripLifecycleWake } from "../push/insertTripLifecycleWake.js";
 import type { InviteCodeCryptography } from "../../modules/trips/ports/inviteCodeHasher.js";
 import type {
   ForegroundTripActor,
@@ -40,6 +41,7 @@ export function createKyselyTripContinuity(
     if (
       !user ||
       user.deleted_at ||
+      user.suspended_at ||
       user.clerk_subject !== actor.clerkSubject ||
       !device ||
       device.user_id !== user.id ||
@@ -323,6 +325,7 @@ export function createKyselyTripContinuity(
           .set({ version: sql`version + 1`, updated_at: now })
           .where("id", "=", tripId)
           .execute();
+        await insertTripLifecycleWake(tx, tripId, now);
         return;
       }
       // One pending replacement per membership, even across fresh installations.
@@ -492,6 +495,7 @@ export function createKyselyTripContinuity(
       .set({ version: sql`version + 1`, updated_at: now })
       .where("id", "=", tripId)
       .execute();
+    await insertTripLifecycleWake(tx, tripId, now);
   }
   return {
     read: (actor, tripId) =>

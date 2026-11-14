@@ -1,0 +1,78 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/crewroll-greenfield]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      EXPO_PUBLIC_API_URL: https://api.example.test
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_dGVzdC5jbGVyay5hY2NvdW50cy5kZXYk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install --global npm@10.9.2
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:ui:android
+      # High advisories block this gate even when functional checks pass.
+      - run: npm audit --audit-level=high
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: uankit
+          POSTGRES_DB: crewroll_test_pg17
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:55433:5432
+        options: >-
+          --health-cmd "pg_isready -U uankit -d crewroll_test_pg17"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CREWROLL_TEST_EXTERNAL_POSTGRES_URL: postgresql://uankit@127.0.0.1:55433/crewroll_test_pg17
+      CREWROLL_TEST_EXTERNAL_POSTGRES_OPT_IN: DISPOSABLE_LOOPBACK_ONLY
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install --global npm@10.9.2
+      - run: npm ci
+      - run: npm run test:integration
+
+  android-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: npm install --global npm@10.9.2
+      - run: npm run test:native:android

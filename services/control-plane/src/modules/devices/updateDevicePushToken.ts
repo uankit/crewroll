@@ -103,6 +103,13 @@ export function createUpdateDevicePushToken(
         now,
       );
       authorizeSnapshot(snapshot, canonicalDeviceId);
+      // Allocate before potentially slow protection. A timed-out request must
+      // never overwrite a later successful token rotation or explicit clear.
+      const requestRevision =
+        await dependencies.unitOfWork.reservePushTokenRevision(
+          snapshot.userId,
+          canonicalDeviceId,
+        );
       let requestedPushFingerprint: Readonly<Uint8Array> | undefined;
 
       for (;;) {
@@ -178,13 +185,16 @@ export function createUpdateDevicePushToken(
                 pushTokenHash = prepared.value.fingerprint;
               }
             }
-            await transaction.updateDevice({
-              ...device,
-              appVersion: body.appVersion,
-              encryptedPushToken,
-              lastSeenAt: now,
-              pushTokenHash,
-            });
+            await transaction.updatePushTokenIfNewer(
+              {
+                ...device,
+                appVersion: body.appVersion,
+                encryptedPushToken,
+                lastSeenAt: now,
+                pushTokenHash,
+              },
+              requestRevision,
+            );
             await transaction.writeIdempotency({
               command,
               expiresAt: addWholeSeconds(now, idempotencyLifetimeSeconds),

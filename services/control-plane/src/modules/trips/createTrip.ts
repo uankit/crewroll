@@ -60,6 +60,9 @@ function prepare(input: CreateTripInput): TripPolicyResult<PreparedCreate> {
   if (!inviteCode.ok) return inviteCode;
   const release = validateTripRelease(input.body.release);
   if (!release.ok) return release;
+  // Keep legacy release values readable, but do not create rooms whose media
+  // cannot be uploaded until delayed delivery is implemented.
+  if (release.value.mode !== "IMMEDIATE") return tripProblem("INVALID_REQUEST");
   const endsAt = new Date(input.body.endsAt);
   if (!Number.isFinite(endsAt.getTime())) {
     return tripProblem("TRIP_DURATION_INVALID");
@@ -105,8 +108,11 @@ function projectionResult(
       return tripProblem("DEVICE_NOT_PARTICIPANT");
     case "DEVICE_REVOKED":
       return tripProblem("DEVICE_REVOKED");
-    case "INVARIANT_ERROR":
     case "NOT_FOUND":
+      return tripProblem(
+        read.reason === "EXPIRED" ? "NOT_FOUND" : "INTERNAL_ERROR",
+      );
+    case "INVARIANT_ERROR":
       return tripProblem("INTERNAL_ERROR");
   }
 }

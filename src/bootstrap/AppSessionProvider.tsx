@@ -27,12 +27,17 @@ import {
 import { AppState, type AppStateStatus } from "react-native";
 
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
+import type { RefreshDeviceSessionInput } from "../application/auth/RefreshDeviceSession";
+import { withDeadline } from "../application/shared/withDeadline";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
 import {
   CreateTripTerminalProblem,
   type CreateImmediateTripInput,
 } from "../application/trips/CreateImmediateTrip";
-import type { JoinTripResult } from "../application/trips/JoinTrip";
+import {
+  JoinTripTerminalProblem,
+  type JoinTripResult,
+} from "../application/trips/JoinTrip";
 import type {
   TripRecoveryRecord,
   TripRecoveryScope,
@@ -40,15 +45,14 @@ import type {
 import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
 import {
   clearForegroundQueryState,
-  clearForegroundSessionState,
   tripQueryKey,
   tripLibraryQueryKey,
 } from "./queryClient";
-import { normalizeInviteCode, sessionUiStore } from "./state/sessionUiStore";
 
 export type AppSessionPhase =
   | "LOADING_FONTS_OR_CLERK"
   | "SIGNED_OUT"
+  | "SIGNING_OUT"
   | "PROVISIONING_DEVICE"
   | "RECOVERABLE_FAILURE"
   | "READY_NO_TRIP"
@@ -59,20 +63,28 @@ export type AppSessionPhase =
   | "READY_ACTIVE";
 
 export type AppSessionPublicErrorCode =
-  "DEVICE_SETUP_FAILED" | "TRIP_RECOVERY_FAILED" | "INVITE_JOIN_FAILED";
+  | "DEVICE_SETUP_FAILED"
+  | "TRIP_RECOVERY_FAILED"
+  | "INVITE_JOIN_FAILED"
+  | "SESSION_TEARDOWN_FAILED";
 
 type ReadyDeviceSnapshot = Readonly<{ deviceId: string }>;
 
 export type AppSessionSnapshot =
   | Readonly<{ phase: "LOADING_FONTS_OR_CLERK" }>
   | Readonly<{ phase: "SIGNED_OUT" }>
+  | Readonly<{ phase: "SIGNING_OUT" }>
   | Readonly<{ phase: "PROVISIONING_DEVICE" }>
   | Readonly<{
       phase: "RECOVERABLE_FAILURE";
       publicErrorCode: AppSessionPublicErrorCode;
     }>
   | (ReadyDeviceSnapshot &
-      Readonly<{ phase: "READY_NO_TRIP"; creationFailed?: true }>)
+      Readonly<{
+        phase: "READY_NO_TRIP";
+        creationFailed?: true;
+        inviteUnavailable?: true;
+      }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_CREATE" }>)
   | (ReadyDeviceSnapshot & Readonly<{ phase: "READY_UNKNOWN_JOIN" }>)
   | (ReadyDeviceSnapshot &
@@ -166,6 +178,8 @@ export type ScopedTripSession = Readonly<{
 }>;
 
 export type AppSessionRuntime = Readonly<{
+  /** Fence continuations from a setup attempt whose caller has stopped waiting. */
+  invalidatePendingSetup(): void;
   pauseTransfers?(
     options?: Readonly<{ preserveDeviceSession: boolean }>,
   ): Promise<void>;
@@ -175,6 +189,7 @@ export type AppSessionRuntime = Readonly<{
     appVersion: string | null | undefined;
     platform: string;
   }): Promise<ProvisionedDevice>;
+  refreshDeviceSession?(input: RefreshDeviceSessionInput): Promise<void>;
   getNativeSnapshot(): Promise<Readonly<{ activeTripId: string | null }>>;
   loadRecovery(scope: TripRecoveryScope): Promise<TripRecoveryRecord | null>;
   createScopedTripSession(
@@ -244,7 +259,6 @@ type AppSessionContextValue = Readonly<{
   actions: TripSessionActions | null;
   retry(): void;
   signOut(): Promise<void>;
-  confirmPendingInvite(): Promise<void>;
   copyOwnerInvite(): Promise<void>;
   loadTripProjection(tripId: string): Promise<TripView>;
   queryScope: QueryScope | null;
@@ -292,6 +306,7 @@ type ObservedTrip = Readonly<{
 
 const INVITE_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{8}$/;
 const LOBBY_POLL_INTERVAL_MS = 5_000;
+const OWNER_INVITE_RECOVERY_READ_DEADLINE_MS = 1_500;
 let accountScopeSequence = 0;
 
 function nextOpaqueAccountScope(): string {
@@ -341,16 +356,6 @@ function isTripAccessFailure(error: unknown): boolean {
       "KEY_MATERIAL_LOST",
     ].includes(code)
   );
-}
-
-function isInvalidInviteFailure(error: unknown): boolean {
-  try {
-    if (typeof error !== "object" || error === null) return false;
-    const record = error as Record<string, unknown>;
-    return record.kind === "API_PROBLEM" && record.code === "INVITE_INVALID";
-  } catch {
-    return false;
-  }
 }
 
 function readyWithTrip(
@@ -406,12 +411,19 @@ export function AppSessionProvider({
   queryClient,
   runtime,
 }: AppSessionProviderProps) {
+  const authUserId = auth.isLoaded && auth.isSignedIn ? auth.userId : null;
+  const authSessionId =
+    auth.isLoaded && auth.isSignedIn ? auth.sessionId : null;
+  const authBindingKey =
+    authUserId === null || authSessionId === null
+      ? null
+      : JSON.stringify([authUserId, authSessionId]);
   const [snapshot, setSnapshot] = useState<AppSessionSnapshot>(() =>
     !fontsReady || !auth.isLoaded
       ? { phase: "LOADING_FONTS_OR_CLERK" }
       : auth.isSignedIn
         ? { phase: "PROVISIONING_DEVICE" }
-        : { phase: "SIGNED_OUT" },
+        : { phase: "LOADING_FONTS_OR_CLERK" },
   );
   const [ownerInvite, setOwnerInvite] = useState<OwnerInvite | null>(null);
   const [activationFailureTripId, setActivationFailureTripId] = useState<
@@ -443,14 +455,23 @@ export function AppSessionProvider({
   const scopedSession = useRef<ScopedTripSession | null>(null);
   const galleryCacheRef = useRef<TripGalleryCache | null>(null);
   const currentDevice = useRef<ProvisionedDevice | null>(null);
+  const pendingTeardown = useRef<
+    Readonly<{ generation: number; operation: Promise<void> }> | undefined
+  >(undefined);
+  const teardownRequestedFor = useRef<string | null | undefined>(undefined);
+  const [teardownBindingKey, setTeardownBindingKey] = useState<
+    string | null | undefined
+  >(undefined);
 
-  const clearAndSignOut = useCallback(async (): Promise<void> => {
+  const clearAndSignOut = useCallback((): Promise<void> => {
+    if (pendingTeardown.current?.generation === runGeneration.current)
+      return pendingTeardown.current.operation;
     const teardownGeneration = ++runGeneration.current;
+    teardownRequestedFor.current = authBindingKey;
+    setTeardownBindingKey(authBindingKey);
+    ++readinessGeneration.current;
+    runtime.invalidatePendingSetup();
     galleryCacheRef.current?.dispose();
-    await runtime.pauseTransfers?.();
-    if (teardownGeneration !== runGeneration.current) return;
-    await clearForegroundSessionState(queryClient);
-    if (teardownGeneration !== runGeneration.current) return;
     scopedSession.current = null;
     currentDevice.current = null;
     recoveryScope.current = null;
@@ -464,13 +485,41 @@ export function AppSessionProvider({
     setPhotoPermission({ kind: "CHECKING" });
     setPhotoPermissionTripId(null);
     photoPermissionTripIdRef.current = null;
-    setSnapshot({ phase: "SIGNED_OUT" });
-    try {
-      await onAuthInvalid?.();
-    } catch {
-      // Fixed signed-out state is retained if Clerk cleanup itself fails.
-    }
-  }, [onAuthInvalid, queryClient, runtime]);
+    setSnapshot({ phase: "SIGNING_OUT" });
+    const operation = (async () => {
+      const isCurrent = () => teardownGeneration === runGeneration.current;
+      try {
+        await withDeadline(async () => runtime.pauseTransfers?.(), 10_000);
+        if (!isCurrent()) return;
+        await withDeadline(
+          () => clearForegroundQueryState(queryClient),
+          10_000,
+        );
+        if (!isCurrent()) return;
+        await withDeadline(async () => onAuthInvalid?.(), 20_000);
+        if (!isCurrent()) return;
+        teardownRequestedFor.current = undefined;
+        setTeardownBindingKey(undefined);
+        setSnapshot({ phase: "SIGNED_OUT" });
+      } catch (error) {
+        if (isCurrent()) {
+          // The transfer stop is unconfirmed. Keep private views closed and
+          // retry teardown instead of reviving services captured by an old fence.
+          runtime.invalidatePendingSetup();
+          setSnapshot({
+            phase: "RECOVERABLE_FAILURE",
+            publicErrorCode: "SESSION_TEARDOWN_FAILED",
+          });
+        }
+        throw error;
+      } finally {
+        if (pendingTeardown.current?.generation === teardownGeneration)
+          pendingTeardown.current = undefined;
+      }
+    })();
+    pendingTeardown.current = { generation: teardownGeneration, operation };
+    return operation;
+  }, [authBindingKey, onAuthInvalid, queryClient, runtime]);
 
   const publishObserved = useCallback(
     async (
@@ -491,20 +540,43 @@ export function AppSessionProvider({
       }
 
       let recovery = knownRecovery;
+      let recoveryUnavailable = false;
       if (recovery === undefined) {
         try {
-          recovery = await runtime.loadRecovery(currentRecoveryScope);
+          recovery = await withDeadline(
+            () => runtime.loadRecovery(currentRecoveryScope),
+            OWNER_INVITE_RECOVERY_READ_DEADLINE_MS,
+          );
         } catch {
           recovery = null;
+          recoveryUnavailable = true;
         }
       }
       if (expectedGeneration !== runGeneration.current) {
         throw unavailableSession();
       }
 
-      setOwnerInvite(
-        matchingOwnerInvite(recovery, observed.trip, device.deviceId),
+      const recoveredOwnerInvite = matchingOwnerInvite(
+        recovery,
+        observed.trip,
+        device.deviceId,
       );
+      setOwnerInvite((previous) => {
+        if (!recoveryUnavailable || previous === null)
+          return recoveredOwnerInvite;
+        // This read supplies an optional display hint. A storage outage must
+        // neither block an accepted mutation nor erase this trip's owner hint.
+        return matchingOwnerInvite(
+          {
+            state: "CONFIRMED",
+            tripId: previous.tripId,
+            membershipId: observed.trip.currentMembershipId,
+            ownerInviteCode: previous.code,
+          },
+          observed.trip,
+          device.deviceId,
+        );
+      });
       setActivationFailureTripId(
         observed.kind === "ACTIVATION_FAILED" ? observed.trip.id : null,
       );
@@ -630,19 +702,23 @@ export function AppSessionProvider({
         }
         if (isAuthFailure(error)) {
           await clearAndSignOut();
-        } else if (
-          isInvalidInviteFailure(error) &&
-          sessionUiStore.getState().pendingInviteCode ===
-            normalizeInviteCode(inviteCode)
-        ) {
-          sessionUiStore.getState().clear();
+        }
+        if (error instanceof JoinTripTerminalProblem) {
+          const device = currentDevice.current;
+          if (device !== null) {
+            setPendingTripPreview(null);
+            setSnapshot({
+              phase: "READY_NO_TRIP",
+              deviceId: device.deviceId,
+              inviteUnavailable: true,
+            });
+          }
         }
         throw error;
       }
       if (current.generation !== runGeneration.current) {
         throw unavailableSession();
       }
-      sessionUiStore.getState().clear();
       if (result.status === "PENDING_KEY") {
         const device = currentDevice.current;
         if (device === null) throw unavailableSession();
@@ -777,7 +853,7 @@ export function AppSessionProvider({
 
   const openPhotoSettings = useCallback(async (): Promise<void> => {
     const current = binding();
-    await current.services.openPhotoSettings();
+    await withDeadline(() => current.services.openPhotoSettings(), 5_000);
   }, [binding]);
 
   const startTrip = useCallback(
@@ -944,13 +1020,6 @@ export function AppSessionProvider({
     ],
   );
 
-  const authUserId = auth.isLoaded && auth.isSignedIn ? auth.userId : null;
-  const authSessionId =
-    auth.isLoaded && auth.isSignedIn ? auth.sessionId : null;
-  const authBindingKey =
-    authUserId === null || authSessionId === null
-      ? null
-      : JSON.stringify([authUserId, authSessionId]);
   const renderedPublicOperationScope = JSON.stringify([
     authBindingKey,
     fontsReady,
@@ -969,6 +1038,7 @@ export function AppSessionProvider({
   useEffect(() => {
     const generation = ++runGeneration.current;
     let cancelled = false;
+    let failureStage: FailureStage = "DEVICE";
     const isCurrent = () => !cancelled && runGeneration.current === generation;
 
     if (!fontsReady || !auth.isLoaded) {
@@ -978,20 +1048,35 @@ export function AppSessionProvider({
     }
 
     if (!auth.isSignedIn || authUserId === null || authSessionId === null) {
-      void runtime.pauseTransfers?.().catch(() => {
-        if (isCurrent())
+      // A restored background credential can outlive the Clerk session. Do
+      // not open sign-in while stopping that old native session is unconfirmed.
+      void Promise.resolve().then(() => {
+        if (isCurrent()) {
+          setTeardownBindingKey(undefined);
+          setSnapshot({ phase: "SIGNING_OUT" });
+        }
+      });
+      teardownRequestedFor.current = undefined;
+      void withDeadline(async () => runtime.pauseTransfers?.(), 10_000).then(
+        () => {
+          if (isCurrent()) setSnapshot({ phase: "SIGNED_OUT" });
+        },
+        () => {
+          if (!isCurrent()) return;
+          runtime.invalidatePendingSetup();
           setSnapshot({
             phase: "RECOVERABLE_FAILURE",
-            publicErrorCode: "DEVICE_SETUP_FAILED",
+            publicErrorCode: "SESSION_TEARDOWN_FAILED",
           });
-      });
+        },
+      );
       previousSessionKey.current = null;
       provisioned.current = undefined;
       scopedSession.current = null;
       currentDevice.current = null;
       recoveryScope.current = null;
       queryScope.current = null;
-      void clearForegroundQueryState(queryClient);
+      void clearForegroundQueryState(queryClient).catch(() => undefined);
       return () => {
         cancelled = true;
       };
@@ -1004,7 +1089,6 @@ export function AppSessionProvider({
       previousAccountId.current !== null &&
       previousAccountId.current !== authUserId;
     if (sessionChanged) {
-      if (accountChanged) sessionUiStore.getState().clear();
       previousAccountId.current = authUserId;
       provisioned.current = undefined;
       scopedSession.current = null;
@@ -1075,6 +1159,7 @@ export function AppSessionProvider({
         }
         if (!isCurrent()) return;
         currentDevice.current = device;
+        failureStage = "RECOVERY";
 
         const scope: TripRecoveryScope = {
           clerkSubject: authUserId,
@@ -1226,7 +1311,20 @@ export function AppSessionProvider({
               phase: "READY_UNKNOWN_JOIN",
               deviceId: device.deviceId,
             });
-            const result = await services.replayUnknownJoin();
+            let result: JoinTripResult | null;
+            try {
+              result = await services.replayUnknownJoin();
+            } catch (error) {
+              if (!isCurrent()) return;
+              if (!(error instanceof JoinTripTerminalProblem)) throw error;
+              setPendingTripPreview(null);
+              setSnapshot({
+                phase: "READY_NO_TRIP",
+                deviceId: device.deviceId,
+                inviteUnavailable: true,
+              });
+              return;
+            }
             if (!isCurrent()) return;
             if (result === null) throw unavailableSession();
             if (result.status === "PENDING_KEY") {
@@ -1237,9 +1335,11 @@ export function AppSessionProvider({
               return;
             }
             if (result.status === "REJECTED") {
+              setPendingTripPreview(null);
               setSnapshot({
                 phase: "READY_NO_TRIP",
                 deviceId: device.deviceId,
+                inviteUnavailable: true,
               });
               return;
             }
@@ -1271,11 +1371,21 @@ export function AppSessionProvider({
     };
 
     const deadline = setTimeout(() => {
-      if (isCurrent())
-        setSnapshot({
-          phase: "RECOVERABLE_FAILURE",
-          publicErrorCode: "DEVICE_SETUP_FAILED",
-        });
+      if (!isCurrent()) return;
+      // A UI-only timeout leaves Retry awaiting the same stalled promise.
+      // Invalidate native continuations before allowing a fresh attempt so an
+      // old registration response cannot install into the retried session.
+      cancelled = true;
+      ++runGeneration.current;
+      ++readinessGeneration.current;
+      runtime.invalidatePendingSetup();
+      provisioned.current = undefined;
+      scopedSession.current = null;
+      currentDevice.current = null;
+      setSnapshot({
+        phase: "RECOVERABLE_FAILURE",
+        publicErrorCode: publicErrorCode(failureStage),
+      });
     }, 30_000);
     void run().finally(() => clearTimeout(deadline));
     return () => {
@@ -1296,6 +1406,68 @@ export function AppSessionProvider({
     provisionInput.platform,
     queryClient,
     retryGeneration,
+    runtime,
+  ]);
+
+  const credentialRefreshReady =
+    snapshot.phase.startsWith("READY_") &&
+    authBindingKey !== null &&
+    publicSessionKey === authBindingKey &&
+    teardownBindingKey !== authBindingKey;
+
+  useEffect(() => {
+    if (!credentialRefreshReady || authBindingKey === null) return;
+    const device = currentDevice.current;
+    const refreshCredential = runtime.refreshDeviceSession;
+    if (device === null || !refreshCredential || authUserId === null) return;
+    const generation = runGeneration.current;
+    let cancelled = false;
+    let running = false;
+    let foreground = AppState.currentState === "active";
+    const isCurrent = () =>
+      !cancelled &&
+      generation === runGeneration.current &&
+      currentDevice.current === device;
+    const refresh = async () => {
+      if (!isCurrent() || !foreground || running) return;
+      running = true;
+      try {
+        await refreshCredential({
+          context: {
+            accountId: authUserId,
+            apiBaseUrl: provisionInput.apiBaseUrl,
+            appVersion: provisionInput.appVersion,
+            platform: provisionInput.platform,
+          },
+          device,
+          sessionBinding: authBindingKey,
+          isCurrent,
+        });
+      } catch {
+        // A temporary refresh failure must not reset a working trip or replace
+        // the selected native session. The controller bounds/retries renewal.
+      } finally {
+        running = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
+    const subscription = AppState.addEventListener("change", (state) => {
+      foreground = state === "active";
+      if (foreground) void refresh();
+    });
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [
+    authBindingKey,
+    authUserId,
+    credentialRefreshReady,
+    provisionInput.apiBaseUrl,
+    provisionInput.appVersion,
+    provisionInput.platform,
     runtime,
   ]);
 
@@ -1401,7 +1573,12 @@ export function AppSessionProvider({
         if (!isCurrent()) return;
         if (result === null) throw unavailableSession();
         if (result.status === "REJECTED") {
-          setSnapshot({ phase: "READY_NO_TRIP", deviceId: device!.deviceId });
+          setPendingTripPreview(null);
+          setSnapshot({
+            phase: "READY_NO_TRIP",
+            deviceId: device!.deviceId,
+            inviteUnavailable: true,
+          });
           return;
         }
         if (result.status === "ACTIVE") {
@@ -1415,8 +1592,19 @@ export function AppSessionProvider({
         delay = 5_000;
       } catch (error) {
         if (!isCurrent()) return;
+        if (error instanceof JoinTripTerminalProblem) {
+          setPendingTripPreview(null);
+          setSnapshot({
+            phase: "READY_NO_TRIP",
+            deviceId: device!.deviceId,
+            inviteUnavailable: true,
+          });
+          return;
+        }
         if (isAuthFailure(error)) {
-          await clearAndSignOut();
+          // Teardown publishes its own retry state on failure. This detached
+          // poll has no caller to handle that rejection.
+          await clearAndSignOut().catch(() => undefined);
           return;
         }
         delay = Math.min(delay * 2, 30_000);
@@ -1449,34 +1637,38 @@ export function AppSessionProvider({
   ]);
 
   const retry = useCallback(() => {
-    setRetryGeneration((generation) => generation + 1);
-  }, []);
-
-  const confirmPendingInvite = useCallback(async (): Promise<void> => {
-    const inviteCode = sessionUiStore.getState().pendingInviteCode;
-    if (inviteCode === null) return;
-    try {
-      await joinTrip(inviteCode);
-    } catch (error) {
-      if (isAuthFailure(error)) {
-        // The safe join facade has already completed the shared teardown.
-        return;
-      } else {
-        setSnapshot({
-          phase: "RECOVERABLE_FAILURE",
-          publicErrorCode: "INVITE_JOIN_FAILED",
-        });
-      }
+    if (teardownRequestedFor.current === authBindingKey) {
+      void clearAndSignOut().catch(() => undefined);
+      return;
     }
-  }, [joinTrip]);
+    setRetryGeneration((generation) => generation + 1);
+  }, [authBindingKey, clearAndSignOut]);
 
   const resolvedSnapshot = useMemo<AppSessionSnapshot>(() => {
     if (!fontsReady || !auth.isLoaded) {
       return { phase: "LOADING_FONTS_OR_CLERK" };
     }
-    if (!auth.isSignedIn || snapshot.phase === "SIGNED_OUT") {
+    if (!auth.isSignedIn) {
+      if (
+        snapshot.phase === "SIGNED_OUT" ||
+        snapshot.phase === "SIGNING_OUT" ||
+        (snapshot.phase === "RECOVERABLE_FAILURE" &&
+          snapshot.publicErrorCode === "SESSION_TEARDOWN_FAILED")
+      )
+        return snapshot;
+      // Confirm native cleanup before the very first committed welcome view.
+      return { phase: "LOADING_FONTS_OR_CLERK" };
+    }
+    if (snapshot.phase === "SIGNED_OUT") {
       return { phase: "SIGNED_OUT" };
     }
+    if (
+      teardownBindingKey === authBindingKey &&
+      (snapshot.phase === "SIGNING_OUT" ||
+        (snapshot.phase === "RECOVERABLE_FAILURE" &&
+          snapshot.publicErrorCode === "SESSION_TEARDOWN_FAILED"))
+    )
+      return snapshot;
     if (
       !profileReady ||
       authBindingKey === null ||
@@ -1493,6 +1685,7 @@ export function AppSessionProvider({
     profileReady,
     publicSessionKey,
     snapshot,
+    teardownBindingKey,
   ]);
 
   const visibleOwnerInviteCode =
@@ -1521,7 +1714,6 @@ export function AppSessionProvider({
       galleryCache,
       actions: ready ? actions : null,
       activationFailureTripId: ready ? activationFailureTripId : null,
-      confirmPendingInvite,
       loadTripProjection,
       ownerInviteCode: visibleOwnerInviteCode,
       pendingTripPreview:
@@ -1543,7 +1735,6 @@ export function AppSessionProvider({
       actions,
       clearAndSignOut,
       activationFailureTripId,
-      confirmPendingInvite,
       loadTripProjection,
       copyOwnerInvite,
       photoPermission,

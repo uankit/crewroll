@@ -23,6 +23,39 @@ it("offers one create action and one code action on the first-trip screen", asyn
   expect(create).toHaveBeenCalledTimes(1);
   expect(join).toHaveBeenCalledTimes(1);
 });
+
+it.each(["first trip", "trip library"] as const)(
+  "shows an unavailable manual invite without blocking another code on %s",
+  async (surface) => {
+    const join = jest.fn();
+    const props = {
+      inviteUnavailable: true,
+      onCreateTrip: jest.fn(),
+      onJoinTrip: join,
+    };
+    const screen = await render(
+      surface === "first trip" ? (
+        <HomeScreen {...props} />
+      ) : (
+        <TripLibraryScreen
+          {...props}
+          trips={[]}
+          onOpenTrip={jest.fn()}
+          onRetry={jest.fn()}
+        />
+      ),
+    );
+    expect(
+      screen.getByText(
+        "This invite is no longer available. Ask your host for a new code.",
+      ),
+    ).toBeOnTheScreen();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Enter invite code" }),
+    );
+    expect(join).toHaveBeenCalledTimes(1);
+  },
+);
 it("waits automatically without a second join or status-check button", async () => {
   const screen = await render(
     <HomeScreen

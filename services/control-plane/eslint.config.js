@@ -32,6 +32,8 @@ export default tseslint.config(
   },
   {
     files: ["worker/**/*.ts", "test/worker/**/*.ts"],
+    plugins: { boundaries },
+    ...controlPlaneBoundaryPolicy,
     languageOptions: {
       parserOptions: {
         projectService: false,
@@ -40,6 +42,7 @@ export default tseslint.config(
       },
     },
     rules: {
+      ...controlPlaneBoundaryPolicy.rules,
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
     },

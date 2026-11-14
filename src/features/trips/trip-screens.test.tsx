@@ -170,7 +170,11 @@ describe("LobbyScreen", () => {
       screen.getByRole("button", { name: "Set up photo access" }),
     );
     screen.getByText("Settings couldn’t open. Open Settings manually.");
-    screen.getByText(/Apps → CrewRoll → Photos/);
+    screen.getByText(
+      Platform.OS === "ios"
+        ? /Apps → CrewRoll → Photos/
+        : /CrewRoll → Permissions → Photos and videos/,
+    );
   });
 
   test("explains checking and unavailable Start actions without inventing a minimum crew size", async () => {
@@ -323,6 +327,11 @@ describe("LobbyScreen", () => {
     await fireEvent.press(
       screen.getByRole("button", { name: "Set up photo access" }),
     );
+    screen.getByText(
+      /New camera photos from your live trip share automatically/,
+    );
+    screen.getByText(/Originals can include capture and location metadata/);
+    screen.getByText(/Pause sharing in Trip info/);
     await fireEvent.press(
       screen.getByRole("button", { name: "Allow photo access" }),
     );
@@ -495,7 +504,7 @@ describe("LobbyScreen", () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  test("keeps owner actions in the scroll tree at 200 percent under RTL, dark, reduced motion", async () => {
+  test("configures scalable text and scrollable owner actions under RTL, dark and reduced motion", async () => {
     const screen = await render(
       <CrewRollThemeProvider reduceMotion scheme="dark">
         <View style={{ direction: "rtl" }}>
@@ -1048,7 +1057,7 @@ describe("CreateTripScreen", () => {
     expect(onCheck).toHaveBeenCalledTimes(1);
   });
 
-  test("keeps the primary action reachable at 200 percent under RTL, dark, and reduced motion", async () => {
+  test("configures scalable text and a scrollable primary action under RTL, dark and reduced motion", async () => {
     const screen = await render(
       <CrewRollThemeProvider reduceMotion scheme="dark">
         <View style={{ direction: "rtl" }}>

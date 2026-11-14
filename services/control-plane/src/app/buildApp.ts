@@ -6,6 +6,7 @@ import Fastify, { type FastifyReply, LogController } from "fastify";
 import { TypeBoxValidatorCompiler } from "@fastify/type-provider-typebox";
 import { TypeGuard } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import { installCrewRollFormats } from "@crewroll/contracts";
 
 import {
   DomainError,
@@ -21,6 +22,14 @@ import {
 import { tripRoutes } from "../modules/trips/index.js";
 import { mediaRoutes } from "../modules/media/index.js";
 import { accountRoutes } from "../modules/account/index.js";
+
+const serializationFormats: Record<string, (value: string) => boolean> = {};
+installCrewRollFormats({
+  Get: (name) => serializationFormats[name],
+  Set: (name, validator) => {
+    serializationFormats[name] = validator;
+  },
+});
 
 const corsMethods = [
   "GET",
@@ -95,6 +104,9 @@ export function buildApp(
     }),
     loggerInstance: dependencies.logger,
     requestIdHeader: false,
+    // fast-json-stringify uses its own AJV to choose union response branches.
+    // Share the contract predicates instead of treating custom formats as unknown.
+    serializerOpts: { ajv: { formats: serializationFormats } },
   });
   app.setValidatorCompiler(TypeBoxValidatorCompiler);
   if (options.isolateStartup) {

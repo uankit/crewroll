@@ -251,7 +251,9 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       "identity",
       "trips",
       "media",
+      "push",
     ];
+    const optionalDatabaseFiles = ["boundedPostgresPool.ts"];
     if (
       !dbEntries ||
       new Set(dbEntries).size !== dbEntries.length ||
@@ -259,7 +261,8 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       dbEntries.some(
         (entry) =>
           !requiredDbEntries.includes(entry) &&
-          !optionalApiRepositories.includes(entry),
+          !optionalApiRepositories.includes(entry) &&
+          !optionalDatabaseFiles.includes(entry),
       )
     ) {
       mark(DB_ROOT);
@@ -268,6 +271,9 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       if (dbEntries?.includes(repository)) {
         await expect(`${DB_ROOT}/${repository}`, "directory");
       }
+    }
+    for (const file of optionalDatabaseFiles) {
+      if (dbEntries?.includes(file)) await expect(`${DB_ROOT}/${file}`, "file");
     }
 
     if (schema) {

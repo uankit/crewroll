@@ -24,7 +24,6 @@ it("boots the control-plane workspace without external connections", async () =>
   });
   expect(manifest.files).toEqual(["dist"]);
   expect(manifest.dependencies["@crewroll/contracts"]).toBe("0.1.0");
-  expect(manifest.dependencies.zod).toBe("4.5.1");
   expect(manifest.scripts["start:api"]).toBe("node dist/src/api/main.js");
   expect(manifest.scripts).not.toHaveProperty("start:worker");
   for (const version of [

@@ -4,6 +4,7 @@ import { createKyselyTripUnitOfWork } from "../../services/control-plane/src/db/
 import { createHmacInviteCodeHasher } from "../../services/control-plane/src/platform/crypto/hmacInviteCodeHasher.js";
 import { createOwnerInviteVault } from "../../services/control-plane/src/platform/crypto/ownerInviteVault.js";
 import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
+import { createKyselyPushWakeRepository } from "../../services/control-plane/src/db/push/kyselyPushWakeRepository.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +12,8 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { CreateUploadSessionBody } from "@crewroll/contracts";
 import { createKyselyMediaService } from "../../services/control-plane/src/db/media/kyselyMediaService.js";
+import { eraseExpiredMediaMetadata } from "../../services/control-plane/src/db/media/mediaMetadataRetention.js";
+import { sql } from "kysely";
 import { createFileCiphertextStore } from "../../services/control-plane/src/platform/localMedia/fileCiphertextStore.js";
 import { createBackgroundDeviceAuthenticator } from "../../services/control-plane/src/modules/devices/index.js";
 import { createKyselyDeviceUnitOfWork } from "../../services/control-plane/src/db/devices/kyselyDeviceUnitOfWork.js";
@@ -729,6 +732,25 @@ describe.sequential("durable encrypted photo delivery", () => {
     expect(await service.commit(members[0]!, body.assetId, commit)).toEqual(
       result,
     );
+    const wakeEvents = await context.db
+      .selectFrom("outbox_events")
+      .selectAll()
+      .where("event_type", "=", "media.committed")
+      .execute();
+    expect(wakeEvents).toHaveLength(1);
+    await createKyselyPushWakeRepository(context.db, {
+      now: () => now,
+    }).materialize(100);
+    const wakeRecipients = await context.db
+      .selectFrom("push_wakeups")
+      .select("recipient_device_id")
+      .execute();
+    expect(wakeRecipients.map((row) => row.recipient_device_id).sort()).toEqual(
+      members
+        .slice(1)
+        .map((member) => member.deviceId)
+        .sort(),
+    );
     expect((await service.pending(members[0]!)).items).toEqual([]);
     expect(await service.cleanup()).toBe(0);
     for (const member of members.slice(1)) {
@@ -770,6 +792,194 @@ describe.sequential("durable encrypted photo delivery", () => {
       await context.db.selectFrom("receipts").selectAll().execute(),
     ).toHaveLength(4);
   });
+  it.each([4, 10])(
+    "keeps complete %i-member commit fan-out within its SQL statement budget",
+    async (memberCount) => {
+      for (let index = members.length; index < memberCount; index++) {
+        const user = await fixtures.user();
+        const device = await fixtures.device(user.id);
+        await fixtures.member(tripId, user.id, device.id);
+        members.push({ userId: user.id, deviceId: device.id });
+      }
+      await context.db
+        .updateTable("trips")
+        .set({ member_count: memberCount })
+        .where("id", "=", tripId)
+        .execute();
+      const commit = await uploaded();
+      let statements = 0;
+      const inserts: Record<string, number> = {};
+      const inboxQueries = new WeakSet<object>();
+      const counted = context.db.withPlugin({
+        transformQuery({ node, queryId }) {
+          statements++;
+          if (node.kind === "InsertQueryNode") {
+            const table = node.into?.table.identifier.name;
+            if (table) inserts[table] = (inserts[table] ?? 0) + 1;
+            if (table === "inbox_events") inboxQueries.add(queryId);
+          }
+          return node;
+        },
+        async transformResult({ result, queryId }) {
+          // SQL RETURNING order is not a recipient-to-sequence contract.
+          return inboxQueries.has(queryId)
+            ? { ...result, rows: [...result.rows].reverse() }
+            : result;
+        },
+      });
+      const measured = createKyselyMediaService(counted, store, {
+        now: () => now,
+      });
+      const result = await measured.commit(members[0]!, body.assetId, commit);
+      const firstCommit = { statements, inserts: { ...inserts } };
+      const phase = process.env.CREWROLL_COMMIT_FANOUT_BENCHMARK_PHASE;
+      if (phase === "before" || phase === "after")
+        process.stdout.write(
+          JSON.stringify({
+            event: "commit_fanout_statement_counts",
+            phase,
+            memberCount,
+            ...firstCommit,
+            scope:
+              "Real PostgreSQL17 media-service commit; excludes background auth, BEGIN/COMMIT and external object HEAD calls",
+          }) + "\n",
+        );
+      expect(firstCommit.statements).toBeLessThanOrEqual(23);
+      expect(firstCommit.inserts.deliveries).toBe(1);
+      expect(firstCommit.inserts.inbox_events).toBe(1);
+      expect(firstCommit.inserts.receipts).toBe(1);
+      const deliveries = await context.db
+        .selectFrom("deliveries")
+        .selectAll()
+        .where("asset_id", "=", body.assetId)
+        .execute();
+      expect(deliveries).toHaveLength(memberCount);
+      expect(deliveries.map((row) => row.recipient_device_id).sort()).toEqual(
+        members.map((member) => member.deviceId).sort(),
+      );
+      const source = deliveries.find(
+        (row) => row.recipient_device_id === members[0]!.deviceId,
+      )!;
+      expect(source).toMatchObject({ state: "SAVED_LOCALLY", saved_at: now });
+      expect(deliveries.filter((row) => row.state === "READY")).toHaveLength(
+        memberCount - 1,
+      );
+      expect(
+        await context.db.selectFrom("receipts").selectAll().execute(),
+      ).toMatchObject([
+        { delivery_id: source.id, receipt_type: "SOURCE_PRESENT" },
+      ]);
+      const events = await context.db
+        .selectFrom("inbox_events")
+        .selectAll()
+        .where("aggregate_id", "=", body.assetId)
+        .execute();
+      expect(events).toHaveLength(memberCount);
+      for (const delivery of deliveries)
+        expect(
+          events.find(
+            (event) =>
+              event.recipient_device_id === delivery.recipient_device_id,
+          ),
+        ).toMatchObject({
+          event_type: "ASSET_COMMITTED",
+          payload: { assetId: body.assetId, deliveryId: delivery.id },
+        });
+      expect(result.sequence).toBe(
+        events.find(
+          (event) => event.recipient_device_id === members[0]!.deviceId,
+        )!.sequence,
+      );
+      const wake = await context.db
+        .selectFrom("outbox_events")
+        .select("payload")
+        .where("dedupe_key", "=", `media.committed:${body.assetId}`)
+        .executeTakeFirstOrThrow();
+      const expectedWakeSequences = events
+        .filter((event) => event.recipient_device_id !== members[0]!.deviceId)
+        .map((event) => event.sequence)
+        .sort();
+      expect(wake.payload).toEqual({
+        tripId,
+        recipientSequences: expect.arrayContaining(expectedWakeSequences),
+      });
+      expect(wake.payload.recipientSequences).toHaveLength(memberCount - 1);
+      expect(await measured.commit(members[0]!, body.assetId, commit)).toEqual(
+        result,
+      );
+      expect(inserts).toEqual(firstCommit.inserts);
+    },
+  );
+  it("rolls back the entire commit on an outbox constraint failure and permits the same upload to retry", async () => {
+    const commit = await uploaded();
+    const blockerId = randomUUID();
+    // Fail after asset objects, every delivery, source receipt and inbox row
+    // were written, using a real PostgreSQL uniqueness violation, not a mock.
+    await context.db
+      .insertInto("outbox_events")
+      .values({
+        id: blockerId,
+        event_type: "media.committed",
+        aggregate_id: body.assetId,
+        dedupe_key: `media.committed:${body.assetId}`,
+        payload: {},
+        available_at: now,
+        created_at: now,
+        published_at: null,
+        last_error: null,
+      })
+      .execute();
+    await expect(
+      service.commit(members[0]!, body.assetId, commit),
+    ).rejects.toMatchObject({
+      code: "23505",
+      constraint: "outbox_events_dedupe_key_unique",
+    });
+    for (const table of [
+      "assets",
+      "asset_objects",
+      "deliveries",
+      "receipts",
+      "inbox_events",
+    ] as const)
+      expect(await context.db.selectFrom(table).selectAll().execute()).toEqual(
+        [],
+      );
+    expect(
+      await context.db.selectFrom("outbox_events").select("id").execute(),
+    ).toEqual([{ id: blockerId }]);
+    expect(
+      await context.db
+        .selectFrom("upload_sessions")
+        .select("state")
+        .where("id", "=", commit.uploadSessionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "CREATED" });
+    expect(
+      await context.db
+        .selectFrom("upload_objects")
+        .select(["etag", "verified_at"])
+        .where("upload_session_id", "=", commit.uploadSessionId)
+        .execute(),
+    ).toEqual([
+      { etag: null, verified_at: null },
+      { etag: null, verified_at: null },
+    ]);
+    await context.db
+      .deleteFrom("outbox_events")
+      .where("id", "=", blockerId)
+      .execute();
+    const result = await service.commit(members[0]!, body.assetId, commit);
+    expect(await service.commit(members[0]!, body.assetId, commit)).toEqual(
+      result,
+    );
+    expect(
+      await context.db.selectFrom("deliveries").selectAll().execute(),
+    ).toHaveLength(members.length);
+    expect(
+      await context.db.selectFrom("outbox_events").selectAll().execute(),
+    ).toHaveLength(1);
+  });
   it("does not acknowledge on download and recovers after process restart", async () => {
     await service.commit(members[0]!, body.assetId, await uploaded());
     const delivery = (await service.pending(members[1]!)).items[0]!;
@@ -782,7 +992,7 @@ describe.sequential("durable encrypted photo delivery", () => {
     expect((await restarted.pending(members[1]!)).items).toEqual([delivery]);
     expect(await restarted.cleanup()).toBe(0);
   });
-  it("drains a 105-photo backlog across ten member phones without skipping pending deliveries", async () => {
+  it("pages beyond 100 blocked originals without receipts, and retains legacy acknowledgement-driven head polling", async () => {
     for (let index = 4; index < 10; index++) {
       const user = await fixtures.user();
       const device = await fixtures.device(user.id);
@@ -804,9 +1014,116 @@ describe.sequential("durable encrypted photo delivery", () => {
       await context.db.selectFrom("deliveries").selectAll().execute(),
     ).toHaveLength(1050);
     const receiver = members[1]!;
-    const first = (await service.pending(receiver)).items;
+    // Every row shares a sub-millisecond timestamp: truncating the cursor to a
+    // JavaScript Date would replay the first page instead of finding the tail.
+    await context.db
+      .updateTable("deliveries")
+      .set({
+        available_at: sql`${now.toISOString()}::timestamptz + interval '1 microsecond'`,
+      })
+      .where("recipient_device_id", "=", receiver.deviceId)
+      .execute();
+    now = new Date(now.getTime() + 1);
+    const legacy = await service.pending(receiver);
+    expect(Object.keys(legacy)).toEqual(["items"]);
+    const first = legacy.items;
     expect(first).toHaveLength(100);
     expect((await service.pending(receiver)).items).toEqual(first);
+    const page = await service.pending(receiver, { tripId });
+    expect(page.items).toEqual(first);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toMatch(/^[A-Za-z0-9_-]{1,512}$/);
+    const blockedKeys = new Set(
+      (
+        await context.db
+          .selectFrom("asset_objects")
+          .select("s3_key")
+          .where(
+            "asset_id",
+            "in",
+            first.map((item) => item.assetId),
+          )
+          .where("variant", "=", "ORIGINAL")
+          .execute()
+      ).map((row) => row.s3_key),
+    );
+    const download = store.download;
+    store.download = async (key, expiresAt) => {
+      if (blockedKeys.has(key)) throw new Error("Original temporarily offline");
+      return download(key, expiresAt);
+    };
+    for (const delivery of first)
+      await expect(
+        service.download(receiver, delivery.deliveryId, {
+          variants: ["ORIGINAL"],
+        }),
+      ).rejects.toThrow("Original temporarily offline");
+    const restarted = createKyselyMediaService(context.db, store, {
+      now: () => now,
+    });
+    const tail = await restarted.pending(receiver, {
+      tripId,
+      after: page.nextCursor!,
+    });
+    expect(tail.items).toHaveLength(5);
+    expect(tail.hasMore).toBe(false);
+    expect(tail.nextCursor).toBeNull();
+    for (const delivery of tail.items) {
+      expect(
+        first.some((item) => item.deliveryId === delivery.deliveryId),
+      ).toBe(false);
+      await expect(
+        restarted.download(receiver, delivery.deliveryId, {
+          variants: ["ORIGINAL"],
+        }),
+      ).resolves.toMatchObject({
+        assetId: delivery.assetId,
+        objects: [{ variant: "ORIGINAL" }],
+      });
+    }
+    expect((await service.pending(receiver)).items).toEqual(first);
+    expect(
+      await context.db.selectFrom("receipts").select("id").execute(),
+    ).toHaveLength(105);
+    const decoded = JSON.parse(
+      Buffer.from(page.nextCursor!, "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
+    const encode = (value: Record<string, unknown>) =>
+      Buffer.from(JSON.stringify(value)).toString("base64url");
+    for (const after of [
+      "a",
+      "A".repeat(513),
+      page.nextCursor! + "=",
+      encode({ ...decoded, v: 2 }),
+      encode({ ...decoded, availableAt: "0000-01-01T08:01:00.000001Z" }),
+      encode({ ...decoded, availableAt: "2026-02-30T08:01:00.000001Z" }),
+      encode({
+        ...decoded,
+        availableAt: "2026-08-29T08:01:00.000000Z' or true --",
+      }),
+      encode({ ...decoded, extra: true }),
+    ])
+      await expect(
+        service.pending(receiver, { tripId, after }),
+      ).rejects.toMatchObject({ kind: "INVALID_REQUEST" });
+    await expect(
+      service.pending(receiver, { after: page.nextCursor! }),
+    ).rejects.toMatchObject({ kind: "INVALID_REQUEST" });
+    await expect(
+      service.pending(members[2]!, { tripId, after: page.nextCursor! }),
+    ).rejects.toMatchObject({ kind: "INVALID_REQUEST" });
+    await expect(
+      service.pending(receiver, {
+        tripId: "01990000-0000-7000-8000-000000000002",
+        after: page.nextCursor!,
+      }),
+    ).rejects.toMatchObject({ kind: "INVALID_REQUEST" });
+    await expect(service.pending(outsider, { tripId })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+    });
+    store.download = download;
     const seen = new Set<string>();
     for (const expected of [100, 5]) {
       const page = (await service.pending(receiver)).items;
@@ -825,6 +1142,17 @@ describe.sequential("durable encrypted photo delivery", () => {
     expect((await service.pending(receiver)).items).toEqual([]);
     expect((await service.pending(members[2]!)).items).toHaveLength(100);
     expect(await service.cleanup()).toBe(0);
+    const otherPage = await service.pending(members[2]!, { tripId });
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .where("id", "=", tripId)
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    await expect(
+      service.pending(members[2]!, { tripId, after: otherPage.nextCursor! }),
+    ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
   });
   it("rejects missing, corrupt, or wrong-size uploads without partial fan-out", async () => {
     const commit = await uploaded();
@@ -847,8 +1175,58 @@ describe.sequential("durable encrypted photo delivery", () => {
       expect(
         await context.db.selectFrom("deliveries").selectAll().execute(),
       ).toEqual([]);
+      expect(
+        await context.db.selectFrom("outbox_events").selectAll().execute(),
+      ).toEqual([]);
     }
   });
+  it("rechecks suspension inside media, lifecycle and continuity transactions", async () => {
+    const commit = await uploaded();
+    await service.commit(members[0]!, body.assetId, commit);
+    const sender = members[0]!;
+    const receiver = members[1]!;
+    const delivery = (await service.pending(receiver)).items[0]!;
+    const receiptsBefore = await context.db
+      .selectFrom("receipts")
+      .select("id")
+      .orderBy("id")
+      .execute();
+    const foregroundSender = await foreground(sender);
+    await context.db
+      .updateTable("users")
+      .set({ suspended_at: now })
+      .where("id", "in", [sender.userId, receiver.userId])
+      .execute();
+
+    const denied = [
+      () => service.createUpload(sender, { ...body, assetId: randomUUID() }),
+      () => service.commit(sender, body.assetId, commit),
+      () => service.pending(receiver),
+      () =>
+        service.download(receiver, delivery.deliveryId, {
+          variants: ["ORIGINAL"],
+        }),
+      () =>
+        service.saved(receiver, delivery.deliveryId, randomUUID(), {
+          assetId: body.assetId,
+          savedAt: now.toISOString(),
+          engineRevision: 1,
+        }),
+      () => lifecycle().read(sender, tripId),
+      () => lifecycle().drained(receiver, tripId, 1),
+      () => continuity().read(foregroundSender, tripId),
+    ];
+    for (const operation of denied)
+      await expect(operation()).rejects.toMatchObject({ kind: "AUTH_INVALID" });
+    expect(
+      await context.db
+        .selectFrom("receipts")
+        .select("id")
+        .orderBy("id")
+        .execute(),
+    ).toEqual(receiptsBefore);
+  });
+
   it("rejects outsiders, cross-device receipts, and revoked receivers", async () => {
     await expect(service.createUpload(outsider, body)).rejects.toMatchObject({
       kind: "NOT_FOUND",
@@ -928,6 +1306,426 @@ describe.sequential("durable encrypted photo delivery", () => {
           .executeTakeFirstOrThrow()
       ).state,
     ).toBe("EXPIRED");
+  });
+
+  it("preserves purged-asset replay before the deadline, then erases photo payloads and keys while retaining history", async () => {
+    for (const member of members)
+      await fixtures.envelope(tripId, member.deviceId, members[0]!.deviceId);
+    const committed = await uploaded();
+    const result = await service.commit(members[0]!, body.assetId, committed);
+    for (const member of members.slice(1)) {
+      const delivery = (await service.pending(member)).items[0]!;
+      await service.saved(member, delivery.deliveryId, randomUUID(), {
+        assetId: body.assetId,
+        savedAt: now.toISOString(),
+        engineRevision: 1,
+      });
+    }
+    now = new Date(now.getTime() + 900_000);
+    expect(await service.cleanup()).toBe(1);
+    expect(
+      await context.db
+        .selectFrom("trip_key_envelopes")
+        .select("recipient_device_id")
+        .execute(),
+    ).toHaveLength(4);
+    expect(
+      (
+        await context.db
+          .selectFrom("assets")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).not.toBeNull();
+    expect(
+      (
+        await context.db
+          .selectFrom("upload_sessions")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).not.toBeNull();
+    await expect(
+      service.commit(members[0]!, body.assetId, committed),
+    ).resolves.toEqual(result);
+    await expect(
+      service.createUpload(members[0]!, body),
+    ).resolves.toMatchObject({ uploadSessionId: committed.uploadSessionId });
+    const history = (await lifecycle().list(members[1]!)).items[0]!;
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    await service.cleanup();
+    expect(
+      (
+        await context.db
+          .selectFrom("assets")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).toBeNull();
+    expect(
+      await context.db
+        .selectFrom("upload_sessions")
+        .select(["state", "encrypted_manifest"])
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "EXPIRED", encrypted_manifest: null });
+    expect(
+      await context.db.selectFrom("trip_key_envelopes").selectAll().execute(),
+    ).toEqual([]);
+    expect(
+      (
+        await context.db
+          .selectFrom("trips")
+          .select("media_metadata_purged_at")
+          .executeTakeFirstOrThrow()
+      ).media_metadata_purged_at,
+    ).toEqual(now);
+    const after = (await lifecycle().list(members[1]!)).items[0]!;
+    expect(after).toMatchObject({
+      id: history.id,
+      name: history.name,
+      savedPhotoCount: history.savedPhotoCount,
+    });
+    expect(after.savedPhotoCount).toBe(1);
+    const actor = await foreground(members[0]!);
+    await expect(
+      createKyselyTripUnitOfWork(context.db).readProjection(actor, tripId),
+    ).resolves.toEqual({ kind: "NOT_FOUND", reason: "EXPIRED" });
+    await expect(service.createUpload(members[0]!, body)).rejects.toMatchObject(
+      { kind: "NOT_FOUND" },
+    );
+    await expect(
+      service.commit(members[0]!, body.assetId, committed),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+    await expect(
+      service.previewDownload(members[1]!, body.assetId),
+    ).rejects.toMatchObject({ kind: "NOT_FOUND" });
+    await expect(
+      eraseExpiredMediaMetadata(context.db, { now: () => now }),
+    ).resolves.toEqual({ assets: 0, uploads: 0, envelopes: 0, trips: 0 });
+  });
+
+  it("rejects null photo payloads on live rows and a premature trip erasure receipt", async () => {
+    const committed = await uploaded();
+    await expect(
+      context.db
+        .updateTable("upload_sessions")
+        .set({ encrypted_manifest: null })
+        .where("id", "=", committed.uploadSessionId)
+        .execute(),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "upload_sessions_manifest_check",
+    });
+    await service.commit(members[0]!, body.assetId, committed);
+    await expect(
+      context.db
+        .updateTable("assets")
+        .set({ encrypted_manifest: null })
+        .where("id", "=", body.assetId)
+        .execute(),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "assets_manifest_check",
+    });
+    await expect(
+      context.db
+        .updateTable("trips")
+        .set({ media_metadata_purged_at: now })
+        .where("id", "=", tripId)
+        .execute(),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "trips_media_metadata_purged_check",
+    });
+  });
+
+  it("erases expired wrapped keys but retains manifests and storage paths until byte retirement succeeds", async () => {
+    await fixtures.envelope(tripId, members[0]!.deviceId, members[0]!.deviceId);
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    const retire = store.delete;
+    store.delete = async () => {
+      throw new Error("storage offline");
+    };
+    expect(await service.cleanup()).toBe(0);
+    expect(
+      await context.db.selectFrom("trip_key_envelopes").selectAll().execute(),
+    ).toEqual([]);
+    expect(
+      (
+        await context.db
+          .selectFrom("assets")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).not.toBeNull();
+    expect(
+      (
+        await context.db
+          .selectFrom("upload_sessions")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).not.toBeNull();
+    expect(
+      await context.db.selectFrom("asset_objects").select("s3_key").execute(),
+    ).toHaveLength(2);
+    expect(
+      (
+        await context.db
+          .selectFrom("trips")
+          .select("media_metadata_purged_at")
+          .executeTakeFirstOrThrow()
+      ).media_metadata_purged_at,
+    ).toBeNull();
+    store.delete = retire;
+    now = new Date(now.getTime() + 11_000);
+    expect(await service.cleanup()).toBe(1);
+    expect(
+      (
+        await context.db
+          .selectFrom("assets")
+          .select("encrypted_manifest")
+          .executeTakeFirstOrThrow()
+      ).encrypted_manifest,
+    ).toBeNull();
+    expect(
+      (
+        await context.db
+          .selectFrom("trips")
+          .select("media_metadata_purged_at")
+          .executeTakeFirstOrThrow()
+      ).media_metadata_purged_at,
+    ).toEqual(now);
+  });
+
+  it("does not let four older storage-blocked trips starve a later expired trip's metadata", async () => {
+    await uploaded(); // Older trip has renewable, unretired bytes and no key envelope.
+    const oldTrip = await context.db
+      .selectFrom("trips")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const blockedTrips = [oldTrip.id];
+    const blockedUpload = await context.db
+      .selectFrom("upload_sessions")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    // Fill the entire four-trip candidate window. With only one blocked trip,
+    // an oldest-four implementation would still find the eligible later trip.
+    for (let index = 0; index < 3; index++) {
+      const blocked = await fixtures.trip(members[0]!.userId);
+      await fixtures.member(
+        blocked.id,
+        members[0]!.userId,
+        members[0]!.deviceId,
+        {
+          role: "OWNER",
+        },
+      );
+      blockedTrips.push(blocked.id);
+      await context.db
+        .insertInto("upload_sessions")
+        .values({
+          ...blockedUpload,
+          id: randomUUID(),
+          client_asset_id: randomUUID(),
+          trip_id: blocked.id,
+        })
+        .execute();
+    }
+    const owner = await fixtures.user();
+    const device = await fixtures.device(owner.id);
+    const day = 86_400_000;
+    const later = await fixtures.trip(owner.id, {
+      ends_at: new Date(oldTrip.ends_at.getTime() + day),
+      hard_delete_at: new Date(oldTrip.hard_delete_at.getTime() + day),
+    });
+    await fixtures.member(later.id, owner.id, device.id, { role: "OWNER" });
+    now = later.hard_delete_at;
+    const assetId = randomUUID();
+    await context.db
+      .insertInto("assets")
+      .values({
+        id: assetId,
+        trip_id: later.id,
+        source_device_id: device.id,
+        source_asset_key: `src_${"Z".repeat(32)}`,
+        committed_at: oldTrip.created_at,
+        media_type: "PHOTO",
+        key_epoch: 1,
+        encryption_version: 1,
+        encrypted_manifest: Buffer.from("retired opaque manifest"),
+        state: "EXPIRED",
+        expired_at: now,
+      })
+      .execute();
+    expect(
+      await eraseExpiredMediaMetadata(context.db, { now: () => now }),
+    ).toMatchObject({ assets: 1, trips: 1 });
+    expect(
+      (
+        await context.db
+          .selectFrom("trips")
+          .select("media_metadata_purged_at")
+          .where("id", "=", later.id)
+          .executeTakeFirstOrThrow()
+      ).media_metadata_purged_at,
+    ).toEqual(now);
+    const blockedReceipts = await context.db
+      .selectFrom("trips")
+      .select("media_metadata_purged_at")
+      .where("id", "in", blockedTrips)
+      .execute();
+    expect(blockedReceipts).toHaveLength(4);
+    expect(
+      blockedReceipts.every((row) => row.media_metadata_purged_at === null),
+    ).toBe(true);
+    const blockedManifests = await context.db
+      .selectFrom("upload_sessions")
+      .select("encrypted_manifest")
+      .where("trip_id", "in", blockedTrips)
+      .execute();
+    expect(blockedManifests).toHaveLength(4);
+    expect(
+      blockedManifests.every((row) => row.encrypted_manifest !== null),
+    ).toBe(true);
+  });
+
+  it("bounds each metadata pass and continues to a final durable receipt", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    await service.cleanup();
+    const template = await context.db
+      .selectFrom("assets")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const upload = await context.db
+      .selectFrom("upload_sessions")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    // Seed already-retired historical rows. No payload/network load is generated.
+    const assets = Array.from({ length: 105 }, () => {
+      const id = randomUUID();
+      return {
+        ...template,
+        id,
+        source_asset_key: `src_${id.replaceAll("-", "")}`,
+        encrypted_manifest: Buffer.from("opaque"),
+      };
+    });
+    await context.db.insertInto("assets").values(assets).execute();
+    await context.db
+      .insertInto("upload_sessions")
+      .values(
+        assets.map((asset) => ({
+          ...upload,
+          id: randomUUID(),
+          client_asset_id: asset.id,
+          source_asset_key: asset.source_asset_key,
+          state: "EXPIRED" as const,
+          encrypted_manifest: Buffer.from("opaque"),
+        })),
+      )
+      .execute();
+    await context.db
+      .updateTable("trips")
+      .set({ media_metadata_purged_at: null })
+      .where("id", "=", tripId)
+      .execute();
+    expect(
+      await eraseExpiredMediaMetadata(context.db, { now: () => now }),
+    ).toEqual({ assets: 100, uploads: 100, envelopes: 0, trips: 0 });
+    expect(
+      (
+        await context.db
+          .selectFrom("trips")
+          .select("media_metadata_purged_at")
+          .executeTakeFirstOrThrow()
+      ).media_metadata_purged_at,
+    ).toBeNull();
+    expect(
+      await eraseExpiredMediaMetadata(context.db, { now: () => now }),
+    ).toEqual({ assets: 5, uploads: 5, envelopes: 0, trips: 1 });
+  });
+
+  it("rolls back an entire metadata batch when a later payload update fails", async () => {
+    await service.commit(members[0]!, body.assetId, await uploaded());
+    now = (
+      await context.db
+        .selectFrom("trips")
+        .select("hard_delete_at")
+        .executeTakeFirstOrThrow()
+    ).hard_delete_at;
+    await service.cleanup();
+    await context.db
+      .updateTable("assets")
+      .set({ encrypted_manifest: Buffer.from("opaque") })
+      .where("id", "=", body.assetId)
+      .execute();
+    await context.db
+      .updateTable("upload_sessions")
+      .set({ encrypted_manifest: Buffer.from("opaque") })
+      .where("client_asset_id", "=", body.assetId)
+      .execute();
+    await context.db
+      .updateTable("trips")
+      .set({ media_metadata_purged_at: null })
+      .where("id", "=", tripId)
+      .execute();
+    await context.db.schema
+      .alterTable("upload_sessions")
+      .addCheckConstraint(
+        "test_metadata_update_failure",
+        sql`encrypted_manifest is not null`,
+      )
+      .execute();
+    try {
+      await expect(
+        eraseExpiredMediaMetadata(context.db, { now: () => now }),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "test_metadata_update_failure",
+      });
+      expect(
+        (
+          await context.db
+            .selectFrom("assets")
+            .select("encrypted_manifest")
+            .executeTakeFirstOrThrow()
+        ).encrypted_manifest,
+      ).not.toBeNull();
+      expect(
+        (
+          await context.db
+            .selectFrom("trips")
+            .select("media_metadata_purged_at")
+            .executeTakeFirstOrThrow()
+        ).media_metadata_purged_at,
+      ).toBeNull();
+    } finally {
+      await context.db.schema
+        .alterTable("upload_sessions")
+        .dropConstraint("test_metadata_update_failure")
+        .execute();
+    }
+    expect(
+      await eraseExpiredMediaMetadata(context.db, { now: () => now }),
+    ).toEqual({ assets: 1, uploads: 1, envelopes: 0, trips: 1 });
   });
   it("reauthorizes after slow object verification so revoked senders cannot commit", async () => {
     const commit = await uploaded();
@@ -1282,6 +2080,30 @@ describe.sequential("durable encrypted photo delivery", () => {
         },
       });
       expect(committed.statusCode, committed.body).toBe(200);
+      const scoped = await app.inject({
+        method: "GET",
+        url: `/v1/deliveries/pending?tripId=${tripId}`,
+        headers: headers(1),
+      });
+      expect(scoped.statusCode, scoped.body).toBe(200);
+      expect(scoped.json()).toMatchObject({
+        items: [{ assetId: body.assetId }],
+        nextCursor: null,
+        hasMore: false,
+      });
+      for (const query of [
+        "after=abc",
+        `tripId=${tripId}&after=a`,
+        `tripId=${tripId}&after=${"A".repeat(513)}`,
+        `tripId=${tripId}&extra=true`,
+      ]) {
+        const invalidPage = await app.inject({
+          method: "GET",
+          url: `/v1/deliveries/pending?${query}`,
+          headers: headers(1),
+        });
+        expect(invalidPage.statusCode, invalidPage.body).toBe(400);
+      }
       for (let index = 1; index < members.length; index++) {
         const pending = await app.inject({
           method: "GET",
@@ -1289,6 +2111,7 @@ describe.sequential("durable encrypted photo delivery", () => {
           headers: headers(index),
         });
         expect(pending.statusCode, pending.body).toBe(200);
+        expect(Object.keys(pending.json())).toEqual(["items"]);
         const delivery = pending.json<{ items: { deliveryId: string }[] }>()
           .items[0]!;
         const download = await app.inject({
@@ -1645,6 +2468,43 @@ describe.sequential("durable encrypted photo delivery", () => {
     });
   });
   it("keeps historical source rows valid after replacing the host device", async () => {
+    // This foreground projection uses the real database clock, unlike media's
+    // injected capture clock. Keep the room live on both clocks for this case.
+    now = new Date();
+    const startedAt = new Date(now.getTime() - 60_000);
+    await context.db
+      .updateTable("trips")
+      .set({
+        created_at: startedAt,
+        started_at: startedAt,
+        ends_at: new Date(now.getTime() + 86_400_000),
+        hard_delete_at: new Date(now.getTime() + 8 * 86_400_000),
+      })
+      .where("id", "=", tripId)
+      .execute();
+    await context.db
+      .updateTable("trip_members")
+      .set({
+        created_at: startedAt,
+        approved_at: startedAt,
+        updated_at: startedAt,
+      })
+      .where("trip_id", "=", tripId)
+      .execute();
+    await context.db
+      .updateTable("devices")
+      .set({
+        background_credential_expires_at: new Date(
+          now.getTime() + 30 * 86_400_000,
+        ),
+      })
+      .where(
+        "id",
+        "in",
+        members.map((member) => member.deviceId),
+      )
+      .execute();
+    body = { ...body, capturedAt: now.toISOString() };
     await service.commit(members[0]!, body.assetId, await uploaded());
     const { request, version, actor } = await replacement(0);
     await continuity().change(await foreground(members[1]!), tripId, {

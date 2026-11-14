@@ -42,6 +42,13 @@ class NativePreviewStore(directory: File) {
         val id = record.getString("assetId"); directory(id)
         val next = JSONObject(state.toString()); next.getJSONObject("records").put(id, JSONObject(record.toString())); persist(next)
     }
+    @Synchronized fun clearAuthenticationBlockers(tripId: String) {
+        val blocked = records(tripId).filter { it.optionalString("blocker") == "AUTH_REVOKED" }
+        if (blocked.isEmpty()) return
+        val next = JSONObject(state.toString())
+        blocked.forEach { next.getJSONObject("records").put(it.getString("assetId"), it.put("blocker", JSONObject.NULL)) }
+        persist(next)
+    }
     fun directory(id: String): File {
         require(UUID.fromString(id).toString() == id)
         return File(root, id).also { require(it.canonicalFile.parentFile == root.canonicalFile) }
@@ -59,6 +66,18 @@ class NativePreviewStore(directory: File) {
             if (path.exists()) check(path.deleteRecursively())
             next.getJSONObject("records").remove(id)
         }
+        persist(next)
+    }
+    @Synchronized fun purgeTrip(tripId: String) {
+        val removed = records(tripId)
+        if (removed.isEmpty() && state.getJSONObject("cursors").isNull(tripId)) return
+        val next = JSONObject(state.toString())
+        removed.forEach { record ->
+            val id = record.getString("assetId")
+            directory(id).let { if (it.exists()) check(it.deleteRecursively()) }
+            next.getJSONObject("records").remove(id)
+        }
+        next.getJSONObject("cursors").remove(tripId)
         persist(next)
     }
     private fun persist(next: JSONObject) {

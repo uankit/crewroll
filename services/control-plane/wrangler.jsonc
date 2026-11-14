@@ -14,6 +14,7 @@
     "CLERK_ISSUER": "https://creative-oriole-5086.clerk.accounts.dev",
     "CLERK_AUTHORIZED_PARTIES_JSON": "[]",
     "REQUIRE_TERMS": "false",
+    "PUSH_DISPATCH_ENABLED": "false",
   },
   "hyperdrive": [
     { "binding": "DATABASE", "id": "d3f9413b86474696bac3e5f0220925e5" },
@@ -46,6 +47,7 @@
         "CLERK_ISSUER": "https://clerk.crewroll.app",
         "CLERK_AUTHORIZED_PARTIES_JSON": "[\"https://crewroll.app\",\"https://www.crewroll.app\",\"https://accounts.crewroll.app\"]",
         "REQUIRE_TERMS": "true",
+        "PUSH_DISPATCH_ENABLED": "false",
         "APPLE_SIGN_IN_CLIENT_ID": "app.crewroll.signin",
         "APPLE_SIGN_IN_TEAM_ID": "639SF375P5",
         "APPLE_SIGN_IN_KEY_ID": "ZTLQAKY32D",

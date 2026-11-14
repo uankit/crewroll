@@ -1,4 +1,8 @@
-import { installCrewRollFormats } from "@crewroll/contracts";
+import {
+  installCrewRollFormats,
+  PushSyncHintSchema,
+  type PushSyncHint,
+} from "@crewroll/contracts";
 import {
   EraseAccountCommandSchema,
   type EraseAccountCommand,
@@ -16,6 +20,7 @@ import {
   ListAssetsQuerySchema,
   NativeDeviceIdentitySchema,
   ReconcileNowCommandSchema,
+  RefreshDeviceSessionCommandSchema,
   RetryCommandSchema,
   RevisionInvalidationSchema,
   RestoreDeviceSessionCommandSchema,
@@ -37,6 +42,7 @@ import {
   type ListAssetsQuery,
   type NativeDeviceIdentity,
   type ReconcileNowCommand,
+  type RefreshDeviceSessionCommand,
   type RetryCommand,
   type RevisionInvalidation,
   type RestoreDeviceSessionCommand,
@@ -87,6 +93,7 @@ export interface CrewRollTransferPort {
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
+  refreshDeviceSession?(command: RefreshDeviceSessionCommand): Promise<void>;
   clearDeviceSession(command: ClearDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
   discardProvisionalTripKey(
@@ -104,6 +111,9 @@ export interface CrewRollTransferPort {
   subscribeToInvalidations(
     listener: (event: RevisionInvalidation) => void,
   ): CrewRollTransferEventSubscription;
+  subscribeToPushHints?(
+    listener: (hint: PushSyncHint) => void,
+  ): CrewRollTransferEventSubscription;
 }
 
 type NativeModuleProvider = () => CrewRollTransferNativeModule;
@@ -118,6 +128,13 @@ export function createCrewRollTransferPort(
     pages.invalidate();
   };
   return {
+    subscribeToPushHints(listener) {
+      return getNativeModule().addListener("pushHint", (event) => {
+        // OS payloads are untrusted; malformed/unknown hints are ignored rather
+        // than throwing out of an asynchronous native event callback.
+        if (Value.Check(PushSyncHintSchema, event)) listener(event);
+      });
+    },
     async restoreDeviceSession(command) {
       const parsed = parse(
         RestoreDeviceSessionCommandSchema,
@@ -155,6 +172,20 @@ export function createCrewRollTransferPort(
         "installDeviceSession command",
       );
       await getNativeModule().installDeviceSession(parsed);
+    },
+    async refreshDeviceSession(command) {
+      const parsed = parse(
+        RefreshDeviceSessionCommandSchema,
+        command,
+        "refreshDeviceSession command",
+      );
+      const native = getNativeModule();
+      if (!native.refreshDeviceSession)
+        throw new CrewRollTransferProtocolError(
+          "refreshDeviceSession unavailable",
+        );
+      await native.refreshDeviceSession(parsed);
+      changed();
     },
     async clearDeviceSession(command) {
       changed();

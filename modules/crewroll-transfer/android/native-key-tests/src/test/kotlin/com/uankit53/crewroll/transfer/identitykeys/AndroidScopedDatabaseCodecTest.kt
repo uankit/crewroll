@@ -92,6 +92,55 @@ class AndroidScopedDatabaseCodecTest {
     assertFalse(migratedEncoding.containsSubsequence(identity.e2eePrivateKey))
   }
 
+  @Test fun `v2 encrypted scoped database remains readable and migrates to v3 without changing secrets`() {
+    val scope = NativeKeyScope("a".repeat(64), "install_A-123456")
+    val trip = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130"
+    val cipher = cipher()
+    val key = ByteArray(32) { 0x44 }
+    val v2 = ByteArrayOutputStream().use { buffer ->
+      DataOutputStream(buffer).use { output ->
+        fun text(value: String) { val bytes = value.toByteArray(); output.writeInt(bytes.size); output.write(bytes) }
+        output.writeInt(0x43524b32); output.writeInt(2)
+        output.writeInt(0); output.writeInt(0); output.writeInt(1)
+        text(scope.accountHash); text(scope.installationId)
+        output.writeBoolean(false); output.writeInt(1); text(trip)
+        output.writeInt(KeyState.INSTALLED.ordinal); output.writeBoolean(false); output.writeBoolean(false)
+        val sealed = cipher.seal(key, AndroidScopedDatabaseCodec.tripAad(scope, trip))
+        output.writeInt(sealed.size); output.write(sealed)
+        output.writeInt(0); output.writeBoolean(false); output.writeInt(0)
+        output.writeBoolean(false)
+      }
+      buffer.toByteArray()
+    }
+    val decoded = AndroidScopedDatabaseCodec.decode(v2, cipher)
+    val state = decoded.scopes[androidScopeKey(scope)]!!
+    assertArrayEquals(key, state.trips[trip]!!.key)
+    assertTrue(state.tripEndsAt.isEmpty())
+    assertTrue(state.legacyReconciliationDeadlines.isEmpty())
+    state.tripEndsAt[trip] = "2030-01-02T00:00:00.123456789Z"
+    state.legacyReconciliationDeadlines[trip] = Instant.parse("2030-01-08T00:00:00.123456789Z")
+    val reopened = AndroidScopedDatabaseCodec.decode(AndroidScopedDatabaseCodec.encode(decoded, cipher), cipher)
+    val after = reopened.scopes[androidScopeKey(scope)]!!
+    assertArrayEquals(key, after.trips[trip]!!.key)
+    assertEquals(state.tripEndsAt, after.tripEndsAt)
+    assertEquals(state.legacyReconciliationDeadlines, after.legacyReconciliationDeadlines)
+  }
+
+  @Test fun `retention maps retain bounded record counts`() {
+    val scope = NativeKeyScope("a".repeat(64), "install_A-123456")
+    for (legacy in listOf(false, true)) {
+      val state = AndroidScopedState(scope)
+      repeat(513) { id ->
+        val trip = "01990000-0000-7000-8000-" + id.toString().padStart(12, '0')
+        if (legacy) state.legacyReconciliationDeadlines[trip] = Instant.EPOCH
+        else state.tripEndsAt[trip] = "2030-01-02T00:00:00Z"
+      }
+      assertThrows(NativeKeyException::class.java) {
+        AndroidScopedDatabaseCodec.encode(AndroidScopedDatabase(scopes = mutableMapOf(androidScopeKey(scope) to state)), cipher())
+      }
+    }
+  }
+
   @Test fun `each secret uses a fresh nonce and canonical scope type id version aad`() {
     val scope = NativeKeyScope("a".repeat(64), "install_A-123456")
     val otherScope = NativeKeyScope("b".repeat(64), "install_B-123456")

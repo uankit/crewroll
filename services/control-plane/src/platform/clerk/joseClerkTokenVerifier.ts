@@ -34,6 +34,9 @@ function isFiniteInteger(value: unknown): value is number {
   );
 }
 
+/** Transport failure is not evidence that an otherwise valid session ended. */
+class ClerkKeyServiceUnavailable extends Error {}
+
 export function createJoseClerkTokenVerifier({
   authorizedParties,
   clock,
@@ -72,7 +75,9 @@ export function createJoseClerkTokenVerifier({
           throw new DomainError("AUTH_INVALID");
         }
         return { clerkSubject: requireClerkSubject(payload.sub) };
-      } catch {
+      } catch (error) {
+        if (error instanceof ClerkKeyServiceUnavailable)
+          throw new DomainError("DEPENDENCY_NOT_READY");
         throw new DomainError("AUTH_INVALID");
       }
     },
@@ -105,12 +110,23 @@ export function createRemoteClerkKeyResolver({
   "issuer" | "fetchImplementation"
 >): JWTVerifyGetKey {
   const jwksUrl = new URL("/.well-known/jwks.json", issuer);
+  const fetchKeys: FetchImplementation = async (url, options) => {
+    try {
+      const response = await (fetchImplementation ?? fetch)(url, options);
+      if (response.status !== 200) throw new ClerkKeyServiceUnavailable();
+      // Read within the transport boundary: a dropped/aborted response body
+      // is retryable, while JSON/JWK/key/signature validation stays with jose.
+      const body = await response.text();
+      return new Response(body, { status: 200, headers: response.headers });
+    } catch {
+      // Do not retain provider URLs, response content or credential-bearing causes.
+      throw new ClerkKeyServiceUnavailable();
+    }
+  };
   return createRemoteJWKSet(jwksUrl, {
     cacheMaxAge: 600_000,
     cooldownDuration: 30_000,
     timeoutDuration: 5_000,
-    ...(fetchImplementation === undefined
-      ? {}
-      : { [customFetch]: fetchImplementation }),
+    [customFetch]: fetchKeys,
   });
 }

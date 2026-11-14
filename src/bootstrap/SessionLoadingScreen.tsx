@@ -1,6 +1,7 @@
 import { reloadAppAsync } from "expo";
 import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
+import { withDeadline } from "../application/shared/withDeadline";
 
 import {
   AppText,
@@ -31,7 +32,7 @@ export function SessionLoadingScreen() {
     setBusy(true);
     try {
       // Reload the same release bundle; preserve all durable account/trip data.
-      await reloadAppAsync("crewroll-session-retry");
+      await withDeadline(() => reloadAppAsync("crewroll-session-retry"), 5_000);
     } catch {
       reloading.current = false;
       setBusy(false);

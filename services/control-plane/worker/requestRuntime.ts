@@ -3,8 +3,13 @@ import { productionApiFactories } from "../src/api/productionApiFactories.js";
 import type { AppDependencies } from "../src/app/dependencies.js";
 import { loadEnvironment } from "../src/config/env.js";
 import { createDatabase } from "../src/db/database.js";
+import { resolvePushDispatchConfiguration } from "../src/config/pushConfiguration.js";
+import { createKyselyPushWakeRepository } from "../src/db/push/kyselyPushWakeRepository.js";
+import { createPushWakeDispatcher } from "../src/modules/push/dispatchPushWakeups.js";
+import { createDirectPushProvider } from "../src/platform/push/directPushProvider.js";
 import { createKyselyMediaService } from "../src/db/media/kyselyMediaService.js";
 import { DomainError } from "../src/shared/errors/domainError.js";
+import { createDependencyReadinessProbe } from "../src/shared/observability/dependencyReadiness.js";
 import { toProblemDetails } from "../src/shared/errors/problemMapper.js";
 import { createR2CiphertextStore } from "./r2CiphertextStore.js";
 import {
@@ -43,7 +48,11 @@ export async function createWorkerRequestRuntime(
     | "INVITE_CODE_HMAC_KEY"
     | "MEDIA_SIGNING_KEY_V1"
     | "PUSH_TOKEN_ENCRYPTION_KEY_V1"
-  >,
+  > &
+    Partial<Pick<Env, "PUSH_DISPATCH_ENABLED">> &
+    // Wrangler generates required secrets only. Provider credentials are an
+    // optional configuration value until an operator enables dispatch.
+    Readonly<{ PUSH_PROVIDER_CREDENTIALS_JSON?: string }>,
   connectionString: string,
   origin: string,
 ) {
@@ -78,6 +87,7 @@ export async function createWorkerRequestRuntime(
   const db = createDatabase(connectionString, {
     maxConnections: 2,
     connectionTimeoutMillis: 10_000,
+    queryTimeoutMillis: 15_000,
   });
   const clock = { now: () => new Date(Math.floor(Date.now() / 1000) * 1000) };
   const gateway = createR2CiphertextStore({
@@ -87,6 +97,9 @@ export async function createWorkerRequestRuntime(
     signingKey: mediaSigningKey,
   });
   let dependencies: AppDependencies | undefined;
+  const pushTokens = createWorkerPushTokenProtector(
+    env.PUSH_TOKEN_ENCRYPTION_KEY_V1,
+  );
   const runtime = await createApiRuntime({
     ...productionApiFactories,
     environment: () => environment,
@@ -97,10 +110,9 @@ export async function createWorkerRequestRuntime(
         authorizedParties: configuration.clerkAuthorizedParties,
         issuer: clerkIssuer,
         clock: requestClock,
-        resolver: clerkKeyResolver!,
+        resolver: clerkKeyResolver,
       }),
-    pushTokenProtector: () =>
-      createWorkerPushTokenProtector(env.PUSH_TOKEN_ENCRYPTION_KEY_V1),
+    pushTokenProtector: () => pushTokens,
     media: ({ authenticator }) =>
       Promise.resolve({
         ciphertextStore: gateway.store,
@@ -108,7 +120,14 @@ export async function createWorkerRequestRuntime(
         service: createKyselyMediaService(db, gateway.store, clock),
       }),
     buildApp(input) {
-      dependencies = input;
+      dependencies = {
+        ...input,
+        readiness: createDependencyReadinessProbe({
+          database: () => input.readiness.check(),
+          // Missing is healthy: no user object is read or created by the probe.
+          storage: () => env.CIPHERTEXT.head("_crewroll/health/readiness"),
+        }),
+      };
       return { close: async () => {}, listen: async () => {} };
     },
   });
@@ -119,6 +138,47 @@ export async function createWorkerRequestRuntime(
   }
   return {
     close: () => runtime.close(),
+    async dispatchPush(limit = 16) {
+      const repository = createKyselyPushWakeRepository(db, clock);
+      async function maintain() {
+        await repository.materialize(100);
+        await repository.compact(200);
+      }
+      const dispatchConfiguration = resolvePushDispatchConfiguration(
+        env.PUSH_DISPATCH_ENABLED,
+        env.PUSH_PROVIDER_CREDENTIALS_JSON,
+      );
+      if (dispatchConfiguration.kind === "DISABLED") {
+        if (limit === 16) {
+          await maintain();
+        }
+        return;
+      }
+      if (dispatchConfiguration.kind === "MISSING") {
+        await maintain();
+        console.error(
+          JSON.stringify({ event: "push_dispatch_configuration_missing" }),
+        );
+        // Do not consume pending work or pretend a hint was delivered.
+        return;
+      }
+      const dispatcher = createPushWakeDispatcher({
+        repository,
+        provider: createDirectPushProvider(
+          dispatchConfiguration.configuration,
+          {
+            now: clock.now,
+          },
+        ),
+        tokenReader: pushTokens.reader,
+        clock,
+      });
+      const counts = await dispatcher.run(limit);
+      if (Object.values(counts).some((count) => count > 0))
+        console.log(
+          JSON.stringify({ event: "push_dispatch_completed", ...counts }),
+        );
+    },
     async cleanup() {
       const results = await Promise.allSettled([
         current.media!.service.cleanup(),

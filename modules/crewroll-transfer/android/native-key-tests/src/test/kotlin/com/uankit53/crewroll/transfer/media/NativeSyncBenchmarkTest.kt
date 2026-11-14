@@ -86,9 +86,9 @@ class NativeSyncBenchmarkTest {
             override fun cancel() {}
             override fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject = when {
                 path.endsWith("transfer-state") -> JSONObject().put("tripId", trip).put("version", 1).put("participation", "JOINED").put("captureUntil", context.metadata.endsAt).put("excludedCaptureWindows", JSONArray())
-                path == "/v1/deliveries/pending" -> JSONObject().put("items", JSONArray(grants.keys.filter { !received.contains(it) }.map {
+                path == "/v1/deliveries/pending?tripId=$trip" -> JSONObject().put("items", JSONArray(grants.keys.filter { !received.contains(it) }.map {
                     JSONObject().put("tripId", trip).put("assetId", it).put("deliveryId", it).put("committedAt", captured.toString())
-                }))
+                })).put("nextCursor", JSONObject.NULL).put("hasMore", false)
                 path.endsWith("download-session") -> JSONObject(grants.getValue(path.split('/')[3]).toString())
                 path.endsWith("saved-receipt") -> { val id = path.split('/')[3]; assertArrayEquals(payload, saved[id]); assertTrue(received.add(id)); JSONObject() }
                 path.contains("previews?after=") -> JSONObject().put("items", JSONArray()).put("nextCursor", "0")

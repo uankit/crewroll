@@ -24,6 +24,27 @@ function renderScreen(
 }
 
 describe("ProvisioningScreen", () => {
+  it("names sign-out progress and retries teardown without suggesting phone registration", async () => {
+    const onRetry = jest.fn();
+    const screen = await renderScreen({
+      status: "working",
+      purpose: "sign-out",
+    });
+    screen.getByRole("summary", { name: "Signing out…" });
+    await screen.rerender(
+      <CrewRollThemeProvider reduceMotion>
+        <ProvisioningScreen
+          status="failed"
+          purpose="sign-out"
+          onRetry={onRetry}
+        />
+      </CrewRollThemeProvider>,
+    );
+    screen.getByText("Finish signing out.");
+    expect(screen.queryByText(safeFailure)).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
   it("presents scalable, accessible progress without a retry action", async () => {
     const screen = await renderScreen({ status: "working" });
 

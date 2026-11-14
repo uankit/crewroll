@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createBackgroundDeviceAuthenticator } from "../../services/control-plane/src/modules/devices/backgroundDeviceAuthenticator.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { classifyDeviceConstraint } from "../../services/control-plane/src/db/devices/constraintClassifier.js";
@@ -153,6 +155,93 @@ describe("Kysely device repository", () => {
       .executeTakeFirstOrThrow();
     expect(storedDevice).toEqual({ app_version: "0.2.1", last_seen_at: now });
     expect(storedKey).toEqual({ response_body: {}, response_status: 204 });
+  });
+
+  it("invalidates an existing background bearer when its owner is suspended", async () => {
+    const fixtures = createIdentityTripFixtures(context.db);
+    const user = await fixtures.user();
+    const bearer = `crb_${"A".repeat(43)}`;
+    const device = await fixtures.device(user.id, {
+      background_credential_hash: createHash("sha256").update(bearer).digest(),
+    });
+    const authenticator = createBackgroundDeviceAuthenticator({
+      clock: { now: () => now },
+      unitOfWork: createKyselyDeviceUnitOfWork(context.db),
+    });
+    const input = {
+      authorization: `Bearer ${bearer}`,
+      headerDeviceId: device.id,
+    };
+    await expect(authenticator.authenticate(input)).resolves.toEqual({
+      deviceId: device.id,
+      userId: user.id,
+    });
+    await context.db
+      .updateTable("users")
+      .set({ suspended_at: now })
+      .where("id", "=", user.id)
+      .execute();
+    await expect(authenticator.authenticate(input)).rejects.toMatchObject({
+      kind: "AUTH_INVALID",
+    });
+  });
+
+  it("reserves restore-safe per-device ordering and only commits a strictly newer push write", async () => {
+    const fixtures = createIdentityTripFixtures(context.db);
+    const user = await fixtures.user();
+    const device = await fixtures.device(user.id);
+    const work = createKyselyDeviceUnitOfWork(context.db);
+    const revisions = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        work.reservePushTokenRevision(user.id, device.id),
+      ),
+    );
+    expect(new Set(revisions).size).toBe(4);
+    const ordered = revisions.map(BigInt).sort((a, b) => (a < b ? -1 : 1));
+    const apply = (revision: bigint, label: string) =>
+      work.run(async (tx) => {
+        const current = await tx.findDeviceByOwnerAndId(user.id, device.id);
+        if (!current) throw new Error("Expected owned device");
+        await tx.updatePushTokenIfNewer(
+          {
+            ...current,
+            appVersion: label,
+            encryptedPushToken: Buffer.from(label),
+            pushTokenHash: createHash("sha256").update(label).digest(),
+          },
+          revision.toString(),
+        );
+      });
+    await apply(ordered[2]!, "1.0.2");
+    await apply(ordered[0]!, "1.0.1");
+    let stored = await context.db
+      .selectFrom("devices")
+      .select([
+        "app_version",
+        "push_token_request_revision",
+        "push_token_committed_revision",
+      ])
+      .where("id", "=", device.id)
+      .executeTakeFirstOrThrow();
+    expect(stored).toEqual({
+      app_version: "1.0.2",
+      push_token_request_revision: ordered[3]!.toString(),
+      push_token_committed_revision: ordered[2]!.toString(),
+    });
+    await apply(ordered[3]!, "1.0.3");
+    stored = await context.db
+      .selectFrom("devices")
+      .select([
+        "app_version",
+        "push_token_request_revision",
+        "push_token_committed_revision",
+      ])
+      .where("id", "=", device.id)
+      .executeTakeFirstOrThrow();
+    expect(stored.app_version).toBe("1.0.3");
+    await expect(
+      work.reservePushTokenRevision(crypto.randomUUID(), device.id),
+    ).rejects.toMatchObject({ kind: "DEVICE_NOT_OWNED" });
   });
 
   it("prunes at most 100 expired records without deleting future records", async () => {

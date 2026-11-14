@@ -58,7 +58,47 @@ function deferred<T>() {
 }
 
 describe("photo access during account setup", () => {
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it("leaves a stalled native check with an actionable error and permits skipping", async () => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const stalled = deferred<PhotoLibraryPermissionState>();
+    f.permission.read.mockReturnValueOnce(stalled.promise);
+    const { result } = await renderHook(() => usePhotoAccessSetup(f));
+    await act(() => jest.advanceTimersByTimeAsync(5_000));
+    expect(result.current.checking).toBe(false);
+    expect(result.current.unavailable).toBe(true);
+    expect(f.permission.request).not.toHaveBeenCalled();
+    await act(() => result.current.defer());
+    expect(result.current.complete).toBe(true);
+    await act(() => stalled.resolve(full));
+    expect(result.current.complete).toBe(true);
+  });
+
+  it("does not wait indefinitely for the optional onboarding cache", async () => {
+    jest.useFakeTimers();
+    const f = fixture(full);
+    f.cache.read.mockReturnValueOnce(new Promise(() => {}));
+    const { result } = await renderHook(() => usePhotoAccessSetup(f));
+    await act(() => jest.advanceTimersByTimeAsync(1_500));
+    expect(result.current.checking).toBe(false);
+    expect(result.current.complete).toBe(true);
+  });
+
+  it("retries a failed check without opening a permission prompt", async () => {
+    const f = fixture();
+    f.permission.read.mockRejectedValueOnce(new Error("native unavailable"));
+    const { result } = await renderHook(() => usePhotoAccessSetup(f));
+    await waitFor(() => expect(result.current.unavailable).toBe(true));
+    f.permission.read.mockResolvedValue(full);
+    await act(() => result.current.retry());
+    await waitFor(() => expect(result.current.complete).toBe(true));
+    expect(f.permission.request).not.toHaveBeenCalled();
+  });
 
   it("offers the native prompt before a user chooses either host or guest, with no trip dependency", async () => {
     const f = fixture();
@@ -146,6 +186,33 @@ describe("photo access during account setup", () => {
     f.permission.read.mockResolvedValue(full);
     await act(() => foreground("active"));
     await waitFor(() => expect(result.current.complete).toBe(true));
+    expect(f.permission.request).not.toHaveBeenCalled();
+  });
+
+  it("releases a stalled Settings launch and preserves a later choice", async () => {
+    jest.useFakeTimers();
+    const f = fixture(blocked);
+    const stalled = deferred<void>();
+    f.permission.openSettings.mockReturnValueOnce(stalled.promise);
+    const { result } = await renderHook(() => usePhotoAccessSetup(f));
+    await act(() => jest.advanceTimersByTimeAsync(0));
+    expect(result.current.settingsRequired).toBe(true);
+    let opening!: Promise<void>;
+    await act(() => {
+      opening = result.current.request();
+    });
+    expect(result.current.busy).toBe(true);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5_000);
+      await opening;
+    });
+    expect(result.current.busy).toBe(false);
+    expect(result.current.unavailable).toBe(true);
+    expect(result.current.complete).toBe(false);
+    await act(() => result.current.defer());
+    expect(result.current.complete).toBe(true);
+    await act(() => stalled.resolve());
+    expect(result.current.complete).toBe(true);
     expect(f.permission.request).not.toHaveBeenCalled();
   });
 

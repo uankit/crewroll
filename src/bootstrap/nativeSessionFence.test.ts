@@ -6,6 +6,7 @@ function fixture() {
     [
       "ensureDeviceIdentity",
       "installDeviceSession",
+      "refreshDeviceSession",
       "clearDeviceSession",
       "createTripKey",
       "discardProvisionalTripKey",
@@ -86,5 +87,29 @@ describe("native session fence", () => {
     }
     await current.getSnapshot();
     expect(native.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a refresh completion after signout and never dispatches an old refresh into the replacement session", async () => {
+    const { native, fence } = fixture();
+    let complete!: () => void;
+    native.refreshDeviceSession = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const old = fence.capture();
+    const command = {} as Parameters<
+      NonNullable<CrewRollTransferPort["refreshDeviceSession"]>
+    >[0];
+    const pending = old.refreshDeviceSession!(command);
+    const rejected = expect(pending).rejects.toThrow("Native session ended");
+    fence.invalidate();
+    complete();
+    await rejected;
+    await expect(old.refreshDeviceSession!(command)).rejects.toThrow(
+      "Native session ended",
+    );
+    expect(native.refreshDeviceSession).toHaveBeenCalledTimes(1);
   });
 });

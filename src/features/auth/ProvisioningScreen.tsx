@@ -9,22 +9,28 @@ import {
 
 const safeFailure =
   "CrewRoll could not connect this phone. Check your connection and try again.";
-export type ProvisioningScreenProps =
+export type ProvisioningScreenProps = (
   | Readonly<{ status: "working"; onRetry?: never; retrying?: never }>
-  | Readonly<{ status: "failed"; onRetry: () => void; retrying?: boolean }>;
+  | Readonly<{ status: "failed"; onRetry: () => void; retrying?: boolean }>
+) &
+  Readonly<{ purpose?: "sign-out" }>;
 
 export function ProvisioningScreen(props: ProvisioningScreenProps) {
+  const signingOut = props.purpose === "sign-out";
+  const failure = signingOut
+    ? "CrewRoll could not finish signing out safely. Try again to stop transfers and close this session."
+    : safeFailure;
   if (props.status === "working")
     return (
       <Screen scroll={false} testID="provisioning-screen">
-        <BrandLoading />
+        <BrandLoading {...(signingOut ? { message: "Signing out…" } : {})} />
       </Screen>
     );
   return (
     <FlowScreen
       testID="provisioning-screen"
       header={<CrewRollWordmark />}
-      title="Let’s reconnect."
+      title={signingOut ? "Finish signing out." : "Let’s reconnect."}
       centerContent
       footer={
         <Button
@@ -36,10 +42,10 @@ export function ProvisioningScreen(props: ProvisioningScreenProps) {
     >
       <AppText
         accessibilityRole="alert"
-        accessibilityLabel={safeFailure}
+        accessibilityLabel={failure}
         tone="secondary"
       >
-        {safeFailure}
+        {failure}
       </AppText>
     </FlowScreen>
   );

@@ -274,6 +274,7 @@ describe("CreateImmediateTrip.create", () => {
       expectedSenderDeviceId: deviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt,
       wrappedKey,
     });
     expect(random.getBytes.mock.calls.map(([count]) => count)).toEqual([
@@ -335,6 +336,35 @@ describe("CreateImmediateTrip.create", () => {
     });
     expect(api.createTrip.mock.calls[0]?.[2].name).toBe(name);
   });
+
+  it.each([50, 80])(
+    "confirms an accepted create for an owner name containing %s astral code points",
+    async (length) => {
+      const { api, native, recoveryStore, service } = harness();
+      const displayName = "🛶".repeat(length);
+      const response = tripResponse();
+      api.createTrip.mockResolvedValueOnce({
+        ...response,
+        members: response.members.map((member) => ({
+          ...member,
+          displayName,
+        })),
+      });
+
+      await expect(
+        service.create({ name: "Ladakh", endsAt }),
+      ).resolves.toMatchObject({ members: [{ displayName }] });
+      expect(recoveryStore.save).toHaveBeenLastCalledWith(scope, {
+        state: "CONFIRMED",
+        tripId,
+        membershipId,
+        ownerInviteCode: inviteCode,
+      });
+      expect(native.importTripKey).toHaveBeenCalledTimes(1);
+      expect(api.createTrip).toHaveBeenCalledTimes(1);
+      expect(api.resolveCreateTripOutcome).not.toHaveBeenCalled();
+    },
+  );
 
   it("trims the trip name before creating any durable or native state", async () => {
     const { api, recoveryStore, service } = harness();
@@ -686,6 +716,7 @@ describe("CreateImmediateTrip.reconcileUnknownCreate", () => {
       expectedSenderDeviceId: deviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt,
       wrappedKey,
     });
     expect(recoveryStore.save.mock.invocationCallOrder[0]).toBeLessThan(

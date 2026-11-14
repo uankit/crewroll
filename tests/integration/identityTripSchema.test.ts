@@ -7,7 +7,7 @@ import {
   createIdentityTripFixtures,
   type IdentityTripFixtures,
 } from "./support/fixtures.js";
-import { migrateDown } from "./support/migrations.js";
+import { migrateTo } from "./support/migrations.js";
 import {
   assertPostgres17,
   assertPostgres17Version,
@@ -160,6 +160,7 @@ describe.sequential("identity and trip schema", () => {
       "trips_hard_delete_at_check",
       "trips_lifecycle_check",
       "trips_lifecycle_order_check",
+      "trips_media_metadata_purged_check",
       "trips_member_count_check",
       "trips_name_check",
       "trips_release_fields_check",
@@ -911,26 +912,22 @@ describe.sequential("identity and trip schema", () => {
   });
 
   it("migrates up, down, and up again", async () => {
-    await migrateDown(db); // 011
-    await migrateDown(db); // 010
-    await migrateDown(db); // 009
+    await migrateTo(db, "008_device_continuity");
     const cleanupClaimsAfterDown = await sql<{ table_name: string }>`
       select table_name from information_schema.tables
       where table_schema = 'public' and table_name = 'media_cleanup_claims'
     `.execute(db);
     expect(cleanupClaimsAfterDown.rows).toEqual([]);
-    await migrateDown(db); // 008
-    await migrateDown(db); // 007
-    await migrateDown(db); // 006
+    await migrateTo(db, "005_trip_room_readiness");
     const participationAfterDown = await sql<{ column_name: string }>`
       select column_name from information_schema.columns
       where table_schema = 'public' and table_name = 'trip_members'
       and column_name in ('leaving_at', 'left_at', 'left_incomplete', 'sharing_paused_at', 'sharing_pauses', 'drained_at')
     `.execute(db);
     expect(participationAfterDown.rows).toEqual([]);
-    await migrateDown(db);
+    await migrateTo(db, "004_identity_device_hardening");
 
-    const readinessAfterFifthDown = await sql<{ column_name: string }>`
+    const readinessAfterBaseline = await sql<{ column_name: string }>`
       select column_name
       from information_schema.columns
       where table_schema = 'public'
@@ -974,7 +971,7 @@ describe.sequential("identity and trip schema", () => {
         and constraint_record.conrelid = 'devices'::regclass
     `.execute(db);
 
-    expect(readinessAfterFifthDown.rows).toEqual([]);
+    expect(readinessAfterBaseline.rows).toEqual([]);
     expect(priorVersionDefault.rows).toEqual([{ column_default: "0" }]);
     expect(priorTripChecks.rows).toHaveLength(2);
     expect(priorTripChecks.rows.every(({ convalidated }) => convalidated)).toBe(
@@ -1001,10 +998,7 @@ describe.sequential("identity and trip schema", () => {
       "octet_length(authentication_public_key) = 65",
     );
 
-    await migrateDown(db);
-    await migrateDown(db);
-    await migrateDown(db);
-    await migrateDown(db);
+    await migrateTo(db, null);
 
     const tablesAfterDown = await sql<{ table_name: string }>`
       select table_name

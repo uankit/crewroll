@@ -1,7 +1,7 @@
-import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 import { useState } from "react";
 
-import { normalizeInviteCode, useAppSession } from "@/bootstrap";
+import { useAppSession } from "@/bootstrap";
 import {
   JoinTripScreen,
   type JoinTripScreenState,
@@ -22,12 +22,9 @@ function safeFailureKind(error: unknown): "INVALID" | "UNKNOWN" | "FAILED" {
 }
 
 export default function JoinTripRoute() {
-  const params = useLocalSearchParams<{ code?: string | string[] }>();
   const router = useRouter();
   const { actions, retry, snapshot } = useAppSession();
-  const routeCode =
-    typeof params.code === "string" ? normalizeInviteCode(params.code) : null;
-  const [initialCode, setInitialCode] = useState(routeCode ?? "");
+  const [editingAttempt, setEditingAttempt] = useState(0);
   const [state, setState] = useState<JoinTripScreenState>({ kind: "editing" });
 
   function recoverUnknownJoin() {
@@ -49,7 +46,7 @@ export default function JoinTripRoute() {
           setState({
             kind: "rejected",
             onUseAnotherCode: () => {
-              setInitialCode("");
+              setEditingAttempt((value) => value + 1);
               setState({ kind: "editing" });
             },
           });
@@ -63,7 +60,7 @@ export default function JoinTripRoute() {
             setState({
               kind: "invalid",
               onUseAnotherCode: () => {
-                setInitialCode("");
+                setEditingAttempt((value) => value + 1);
                 setState({ kind: "editing" });
               },
             });
@@ -89,8 +86,7 @@ export default function JoinTripRoute() {
 
   return (
     <JoinTripScreen
-      key={initialCode}
-      initialCode={initialCode}
+      key={editingAttempt}
       onLookup={async (code) => {
         if (actions === null) throw new Error("Session unavailable");
         return actions.previewInvite(code);

@@ -13,6 +13,8 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
     private var completions: [String: () -> Void] = [:]
     private var failures: [ObjectIdentifier: Error] = [:]
     private var generation = 0
+    // Queue-confined state shared by URLSession enumeration callbacks.
+    private final class PendingClear: @unchecked Sendable { var failure: Error? }
     private var cancelledTasks = Set<ObjectIdentifier>()
     private let prefix = "app.crewroll.ciphertext."
     private var root: URL {
@@ -92,28 +94,57 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
                 removed.forEach { $0.1.resume(throwing: CancellationError()) }
                 if self.waiters[key]!.isEmpty {
                     self.waiters.removeValue(forKey: key)
-                    self.sessions.values.forEach { session in session.getAllTasks { tasks in tasks.filter { $0.taskDescription?.hasPrefix(key + "|") == true }.forEach { $0.cancel() } } }
+                    for session in self.sessions.values {
+                        session.getAllTasks { tasks in self.queue.async {
+                            NativeTransferOwnerCancellation.cancelUnobserved(
+                                tasks: tasks, transferID: key,
+                                hasWaiters: { self.waiters[$0] != nil },
+                                taskTransferID: { $0.taskDescription?.split(separator: "|").first.map(String.init) },
+                                markCancelled: { self.cancelledTasks.insert(ObjectIdentifier($0)) },
+                                cancel: { $0.cancel() }
+                            )
+                        } }
+                    }
                 }
             }
         }
     }
-    public func clear() async {
-        await withCheckedContinuation { continuation in queue.async {
-            self.generation += 1
-            self.waiters.values.flatMap { $0 }.forEach { $0.1.resume(throwing: CancellationError()) }
-            self.waiters.removeAll()
-            // Wait for cancellation requests before a new account can enqueue.
+    public func clear(ifCurrent: @escaping () -> Bool = { true },
+                      protectedMutation: @escaping (() throws -> Void) throws -> Void = { try $0() }) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in queue.async {
+            do {
+                try protectedMutation {
+                    guard ifCurrent() else { throw CancellationError() }
+                    self.generation += 1
+                    self.waiters.values.flatMap { $0 }.forEach { $0.1.resume(throwing: CancellationError()) }
+                    self.waiters.removeAll()
+                }
+            } catch { continuation.resume(throwing: error); return }
             let group = DispatchGroup()
+            // Accessed only on queue. A replacement selection can arrive while
+            // URLSession enumerates tasks, so fence every later mutation too.
+            let state = PendingClear()
             for session in self.sessions.values {
                 group.enter()
                 session.getAllTasks { tasks in self.queue.async {
-                    for task in tasks { self.cancelledTasks.insert(ObjectIdentifier(task)); task.cancel() }
+                    do {
+                        try protectedMutation {
+                            guard ifCurrent() else { throw CancellationError() }
+                            for task in tasks { self.cancelledTasks.insert(ObjectIdentifier(task)); task.cancel() }
+                        }
+                    } catch { state.failure = error }
                     group.leave()
                 } }
             }
             group.notify(queue: self.queue) {
-                if let root = try? self.root { try? FileManager.default.removeItem(at: root) }
-                continuation.resume()
+                do {
+                    if let failure = state.failure { throw failure }
+                    try protectedMutation {
+                        guard ifCurrent() else { throw CancellationError() }
+                        if let root = try? self.root { try? FileManager.default.removeItem(at: root) }
+                    }
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
             }
         } }
     }
@@ -123,7 +154,7 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
             guard let parts = downloadTask.taskDescription?.split(separator: "|"), parts.count == 3,
                   let expected = UInt64(parts[1]), let checksum = Data(base64Encoded: String(parts[2])), let response = downloadTask.response as? HTTPURLResponse,
                   (200..<300).contains(response.statusCode),
-                  response.url?.host == downloadTask.originalRequest?.url?.host else { throw NativeKeyError.invalidEnvelope }
+                  NativeTransferURLPolicy.sameHTTPSOrigin(response.url, downloadTask.originalRequest?.url) else { throw NativeKeyError.invalidEnvelope }
             try NativeTransferCacheIdentity.verify(location, bytes: expected, sha256: checksum)
             let destination = try root.appendingPathComponent(String(parts[0]) + ".ciphertext")
             if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
@@ -136,7 +167,11 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
         let result: Result<String, Error>
         do {
             if let error = failures.removeValue(forKey: ObjectIdentifier(task)) ?? error { throw error }
-            guard let response = task.response as? HTTPURLResponse, response.url?.host == task.originalRequest?.url?.host else { throw NativeKeyError.invalidEnvelope }
+            // Background URLSession follows redirects without consulting the
+            // redirect delegate. Reject a changed origin before accepting a
+            // completion; the capability gateway itself must never redirect.
+            guard let response = task.response as? HTTPURLResponse,
+                  NativeTransferURLPolicy.sameHTTPSOrigin(response.url, task.originalRequest?.url) else { throw NativeKeyError.invalidEnvelope }
             guard (200..<300).contains(response.statusCode) else { throw NativeTransferHTTPError(status: response.statusCode, authenticated: false) }
             let value: String
             if task is URLSessionUploadTask {

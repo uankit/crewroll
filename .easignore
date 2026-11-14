@@ -1,0 +1,53 @@
+# Keep the exclusions below aligned with .gitignore.
+# Dependencies
+node_modules/
+
+# Expo and generated bundles
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Continuous Native Generation output. Signing identity stays in app.json/eas.json
+/ios/
+/android/
+.kotlin/
+modules/crewroll-transfer/android/native-key-tests/.gradle/
+modules/crewroll-transfer/android/build/
+modules/crewroll-transfer/ios/IdentityKeys/.build/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Local operating-system files and secrets
+.DS_Store
+*.pem
+.env
+.env*.local
+
+# Generated test/build artifacts
+.wrangler/
+.dev.vars*
+*.tsbuildinfo
+coverage/
+outputs/**/previews/
+outputs/**/inspection*.ndjson
+outputs/**/*.inspect.ndjson
+
+# Cloud build archives retain source, not local audit evidence or test caches.
+/outputs/
+**/.gradle/
+**/.build/
+/modules/crewroll-transfer/android/native-key-tests/build/
+/packages/contracts/crypto/conformance/kotlin/build/

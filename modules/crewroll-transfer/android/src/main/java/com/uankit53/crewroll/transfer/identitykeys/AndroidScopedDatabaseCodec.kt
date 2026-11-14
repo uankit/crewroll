@@ -17,7 +17,13 @@ internal data class AndroidScopedState(
   val tombstones: MutableSet<String> = mutableSetOf(),
   var activeMetadata: ActiveTripMetadata? = null,
   val frozenMetadata: MutableMap<String, ActiveTripMetadata> = mutableMapOf(),
-)
+  val tripEndsAt: MutableMap<String, String> = mutableMapOf(),
+  val legacyReconciliationDeadlines: MutableMap<String, Instant> = mutableMapOf(),
+) {
+  fun authoritativeDeadline(tripId: String): Instant? = tripEndsAt[tripId]?.let(NativeTripRetention::deadline)
+    ?: (frozenMetadata[tripId] ?: activeMetadata?.takeIf { it.tripId == tripId })?.let(NativeTripRetention::deadline)
+  fun cleanupDeadline(tripId: String): Instant? = authoritativeDeadline(tripId) ?: legacyReconciliationDeadlines[tripId]
+}
 
 internal data class AndroidScopedDatabase(
   val identities: MutableMap<String, DeviceIdentityMaterial> = mutableMapOf(),
@@ -98,6 +104,7 @@ internal object AndroidScopedDatabaseCodec {
   private const val MAGIC = 0x43524b32
   private const val VERSION = 1
   private const val V2_VERSION = 2
+  private const val V3_VERSION = 3
   private const val SECRET_VERSION = 1
 
   private fun decodeLegacy(bytes: ByteArray): AndroidScopedDatabase {
@@ -150,7 +157,7 @@ internal object AndroidScopedDatabaseCodec {
     ByteArrayOutputStream().use { buffer ->
       ScopedRecordOutputV2(buffer, cipher).use { output ->
         output.writeInt(MAGIC)
-        output.writeInt(V2_VERSION)
+        output.writeInt(V3_VERSION)
         output.writeCount(database.identities.size, 64)
         database.identities.toSortedMap().forEach { (accountHash, identity) ->
           output.text(accountHash, 64)
@@ -179,6 +186,16 @@ internal object AndroidScopedDatabaseCodec {
             output.text(tripId, 64)
             output.metadata(metadata)
           }
+          output.writeCount(state.tripEndsAt.size, 512)
+          state.tripEndsAt.toSortedMap().forEach { (tripId, endsAt) ->
+            output.text(tripId, 64)
+            output.text(endsAt, 64)
+          }
+          output.writeCount(state.legacyReconciliationDeadlines.size, 512)
+          state.legacyReconciliationDeadlines.toSortedMap().forEach { (tripId, deadline) ->
+            output.text(tripId, 64)
+            output.text(deadline.toString(), 64)
+          }
         }
         output.optional(database.selectedScope) { scope(it) }
       }
@@ -195,11 +212,11 @@ internal object AndroidScopedDatabaseCodec {
       throw NativeKeyException.materialLost()
     }
     if (version == VERSION) return decodeLegacy(bytes)
-    if (version != V2_VERSION) throw NativeKeyException.materialLost()
+    if (version != V2_VERSION && version != V3_VERSION) throw NativeKeyException.materialLost()
     val database = AndroidScopedDatabase()
     return try {
       ScopedRecordInputV2(ByteArrayInputStream(bytes), cipher).use { input ->
-        if (input.readInt() != MAGIC || input.readInt() != V2_VERSION) {
+        if (input.readInt() != MAGIC || input.readInt() != version) {
           throw NativeKeyException.materialLost()
         }
         repeat(input.count(64)) {
@@ -236,6 +253,19 @@ internal object AndroidScopedDatabaseCodec {
             val metadata = input.metadata()
             if (metadata.tripId != tripId || state.frozenMetadata.put(tripId, metadata) != null) {
               throw NativeKeyException.materialLost()
+            }
+          }
+          if (version >= V3_VERSION) {
+            repeat(input.count(512)) {
+              val tripId = input.canonicalUuid()
+              val endsAt = input.text(64)
+              NativeTripRetention.deadline(endsAt)
+              if (state.tripEndsAt.put(tripId, endsAt) != null) throw NativeKeyException.materialLost()
+            }
+            repeat(input.count(512)) {
+              val tripId = input.canonicalUuid()
+              val deadline = Instant.parse(input.text(64))
+              if (state.legacyReconciliationDeadlines.put(tripId, deadline) != null) throw NativeKeyException.materialLost()
             }
           }
         }

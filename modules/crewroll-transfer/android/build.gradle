@@ -16,6 +16,9 @@ android {
 }
 
 dependencies {
+  // SDK 57 autolinking may use a precompiled publication instead of a source project.
+  implementation expoModule.getExpoDependency('expo-notifications')
+  implementation 'com.google.firebase:firebase-messaging:25.0.1'
   // Reviewed, hash-locked artifacts; see Vendor/native-crypto-lock.json.
   implementation files('Vendor/lazysodium-android-5.2.0.aar')
   implementation files('Vendor/jna-5.17.0.aar')

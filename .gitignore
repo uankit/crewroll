@@ -43,3 +43,6 @@ coverage/
 outputs/**/previews/
 outputs/**/inspection*.ndjson
 outputs/**/*.inspect.ndjson
+
+# Local audit artifacts may include private account metadata.
+/outputs/

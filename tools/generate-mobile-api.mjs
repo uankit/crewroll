@@ -28,6 +28,7 @@ export const requiredOperations = [
   "getTrip",
   "previewInvite",
   "registerDevice",
+  "updatePushToken",
   "resolveCreateTripOutcome",
   "setTripReadiness",
   "startTrip",
@@ -41,7 +42,16 @@ const UUID_V7_SCHEMA = Object.freeze({
     "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   type: "string",
 });
-const PROBLEM_STATUSES = ["400", "401", "403", "404", "409", "429", "500"];
+const PROBLEM_STATUSES = [
+  "400",
+  "401",
+  "403",
+  "404",
+  "409",
+  "429",
+  "500",
+  "503",
+];
 const HTTP_METHODS = [
   "delete",
   "get",
@@ -251,6 +261,19 @@ const operationExpectations = [
     request: "RegisterDeviceBody",
     response: "DeviceResponse",
     successStatus: "201",
+  },
+  {
+    method: "patch",
+    operationId: "updatePushToken",
+    parameters: [
+      deviceHeader(),
+      commandHeader(),
+      parameter("deviceId", "path", UUID_SCHEMA),
+    ],
+    path: "/v1/devices/{deviceId}/push-token",
+    request: "UpdatePushTokenBody",
+    response: null,
+    successStatus: "204",
   },
   {
     method: "post",
@@ -640,6 +663,7 @@ function renderGeneratedTypes() {
     "ProblemDetails",
     "ProfileResponse",
     "RegisterDeviceBody",
+    "UpdatePushTokenBody",
     "SetTripReadinessBody",
     "StartTripBody",
     "SyncProfileBody",
@@ -684,6 +708,7 @@ export async function generateMobileApi({
     "packages/contracts/generated/crewroll.openapi.json",
   ),
   outputPath = path.join(root, "src/infrastructure/api/generated.ts"),
+  check = false,
 } = {}) {
   const contract = JSON.parse(await readFile(inputPath, "utf8"));
   requireObject(contract, "OpenAPI document");
@@ -694,10 +719,21 @@ export async function generateMobileApi({
     validateOperation(contract, expected);
   }
 
+  const generated = renderGeneratedTypes();
+  if (check) {
+    if ((await readFile(outputPath, "utf8")) !== generated) {
+      throw new Error("Generated mobile API types drifted; regenerate them");
+    }
+    return;
+  }
   await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, renderGeneratedTypes(), "utf8");
+  await writeFile(outputPath, generated, "utf8");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  await generateMobileApi();
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== "--check")) {
+    throw new Error("Usage: node tools/generate-mobile-api.mjs [--check]");
+  }
+  await generateMobileApi({ check: args[0] === "--check" });
 }

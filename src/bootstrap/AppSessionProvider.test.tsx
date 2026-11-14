@@ -3,12 +3,20 @@ import type { TripListResponse, TripTransferState } from "@crewroll/contracts";
 import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react-native";
-import { useLayoutEffect, type PropsWithChildren } from "react";
+import { useLayoutEffect, useState, type PropsWithChildren } from "react";
 import { AppState, Text, type AppStateStatus } from "react-native";
 
 import { CrewRollApiProblem } from "../application/problems/crewRollApiProblem";
+import { createCrewRollApi } from "../infrastructure/api/crewRollApi";
 import type { ProvisionedDevice } from "../application/auth/ProvisionDevice";
-import type { JoinTripResult } from "../application/trips/JoinTrip";
+import {
+  createRefreshDeviceSession,
+  type RefreshDeviceSessionInput,
+} from "../application/auth/RefreshDeviceSession";
+import {
+  JoinTripTerminalProblem,
+  type JoinTripResult,
+} from "../application/trips/JoinTrip";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
 import { CreateTripTerminalProblem } from "../application/trips/CreateImmediateTrip";
 import type {
@@ -27,8 +35,11 @@ import {
   type ScopedTripSession,
   type TripMutationResult,
 } from "./AppSessionProvider";
-import { sessionUiStore } from "./state/sessionUiStore";
-import { usePhotoReadinessEntryBoundary } from "./photoReadinessReconciler";
+import {
+  canPublishPhotoReadiness,
+  usePhotoReadinessEntryBoundary,
+  usePhotoReadinessRecovery,
+} from "./photoReadinessReconciler";
 import { createPhotoReadinessService } from "./photoReadinessService";
 import { useTripLibrary } from "./useTripLibrary";
 
@@ -83,6 +94,187 @@ const signedIn: AppSessionAuthSnapshot = Object.freeze({
   isSignedIn: true,
   userId,
   sessionId,
+});
+
+describe("ready session credential renewal", () => {
+  it("retries only in foreground without restarting setup or hiding the ready screen", async () => {
+    jest.useFakeTimers();
+    const originalAppState = AppState.currentState;
+    AppState.currentState = "background";
+    const listeners = new Set<(state: AppStateStatus) => void>();
+    const originalSubscribe = AppState.addEventListener;
+    AppState.addEventListener = (_event, callback) => {
+      listeners.add(callback);
+      return { remove: () => listeners.delete(callback) };
+    };
+    const client = createQueryClient();
+    const { runtime: base } = createRuntime();
+    const refresh = jest
+      .fn(async (_input: RefreshDeviceSessionInput) => undefined)
+      .mockRejectedValueOnce(new Error("offline"));
+    const runtime = { ...base, refreshDeviceSession: refresh };
+    try {
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <SessionProbe />
+        </Harness>,
+      );
+      await act(() => jest.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId("session-probe")).toHaveTextContent(
+        "READY_NO_TRIP",
+      );
+      expect(refresh).not.toHaveBeenCalled();
+      await act(async () => {
+        AppState.currentState = "active";
+        listeners.forEach((callback) => callback("active"));
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("session-probe")).toHaveTextContent(
+        "READY_NO_TRIP",
+      );
+      await act(async () => {
+        AppState.currentState = "background";
+        listeners.forEach((callback) => callback("background"));
+        await jest.advanceTimersByTimeAsync(120_000);
+      });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        AppState.currentState = "active";
+        listeners.forEach((callback) => callback("active"));
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(refresh).toHaveBeenCalledTimes(3);
+      expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("session-probe")).toHaveTextContent(
+        "READY_NO_TRIP",
+      );
+      await view.unmount();
+    } finally {
+      client.clear();
+      AppState.addEventListener = originalSubscribe;
+      AppState.currentState = originalAppState;
+      jest.useRealTimers();
+    }
+  });
+
+  it("renews daily after eight days in one ready process using the current device", async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2026-11-14T10:00:00.000Z"));
+    const originalAppState = AppState.currentState;
+    AppState.currentState = "active";
+    const listeners = new Set<(state: AppStateStatus) => void>();
+    const originalSubscribe = AppState.addEventListener;
+    AppState.addEventListener = (_event, callback) => {
+      listeners.add(callback);
+      return { remove: () => listeners.delete(callback) };
+    };
+    const client = createQueryClient();
+    const { runtime: base } = createRuntime();
+    const nativeRefresh = jest.fn(async () => undefined);
+    const registerDevice = jest.fn(async () => ({
+      deviceId,
+      backgroundBearer: "new-credential",
+      backgroundBearerExpiresAt: new Date(
+        Date.now() + 30 * 86_400_000,
+      ).toISOString(),
+    }));
+    let byte = 0;
+    const refreshDeviceSession = createRefreshDeviceSession({
+      native: () => ({ refreshDeviceSession: nativeRefresh }),
+      registration: { registerDevice },
+      random: {
+        getBytes: async (length) => new Uint8Array(length).fill(++byte),
+      },
+      sessionBinding: () => JSON.stringify([userId, sessionId]),
+      now: () => Date.now(),
+    });
+    const runtime = { ...base, refreshDeviceSession };
+    try {
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <SessionProbe />
+        </Harness>,
+      );
+      await act(() => jest.advanceTimersByTimeAsync(0));
+      expect(registerDevice).toHaveBeenCalledTimes(1);
+      for (let elapsedDays = 1; elapsedDays <= 8; elapsedDays++) {
+        jest.setSystemTime(Date.now() + 86_400_000);
+        await act(async () => {
+          listeners.forEach((callback) => callback("active"));
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        expect(registerDevice).toHaveBeenCalledTimes(elapsedDays + 1);
+        expect(screen.getByTestId("session-probe")).toHaveTextContent(
+          "READY_NO_TRIP",
+        );
+      }
+      expect(nativeRefresh).toHaveBeenCalledTimes(9);
+      expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+      expect(base.createScopedTripSession).toHaveBeenCalledTimes(1);
+      await view.unmount();
+    } finally {
+      client.clear();
+      AppState.addEventListener = originalSubscribe;
+      AppState.currentState = originalAppState;
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["account switch", "sign-out", "unmount"])(
+    "invalidates a pending ready-device renewal on %s",
+    async (change) => {
+      const originalAppState = AppState.currentState;
+      AppState.currentState = "active";
+      const client = createQueryClient();
+      const { runtime: base } = createRuntime();
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => (finish = resolve));
+      const inputs: RefreshDeviceSessionInput[] = [];
+      const nativeWrites: string[] = [];
+      const refresh = jest.fn(async (input: RefreshDeviceSessionInput) => {
+        inputs.push(input);
+        if (inputs.length === 1) await pending;
+        if (input.isCurrent()) nativeWrites.push(input.context.accountId);
+      });
+      const runtime = { ...base, refreshDeviceSession: refresh };
+      try {
+        const view = await render(
+          <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+            <SessionProbe />
+          </Harness>,
+        );
+        await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+        expect(inputs[0]?.isCurrent()).toBe(true);
+        if (change === "unmount") await view.unmount();
+        else
+          await view.rerender(
+            <Harness
+              auth={
+                change === "sign-out"
+                  ? signedOut
+                  : {
+                      ...signedIn,
+                      userId: "user_two",
+                      sessionId: "session_two",
+                    }
+              }
+              runtime={runtime}
+              queryClient={client}
+            >
+              <SessionProbe />
+            </Harness>,
+          );
+        expect(inputs[0]?.isCurrent()).toBe(false);
+        await act(async () => finish());
+        expect(nativeWrites).not.toContain(userId);
+        if (change !== "unmount") await view.unmount();
+      } finally {
+        client.clear();
+        AppState.currentState = originalAppState;
+      }
+    },
+  );
 });
 
 function completeLaunchInput(
@@ -168,6 +360,7 @@ function createRuntime(options: RuntimeOptions = {}) {
     startTrip: jest.fn(async () => ({ ...lobby, status: "ACTIVE" as const })),
   };
   const runtime: AppSessionRuntime = {
+    invalidatePendingSetup: jest.fn(),
     provisionCurrentDevice: jest.fn(
       options.provision ??
         (async () => {
@@ -225,9 +418,11 @@ function Harness({
   auth,
   children,
   runtime,
-  queryClient = createQueryClient(),
+  queryClient: suppliedQueryClient,
   onAuthInvalid,
 }: HarnessProps) {
+  const [fallbackQueryClient] = useState(createQueryClient);
+  const queryClient = suppliedQueryClient ?? fallbackQueryClient;
   return (
     <AppSessionProvider
       auth={auth}
@@ -248,6 +443,48 @@ function Harness({
 }
 
 describe("resolveLaunchPhase", () => {
+  it("bounds a stalled Settings launch without granting access or losing the session", async () => {
+    jest.useFakeTimers();
+    const client = createQueryClient();
+    const { runtime, scoped } = createRuntime();
+    jest
+      .mocked(scoped.openPhotoSettings)
+      .mockReturnValueOnce(new Promise(() => {}));
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SessionProbe />;
+    }
+    try {
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <Probe />
+        </Harness>,
+      );
+      await act(() => jest.advanceTimersByTimeAsync(0));
+      expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+      let outcome!: Promise<unknown>;
+      await act(() => {
+        outcome = current.actions!.openPhotoSettings().catch((error) => error);
+      });
+      await act(() => jest.advanceTimersByTimeAsync(5_000));
+      await expect(outcome).resolves.toMatchObject({
+        name: "OperationDeadlineExceeded",
+      });
+      expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+      expect(current.photoPermission.kind).toBe("CHECKING");
+      await act(() => current.actions!.openPhotoSettings());
+      expect(scoped.openPhotoSettings).toHaveBeenCalledTimes(2);
+      await view.unmount();
+    } finally {
+      client.clear();
+      jest.useRealTimers();
+    }
+  });
+
   it("shows the recovered trip library without a duplicate request and discards it on account change", async () => {
     const initialAppState = AppState.currentState;
     AppState.currentState = "active";
@@ -342,14 +579,18 @@ describe("resolveLaunchPhase", () => {
       </Harness>,
     );
     await waitFor(() => expect(current.snapshot.phase).toBe("READY_LOBBY"));
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
     queryClient.setQueryData(["trip", "private"], lobby);
     pauseTransfers.mockRejectedValueOnce(new Error("KEYCHAIN_UNAVAILABLE"));
     await act(async () => {
       await expect(current.signOut()).rejects.toThrow("KEYCHAIN_UNAVAILABLE");
     });
     expect(onAuthInvalid).not.toHaveBeenCalled();
-    expect(current.snapshot.phase).toBe("READY_LOBBY");
+    expect(current.snapshot).toEqual({
+      phase: "RECOVERABLE_FAILURE",
+      publicErrorCode: "SESSION_TEARDOWN_FAILED",
+    });
+    expect(current.actions).toBeNull();
+    expect(current.queryScope).toBeNull();
 
     let finishPause!: () => void;
     pauseTransfers.mockImplementationOnce(
@@ -362,6 +603,8 @@ describe("resolveLaunchPhase", () => {
     await act(async () => {
       signOut = current.signOut();
     });
+    expect(current.snapshot.phase).toBe("SIGNING_OUT");
+    expect(current.actions).toBeNull();
     expect(onAuthInvalid).not.toHaveBeenCalled();
     await act(async () => {
       finishPause();
@@ -372,11 +615,161 @@ describe("resolveLaunchPhase", () => {
     expect(current.queryScope).toBeNull();
     expect(onAuthInvalid).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
     expect(scoped.createTrip).not.toHaveBeenCalled();
     expect(scoped.startTrip).not.toHaveBeenCalled();
     expect(scoped.setPhotoReadiness).not.toHaveBeenCalled();
   });
+
+  it.each(["native pause", "Clerk sign-out"] as const)(
+    "closes private views, bounds a stalled %s and retries teardown without provisioning again",
+    async (stage) => {
+      jest.useFakeTimers();
+      try {
+        let finishOld!: () => void;
+        const stalled = new Promise<void>((resolve) => {
+          finishOld = resolve;
+        });
+        const { runtime: base } = createRuntime();
+        const pauseTransfers = jest
+          .fn<Promise<void>, []>()
+          .mockResolvedValue(undefined);
+        const onAuthInvalid = jest
+          .fn<Promise<void>, []>()
+          .mockResolvedValue(undefined);
+        const runtime = { ...base, pauseTransfers };
+        let current!: ReturnType<typeof useAppSession>;
+        function Probe() {
+          const session = useAppSession();
+          useLayoutEffect(() => {
+            current = session;
+          }, [session]);
+          return <SessionProbe />;
+        }
+        const view = await render(
+          <Harness
+            auth={signedIn}
+            runtime={runtime}
+            onAuthInvalid={onAuthInvalid}
+          >
+            <Probe />
+          </Harness>,
+        );
+        expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+        const oldActions = current.actions!;
+        if (stage === "native pause")
+          pauseTransfers.mockReturnValueOnce(stalled);
+        else onAuthInvalid.mockReturnValueOnce(stalled);
+        let first!: Promise<void>;
+        let duplicate!: Promise<void>;
+        await act(() => {
+          first = current.signOut();
+          duplicate = current.signOut();
+        });
+        expect(duplicate).toBe(first);
+        expect(current.snapshot.phase).toBe("SIGNING_OUT");
+        expect(current.actions).toBeNull();
+        const rejection = expect(first).rejects.toThrow(
+          "OPERATION_DEADLINE_EXCEEDED",
+        );
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(
+            stage === "native pause" ? 10_000 : 20_000,
+          );
+          await rejection;
+        });
+        expect(current.snapshot).toEqual({
+          phase: "RECOVERABLE_FAILURE",
+          publicErrorCode: "SESSION_TEARDOWN_FAILED",
+        });
+        expect(current.actions).toBeNull();
+        expect(current.queryScope).toBeNull();
+        await expect(
+          oldActions.create({ name: "stale", endsAt: lobby.endsAt }),
+        ).rejects.toThrow("TRIP_SESSION_UNAVAILABLE");
+        await act(() => current.retry());
+        expect(current.snapshot.phase).toBe("SIGNED_OUT");
+        expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+        await act(() => finishOld());
+        expect(current.snapshot.phase).toBe("SIGNED_OUT");
+        await view.unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["failed", "stalled"] as const)(
+    "keeps a signed-out cold launch recoverable when native cleanup has %s without exposing protected views",
+    async (failure) => {
+      jest.useFakeTimers();
+      try {
+        let finishOld!: () => void;
+        const old = new Promise<void>((resolve) => {
+          finishOld = resolve;
+        });
+        const { runtime: base } = createRuntime();
+        const pauseTransfers = jest
+          .fn<Promise<void>, []>()
+          .mockResolvedValue(undefined);
+        if (failure === "failed")
+          pauseTransfers.mockRejectedValueOnce(new Error("keychain locked"));
+        else pauseTransfers.mockReturnValueOnce(old);
+        const runtime = { ...base, pauseTransfers };
+        const onAuthInvalid = jest.fn();
+        const committedPhases: string[] = [];
+        function Probe() {
+          const session = useAppSession();
+          useLayoutEffect(() => {
+            committedPhases.push(session.snapshot.phase);
+          }, [session.snapshot.phase]);
+          return (
+            <Text testID="signed-out-cleanup" onPress={session.retry}>
+              {JSON.stringify(session.snapshot)}
+            </Text>
+          );
+        }
+        const view = await render(
+          <Harness
+            auth={signedOut}
+            runtime={runtime}
+            onAuthInvalid={onAuthInvalid}
+          >
+            <Probe />
+          </Harness>,
+        );
+        expect(committedPhases).not.toContain("SIGNED_OUT");
+        if (failure === "stalled")
+          expect(screen.getByTestId("signed-out-cleanup").props.children).toBe(
+            JSON.stringify({ phase: "SIGNING_OUT" }),
+          );
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10_000);
+        });
+        expect(screen.getByTestId("signed-out-cleanup").props.children).toBe(
+          JSON.stringify({
+            phase: "RECOVERABLE_FAILURE",
+            publicErrorCode: "SESSION_TEARDOWN_FAILED",
+          }),
+        );
+        await act(() =>
+          screen.getByTestId("signed-out-cleanup").props.onPress(),
+        );
+        expect(screen.getByTestId("signed-out-cleanup").props.children).toBe(
+          JSON.stringify({ phase: "SIGNED_OUT" }),
+        );
+        await act(() => finishOld());
+        expect(screen.getByTestId("signed-out-cleanup").props.children).toBe(
+          JSON.stringify({ phase: "SIGNED_OUT" }),
+        );
+        expect(pauseTransfers).toHaveBeenCalledTimes(2);
+        expect(base.provisionCurrentDevice).not.toHaveBeenCalled();
+        expect(onAuthInvalid).not.toHaveBeenCalled();
+        await view.unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it("keeps unchanged permission rechecks local and clears the gallery on account change and sign-out", async () => {
     const full = {
@@ -538,10 +931,185 @@ describe("resolveLaunchPhase", () => {
 
 describe("AppSessionProvider", () => {
   beforeEach(() => {
-    sessionUiStore.getState().clear();
     jest
       .spyOn(AppState, "addEventListener")
       .mockReturnValue({ remove: jest.fn() });
+  });
+
+  it.each(["create", "join", "start"] as const)(
+    "finishes an accepted %s when the optional owner-invite recovery read never settles",
+    async (operation) => {
+      jest.useFakeTimers();
+      const client = createQueryClient();
+      const { runtime } = createRuntime({
+        ...(operation === "start"
+          ? {
+              recovery: {
+                state: "CONFIRMED" as const,
+                tripId,
+                membershipId,
+                ownerInviteCode: "ABCD2345",
+              },
+            }
+          : {}),
+        requestJoin: async () => ({
+          tripId,
+          membershipId,
+          status: "ACTIVE" as const,
+        }),
+      });
+      let current!: ReturnType<typeof useAppSession>;
+      function Probe() {
+        const session = useAppSession();
+        useLayoutEffect(() => {
+          current = session;
+        }, [session]);
+        return (
+          <Text testID="optional-recovery-result">
+            {session.snapshot.phase}:{session.ownerInviteCode ?? "none"}
+          </Text>
+        );
+      }
+      try {
+        const view = await render(
+          <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+            <Probe />
+          </Harness>,
+        );
+        await waitFor(() =>
+          expect(current.snapshot.phase).toBe(
+            operation === "start" ? "READY_LOBBY" : "READY_NO_TRIP",
+          ),
+        );
+        if (operation === "start") {
+          await act(async () => {
+            await current.actions!.publishPhotoReadiness(tripId, false);
+          });
+        }
+        jest
+          .mocked(runtime.loadRecovery)
+          .mockReturnValue(new Promise(() => {}));
+        let result: TripMutationResult | undefined;
+        let failure: unknown;
+        let pending!: Promise<unknown>;
+        await act(async () => {
+          pending = (
+            operation === "create"
+              ? current.actions!.create({
+                  name: "Trip",
+                  endsAt: "2030-01-02T00:00:00.000Z",
+                })
+              : operation === "join"
+                ? current.actions!.join("ABCD2345")
+                : current.actions!.start(tripId)
+          ).then(
+            (value) => {
+              if (value.kind === "READY" || value.kind === "ACTIVATION_FAILED")
+                result = value;
+            },
+            (error: unknown) => {
+              failure = error;
+            },
+          );
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(1_500);
+        });
+        expect(failure).toBeUndefined();
+        expect(result).toEqual({ kind: "READY", tripId });
+        expect(current.snapshot.phase).toBe(
+          operation === "start" ? "READY_ACTIVE" : "READY_LOBBY",
+        );
+        if (operation === "start")
+          expect(current.ownerInviteCode).toBe("ABCD2345");
+        await pending;
+        await view.unmount();
+      } finally {
+        client.clear();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("does not publish an old account's optional owner invite after a deadline and account switch", async () => {
+    jest.useFakeTimers();
+    const client = createQueryClient();
+    const { runtime } = createRuntime();
+    let finishOld!: (value: TripRecoveryRecord | null) => void;
+    const oldRead = new Promise<TripRecoveryRecord | null>((resolve) => {
+      finishOld = resolve;
+    });
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return (
+        <Text testID="optional-recovery-account">
+          {session.snapshot.phase}:{session.ownerInviteCode ?? "none"}
+        </Text>
+      );
+    }
+    try {
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <Probe />
+        </Harness>,
+      );
+      await waitFor(() => expect(current.snapshot.phase).toBe("READY_NO_TRIP"));
+      jest.mocked(runtime.loadRecovery).mockReturnValueOnce(oldRead);
+      let finished = false;
+      let failure: unknown;
+      await act(async () => {
+        void current
+          .actions!.create({ name: "Trip", endsAt: "2030-01-02T00:00:00.000Z" })
+          .then(
+            () => {
+              finished = true;
+            },
+            (error: unknown) => {
+              finished = true;
+              failure = error;
+            },
+          );
+      });
+      await view.rerender(
+        <Harness
+          auth={{
+            isLoaded: true,
+            isSignedIn: true,
+            userId: "user_two",
+            sessionId: "session_two",
+          }}
+          runtime={runtime}
+          queryClient={client}
+        >
+          <Probe />
+        </Harness>,
+      );
+      await waitFor(() => expect(current.snapshot.phase).toBe("READY_NO_TRIP"));
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_500);
+      });
+      expect(finished).toBe(true);
+      expect(failure).toEqual(new Error("TRIP_SESSION_UNAVAILABLE"));
+      await act(async () => {
+        finishOld({
+          state: "CONFIRMED",
+          tripId,
+          membershipId,
+          ownerInviteCode: "ABCD2345",
+        });
+      });
+      expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+      expect(current.ownerInviteCode).toBeNull();
+      expect(client.getQueryCache().getAll()).toHaveLength(0);
+      await view.unmount();
+    } finally {
+      client.clear();
+      jest.useRealTimers();
+    }
   });
 
   it("a stalled setup becomes an explicit failure instead of an endless spinner", async () => {
@@ -566,7 +1134,99 @@ describe("AppSessionProvider", () => {
     }
   });
 
-  it("does no native or API work while Clerk is loading or signed out", async () => {
+  it("retries a stalled provisioning attempt and fences its late completion", async () => {
+    jest.useFakeTimers();
+    try {
+      let finishOld!: (value: ProvisionedDevice) => void;
+      const old = new Promise<ProvisionedDevice>((resolve) => {
+        finishOld = resolve;
+      });
+      const provision = jest
+        .fn<Promise<ProvisionedDevice>, []>()
+        .mockReturnValueOnce(old)
+        .mockResolvedValue({ deviceId, identity });
+      const { runtime: base } = createRuntime({ provision });
+      const invalidatePendingSetup = jest.fn();
+      const runtime = { ...base, invalidatePendingSetup };
+      function RetryProbe() {
+        const session = useAppSession();
+        return (
+          <Text testID="retry-setup" onPress={session.retry}>
+            {JSON.stringify(session.snapshot)}
+          </Text>
+        );
+      }
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime}>
+          <RetryProbe />
+        </Harness>,
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(30_000);
+      });
+      expect(screen.getByTestId("retry-setup").props.children).toContain(
+        "DEVICE_SETUP_FAILED",
+      );
+      expect(invalidatePendingSetup).toHaveBeenCalledTimes(1);
+      await act(() => screen.getByTestId("retry-setup").props.onPress());
+      expect(screen.getByTestId("retry-setup").props.children).toContain(
+        "READY_NO_TRIP",
+      );
+      expect(provision).toHaveBeenCalledTimes(2);
+      const snapshotReads = (runtime.getNativeSnapshot as jest.Mock).mock.calls
+        .length;
+      await act(() =>
+        finishOld({ deviceId: "old-device-must-not-be-published", identity }),
+      );
+      expect(screen.getByTestId("retry-setup").props.children).toContain(
+        deviceId,
+      );
+      expect(screen.getByTestId("retry-setup").props.children).not.toContain(
+        "old-device",
+      );
+      expect(runtime.getNativeSnapshot).toHaveBeenCalledTimes(snapshotReads);
+      await view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("reports a recovery stall at the correct stage and ignores its late projection", async () => {
+    jest.useFakeTimers();
+    try {
+      let finishOld!: (value: TripView) => void;
+      const pending = new Promise<TripView>((resolve) => {
+        finishOld = resolve;
+      });
+      const { runtime: base } = createRuntime({
+        recovery: { state: "CONFIRMED", tripId, membershipId },
+        hydrate: async () => pending,
+      });
+      const invalidatePendingSetup = jest.fn();
+      const runtime = { ...base, invalidatePendingSetup };
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime}>
+          <SnapshotProbe />
+        </Harness>,
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(30_000);
+      });
+      expect(screen.getByTestId("snapshot-probe").props.children).toContain(
+        "TRIP_RECOVERY_FAILED",
+      );
+      expect(invalidatePendingSetup).toHaveBeenCalledTimes(1);
+      await act(() => finishOld(lobby));
+      expect(screen.getByTestId("snapshot-probe").props.children).toContain(
+        "TRIP_RECOVERY_FAILED",
+      );
+      await view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("does not provision or read trip recovery while Clerk is loading or signed out", async () => {
     const loadingRuntime = createRuntime();
     const loadingAuth: AppSessionAuthSnapshot = {
       isLoaded: false,
@@ -612,6 +1272,7 @@ describe("AppSessionProvider", () => {
     );
     await act(async () => undefined);
     expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(runtime.createScopedTripSession).toHaveBeenCalledTimes(1);
   });
 
   it("delegates UNKNOWN_CREATE only to Task 7 reconciliation", async () => {
@@ -709,6 +1370,367 @@ describe("AppSessionProvider", () => {
     expect(hydrateTrip).not.toHaveBeenCalled();
     expect(scoped.reconcileUnknownCreate).not.toHaveBeenCalled();
   });
+
+  it("keeps pending-poll auth teardown failure retryable without an unhandled rejection or private actions", async () => {
+    jest.useFakeTimers();
+    const originalState = AppState.currentState;
+    AppState.currentState = "active";
+    const replay = jest
+      .fn<Promise<JoinTripResult>, []>()
+      .mockResolvedValueOnce({ tripId, membershipId, status: "PENDING_KEY" })
+      .mockRejectedValue(new CrewRollApiProblem("AUTH_INVALID"));
+    const { runtime: base, scoped } = createRuntime({
+      recovery: {
+        state: "UNKNOWN_JOIN",
+        inviteCode: "ABCD2345",
+        deviceId,
+        commandId: "40000000-0000-4000-8000-000000000001",
+      },
+      replayJoin: replay,
+    });
+    const pauseTransfers = jest
+      .fn<Promise<void>, []>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("NATIVE_PAUSE_FAILED"))
+      .mockResolvedValue(undefined);
+    const runtime: AppSessionRuntime = { ...base, pauseTransfers };
+    const client = createQueryClient();
+    const onAuthInvalid = jest.fn(async () => undefined);
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SessionProbe />;
+    }
+    try {
+      const view = await render(
+        <Harness
+          auth={signedIn}
+          runtime={runtime}
+          queryClient={client}
+          onAuthInvalid={onAuthInvalid}
+        >
+          <Probe />
+        </Harness>,
+      );
+      await act(() => jest.advanceTimersByTimeAsync(0));
+      expect(current.snapshot.phase).toBe("READY_PENDING_APPROVAL");
+      await act(() => jest.advanceTimersByTimeAsync(5_000));
+      expect(current.snapshot).toEqual({
+        phase: "RECOVERABLE_FAILURE",
+        publicErrorCode: "SESSION_TEARDOWN_FAILED",
+      });
+      expect(current.actions).toBeNull();
+      expect(current.queryScope).toBeNull();
+      expect(onAuthInvalid).not.toHaveBeenCalled();
+      expect(scoped.hydrateTrip).not.toHaveBeenCalled();
+      expect(replay).toHaveBeenCalledTimes(2);
+
+      await act(async () => current.retry());
+      expect(current.snapshot.phase).toBe("SIGNED_OUT");
+      expect(pauseTransfers).toHaveBeenCalledTimes(3);
+      expect(onAuthInvalid).toHaveBeenCalledTimes(1);
+      expect(client.getQueryCache().getAll()).toHaveLength(0);
+      await view.unmount();
+    } finally {
+      client.clear();
+      AppState.currentState = originalState;
+      jest.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["startup", "invalid"],
+    ["pending poll", "invalid"],
+    ["startup", "rejected"],
+    ["pending poll", "rejected"],
+  ] as const)(
+    "returns a conclusively unavailable join to a visible usable Home from %s after %s",
+    async (stage, outcome) => {
+      jest.useFakeTimers();
+      const previousState = AppState.currentState;
+      AppState.currentState = "active";
+      const replay = jest
+        .fn<Promise<JoinTripResult>, []>()
+        .mockRejectedValue(new JoinTripTerminalProblem());
+      if (outcome === "rejected")
+        replay.mockResolvedValue({ status: "REJECTED" });
+      if (stage === "pending poll")
+        replay.mockResolvedValueOnce({
+          tripId,
+          membershipId,
+          status: "PENDING_KEY",
+        });
+      const { runtime, scoped } = createRuntime({
+        recovery: {
+          state: "UNKNOWN_JOIN",
+          inviteCode: "ABCD2345",
+          deviceId,
+          commandId: "40000000-0000-4000-8000-000000000001",
+        },
+        replayJoin: replay,
+      });
+      try {
+        const view = await render(
+          <Harness auth={signedIn} runtime={runtime}>
+            <SnapshotProbe />
+          </Harness>,
+        );
+        await act(() => jest.advanceTimersByTimeAsync(0));
+        if (stage === "pending poll")
+          await act(() => jest.advanceTimersByTimeAsync(5_000));
+        expect(
+          JSON.parse(screen.getByTestId("snapshot-probe").props.children)
+            .snapshot,
+        ).toEqual({
+          phase: "READY_NO_TRIP",
+          deviceId,
+          inviteUnavailable: true,
+        });
+        const count = replay.mock.calls.length;
+        await act(() => jest.advanceTimersByTimeAsync(60_000));
+        expect(replay).toHaveBeenCalledTimes(count);
+        expect(scoped.hydrateTrip).not.toHaveBeenCalled();
+        await view.unmount();
+      } finally {
+        AppState.currentState = previousState;
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("clears the unavailable notice when a new manual join succeeds", async () => {
+    const requestJoin = jest
+      .fn<Promise<JoinTripResult>, [string]>()
+      .mockRejectedValueOnce(new JoinTripTerminalProblem())
+      .mockResolvedValueOnce({ tripId, membershipId, status: "PENDING_KEY" });
+    const { runtime } = createRuntime({ requestJoin });
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SnapshotProbe />;
+    }
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_NO_TRIP"));
+    await act(async () => {
+      await expect(current.actions!.join("ABCD2345")).rejects.toBeInstanceOf(
+        JoinTripTerminalProblem,
+      );
+    });
+    expect(current.snapshot).toEqual({
+      phase: "READY_NO_TRIP",
+      deviceId,
+      inviteUnavailable: true,
+    });
+    await act(async () => {
+      await current.actions!.join("EFGH6789");
+    });
+    expect(current.snapshot).toEqual({
+      phase: "READY_PENDING_APPROVAL",
+      deviceId,
+    });
+    await view.unmount();
+  });
+
+  it("does not replace a new account's Home with an older terminal join replay", async () => {
+    let rejectReplay!: (error: unknown) => void;
+    const waiting = new Promise<JoinTripResult>((_resolve, reject) => {
+      rejectReplay = reject;
+    });
+    const { runtime: base } = createRuntime({ replayJoin: () => waiting });
+    const runtime: AppSessionRuntime = {
+      ...base,
+      loadRecovery: async (scope) =>
+        scope.clerkSubject === userId
+          ? {
+              state: "UNKNOWN_JOIN",
+              inviteCode: "ABCD2345",
+              deviceId,
+              commandId: "40000000-0000-4000-8000-000000000001",
+            }
+          : null,
+    };
+    const client = createQueryClient();
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+        <SnapshotProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(screen.getByTestId("snapshot-probe").props.children).snapshot
+          .phase,
+      ).toBe("READY_UNKNOWN_JOIN"),
+    );
+    await view.rerender(
+      <Harness
+        auth={{ ...signedIn, userId: "user_two", sessionId: "session_two" }}
+        runtime={runtime}
+        queryClient={client}
+      >
+        <SnapshotProbe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(screen.getByTestId("snapshot-probe").props.children).snapshot
+          .phase,
+      ).toBe("READY_NO_TRIP"),
+    );
+    await act(async () => rejectReplay(new JoinTripTerminalProblem()));
+    expect(
+      JSON.parse(screen.getByTestId("snapshot-probe").props.children).snapshot,
+    ).toEqual({ phase: "READY_NO_TRIP", deviceId });
+    await view.unmount();
+    client.clear();
+  });
+
+  it.each(["ACTIVE", "PENDING_KEY"] as const)(
+    "publishes a pregranted guest permission after approval with an initial %s projection, retrying a lost readiness reply without leaving foreground",
+    async (initialStatus) => {
+      jest.useFakeTimers();
+      const previousAppState = AppState.currentState;
+      AppState.currentState = "active";
+      const client = createQueryClient();
+      const guest = (
+        status: "ACTIVE" | "PENDING_KEY",
+        full = false,
+      ): TripView => ({
+        ...lobby,
+        ownerDeviceId: "10000000-0000-4000-8000-000000000002",
+        version: status === "PENDING_KEY" ? 1 : full ? 3 : 2,
+        members: lobby.members.map((member) => ({
+          ...member,
+          role: "MEMBER",
+          status,
+          fullPhotoLibraryAccess: full,
+        })),
+      });
+      const pending = { tripId, membershipId, status: "PENDING_KEY" as const };
+      const replay = jest
+        .fn<Promise<JoinTripResult>, []>()
+        .mockResolvedValue(pending);
+      const hydrate = jest.fn(async () => guest(initialStatus));
+      const permission = {
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: false,
+      };
+      const photoPermission = {
+        read: jest.fn(async () => permission),
+        request: jest.fn(async () => permission),
+        openSettings: jest.fn(async () => undefined),
+      };
+      const published = jest
+        .fn<Promise<TripView>, [TripView, boolean]>()
+        .mockRejectedValueOnce(new Error("readiness acknowledgement lost"))
+        .mockResolvedValue(guest("ACTIVE", true));
+      const reconcile = jest.fn(async (trip: TripView, full: boolean) => {
+        if (trip.members[0]?.status !== "ACTIVE") return trip;
+        return published(trip, full);
+      });
+      const { runtime } = createRuntime({
+        recovery: {
+          state: "UNKNOWN_JOIN",
+          inviteCode: "ABCD2345",
+          deviceId,
+          commandId: "40000000-0000-4000-8000-000000000001",
+        },
+        replayJoin: replay,
+        hydrate,
+        setPhotoReadiness: createPhotoReadinessService({
+          photoPermission,
+          hydrate,
+          reconcile,
+        }),
+      });
+      function VisibleTrip() {
+        const session = useAppSession();
+        const projection = useTripProjection(tripId, { pollLobby: true });
+        const readiness = usePhotoReadinessRecovery(
+          session.actions,
+          tripId,
+          true,
+          canPublishPhotoReadiness(projection.trip),
+        );
+        return (
+          <Text testID="guest-readiness">
+            {JSON.stringify({
+              phase: session.snapshot.phase,
+              trip: projection.trip,
+              checked: readiness.checked,
+              failed: readiness.failed,
+              permission: session.photoPermission.kind,
+            })}
+          </Text>
+        );
+      }
+      function Probe() {
+        const session = useAppSession();
+        return session.snapshot.phase === "READY_LOBBY" ? (
+          <VisibleTrip />
+        ) : (
+          <SessionProbe />
+        );
+      }
+      try {
+        const view = await render(
+          <QueryClientProvider client={client}>
+            <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+              <Probe />
+            </Harness>
+          </QueryClientProvider>,
+        );
+        await act(() => jest.advanceTimersByTimeAsync(0));
+        expect(screen.getByText("READY_PENDING_APPROVAL")).toBeOnTheScreen();
+        expect(photoPermission.read).not.toHaveBeenCalled();
+        replay.mockResolvedValue({ tripId, membershipId, status: "ACTIVE" });
+        await act(() => jest.advanceTimersByTimeAsync(5_000));
+        const state = () =>
+          JSON.parse(screen.getByTestId("guest-readiness").props.children);
+        expect(state().phase).toBe("READY_LOBBY");
+        if (initialStatus === "PENDING_KEY") {
+          // Hydration legitimately projects pending LOBBY membership. A later
+          // poll must cross the readiness boundary even though phase is stable.
+          expect(photoPermission.read).not.toHaveBeenCalled();
+          hydrate.mockResolvedValue(guest("ACTIVE"));
+          await act(() => jest.advanceTimersByTimeAsync(5_000));
+        }
+        expect(published).toHaveBeenCalledTimes(1);
+        expect(state().failed).toBe(true);
+        await act(() => jest.advanceTimersByTimeAsync(2_000));
+        expect(state()).toMatchObject({
+          phase: "READY_LOBBY",
+          checked: true,
+          failed: false,
+          permission: "FULL",
+          trip: {
+            members: [{ status: "ACTIVE", fullPhotoLibraryAccess: true }],
+          },
+        });
+        expect(published).toHaveBeenCalledTimes(2);
+        expect(published.mock.calls.every(([, full]) => full)).toBe(true);
+        expect(photoPermission.request).not.toHaveBeenCalled();
+        expect(photoPermission.openSettings).not.toHaveBeenCalled();
+        expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+        expect(AppState.currentState).toBe("active");
+        await view.unmount();
+      } finally {
+        client.clear();
+        AppState.currentState = previousAppState;
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it("polls a pending join only in foreground and retries hydration after approval without replaying again", async () => {
     jest.useFakeTimers();
@@ -912,7 +1934,6 @@ describe("AppSessionProvider", () => {
   it("clears account-scoped foreground state and provisions again on a session change", async () => {
     const queryClient = createQueryClient();
     queryClient.setQueryData(["private", userId], { token: "private" });
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
     const cancelQueries = jest.spyOn(queryClient, "cancelQueries");
     const clear = jest.spyOn(queryClient, "clear");
     const first = createRuntime();
@@ -950,13 +1971,78 @@ describe("AppSessionProvider", () => {
     expect(cancelQueries).toHaveBeenCalled();
     expect(clear).toHaveBeenCalled();
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
+  });
+
+  it("keeps the signed-in account after a key-provider 503 and retries without refreshing or clearing its session", async () => {
+    const getToken = jest.fn(async () => "same-valid-clerk-token");
+    const fetcher = jest
+      .fn(
+        async () =>
+          new Response(
+            JSON.stringify({ termsVersion: "2026-09-24", accepted: true }),
+          ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            type: "about:blank",
+            title: "Service unavailable",
+            status: 503,
+            detail: "Required service dependencies are unavailable.",
+            instance: "/problems/requests/50000000-0000-4000-8000-000000000001",
+            requestId: "50000000-0000-4000-8000-000000000001",
+            code: "INTERNAL_ERROR",
+          }),
+          { status: 503 },
+        ),
+      );
+    const api = createCrewRollApi({
+      apiBaseUrl: "https://api.crewroll.test",
+      fetch: fetcher,
+      sessionTokenSource: { getToken },
+      sessionBinding: () => JSON.stringify([userId, sessionId]),
+    });
+    const { runtime } = createRuntime({
+      provision: async () => {
+        await api.getAccountPolicy();
+        return { deviceId, identity };
+      },
+    });
+    const onAuthInvalid = jest.fn();
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SessionProbe />;
+    }
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime} onAuthInvalid={onAuthInvalid}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("RECOVERABLE_FAILURE")).toBeOnTheScreen(),
+    );
+    expect(onAuthInvalid).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(getToken.mock.calls).toEqual([[]]);
+
+    await act(async () => current.retry());
+    await waitFor(() =>
+      expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen(),
+    );
+    expect(onAuthInvalid).not.toHaveBeenCalled();
+    expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(getToken.mock.calls).toEqual([[], []]);
+    await view.unmount();
   });
 
   it("fails AUTH_INVALID closed to signed out and exposes no raw metadata", async () => {
     const queryClient = createQueryClient();
     const onAuthInvalid = jest.fn(async () => undefined);
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
     const reconcileCreate = jest.fn(async () => {
       const problem = new CrewRollApiProblem("AUTH_INVALID") as Error & {
         detail?: string;
@@ -991,41 +2077,7 @@ describe("AppSessionProvider", () => {
       expect(screen.getByText("SIGNED_OUT")).toBeOnTheScreen(),
     );
     expect(onAuthInvalid).toHaveBeenCalledTimes(1);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
     expect(JSON.stringify(screen.toJSON())).not.toMatch(/private|requestId/i);
-  });
-
-  it("starts Task 8 join only after explicit confirmation", async () => {
-    const requestJoin = jest.fn(async () => ({
-      tripId,
-      membershipId,
-      status: "PENDING_KEY" as const,
-    }));
-    const { runtime } = createRuntime({ requestJoin });
-    function ConfirmationProbe() {
-      const session = useAppSession();
-      return (
-        <Text onPress={() => void session.confirmPendingInvite()}>
-          {session.snapshot.phase}
-        </Text>
-      );
-    }
-
-    await render(
-      <Harness auth={signedIn} runtime={runtime}>
-        <ConfirmationProbe />
-      </Harness>,
-    );
-    await waitFor(() =>
-      expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen(),
-    );
-    expect(requestJoin).not.toHaveBeenCalled();
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
-
-    await act(async () => {
-      screen.getByText("READY_NO_TRIP").props.onPress();
-    });
-    await waitFor(() => expect(requestJoin).toHaveBeenCalledWith("ABCD2345"));
   });
 
   it("keeps TripView only in the exact opaque account/device Query key", async () => {
@@ -1422,30 +2474,6 @@ describe("AppSessionProvider", () => {
     expect(baseRuntime.provisionCurrentDevice).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves an explicit invite while signed out and through provisioning", async () => {
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
-    const deferred = new Promise<ProvisionedDevice>(() => undefined);
-    const { runtime } = createRuntime({ provision: () => deferred });
-    const view = await render(
-      <Harness auth={signedOut} runtime={runtime}>
-        <SessionProbe />
-      </Harness>,
-    );
-
-    await act(async () => undefined);
-    expect(sessionUiStore.getState().pendingInviteCode).toBe("ABCD2345");
-
-    await view.rerender(
-      <Harness auth={signedIn} runtime={runtime}>
-        <SessionProbe />
-      </Harness>,
-    );
-    await waitFor(() =>
-      expect(screen.getByText("PROVISIONING_DEVICE")).toBeOnTheScreen(),
-    );
-    expect(sessionUiStore.getState().pendingInviteCode).toBe("ABCD2345");
-  });
-
   it("shows an actionable setup failure when the initial native pause fails", async () => {
     const { runtime: baseRuntime } = createRuntime({});
     const pauseTransfers = jest
@@ -1517,7 +2545,6 @@ describe("AppSessionProvider", () => {
         </Text>
       );
     }
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
 
     await render(
       <Harness
@@ -1545,7 +2572,6 @@ describe("AppSessionProvider", () => {
     expect(onAuthInvalid).toHaveBeenCalledTimes(1);
     expect(teardownOrder).toEqual(["pause-transfers", "sign-out"]);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
   });
 
   it("gates the first render of a new auth binding before effects provision it", async () => {
@@ -1749,41 +2775,6 @@ describe("AppSessionProvider", () => {
     expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen();
   });
 
-  it("tears down an auth-invalid confirmed join exactly once", async () => {
-    const onAuthInvalid = jest.fn(async () => undefined);
-    const requestJoin = jest.fn(async () => {
-      throw new CrewRollApiProblem("AUTH_INVALID");
-    });
-    const { runtime } = createRuntime({ requestJoin });
-    function ConfirmProbe() {
-      const session = useAppSession();
-      return (
-        <Text onPress={() => void session.confirmPendingInvite()}>
-          {session.snapshot.phase}
-        </Text>
-      );
-    }
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
-
-    await render(
-      <Harness auth={signedIn} onAuthInvalid={onAuthInvalid} runtime={runtime}>
-        <ConfirmProbe />
-      </Harness>,
-    );
-    await waitFor(() =>
-      expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen(),
-    );
-    await act(async () => {
-      screen.getByText("READY_NO_TRIP").props.onPress();
-    });
-    await waitFor(() =>
-      expect(screen.getByText("SIGNED_OUT")).toBeOnTheScreen(),
-    );
-    expect(requestJoin).toHaveBeenCalledWith("ABCD2345");
-    expect(onAuthInvalid).toHaveBeenCalledTimes(1);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
-  });
-
   it("tears down a direct auth-invalid join action exactly once", async () => {
     const queryClient = createQueryClient();
     const onAuthInvalid = jest.fn(async () => undefined);
@@ -1811,7 +2802,6 @@ describe("AppSessionProvider", () => {
         </Text>
       );
     }
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
 
     await render(
       <Harness
@@ -1837,14 +2827,14 @@ describe("AppSessionProvider", () => {
     expect(screen.getByText("SIGNED_OUT:closed")).toBeOnTheScreen();
     expect(onAuthInvalid).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
   });
 
-  it("discards the matching queued invite after a conclusive invalid result", async () => {
+  it("surfaces an unbranded invalid-invite failure without inferring terminal recovery", async () => {
     const requestJoin = jest.fn(async () => {
       throw new CrewRollApiProblem("INVITE_INVALID");
     });
     const { runtime } = createRuntime({ requestJoin });
+    const onAuthInvalid = jest.fn();
     let actionFailure: unknown;
     function JoinProbe() {
       const session = useAppSession();
@@ -1860,27 +2850,32 @@ describe("AppSessionProvider", () => {
           }}
           testID="invalid-join-probe"
         >
-          {session.snapshot.phase}
+          {JSON.stringify(session.snapshot)}
         </Text>
       );
     }
-    sessionUiStore.getState().setPendingInvite("ABCD2345");
 
     await render(
-      <Harness auth={signedIn} runtime={runtime}>
+      <Harness auth={signedIn} runtime={runtime} onAuthInvalid={onAuthInvalid}>
         <JoinProbe />
       </Harness>,
     );
     await waitFor(() =>
-      expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen(),
+      expect(
+        JSON.parse(screen.getByTestId("invalid-join-probe").props.children)
+          .phase,
+      ).toBe("READY_NO_TRIP"),
     );
     await act(async () => {
       await screen.getByTestId("invalid-join-probe").props.onPress();
     });
 
     expect(actionFailure).toEqual(new CrewRollApiProblem("INVITE_INVALID"));
-    expect(sessionUiStore.getState().pendingInviteCode).toBeNull();
-    expect(screen.getByText("READY_NO_TRIP")).toBeOnTheScreen();
+    expect(requestJoin).toHaveBeenCalledWith("ABCD2345");
+    expect(
+      JSON.parse(screen.getByTestId("invalid-join-probe").props.children),
+    ).toEqual({ phase: "READY_NO_TRIP", deviceId });
+    expect(onAuthInvalid).not.toHaveBeenCalled();
   });
 
   it("copies only the invite code and reports a clipboard failure to its caller", async () => {

@@ -120,6 +120,7 @@ export function createActivateObservedTrip(
             envelope.senderDeviceId ?? response.ownerDeviceId,
           recipientDeviceId: device.deviceId,
           recipientE2eeKeyVersion: nomination.e2eeKeyVersion,
+          endsAt: response.endsAt,
           wrappedKey: envelope.wrappedKey,
         }),
       );

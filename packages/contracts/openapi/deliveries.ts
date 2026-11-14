@@ -16,6 +16,24 @@ import {
   TripIdSchema,
 } from "./ids.js";
 
+export const PendingDeliveryCursorSchema = Type.String({
+  minLength: 1,
+  maxLength: 512,
+  pattern: "^[A-Za-z0-9_-]+$",
+});
+
+/** No query retains the legacy global pending head. Pagination is trip scoped. */
+export const PendingDeliveriesQuerySchema = Type.Union([
+  ClosedObject({}),
+  ClosedObject({
+    tripId: TripIdSchema,
+    after: Type.Optional(PendingDeliveryCursorSchema),
+  }),
+]);
+export type PendingDeliveriesQuery = Static<
+  typeof PendingDeliveriesQuerySchema
+>;
+
 export const PendingDeliveriesResponseSchema = ClosedObject({
   items: Type.Array(
     ClosedObject({
@@ -27,6 +45,10 @@ export const PendingDeliveriesResponseSchema = ClosedObject({
     }),
     { maxItems: 100 },
   ),
+  nextCursor: Type.Optional(
+    Type.Union([PendingDeliveryCursorSchema, Type.Null()]),
+  ),
+  hasMore: Type.Optional(Type.Boolean()),
 });
 export type PendingDeliveriesResponse = Static<
   typeof PendingDeliveriesResponseSchema

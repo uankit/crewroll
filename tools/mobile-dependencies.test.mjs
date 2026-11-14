@@ -29,11 +29,8 @@ const applicationDependencies = [
   "@crewroll/contracts",
   "@sinclair/typebox",
   "@tanstack/react-query",
-  "zustand",
   "zod",
   "openapi-fetch",
-  "react-hook-form",
-  "@hookform/resolvers",
   "@shopify/flash-list",
 ];
 
@@ -178,19 +175,6 @@ test("rejects removal of required mobile dependencies", () => {
   assert.throws(
     () => assertMobileDependencyPolicy(withoutNotifications, notificationsLock),
     /expo-notifications must use an SDK 57 compatible range/,
-  );
-
-  const { manifest: withoutResolvers, lockfile: resolversLock } =
-    cloneManifestAndLock();
-  removeRootDependency(
-    withoutResolvers,
-    resolversLock,
-    "dependencies",
-    "@hookform/resolvers",
-  );
-  assert.throws(
-    () => assertMobileDependencyPolicy(withoutResolvers, resolversLock),
-    /@hookform\/resolvers must use an exact application version/,
   );
 
   const { manifest: withoutTypeBox, lockfile: typeBoxLock } =

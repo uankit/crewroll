@@ -144,6 +144,8 @@ function callbackTransactionScope(raw: TripTransaction) {
     lockDevice: (deviceId) => invoke(() => raw.lockDevice(deviceId)),
     lockDevices: (deviceIds) => invoke(() => raw.lockDevices(deviceIds)),
     lockInvite: (inviteId) => invoke(() => raw.lockInvite(inviteId)),
+    lockJoinReplayMembership: (input) =>
+      invoke(() => raw.lockJoinReplayMembership(input)),
     lockMembership: (tripId, membershipId) =>
       invoke(() => raw.lockMembership(tripId, membershipId)),
     lockMembershipForUser: (tripId, userId) =>
@@ -177,9 +179,11 @@ function fakeProjection(
   state: TripFakeState,
   actor: ForegroundTripActor,
   tripId: string,
+  now: Date,
 ): TripProjectionRead {
   const trip = state.trips.get(tripId);
   if (trip === undefined) return { kind: "NOT_FOUND" };
+  if (trip.hardDeleteAt <= now) return { kind: "NOT_FOUND", reason: "EXPIRED" };
   const caller = [...state.memberships.values()].find(
     (membership) =>
       membership.tripId === tripId &&
@@ -431,6 +435,17 @@ export function createTripTestHarness() {
         trace.push("lock.invite");
         return Promise.resolve(working.invites.get(inviteId) ?? null);
       },
+      lockJoinReplayMembership(input) {
+        trace.push("lock.membership");
+        const membership = working.memberships.get(input.membershipId);
+        return Promise.resolve(
+          membership?.tripId === input.tripId &&
+            membership.userId === input.userId &&
+            membership.participatingDeviceId === input.deviceId
+            ? { leftAt: null, membership }
+            : null,
+        );
+      },
       lockMembership(tripId, membershipId) {
         trace.push("lock.membership");
         const membership = working.memberships.get(membershipId);
@@ -463,7 +478,9 @@ export function createTripTestHarness() {
       },
       readProjection(actor, tripId) {
         trace.push("read.projection.transaction");
-        return Promise.resolve(fakeProjection(working, actor, tripId));
+        return Promise.resolve(
+          fakeProjection(working, actor, tripId, authoritativeNow),
+        );
       },
       reauthorizeForegroundActor(actor) {
         trace.push("lock.actor.user", "lock.actor.device");
@@ -543,7 +560,9 @@ export function createTripTestHarness() {
     },
     readProjection(actor, tripId) {
       trace.push("read.projection.plain");
-      return Promise.resolve(fakeProjection(state, actor, tripId));
+      return Promise.resolve(
+        fakeProjection(state, actor, tripId, authoritativeNow),
+      );
     },
     async run(operation) {
       trace.push("transaction.begin");

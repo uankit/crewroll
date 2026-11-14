@@ -2,6 +2,7 @@ package com.uankit53.crewroll.transfer.media
 
 import com.uankit53.crewroll.transfer.identitykeys.NativeMediaContext
 import com.uankit53.crewroll.transfer.identitykeys.NativeKeyException
+import com.uankit53.crewroll.transfer.identitykeys.NativeExpiredTrip
 import java.io.File
 import java.time.Instant
 import java.security.MessageDigest
@@ -28,6 +29,9 @@ class NativePhotoTransferEngine(
     private val networkFactory: (Boolean) -> NativePhotoTransportPort,
     private val invalidated: (Long) -> Unit,
     private val downloadLimit: Int = 2,
+    private val expiredTrips: () -> List<NativeExpiredTrip> = { emptyList() },
+    private val purgeTripKey: (NativeExpiredTrip, () -> Unit) -> Boolean = { _, cleanup -> cleanup(); true },
+    private val nextRetentionDeadline: () -> Instant? = { null },
 ) {
     init { require(downloadLimit in 1..2) }
     private val executor = Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "CrewRollPhotos").apply { isDaemon = true } }
@@ -45,21 +49,55 @@ class NativePhotoTransferEngine(
     @Volatile private var retryAt: Instant? = null
     @Volatile private var networkUnavailable = false
     private val generation = AtomicLong()
+    // User/runtime policy intent is distinct from retention's temporary stop.
+    private val policyRevision = AtomicLong()
+    private var requestedPaused = true
+    private var requestedCellular = true
+    private data class PolicyChange(val epoch: Long, val finished: CompletableFuture<Unit>)
     @Volatile private var paused = true
     @Volatile private var network: NativePhotoTransportPort? = null
     @Volatile private var previewNetwork: NativePhotoTransportPort? = null
     @Volatile private var cellular = true
     private var timer: ScheduledFuture<*>? = null
     private var previewTimer: ScheduledFuture<*>? = null
+    private var retentionTimer: ScheduledFuture<*>? = null
+    private var retentionPending: CompletableFuture<Unit>? = null
+    @Volatile private var closed = false
     @Volatile private var journal: NativeTransferJournal? = null
     @Volatile private var previews: NativePreviewStore? = null
     private var scope: String? = null
     @Volatile private var globalBlocker: String? = null
     @Volatile private var previewBlocker: String? = null
+    private data class CredentialRecovery(val deviceId: String, val ifCurrent: () -> Boolean)
+    private var credentialRecovery: CredentialRecovery? = null
     private val wakeQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     private val previewQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     private val originalPoll = NativePollGate()
     private val previewPoll = NativePollGate()
+
+    /** A verified same-scope credential replacement only retries auth failures. */
+    fun credentialRefreshed(deviceId: String, ifCurrent: () -> Boolean = { true }) = serial {
+        if (!ifCurrent()) return@serial
+        credentialRecovery = CredentialRecovery(deviceId, ifCurrent)
+        recoverCredentialRotation()
+        if (!paused) { originalPoll.wake(); previewPoll.wake(); wake(); wakePreviews() }
+    }
+    private fun recoverCredentialRotation() {
+        val recovery = credentialRecovery ?: return
+        if (!recovery.ifCurrent()) { credentialRecovery = null; return }
+        val context = contextProvider() ?: return
+        try {
+            if (context.session.deviceId != recovery.deviceId) { credentialRecovery = null; return }
+            val ledger = ledger(context)
+            ledger.clearAuthenticationBlockers(context.metadata.tripId)
+            // Store methods synchronize their bounded file mutations; do not
+            // wait behind a potentially slow preview network operation here.
+            previews?.clearAuthenticationBlockers(context.metadata.tripId)
+            if (previewBlocker == "AUTH_REVOKED") previewBlocker = null
+            if (globalBlocker == "AUTH_REVOKED") globalBlocker = null
+            credentialRecovery = null
+        } finally { context.erase() }
+    }
 
     fun foreground(value: Boolean) {
         originalPoll.foreground(value); previewPoll.foreground(value)
@@ -71,45 +109,165 @@ class NativePhotoTransferEngine(
         executor.execute { try { result.complete(action()) } catch (error: Throwable) { result.completeExceptionally(error) } }
         return result
     }
-    fun policy(pause: Boolean, cellularAllowed: Boolean): CompletableFuture<Unit> {
+    @Synchronized fun policy(pause: Boolean, cellularAllowed: Boolean, ifCurrent: () -> Boolean = { true }): CompletableFuture<Unit> {
+        if (!ifCurrent()) return CompletableFuture.completedFuture(Unit)
+        policyRevision.incrementAndGet()
+        requestedPaused = pause; requestedCellular = cellularAllowed
+        return changePolicy(pause, cellularAllowed, ifCurrent).finished
+    }
+    @Synchronized private fun changePolicy(pause: Boolean, cellularAllowed: Boolean, ifCurrent: () -> Boolean = { true }): PolicyChange {
         val epoch = generation.incrementAndGet()
         paused = true; network?.cancel(); previewNetwork?.cancel(); activeWork.values.forEach { it.transport.cancel() }
-        return serial {
-            if (generation.get() == epoch) {
+        val finished = serial {
+            if (generation.get() == epoch && ifCurrent()) {
                 timer?.cancel(false); timer = null; photos.observe(null)
                 previewTimer?.cancel(false); previewTimer = null
                 // Wait for verified saves in every lane before acknowledging sign-out.
                 activeWork.values.forEach { it.transport.cancel() }
                 CompletableFuture.allOf(*activeWork.values.map { it.finished }.toTypedArray()).join()
                 previewExecutor.submit {}.get()
-                if (generation.get() != epoch) return@serial
+                if (generation.get() != epoch || !ifCurrent()) return@serial
                 if (pause) previews?.clearRenders()
-                cellular = cellularAllowed; paused = pause
+                cellular = cellularAllowed
                 if (!pause) {
-                    originalPoll.wake(); previewPoll.wake()
-                    photos.observe { previewPoll.wake(); wakePreviews() }
-                    timer = executor.scheduleWithFixedDelay({ runPass() }, 1, 1, TimeUnit.SECONDS)
-                    previewTimer = previewExecutor.scheduleWithFixedDelay({ previewPass() }, 1, 1, TimeUnit.SECONDS)
-                    wake(); wakePreviews()
+                    try {
+                        originalPoll.wake(); previewPoll.wake()
+                        photos.observe { previewPoll.wake(); wakePreviews() }
+                        timer = executor.scheduleWithFixedDelay({ runPass() }, 1, 1, TimeUnit.SECONDS)
+                        previewTimer = previewExecutor.scheduleWithFixedDelay({ previewPass() }, 1, 1, TimeUnit.SECONDS)
+                        // Publish running only after every required lane exists.
+                        paused = false
+                        wake(); wakePreviews()
+                    } catch (error: Throwable) {
+                        paused = true
+                        timer?.cancel(false); timer = null
+                        previewTimer?.cancel(false); previewTimer = null
+                        runCatching { photos.observe(null) }
+                        throw error
+                    }
+                }
+            }
+        }
+        return PolicyChange(epoch, finished)
+    }
+    // Projection refreshes must not cancel an original already being transferred.
+    fun activate(ifCurrent: () -> Boolean = { true }): CompletableFuture<Unit> {
+        val requested = synchronized(this) {
+            if (!ifCurrent()) return CompletableFuture.completedFuture(Unit)
+            policyRevision.incrementAndGet()
+        }
+        return reconcileRetention().thenCompose {
+            synchronized(this) {
+                if (closed || requested != policyRevision.get() || !ifCurrent()) CompletableFuture.completedFuture(Unit)
+                else {
+                    requestedPaused = false; requestedCellular = true
+                    if (!paused && cellular) CompletableFuture.completedFuture(Unit)
+                    else changePolicy(false, true, ifCurrent).finished
                 }
             }
         }
     }
-    // Projection refreshes must not cancel an original already being transferred.
-    fun activate(): CompletableFuture<Unit> = if (!paused && cellular) CompletableFuture.completedFuture(Unit) else policy(false, true)
-    fun stop() = policy(true, cellular)
-    fun eraseAccount(accountHash: String): CompletableFuture<Unit> {
-        require(accountHash.matches(Regex("^[a-f0-9]{64}$")))
-        return stop().thenCompose { serial {
-            if (scope?.startsWith(accountHash + ".") == true) {
-                journal = null; previews = null; scope = null; progressScope = null
-                globalBlocker = null; previewBlocker = null
+    fun stop(ifCurrent: () -> Boolean = { true }) = policy(true, cellular, ifCurrent)
+    /** Drain every writer before removing a trip's staged data, then its key.
+     * Frozen timing metadata remains in the key store as a replay fence. */
+    @Synchronized fun reconcileRetention(): CompletableFuture<Unit> {
+        retentionPending?.let { return it }
+        if (closed) return CompletableFuture.completedFuture(Unit)
+        val result = CompletableFuture<Unit>()
+        retentionPending = result
+        CompletableFuture.supplyAsync({ expiredTrips() }, projectionExecutor).thenCompose { expired ->
+            if (expired.isEmpty()) synchronized(this) {
+                // A previous pass may have committed the key purge before a
+                // later callback failed. Its retry must still restore the last
+                // external policy, even when no expired keys remain to list.
+                if (!closed && !requestedPaused && paused) changePolicy(false, requestedCellular).finished
+                else CompletableFuture.completedFuture(Unit)
             }
-            root.listFiles()?.filter { it.name.startsWith(accountHash + ".") }?.forEach { check(it.deleteRecursively()) }
-            invalidated(0)
+            else {
+                val (resume, revision, stopped) = synchronized(this) {
+                    // Physical pause survives a failed purge. Remember the
+                    // external intent across retries rather than treating that
+                    // maintenance pause as a member-requested stop.
+                    Triple(!requestedPaused, policyRevision.get(), changePolicy(true, cellular))
+                }
+                val epoch = stopped.epoch
+                stopped.finished.thenCompose { serial {
+                    for (trip in expired) {
+                        if (generation.get() != epoch) throw CancellationException()
+                        if (trip.deadline.isAfter(Instant.now())) continue
+                        require(trip.scope.accountHash.matches(Regex("^[a-f0-9]{64}$")))
+                        require(trip.scope.installationId.matches(Regex("^[A-Za-z0-9_-]{8,128}$")))
+                        requireUuid(trip.tripId)
+                        val name = trip.scope.accountHash + "." + trip.scope.installationId
+                        val directory = File(root, name)
+                        require(directory.canonicalFile.parentFile == root.canonicalFile)
+                        val purged = purgeTripKey(trip) {
+                            if (generation.get() != epoch) throw CancellationException()
+                            if (directory.isDirectory) {
+                                val ledger = if (scope == name) journal ?: NativeTransferJournal(directory) else NativeTransferJournal(directory)
+                                val cache = if (scope == name) previews ?: NativePreviewStore(directory) else NativePreviewStore(directory)
+                                ledger.purgeTrip(trip.tripId)
+                                cache.purgeTrip(trip.tripId)
+                            }
+                        }
+                        if (!purged) continue
+                        if (scope == name && progressScope?.endsWith("." + trip.tripId) == true) {
+                            progressScope = null; globalBlocker = null; previewBlocker = null
+                            lastCheckedAt = null; lastPreviewCheckedAt = null; lastProgressAt = null
+                        }
+                    }
+                    invalidated(journal?.revision() ?: 0)
+                } }.thenCompose {
+                    synchronized(this) {
+                        if (resume && !closed && generation.get() == epoch && policyRevision.get() == revision && paused)
+                            changePolicy(false, requestedCellular).finished
+                        else CompletableFuture.completedFuture(Unit)
+                    }
+                }
+            }
+        }.whenComplete { _, error ->
+            synchronized(this) { retentionPending = null }
+            try { scheduleRetention(if (error == null) nextRetentionDeadline() else Instant.now().plusSeconds(30)) }
+            catch (_: Throwable) { scheduleRetention(Instant.now().plusSeconds(30)) }
+            if (error == null) result.complete(Unit) else result.completeExceptionally(error)
+        }
+        return result
+    }
+    @Synchronized private fun scheduleRetention(at: Instant?) {
+        retentionTimer?.cancel(false); retentionTimer = null
+        if (!closed && at != null) {
+            val delay = java.time.Duration.between(Instant.now(), at).toMillis().coerceAtLeast(1_000)
+            retentionTimer = executor.schedule({ reconcileRetention() }, delay, TimeUnit.MILLISECONDS)
+        }
+    }
+    fun eraseAccount(accountHash: String, protectedMutation: (() -> Unit) -> Unit = { it() }, ifCurrent: () -> Boolean = { true }): CompletableFuture<Unit> {
+        require(accountHash.matches(Regex("^[a-f0-9]{64}$")))
+        val (epoch, stopped) = synchronized(this) {
+            if (!ifCurrent()) throw CancellationException()
+            val pending = stop(ifCurrent)
+            Pair(generation.get(), pending)
+        }
+        return stopped.thenCompose { serial {
+            // Selection replacement must not interleave the final filesystem
+            // mutation. Acquire that ownership fence BEFORE the engine monitor,
+            // matching command dispatch order; never engine -> command lock.
+            protectedMutation {
+                synchronized(this) {
+                    if (!ifCurrent() || generation.get() != epoch || !paused) throw CancellationException()
+                    if (scope?.startsWith(accountHash + ".") == true) {
+                        journal = null; previews = null; scope = null; progressScope = null
+                        globalBlocker = null; previewBlocker = null
+                    }
+                    root.listFiles()?.filter { it.name.startsWith(accountHash + ".") }?.forEach { check(it.deleteRecursively()) }
+                    invalidated(0)
+                }
+            }
         } }
     }
-    fun close() { stop().whenComplete { _, _ -> executor.shutdown(); previewExecutor.shutdown(); projectionExecutor.shutdown(); bulkExecutor.shutdown() } }
+    fun close() {
+        synchronized(this) { closed = true; retentionTimer?.cancel(false); retentionTimer = null }
+        stop().whenComplete { _, _ -> executor.shutdown(); previewExecutor.shutdown(); projectionExecutor.shutdown(); bulkExecutor.shutdown() }
+    }
     fun wake(): CompletableFuture<Unit> {
         if (!wakeQueued.compareAndSet(false, true)) return CompletableFuture.completedFuture(Unit)
         return serial { try { runPass() } finally { wakeQueued.set(false) } }
@@ -186,19 +344,40 @@ class NativePhotoTransferEngine(
         var context: NativeMediaContext? = null
         var transport: NativePhotoTransportPort? = null
         try {
+            recoverCredentialRotation()
             val c = contextProvider() ?: return; context = c
             current(c, epoch)
             val ledger = ledger(c); val n = networkFactory(cellular); transport = n; network = n
             val policy = NativeCapturePolicy(n.json("/v1/trips/${c.metadata.tripId}/transfer-state", "GET", null, c, uuid()), c.metadata.tripId)
             current(c, epoch)
             if (policy.left) { globalBlocker = null; return }
-            val page = n.json("/v1/deliveries/pending", "GET", null, c, uuid()).getJSONArray("items")
+            val after = ledger.pendingDeliveryCursor(c.metadata.tripId)
+            val path = "/v1/deliveries/pending?tripId=${c.metadata.tripId}" + (after?.let { "&after=$it" } ?: "")
+            val response = n.json(path, "GET", null, c, uuid())
+            val page = response.getJSONArray("items")
             current(c, epoch); require(page.length() <= 100)
+            val paged = response.has("hasMore") || response.has("nextCursor")
+            val hasMore: Boolean
+            val nextCursor: String?
+            if (paged) {
+                require(response.has("hasMore") && response.has("nextCursor") && response.get("hasMore") is Boolean)
+                hasMore = response.getBoolean("hasMore")
+                nextCursor = response.optionalString("nextCursor")
+                require(nextCursor == null || nextCursor.matches(Regex("^[A-Za-z0-9_-]{1,512}$")))
+                require(if (hasMore) page.length() > 0 && nextCursor != null && nextCursor != after else nextCursor == null)
+            } else { hasMore = false; nextCursor = null }
+            val admitted = mutableListOf<JSONObject>()
             for (index in 0 until page.length()) {
-                val item = page.getJSONObject(index); if (item.getString("tripId") != c.metadata.tripId) continue
+                val item = page.getJSONObject(index)
+                val tripId = item.getString("tripId")
+                if (paged) require(tripId == c.metadata.tripId)
+                if (tripId != c.metadata.tripId) continue // Older servers return unscoped legacy pages.
                 val id = item.getString("deliveryId"); val assetId = item.getString("assetId"); requireUuid(id); requireUuid(assetId)
-                if (ledger.record(id) == null) ledger.put(newWork(id, assetId, c.metadata.tripId, item.getString("committedAt")).put("deliveryId", id))
+                val committed = item.getString("committedAt"); Instant.parse(committed)
+                admitted.add(newWork(id, assetId, c.metadata.tripId, committed).put("deliveryId", id))
             }
+            current(c, epoch)
+            ledger.admitPendingDeliveries(admitted, c.metadata.tripId, nextCursor)
             globalBlocker = null; networkUnavailable = false; retryAt = null; lastCheckedAt = Instant.now().toString()
             wakePreviews()
             val pending = ledger.records().filter { it.getString("tripId") == c.metadata.tripId && !it.getBoolean("complete") && it.isNull("blocker") }.sortedBy { it.getString("capturedAt") }
@@ -222,7 +401,7 @@ class NativePhotoTransferEngine(
                         if (task.upload) { previewPoll.wake(); wakePreviews() }
                     } catch (error: Throwable) {
                         if (!paused && epoch == generation.get()) {
-                            val code = blocker(error)
+                            val code = blocker(error, copied)
                             if (code != null) ledger.record(id)?.let { ledger.put(it.put("blocker", code)) }
                             else if (error !is CancellationException) {
                                 networkUnavailable = error is PhotoNetworkUnavailable
@@ -240,6 +419,7 @@ class NativePhotoTransferEngine(
                 }
             }
             originalPoll.completed(works.isNotEmpty() || activeWork.isNotEmpty(), false)
+            if (hasMore) originalPoll.retryWithin(1_000)
             pending.mapNotNull { it.optionalString("nextAttemptAt")?.let(Instant::parse) }.filter { it.isAfter(Instant.now()) }.minOrNull()?.let {
                 originalPoll.retryWithin(java.time.Duration.between(Instant.now(), it).toMillis())
             }
@@ -403,7 +583,7 @@ class NativePhotoTransferEngine(
                                 continue
                             }
                         }
-                        blocker(error)?.let { code -> ledger.record(work.getString("workId"))?.let { ledger.put(it.put("blocker", code)) } }
+                        blocker(error, c)?.let { code -> ledger.record(work.getString("workId"))?.let { ledger.put(it.put("blocker", code)) } }
                     }
                 }
                 // Final capture discovery and original uploads determine this
@@ -448,7 +628,7 @@ class NativePhotoTransferEngine(
                 }
                 for (record in cache.records(c.metadata.tripId).filter { cache.render(it.getString("assetId")) == null && it.isNull("blocker") }.sortedByDescending { it.getString("capturedAt") }.take(8)) {
                     try { materializePreview(record, c, epoch, cache, n); invalidated(ledger.revision() + cache.revision()) }
-                    catch (error: Throwable) { current(c, epoch); blocker(error)?.let { cache.put(record.put("blocker", it)) } }
+                    catch (error: Throwable) { current(c, epoch); blocker(error, c)?.let { cache.put(record.put("blocker", it)) } }
                 }
                 lastPreviewCheckedAt = Instant.now()
             } finally {
@@ -490,7 +670,7 @@ class NativePhotoTransferEngine(
                     manifest.capturedAtMilliseconds?.let { record.put("capturedAt", Instant.ofEpochMilli(it.toLong()).toString()) }
                     record.put("readyAt", Instant.now().toString()).put("galleryMetadataVersion", 1).put("blocker", JSONObject.NULL)
                     cache.put(record); invalidated(ledger.revision() + cache.revision())
-                } catch (error: Throwable) { current(c, epoch); blocker(error)?.let { cache.put(record.put("blocker", it)) } }
+                } catch (error: Throwable) { current(c, epoch); blocker(error, c)?.let { cache.put(record.put("blocker", it)) } }
                 finally { stage.deleteRecursively() }
             } finally { manifest.erase() }
         }
@@ -598,14 +778,24 @@ class NativePhotoTransferEngine(
             mapOf("protocolVersion" to 1, "revision" to revision, "activeTripId" to c?.metadata?.tripId, "items" to page, "nextCursor" to nextCursor)
         } finally { c?.erase() }
     }
-    private fun blocker(error: Throwable): String? = when (error) {
+    private fun blocker(error: Throwable, context: NativeMediaContext? = null): String? = when (error) {
         is CancellationException -> null
         is PhotoLibraryException -> error.blocker
         is SecurityException -> "PHOTO_PERMISSION"
         is CryptoReadException, is IllegalArgumentException, is org.json.JSONException -> "INTEGRITY_FAILURE"
         is NativeKeyException -> if (error.code in setOf("KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST")) error.code else "INTEGRITY_FAILURE"
-        is TransferHttpException -> if (error.authenticated && error.code == "TRIP_STORAGE_LIMIT") "SHARING_LIMIT" else if (error.authenticated && error.status in setOf(401, 403)) "AUTH_REVOKED" else null
+        is TransferHttpException -> if (error.authenticated && error.code == "TRIP_STORAGE_LIMIT") "SHARING_LIMIT" else if (error.authenticated && error.status in setOf(401, 403)) {
+            if (context != null && rotatedCredential(context)) null else "AUTH_REVOKED"
+        } else null
         else -> null
+    }
+    private fun rotatedCredential(previous: NativeMediaContext): Boolean {
+        val actual = try { contextProvider() } catch (_: Throwable) { null } ?: return false
+        try {
+            return actual.scope == previous.scope && actual.metadata.tripId == previous.metadata.tripId &&
+                actual.session.deviceId == previous.session.deviceId && actual.session.apiBaseUrl == previous.session.apiBaseUrl &&
+                !MessageDigest.isEqual(actual.session.backgroundBearer, previous.session.backgroundBearer)
+        } finally { actual.erase() }
     }
     private fun b64(bytes: ByteArray) = Base64.getEncoder().encodeToString(bytes)
     private fun uuid() = UUID.randomUUID().toString()

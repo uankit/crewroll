@@ -277,8 +277,7 @@ function isTripMember(
     !isUuid(value.membershipId) ||
     (value.role !== "OWNER" && value.role !== "MEMBER") ||
     typeof value.displayName !== "string" ||
-    value.displayName.length < 1 ||
-    value.displayName.length > 80 ||
+    !TRIP_NAME_PATTERN.test(value.displayName) ||
     (value.status !== "PENDING_KEY" && value.status !== "ACTIVE") ||
     !isRecord(value.readiness) ||
     !hasExactKeys(value.readiness, ["fullPhotoLibraryAccess"]) ||
@@ -542,6 +541,7 @@ function prepareTrip(
       expectedSenderDeviceId: response.ownerDeviceId,
       recipientDeviceId: device.deviceId,
       recipientE2eeKeyVersion: nominatedDevice.e2eeKeyVersion,
+      endsAt: response.endsAt,
       wrappedKey: envelope.wrappedKey,
     },
   };

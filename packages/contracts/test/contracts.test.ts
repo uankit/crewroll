@@ -28,7 +28,6 @@ import {
   SavedReceiptBodySchema,
   SetTripReadinessBodySchema,
   StartTripBodySchema,
-  SyncAvailablePushHintSchema,
   SyncQuerySchema,
   SyncResponseSchema,
   TripIdSchema,
@@ -51,7 +50,6 @@ import {
   validCreateJoinRequestBody,
   validEndTripBody,
   validImmediateTripBody,
-  validNightlyTripBody,
   validReconciliationQuery,
   validRegisterDeviceBody,
   validRegistrationHeaders,
@@ -653,11 +651,21 @@ describe("trip and invite contracts", () => {
     expect(endReplay.version).toBe(versionN + 2);
   });
 
-  it("accepts immediate trips and rejects nightly trips without timezone and local time", () => {
+  it("accepts only immediate creation while preserving historical nightly responses", () => {
     expect(Value.Check(CreateTripBodySchema, validImmediateTripBody())).toBe(
       true,
     );
-    const body = validNightlyTripBody();
+    const legacy = {
+      ...validTripResponse(),
+      release: {
+        mode: "NIGHTLY",
+        timeZone: "Asia/Kolkata",
+        localTime: "21:30",
+      },
+    };
+    expect(Value.Check(TripResponseSchema, legacy)).toBe(true);
+    const body = { ...validImmediateTripBody(), release: legacy.release };
+    rejects(CreateTripBodySchema, body);
     rejects(CreateTripBodySchema, { ...body, release: { mode: "NIGHTLY" } });
     rejects(CreateTripBodySchema, {
       ...body,
@@ -862,20 +870,6 @@ describe("sync and error contracts", () => {
     const { caughtUpThrough: _watermark, ...withoutWatermark } = response;
     rejects(SyncResponseSchema, withoutWatermark);
     rejects(SyncResponseSchema, { ...response, cursorExpiresAt: "never" });
-  });
-
-  it("models push as one non-durable sync hint", () => {
-    const hint = {
-      type: "SYNC_AVAILABLE",
-      tripId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3130",
-      sequence: "42",
-    };
-    expect(Value.Check(SyncAvailablePushHintSchema, hint)).toBe(true);
-    rejects(SyncAvailablePushHintSchema, {
-      ...hint,
-      deliveryId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3199",
-    });
-    rejects(SyncAvailablePushHintSchema, { ...hint, type: "DELIVERY_READY" });
   });
 
   it("validates RFC 9457 problem details with stable code and request id", () => {

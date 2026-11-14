@@ -39,8 +39,4 @@ export const pages = {
     "Try CrewRoll",
     `<p class="eyebrow">EARLY ACCESS</p><h1>Try CrewRoll</h1><p class="lead">Bring an iPhone. Bring an Android. Bring your crew.</p><div class="downloads"><section><h2>iPhone</h2><p>Join through TestFlight. Access opens when Apple approves the beta.</p><a class="button" href="https://testflight.apple.com/join/1SqZ9RdY">Open TestFlight</a></section><section><h2>Android</h2><p>Use the Google account added to our tester list. Ask the team for access first.</p><a class="button" href="https://play.google.com/apps/internaltest/4700971440071305397">Open Google Play</a></section></div><p class="small">CrewRoll is currently in testing. Public App Store and Google Play releases are not yet available.</p>`,
   ],
-  "/join": [
-    "Join your crew",
-    `<p class="eyebrow">YOU’RE INVITED</p><h1>Join your crew</h1><p class="lead" id="invite-message">Open your invitation in CrewRoll.</p><a class="button" id="open-invite" hidden>Open CrewRoll</a><p><a href="/download">Get CrewRoll</a> if it is not installed yet.</p>`,
-  ],
 };

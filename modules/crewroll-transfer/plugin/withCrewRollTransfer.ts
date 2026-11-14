@@ -14,28 +14,36 @@ const IOS_PHOTO_ADD_DESCRIPTION =
 const IOS_BACKGROUND_TASK_IDENTIFIER = "com.uankit53.airmesh.media-processing";
 
 type AndroidPermission = Readonly<{
-  $?: Readonly<Record<string, string>>;
+  $?: Readonly<Record<string, string | undefined>>;
   [key: string]: unknown;
 }>;
 
 type AndroidManifest = Readonly<{
   manifest: Readonly<
     Record<string, unknown> & {
+      $?: Readonly<Record<string, string | undefined>>;
       "uses-permission"?: readonly AndroidPermission[];
+      application?: readonly {
+        $?: Readonly<Record<string, string | undefined>>;
+        service?: readonly AndroidPermission[];
+        [key: string]: unknown;
+      }[];
     }
   >;
 }>;
 
 const ANDROID_READ_MEDIA_IMAGES = "android.permission.READ_MEDIA_IMAGES";
+const ANDROID_READ_SELECTED_IMAGES =
+  "android.permission.READ_MEDIA_VISUAL_USER_SELECTED";
 const ANDROID_READ_EXTERNAL_STORAGE =
   "android.permission.READ_EXTERNAL_STORAGE";
 const ANDROID_WRITE_EXTERNAL_STORAGE =
   "android.permission.WRITE_EXTERNAL_STORAGE";
-const ANDROID_FORBIDDEN_PERMISSIONS = new Set([
+const ANDROID_NORMALIZED_PERMISSIONS = new Set([
   ANDROID_READ_MEDIA_IMAGES,
   ANDROID_READ_EXTERNAL_STORAGE,
   ANDROID_WRITE_EXTERNAL_STORAGE,
-  "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+  ANDROID_READ_SELECTED_IMAGES,
   "android.permission.ACCESS_WIFI_STATE",
   "android.permission.CHANGE_WIFI_STATE",
   "android.permission.CHANGE_WIFI_MULTICAST_STATE",
@@ -66,16 +74,42 @@ export function applyAndroidManifest(
     androidManifest.manifest["uses-permission"] ?? []
   ).filter(
     (permission) =>
-      !ANDROID_FORBIDDEN_PERMISSIONS.has(permissionName(permission) ?? ""),
+      !ANDROID_NORMALIZED_PERMISSIONS.has(permissionName(permission) ?? ""),
   );
 
   return {
     ...androidManifest,
     manifest: {
       ...androidManifest.manifest,
+      $: {
+        ...androidManifest.manifest.$,
+        "xmlns:tools": "http://schemas.android.com/tools",
+      },
+      application: (androidManifest.manifest.application ?? [{}]).map(
+        (application) => ({
+          ...application,
+          service: [
+            ...(application.service ?? []).filter(
+              (service) =>
+                service.$?.["android:name"] !==
+                "expo.modules.notifications.service.ExpoFirebaseMessagingService",
+            ),
+            {
+              $: {
+                "android:name":
+                  "expo.modules.notifications.service.ExpoFirebaseMessagingService",
+                "tools:node": "remove",
+              },
+            },
+          ],
+        }),
+      ),
       "uses-permission": [
         ...retainedPermissions,
         { $: { "android:name": ANDROID_READ_MEDIA_IMAGES } },
+        // Request alongside READ_MEDIA_IMAGES on Android 14+ so selected-only
+        // access cannot masquerade as a full-library grant until backgrounding.
+        { $: { "android:name": ANDROID_READ_SELECTED_IMAGES } },
         {
           $: {
             "android:name": ANDROID_READ_EXTERNAL_STORAGE,

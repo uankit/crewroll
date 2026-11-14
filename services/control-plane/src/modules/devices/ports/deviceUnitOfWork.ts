@@ -39,6 +39,7 @@ export interface DeviceIdempotencyRecord {
 export interface BackgroundAuthenticationRecord {
   readonly device: DeviceRecord;
   readonly userDeleted: boolean;
+  readonly userSuspended: boolean;
 }
 
 export interface DeviceTransaction {
@@ -67,10 +68,12 @@ export interface DeviceTransaction {
     limit: 100,
   ): Promise<number>;
   updateDevice(device: DeviceRecord): Promise<DeviceRecord>;
+  updatePushTokenIfNewer(device: DeviceRecord, revision: string): Promise<void>;
   writeIdempotency(record: DeviceIdempotencyRecord): Promise<void>;
 }
 
 export interface DeviceUnitOfWork {
+  reservePushTokenRevision(userId: string, deviceId: string): Promise<string>;
   run<Result>(
     operation: (transaction: DeviceTransaction) => Promise<Result>,
   ): Promise<Result>;

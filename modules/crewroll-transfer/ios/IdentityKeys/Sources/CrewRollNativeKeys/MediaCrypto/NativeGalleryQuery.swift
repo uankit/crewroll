@@ -21,13 +21,22 @@ public struct NativeGalleryQuery: Sendable {
     }
     func page(_ records: [[String: Any]], revision: Int, limit: Int, cursor: String?) throws -> (items: [[String: Any]], nextCursor: String?) {
         guard (1...100).contains(limit) else { throw NativeKeyError.invalidCommand }
-        let filtered = records.filter {
-            guard let stamp = $0["capturedAt"] as? String, let captured = Self.date(stamp) else { return false }
-            return (sourceMembershipID == nil || $0["sourceMembershipId"] as? String == sourceMembershipID) &&
-                (from == nil || captured >= from!) && (before == nil || captured < before!)
-        }.sorted {
-            let a = (Self.date($0["capturedAt"] as? String ?? "") ?? .distantPast, $0["assetId"] as? String ?? "")
-            let b = (Self.date($1["capturedAt"] as? String ?? "") ?? .distantPast, $1["assetId"] as? String ?? "")
+        // Parse once per row and reuse formatters for this page. Constructing
+        // formatters and parsing inside the comparator multiplies that work by
+        // the number of sort comparisons for a large trip library.
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        let indexed: [(row: [String: Any], captured: Date, assetID: String)] = records.compactMap { row in
+            guard let stamp = row["capturedAt"] as? String,
+                  let captured = fractional.date(from: stamp) ?? standard.date(from: stamp),
+                  sourceMembershipID == nil || row["sourceMembershipId"] as? String == sourceMembershipID,
+                  from == nil || captured >= from!, before == nil || captured < before! else { return nil }
+            return (row, captured, row["assetId"] as? String ?? "")
+        }
+        let filtered = indexed.sorted {
+            let a = ($0.captured, $0.assetID)
+            let b = ($1.captured, $1.assetID)
             return newest ? a > b : a < b
         }
         let prefix = "page_\(revision)_\(fingerprint)_"
@@ -37,7 +46,7 @@ public struct NativeGalleryQuery: Sendable {
             offset = value
         }
         guard offset >= 0, offset <= filtered.count else { throw NativeKeyError.invalidCommand }
-        let items = Array(filtered.dropFirst(offset).prefix(limit))
+        let items = filtered.dropFirst(offset).prefix(limit).map { $0.row }
         return (items, offset + items.count < filtered.count ? prefix + String(offset + items.count) : nil)
     }
     private static func date(_ value: String) -> Date? {

@@ -12,6 +12,7 @@ export type MobileDependencies = Readonly<{
   accountApi: AccountApi;
   profileApi: Pick<ReturnType<typeof createCrewRollApi>, "syncProfile">;
   deviceRegistration: DeviceRegistrationPort;
+  pushApi: Pick<ReturnType<typeof createCrewRollApi>, "updateDevicePushToken">;
   tripApi: TripApiPort &
     Pick<
       ReturnType<typeof createCrewRollApi>,
@@ -30,6 +31,7 @@ export function createMobileDependencies(
     apiBaseUrl: string;
     fetch: typeof fetch;
     sessionTokenSource: SessionTokenSource;
+    sessionBinding?: () => string | null;
   }>,
 ): MobileDependencies {
   const crewRollApi = createCrewRollApi(input);
@@ -37,6 +39,7 @@ export function createMobileDependencies(
     accountApi: crewRollApi,
     profileApi: crewRollApi,
     deviceRegistration: crewRollApi,
+    pushApi: crewRollApi,
     tripApi: crewRollApi,
   });
 }

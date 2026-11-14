@@ -18,7 +18,16 @@ const canonicalInput = path.join(
   "packages/contracts/generated/crewroll.openapi.json",
 );
 const createOutcomePath = "/v1/trips/create-outcome";
-const problemStatuses = ["400", "401", "403", "404", "409", "429", "500"];
+const problemStatuses = [
+  "400",
+  "401",
+  "403",
+  "404",
+  "409",
+  "429",
+  "500",
+  "503",
+];
 
 async function withContract(mutator, assertion) {
   const directory = await mkdtemp(path.join(tmpdir(), "crewroll-mobile-api-"));
@@ -34,6 +43,41 @@ async function withContract(mutator, assertion) {
     await rm(directory, { force: true, recursive: true });
   }
 }
+
+test("check mode rejects stale generated types without rewriting them", async () => {
+  await withContract(
+    async () => undefined,
+    async ({ inputPath, outputPath }) => {
+      const stale = "// stale generated mobile API types\n";
+      await writeFile(outputPath, stale);
+      await assert.rejects(
+        generateMobileApi({ inputPath, outputPath, check: true }),
+        /generated mobile API types drifted/i,
+      );
+      assert.equal(await readFile(outputPath, "utf8"), stale);
+    },
+  );
+});
+
+test("check mode accepts the exact generated file and rejects a missing one", async () => {
+  await withContract(
+    async () => undefined,
+    async ({ inputPath, outputPath }) => {
+      await assert.rejects(
+        generateMobileApi({ inputPath, outputPath, check: true }),
+        { code: "ENOENT" },
+      );
+      await generateMobileApi({ inputPath, outputPath });
+      const before = await readFile(outputPath, "utf8");
+      await generateMobileApi({ inputPath, outputPath, check: true });
+      assert.equal(await readFile(outputPath, "utf8"), before);
+    },
+  );
+});
+
+test("committed mobile API types match the current canonical contract", async () => {
+  await generateMobileApi({ check: true });
+});
 
 test("generates the exact bounded current mobile operations deterministically", async () => {
   await withContract(
@@ -59,6 +103,7 @@ test("generates the exact bounded current mobile operations deterministically", 
         "getTrip",
         "previewInvite",
         "registerDevice",
+        "updatePushToken",
         "resolveCreateTripOutcome",
         "setTripReadiness",
         "startTrip",

@@ -3,34 +3,48 @@ import CoreFoundation
 
 public final class CrewRollTransferModule: Module {
   private var invalidationObserver: NSObjectProtocol?
-  private let transferCommands = NativeTransferCommandFence()
+  private var pushObserver: NSObjectProtocol?
+  private let transferCommands = NativeTransferCommandFence.shared
 
   public func definition() -> ModuleDefinition {
     Name("CrewRollTransfer")
-    Events("engineInvalidated")
+    Events("engineInvalidated", "pushHint")
     OnCreate {
-      self.runLifecycleCleanup()
+      CrewRollAppleRuntime.lifecycleWork.submit { [weak self] in self?.runLifecycleCleanup() }
       self.invalidationObserver = NotificationCenter.default.addObserver(forName: .crewRollEngineInvalidated, object: nil, queue: nil) { [weak self] event in
         if let revision = event.userInfo?["revision"] as? Int { self?.sendEvent("engineInvalidated", ["protocolVersion": 1, "type": "ENGINE_INVALIDATED", "revision": revision]) }
       }
+      self.pushObserver = NotificationCenter.default.addObserver(forName: .crewRollPushHint, object: nil, queue: nil) { [weak self] event in
+        guard let info = event.userInfo else { return }
+        var data: [String: Any] = [:]
+        for key in ["type", "deviceId", "tripId", "eventId"] { data[key] = info[key] }
+        if let hint = NativePushHint.parse(data) { self?.sendEvent("pushHint", hint.data) }
+      }
     }
     OnAppEntersForeground {
-      self.runLifecycleCleanup()
-      try? CrewRollAppleRuntime.get().foreground(true)
-      if let engine = try? self.engine() { Task { await engine.wake() } }
+      CrewRollAppleRuntime.lifecycleWork.submit { [weak self] in
+        self?.runLifecycleCleanup()
+        try? CrewRollAppleRuntime.get().foreground(true)
+        if let engine = try? self?.engine() { Task { await engine.wake() } }
+      }
     }
     OnDestroy {
       if let observer = self.invalidationObserver { NotificationCenter.default.removeObserver(observer) }
       self.invalidationObserver = nil
+      if let observer = self.pushObserver { NotificationCenter.default.removeObserver(observer) }
+      self.pushObserver = nil
     }
 
     AsyncFunction("ensureDeviceIdentity") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .ensureDeviceIdentity)
+        let epoch = self.transferCommands.advance()
         let lifecycle = try self.lifecycle()
-        let identity = try lifecycle.ensureDeviceIdentity(
-          accountID: try Self.string(command, "accountId")
-        )
+        let identity = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.ensureDeviceIdentity(
+            accountID: try Self.string(command, "accountId")
+          )
+        }
         promise.resolve([
           "protocolVersion": identity.protocolVersion,
           "installationId": identity.installationID,
@@ -46,11 +60,15 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("restoreDeviceSession") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .restoreDeviceSession)
-        let deviceID = try self.lifecycle().restoreDeviceSession(
-          accountID: try Self.string(command, "accountId"),
-          installationID: try Self.string(command, "installationId"),
-          apiBaseURL: try Self.string(command, "apiBaseUrl")
-        )
+        let epoch = self.transferCommands.advance()
+        let lifecycle = try self.lifecycle()
+        let deviceID = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.restoreDeviceSession(
+            accountID: try Self.string(command, "accountId"),
+            installationID: try Self.string(command, "installationId"),
+            apiBaseURL: try Self.string(command, "apiBaseUrl")
+          )
+        }
         if let deviceID { promise.resolve(["protocolVersion": 1, "deviceId": deviceID]) }
         else { promise.resolve(nil) }
       } catch { promise.reject(Self.bridgeException(error)) }
@@ -58,31 +76,59 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("installDeviceSession") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .installDeviceSession)
+        let epoch = self.transferCommands.advance()
         let lifecycle = try self.lifecycle()
-        try lifecycle.installDeviceSession(
-          accountID: try Self.string(command, "accountId"),
-          installationID: try Self.string(command, "installationId"),
-          deviceID: try Self.string(command, "deviceId"),
-          backgroundBearer: try Self.string(command, "backgroundBearer"),
-          expiresAt: try Self.date(command, "backgroundBearerExpiresAt"),
-          apiBaseURL: try Self.string(command, "apiBaseUrl")
-        )
+        try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.installDeviceSession(
+            accountID: try Self.string(command, "accountId"),
+            installationID: try Self.string(command, "installationId"),
+            deviceID: try Self.string(command, "deviceId"),
+            backgroundBearer: try Self.string(command, "backgroundBearer"),
+            expiresAt: try Self.date(command, "backgroundBearerExpiresAt"),
+            apiBaseURL: try Self.string(command, "apiBaseUrl")
+          )
+        }
+        promise.resolve(nil)
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
+    AsyncFunction("refreshDeviceSession") { (command: [String: Any], promise: Promise) in
+      do {
+        try NativeCommandDecoder.require(command, for: .refreshDeviceSession)
+        let epoch = self.transferCommands.current()
+        let lifecycle = try self.lifecycle()
+        let changed = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.refreshDeviceSession(
+            accountID: try Self.string(command, "accountId"),
+            installationID: try Self.string(command, "installationId"),
+            deviceID: try Self.string(command, "deviceId"),
+            backgroundBearer: try Self.string(command, "backgroundBearer"),
+            expiresAt: try Self.date(command, "backgroundBearerExpiresAt"),
+            apiBaseURL: try Self.string(command, "apiBaseUrl")
+          )
+        }
+        if changed {
+          let engine = try self.engine()
+          let deviceID = try Self.string(command, "deviceId")
+          let fence = self.transferCommands
+          Task { try? await engine.credentialRefreshed(deviceID: deviceID, ifCurrent: { fence.matches(epoch) }) }
+        }
         promise.resolve(nil)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("clearDeviceSession") { (command: [String: Any], promise: Promise) in
       do {
         try Self.require(command, keys: ["protocolVersion"])
-        let lifecycle = try self.lifecycle()
-        let engine = try self.engine()
         let epoch = self.transferCommands.advance()
+        let runtime = try CrewRollAppleRuntime.get()
+        let lifecycle = runtime.lifecycle
+        let engine = runtime.engine
+        try self.transferCommands.withCurrent(epoch) { runtime.policy(enabled: false) }
         Task {
-          await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
           do {
-            guard self.transferCommands.matches(epoch) else { throw NativeKeyError.invalidCommand }
-            try CrewRollAppleRuntime.get().policy(enabled: false)
-            await AppleBackgroundTransfer.shared.clear()
-            try lifecycle.clearDeviceSession()
+            await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+            try await AppleBackgroundTransfer.shared.clear(ifCurrent: { self.transferCommands.matches(epoch) },
+              protectedMutation: { work in try self.transferCommands.withCurrent(epoch, work) })
+            try self.transferCommands.withCurrent(epoch) { try lifecycle.clearDeviceSession() }
             promise.resolve(nil)
           } catch { promise.reject(Self.bridgeException(error)) }
         }
@@ -91,18 +137,20 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("eraseAccount") { (command: [String: Any], promise: Promise) in
       do {
         try Self.require(command, keys: ["protocolVersion", "accountId"])
-        let accountID = try Self.string(command, "accountId")
-        let lifecycle = try self.lifecycle()
-        let engine = try self.engine()
         let epoch = self.transferCommands.advance()
-        try CrewRollAppleRuntime.get().policy(enabled: false)
+        let accountID = try Self.string(command, "accountId")
+        let runtime = try CrewRollAppleRuntime.get()
+        let lifecycle = runtime.lifecycle
+        let engine = runtime.engine
+        try self.transferCommands.withCurrent(epoch) { runtime.policy(enabled: false) }
         Task {
-          await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
           do {
-            guard self.transferCommands.matches(epoch) else { throw NativeKeyError.invalidCommand }
-            await AppleBackgroundTransfer.shared.clear()
-            let hash = try lifecycle.eraseAccount(accountID: accountID)
-            try await engine.eraseAccount(accountHash: hash)
+            await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+            try await AppleBackgroundTransfer.shared.clear(ifCurrent: { self.transferCommands.matches(epoch) },
+              protectedMutation: { work in try self.transferCommands.withCurrent(epoch, work) })
+            let hash = try self.transferCommands.withCurrent(epoch) { try lifecycle.eraseAccount(accountID: accountID) }
+            try await engine.eraseAccount(accountHash: hash, ifCurrent: { self.transferCommands.matches(epoch) },
+              protectedMutation: { work in try self.transferCommands.withCurrent(epoch, work) })
             promise.resolve(nil)
           } catch { promise.reject(Self.bridgeException(error)) }
         }
@@ -111,11 +159,14 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("createTripKey") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .createTripKey)
+        let epoch = self.transferCommands.current()
         let lifecycle = try self.lifecycle()
-        let result = try lifecycle.createTripKey(
-          tripID: try Self.string(command, "tripId"),
-          keyEpoch: try Self.integer(command, "keyEpoch")
-        )
+        let result = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.createTripKey(
+            tripID: try Self.string(command, "tripId"),
+            keyEpoch: try Self.integer(command, "keyEpoch")
+          )
+        }
         promise.resolve([
           "protocolVersion": result.protocolVersion,
           "tripId": result.tripID,
@@ -126,25 +177,31 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("discardProvisionalTripKey") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .discardProvisionalTripKey)
+        let epoch = self.transferCommands.current()
         let lifecycle = try self.lifecycle()
-        try lifecycle.discardProvisionalTripKey(
-          tripID: try Self.string(command, "tripId"),
-          keyEpoch: try Self.integer(command, "keyEpoch")
-        )
+        try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.discardProvisionalTripKey(
+            tripID: try Self.string(command, "tripId"),
+            keyEpoch: try Self.integer(command, "keyEpoch")
+          )
+        }
         promise.resolve(nil)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("wrapTripKey") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .wrapTripKey)
+        let epoch = self.transferCommands.current()
         let lifecycle = try self.lifecycle()
-        let result = try lifecycle.wrapTripKey(
-          tripID: try Self.string(command, "tripId"),
-          keyEpoch: try Self.integer(command, "keyEpoch"),
-          recipientDeviceID: try Self.string(command, "recipientDeviceId"),
-          recipientE2EEPublicKey: try Self.string(command, "recipientE2eePublicKey"),
-          recipientE2EEKeyVersion: try Self.integer(command, "recipientE2eeKeyVersion")
-        )
+        let result = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.wrapTripKey(
+            tripID: try Self.string(command, "tripId"),
+            keyEpoch: try Self.integer(command, "keyEpoch"),
+            recipientDeviceID: try Self.string(command, "recipientDeviceId"),
+            recipientE2EEPublicKey: try Self.string(command, "recipientE2eePublicKey"),
+            recipientE2EEKeyVersion: try Self.integer(command, "recipientE2eeKeyVersion")
+          )
+        }
         promise.resolve([
           "protocolVersion": result.protocolVersion,
           "tripId": result.tripID,
@@ -160,27 +217,36 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("importTripKey") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .importTripKey)
+        let epoch = self.transferCommands.current()
         let lifecycle = try self.lifecycle()
-        try lifecycle.importTripKey(
-          tripID: try Self.string(command, "tripId"),
-          keyEpoch: try Self.integer(command, "keyEpoch"),
-          algorithmVersion: try Self.integer(command, "algorithmVersion"),
-          expectedSenderDeviceID: try Self.string(command, "expectedSenderDeviceId"),
-          recipientDeviceID: try Self.string(command, "recipientDeviceId"),
-          recipientE2EEKeyVersion: try Self.integer(command, "recipientE2eeKeyVersion"),
-          wrappedKey: try Self.string(command, "wrappedKey")
-        )
+        try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.importTripKey(
+            tripID: try Self.string(command, "tripId"),
+            keyEpoch: try Self.integer(command, "keyEpoch"),
+            algorithmVersion: try Self.integer(command, "algorithmVersion"),
+            expectedSenderDeviceID: try Self.string(command, "expectedSenderDeviceId"),
+            recipientDeviceID: try Self.string(command, "recipientDeviceId"),
+            recipientE2EEKeyVersion: try Self.integer(command, "recipientE2eeKeyVersion"),
+            wrappedKey: try Self.string(command, "wrappedKey"),
+            endsAt: try Self.string(command, "endsAt")
+          )
+        }
+        let engine = try self.engine()
+        Task { try? await engine.reconcileRetention(force: true) }
         promise.resolve(nil)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("activateTrip") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .activateTrip)
-        let lifecycle = try self.lifecycle()
-        try lifecycle.activateTrip(try NativeCommandDecoder.activation(command))
-        try CrewRollAppleRuntime.get().policy(enabled: true, cellular: true)
-        let engine = try self.engine()
         let epoch = self.transferCommands.advance()
+        let lifecycle = try self.lifecycle()
+        let runtime = try CrewRollAppleRuntime.get()
+        let engine = runtime.engine
+        try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.activateTrip(try NativeCommandDecoder.activation(command))
+          runtime.policy(enabled: true, cellular: true)
+        }
         Task {
           await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
           promise.resolve(nil)
@@ -190,16 +256,18 @@ public final class CrewRollTransferModule: Module {
     AsyncFunction("deactivateTrip") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .deactivateTrip)
-        let lifecycle = try self.lifecycle()
-        try lifecycle.deactivateTrip(tripID: try Self.string(command, "tripId"))
-        try CrewRollAppleRuntime.get().policy(enabled: false)
         let epoch = self.transferCommands.advance()
-        if let engine = try? self.engine() {
-          Task {
-            await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
-            promise.resolve(nil)
-          }
-        } else { promise.resolve(nil) }
+        let lifecycle = try self.lifecycle()
+        let runtime = try CrewRollAppleRuntime.get()
+        let engine = runtime.engine
+        try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.deactivateTrip(tripID: try Self.string(command, "tripId"))
+          runtime.policy(enabled: false)
+        }
+        Task {
+          await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+          promise.resolve(nil)
+        }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("setTransferPolicy") { (command: [String: Any], promise: Promise) in
@@ -207,9 +275,12 @@ public final class CrewRollTransferModule: Module {
         try Self.require(command, keys: ["protocolVersion", "paused", "cellularAllowed"])
         guard let pausedValue = command["paused"] as? NSNumber, CFGetTypeID(pausedValue) == CFBooleanGetTypeID(),
               let cellularValue = command["cellularAllowed"] as? NSNumber, CFGetTypeID(cellularValue) == CFBooleanGetTypeID() else { throw NativeKeyError.invalidCommand }
-        let engine = try self.engine()
-        try CrewRollAppleRuntime.get().policy(enabled: !pausedValue.boolValue, cellular: cellularValue.boolValue)
         let epoch = self.transferCommands.advance()
+        let engine = try self.engine()
+        let runtime = try CrewRollAppleRuntime.get()
+        try self.transferCommands.withCurrent(epoch) {
+          runtime.policy(enabled: !pausedValue.boolValue, cellular: cellularValue.boolValue)
+        }
         Task {
           await engine.setPolicy(paused: pausedValue.boolValue, cellularAllowed: cellularValue.boolValue, ifCurrent: { self.transferCommands.matches(epoch) })
           promise.resolve(nil)
@@ -275,6 +346,7 @@ public final class CrewRollTransferModule: Module {
   private func runLifecycleCleanup() {
     do {
       try lifecycle().runScheduledCleanup()
+      if let engine = try? self.engine() { Task { try? await engine.reconcileRetention(force: true) } }
     } catch {
       // Access-locked and transient failures are retried on the next foreground wake.
     }

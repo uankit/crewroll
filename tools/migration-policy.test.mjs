@@ -232,6 +232,75 @@ test("accepts the bounded API3 alter-table column grammar", async (t) => {
   assert.deepEqual(result.findings, []);
 });
 
+test("allows only directed nullability changes for the retired media payload columns", async (t) => {
+  for (const table of ["assets", "upload_sessions"]) {
+    const result = await analyzeSource(
+      t,
+      migrationSource({
+        upBody: `await db.schema.alterTable("${table}").alterColumn("encrypted_manifest", c => c.dropNotNull()).execute();`,
+        downBody: `await db.schema.alterTable("${table}").alterColumn("encrypted_manifest", c => c.setNotNull()).execute();`,
+      }),
+    );
+    assert.deepEqual(result.findings, []);
+  }
+});
+
+test("rejects nullability grammar changes outside the reviewed erasure boundary", async (t) => {
+  const cases = [
+    [
+      "up",
+      'await db.schema.alterTable("users").alterColumn("encrypted_manifest", c => c.dropNotNull()).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("id", c => c.dropNotNull()).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => c.setNotNull()).execute();',
+    ],
+    [
+      "down",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => c.dropNotNull()).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => c.dropNotNull(true)).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => c.dropNotNull().setDefault(0)).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => { sideEffect(); return c.dropNotNull(); }).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn("encrypted_manifest", c => c.dropNotNull<"ignored">()).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable(tableName).alterColumn("encrypted_manifest", c => c.dropNotNull()).execute();',
+    ],
+    [
+      "up",
+      'await db.schema.alterTable("assets").alterColumn(columnName, c => c.dropNotNull()).execute();',
+    ],
+  ];
+  for (const [mode, source] of cases) {
+    const result = await analyzeSource(
+      t,
+      migrationSource(
+        mode === "up"
+          ? { upBody: source }
+          : { upBody: safeCreate, downBody: source },
+      ),
+    );
+    assert.ok(result.findings.length > 0, source);
+  }
+});
+
 test("rejects every widening of the API3 alter-table column grammar", async (t) => {
   const cases = [
     [
@@ -1109,6 +1178,60 @@ test("rejects malformed table and index builder chains", async (t) => {
     );
   }
 });
+
+for (const [middle, accepted] of [
+  [
+    '.columns<"device_id" | "trip_id" | "completed_at">(["device_id", "trip_id"]).where("completed_at", "is", null)',
+    true,
+  ],
+  [
+    '.columns<"device_id" | "completed_at">(["device_id"]).where("completed_at", "is", null)',
+    true,
+  ],
+  [
+    '.columns<"trip_id" | "device_id" | "completed_at">(["device_id", "trip_id"]).where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "trip_id" | "other">(["device_id", "trip_id"]).where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "trip_id" | "completed_at" | "other">(["device_id", "trip_id"]).where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "device_id" | "completed_at">(["device_id", "device_id"]).where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "completed_at">(["device_id", "completed_at"]).where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "trip_id" | "completed_at">(["device_id", "trip_id"])',
+    false,
+  ],
+  [
+    '.columns<"device_id" | "trip_id" | "completed_at">(["device_id", "trip_id"]).column("other").where("completed_at", "is", null)',
+    false,
+  ],
+  [
+    '.columns<string | "completed_at">(["device_id", "trip_id"]).where("completed_at", "is", null)',
+    false,
+  ],
+]) {
+  test(`literal multi-column partial-index grammar ${middle}`, async (t) => {
+    const result = await analyzeSource(
+      t,
+      migrationSource({
+        upBody: `await db.schema.createIndex("idx").on("push_wakeups")${middle}.execute();`,
+        downBody: 'await db.schema.dropIndex("idx").execute();',
+      }),
+    );
+    assert.equal(result.findings.length === 0, accepted);
+  });
+}
 
 test("accepts only the exact erased partial-index type widening", async (t) => {
   const positive = migrationSource({
@@ -2066,6 +2189,21 @@ for (const [column, accepted] of [
   ['.addColumn("left_at", "timestamptz")', true],
   ['.addColumn("encrypted_checkpoint", "text")', true],
   ['.addColumn("left_at", "bigint")', false],
+  ['.addColumn("revision", "bigint", c => c.notNull().defaultTo(0))', true],
+  ['.addColumn("revision", "bigint", c => c.notNull().defaultTo(1))', false],
+  ['.addColumn("revision", "bigint", c => c.notNull().defaultTo(-1))', false],
+  ['.addColumn("revision", "bigint", c => c.notNull().defaultTo(0n))', false],
+  ['.addColumn("revision", "bigint", c => c.notNull().defaultTo(0.0))', false],
+  [
+    '.addColumn("revision", "bigint", c => c.notNull().defaultTo(0 + 0))',
+    false,
+  ],
+  ['.addColumn("revision", "bigint", c => c.defaultTo(0))', false],
+  [
+    '.addColumn("revision", "bigint", c => c.notNull().defaultTo(0).unique())',
+    false,
+  ],
+  ['.addColumn("revision", "integer", c => c.notNull().defaultTo(0))', false],
   [
     '.addColumn("pauses", "jsonb", c => c.notNull().defaultTo(sql`\'[]\'::jsonb`))',
     true,
@@ -2079,7 +2217,7 @@ for (const [column, accepted] of [
     false,
   ],
 ]) {
-  test(`additive participation grammar ${column}`, async (t) => {
+  test(`additive column grammar ${column}`, async (t) => {
     const result = await analyzeSource(
       t,
       migrationSource({

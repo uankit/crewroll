@@ -54,6 +54,36 @@ const readinessBody = {
 const membershipId = "5a95305d-c558-4c79-b78c-a075be7bff85";
 const requestId = "5a95305d-c558-4c79-b78c-a075be7bff86";
 
+it("registers a native push token through the authenticated device-scoped idempotent PATCH", async () => {
+  const fetcher = jest.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(null, { status: 204 }),
+  );
+  const api = createCrewRollApi({
+    apiBaseUrl: "https://api.example",
+    fetch: fetcher,
+    sessionTokenSource: { getToken: async () => "current-session" },
+  });
+  await api.updateDevicePushToken(deviceId, commandId, {
+    pushToken: "native-provider-token",
+    appVersion: "1.0.5",
+  });
+  const request = fetcher.mock.calls[0]?.[0];
+  if (!(request instanceof Request))
+    throw new Error("Expected Request transport");
+  expect(request?.url).toBe(
+    `https://api.example/v1/devices/${deviceId}/push-token`,
+  );
+  expect(request?.method).toBe("PATCH");
+  expect(request?.headers.get("X-CrewRoll-Device-Id")).toBe(deviceId);
+  expect(request?.headers.get("Idempotency-Key")).toBe(commandId);
+  expect(request?.headers.get("Authorization")).toBe("Bearer current-session");
+  await expect(request?.json()).resolves.toEqual({
+    pushToken: "native-provider-token",
+    appVersion: "1.0.5",
+  });
+});
+
 it("bounds a stalled token lookup and never sends a late authenticated request", async () => {
   let resolve!: (token: string) => void;
   const fetcher = jest.fn(async () => new Response("{}"));
@@ -182,15 +212,245 @@ function requestFrom(call: unknown[] | undefined): Request {
 function apiWith(
   fetchMock: jest.Mock,
   getToken: SessionTokenSource["getToken"] = async () => "clerk-session",
+  sessionBinding?: () => string | null,
 ) {
   return createCrewRollApi({
     apiBaseUrl: "https://api.crewroll.app",
     fetch: fetchMock as unknown as typeof fetch,
     sessionTokenSource: { getToken },
+    ...(sessionBinding ? { sessionBinding } : {}),
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("CrewRoll API boundary", () => {
+  it("accepts an 80-code-point astral profile name through the HTTP response parser", async () => {
+    const displayName = "🛶".repeat(80);
+    const fetchMock = jest.fn(async () => response({ displayName }, 200));
+    await expect(apiWith(fetchMock).syncProfile()).resolves.toEqual({
+      displayName,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(requestFrom(fetchMock.mock.calls[0]).url).toBe(
+      "https://api.crewroll.app/v1/profile",
+    );
+  });
+
+  it("rejects an 81-code-point astral profile name through the HTTP response parser", async () => {
+    const fetchMock = jest.fn(async () =>
+      response({ displayName: "🛶".repeat(81) }, 200),
+    );
+    await expect(apiWith(fetchMock).syncProfile()).rejects.toBeInstanceOf(
+      CrewRollTransportProblem,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts 80-code-point astral trip and member names in an authoritative committed outcome", async () => {
+    const name = "🛶".repeat(80);
+    const committed = {
+      outcome: "COMMITTED",
+      trip: {
+        ...tripResponse,
+        name,
+        members: tripResponse.members.map((member) => ({
+          ...member,
+          displayName: name,
+        })),
+      },
+    };
+    const fetchMock = jest.fn(async () => response(committed, 200));
+    await expect(
+      apiWith(fetchMock).resolveCreateTripOutcome(deviceId, commandId, {
+        tripId,
+      }),
+    ).resolves.toEqual(committed);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["trip", "member"] as const)(
+    "rejects an 81-code-point astral %s name in an authoritative committed outcome",
+    async (field) => {
+      const name = "🛶".repeat(81);
+      const trip = {
+        ...tripResponse,
+        ...(field === "trip" ? { name } : {}),
+        members: tripResponse.members.map((member) => ({
+          ...member,
+          ...(field === "member" ? { displayName: name } : {}),
+        })),
+      };
+      const fetchMock = jest.fn(async () =>
+        response({ outcome: "COMMITTED", trip }, 200),
+      );
+      await expect(
+        apiWith(fetchMock).resolveCreateTripOutcome(deviceId, commandId, {
+          tripId,
+        }),
+      ).rejects.toEqual(new CrewRollApiProblem("INTERNAL_ERROR"));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not send an account mutation when the originating session changes during token lookup", async () => {
+    let binding: string | null = "account-a/session-a";
+    const lookup = deferred<string>();
+    const started = deferred<void>();
+    const getToken = jest.fn(() => {
+      started.resolve();
+      return lookup.promise;
+    });
+    const fetchMock = jest.fn(async () =>
+      response({ requestId, status: "PENDING" }),
+    );
+    const api = apiWith(fetchMock, getToken, () => binding);
+    const deletion = api.requestAccountDeletion();
+    await started.promise;
+    binding = "account-b/session-b";
+    lookup.resolve("account-b-token");
+    await expect(deletion).rejects.toBeInstanceOf(CrewRollTransportProblem);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "account-a/session-two", "account-b/session-b"])(
+    "does not replay an old account deletion after a delayed 401 and session switch to %s",
+    async (nextBinding) => {
+      let binding: string | null = "account-a/session-a";
+      const first = deferred<Response>();
+      const started = deferred<void>();
+      const getToken = jest.fn(async () =>
+        binding === "account-a/session-a"
+          ? "account-a-token"
+          : "new-session-token",
+      );
+      const fetchMock = jest.fn(async () =>
+        response({ requestId, status: "PENDING" }),
+      );
+      fetchMock.mockImplementationOnce(async () => {
+        started.resolve();
+        return first.promise;
+      });
+      const deletion = apiWith(
+        fetchMock,
+        getToken,
+        () => binding,
+      ).requestAccountDeletion();
+      await started.promise;
+      binding = nextBinding;
+      first.resolve(problemResponse("AUTH_INVALID", 401));
+      await expect(deletion).rejects.toBeInstanceOf(CrewRollTransportProblem);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(getToken).toHaveBeenCalledTimes(1);
+      expect(
+        requestFrom(fetchMock.mock.calls[0]).headers.get("Authorization"),
+      ).toBe("Bearer account-a-token");
+    },
+  );
+
+  it("does not replay a mutation when its token refresh completes in another session", async () => {
+    let binding: string | null = "account-a/session-a";
+    const refresh = deferred<string>();
+    const started = deferred<void>();
+    const getToken = jest.fn(async (options?: { skipCache: boolean }) => {
+      if (options?.skipCache) {
+        started.resolve();
+        return refresh.promise;
+      }
+      return "expired-account-a-token";
+    });
+    const fetchMock = jest
+      .fn(async () => response({ requestId, status: "PENDING" }))
+      .mockResolvedValueOnce(problemResponse("AUTH_INVALID", 401));
+    const deletion = apiWith(
+      fetchMock,
+      getToken,
+      () => binding,
+    ).requestAccountDeletion();
+    await started.promise;
+    binding = "account-b/session-b";
+    refresh.resolve("account-b-token");
+    await expect(deletion).rejects.toBeInstanceOf(CrewRollTransportProblem);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish an old account response after the session changes while reading its body", async () => {
+    let binding: string | null = "account-a/session-a";
+    const body = deferred<string>();
+    const started = deferred<void>();
+    const pending = response({});
+    pending.text = () => {
+      started.resolve();
+      return body.promise;
+    };
+    const fetchMock = jest.fn(async () => pending);
+    const policy = apiWith(
+      fetchMock,
+      async () => "account-a-token",
+      () => binding,
+    ).getAccountPolicy();
+    await started.promise;
+    binding = "account-b/session-b";
+    body.resolve(
+      JSON.stringify({ termsVersion: "2026-09-24", accepted: true }),
+    );
+    await expect(policy).rejects.toBeInstanceOf(CrewRollTransportProblem);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["initial", "AUTH_REQUIRED"],
+    ["initial", "AUTH_INVALID"],
+    ["refresh", "AUTH_REQUIRED"],
+    ["refresh", "AUTH_INVALID"],
+  ] as const)(
+    "normalizes a stale %s token lookup's %s rejection without invalidating the new session",
+    async (stage, code) => {
+      let binding: string | null = "account-a/session-a";
+      const lookup = deferred<string>();
+      const started = deferred<void>();
+      const getToken = jest.fn(async (options?: { skipCache: boolean }) => {
+        if (stage === "refresh" && !options?.skipCache)
+          return "expired-account-a-token";
+        started.resolve();
+        return lookup.promise;
+      });
+      const fetchMock = jest.fn(async () =>
+        problemResponse("AUTH_INVALID", 401),
+      );
+      const policy = apiWith(
+        fetchMock,
+        getToken,
+        () => binding,
+      ).getAccountPolicy();
+      await started.promise;
+      binding = "account-b/session-b";
+      lookup.reject(new CrewRollApiProblem(code));
+      await expect(policy).rejects.toBeInstanceOf(CrewRollTransportProblem);
+      expect(fetchMock).toHaveBeenCalledTimes(stage === "initial" ? 0 : 1);
+    },
+  );
+
+  it("fails closed without looking up a token when there is no originating session", async () => {
+    const getToken = jest.fn(async () => "cached-old-account-token");
+    const fetchMock = jest.fn(async () =>
+      response({ requestId, status: "PENDING" }),
+    );
+    await expect(
+      apiWith(fetchMock, getToken, () => null).requestAccountDeletion(),
+    ).rejects.toBeInstanceOf(CrewRollTransportProblem);
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refreshes an expired token once without changing the trip command or body", async () => {
     const requests: {
       authorization: string | null;
@@ -211,7 +471,11 @@ describe("CrewRoll API boundary", () => {
       options?.skipCache ? "fresh-token" : "expired-token",
     );
     await expect(
-      apiWith(fetchMock, getToken).createTrip(deviceId, commandId, createBody),
+      apiWith(fetchMock, getToken, () => "account-a/session-a").createTrip(
+        deviceId,
+        commandId,
+        createBody,
+      ),
     ).resolves.toEqual(tripResponse);
     expect(requests).toEqual([
       {
@@ -273,7 +537,7 @@ describe("CrewRoll API boundary", () => {
         ? problemResponse("AUTH_INVALID", 401)
         : response(tripResponse, 200),
     );
-    const api = apiWith(fetchMock, getToken);
+    const api = apiWith(fetchMock, getToken, () => "account-a/session-a");
     const requests = Promise.all([
       api.getTrip(deviceId, tripId),
       api.getTrip(deviceId, tripId),
@@ -681,6 +945,27 @@ describe("CrewRoll API boundary", () => {
       api.rejectMember(deviceId, commandId, tripId, membershipId),
     ).rejects.toEqual(new CrewRollApiProblem("NOT_FOUND"));
   });
+
+  it.each([200, 201, 202])(
+    "rejects an unexpected successful decline status %i instead of claiming the member was declined",
+    async (status) => {
+      const fetchMock = jest.fn(async () =>
+        response(
+          { status: "declined", privateMetadata: "must not escape" },
+          status,
+        ),
+      );
+      await expect(
+        apiWith(fetchMock).rejectMember(
+          deviceId,
+          commandId,
+          tripId,
+          membershipId,
+        ),
+      ).rejects.toEqual(new CrewRollApiProblem("INTERNAL_ERROR"));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("never returns RFC 9457 detail to callers", async () => {
     const fetchMock = jest.fn(async () =>
