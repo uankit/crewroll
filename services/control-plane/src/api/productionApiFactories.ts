@@ -56,7 +56,12 @@ function required<Value>(value: Value | undefined): Value {
 }
 
 function databaseHandle(environment: Environment) {
-  const database = createDatabase(environment.databaseUrl);
+  const database = createDatabase(environment.databaseUrl, {
+    queryTimeoutMillis: 15_000,
+    statementTimeoutMillis: 10_000,
+    lockTimeoutMillis: 5_000,
+    idleTransactionTimeoutMillis: 15_000,
+  });
   return { database, destroy: () => database.destroy() };
 }
 

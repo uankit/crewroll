@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { Buffer } from "node:buffer";
 import { test } from "node:test";
-import site, {
-  nativeInviteFromFragment,
-} from "../services/control-plane/site/index.mjs";
+import site from "../services/control-plane/site/index.mjs";
 
 test("legal and deletion pages are accessible and do not claim public availability", async () => {
   for (const path of [
@@ -31,24 +28,32 @@ test("legal and deletion pages are accessible and do not claim public availabili
     /Public App Store and Google Play releases are not yet available/,
   );
 });
-test("invite fragments accept only the app scheme and never fetch invitation material", async () => {
-  const fragment = (value) => "#v1." + Buffer.from(value).toString("base64url");
-  assert.equal(
-    nativeInviteFromFragment(fragment("airmesh://join?secret=fixture")),
-    "airmesh://join?secret=fixture",
+test("unsupported invite links and app associations are absent", async () => {
+  for (const path of [
+    "/join#v1.private-fixture",
+    "/join/ABCD2345",
+    "/invite/ABCD2345",
+    "/.well-known/assetlinks.json",
+    "/.well-known/apple-app-site-association",
+  ]) {
+    const response = await site.fetch(
+      new Request("https://crewroll.app" + path),
+    );
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
+    assert.doesNotMatch(
+      await response.text(),
+      /private-fixture|open-invite|airmesh:|applinks|delegate_permission/,
+    );
+  }
+  const client = await (
+    await site.fetch(new Request("https://crewroll.app/site.js"))
+  ).text();
+  assert.doesNotMatch(
+    client,
+    /nativeInviteFromFragment|location\.hash|airmesh:|open-invite/,
   );
-  for (const value of [
-    "https://evil.test",
-    "javascript:alert(1)",
-    "airmesh://other?secret=x",
-    "airmesh://user@join?secret=x",
-  ])
-    assert.equal(nativeInviteFromFragment(fragment(value)), null);
-  const response = await site.fetch(
-    new Request("https://crewroll.app/join#private-fixture"),
-  );
-  assert.doesNotMatch(await response.text(), /private-fixture/);
-  assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
+  assert.match(client, /bootAccountDeletion/);
 });
 test("account deletion is closed to anonymous and cross-origin submissions", async () => {
   for (const headers of [
@@ -128,24 +133,4 @@ test("authenticated deletion and receipts use the configured Worker service bind
   assert.deepEqual(await receipt.json(), { status: "PENDING" });
   assert.equal(calls.length, 2);
   assert.equal(calls[1].headers.get("Authorization"), null);
-});
-test("verified app associations retain the existing signed package identities", async () => {
-  const android = await (
-    await site.fetch(
-      new Request("https://crewroll.app/.well-known/assetlinks.json"),
-    )
-  ).json();
-  assert.equal(android[0].target.package_name, "com.uankit53.airmesh");
-  assert.equal(android[0].target.sha256_cert_fingerprints.length, 2);
-  const apple = await (
-    await site.fetch(
-      new Request(
-        "https://crewroll.app/.well-known/apple-app-site-association",
-      ),
-    )
-  ).json();
-  assert.equal(
-    apple.applinks.details[0].appID,
-    "639SF375P5.app.crewroll.mobile",
-  );
 });

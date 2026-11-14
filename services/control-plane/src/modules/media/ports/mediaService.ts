@@ -11,6 +11,8 @@ import type {
   PublishPreviewResponse,
   PreviewDownloadResponse,
   PreviewFeedResponse,
+  PendingDeliveriesQuery,
+  PendingDeliveriesResponse,
 } from "@crewroll/contracts";
 
 export interface MediaActor {
@@ -68,7 +70,10 @@ export interface MediaService {
     assetId: string,
     body: CommitAssetBody,
   ): Promise<CommitAssetResponse>;
-  pending(actor: MediaActor): Promise<{ items: PendingDelivery[] }>;
+  pending(
+    actor: MediaActor,
+    query?: PendingDeliveriesQuery,
+  ): Promise<PendingDeliveriesResponse>;
   download(
     actor: MediaActor,
     deliveryId: string,

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createRemoteJoseClerkTokenVerifier } from "../../src/platform/clerk/joseClerkTokenVerifier.js";
 import { DomainError } from "../../src/shared/errors/domainError.js";
@@ -22,13 +22,21 @@ beforeAll(async () => {
   ]);
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
 function responseFor(keys: readonly ClerkJwtKey[]): Response {
   return Response.json({ keys: keys.map((key) => key.publicJwk) });
 }
 
-function expectInvalid(error: unknown) {
+function expectDomainError(
+  error: unknown,
+  kind: "AUTH_INVALID" | "DEPENDENCY_NOT_READY",
+) {
   expect(error).toBeInstanceOf(DomainError);
-  expect((error as DomainError).kind).toBe("AUTH_INVALID");
+  expect((error as DomainError).kind).toBe(kind);
 }
 
 describe("remote Clerk JWKS policy", () => {
@@ -59,7 +67,9 @@ describe("remote Clerk JWKS policy", () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
 
     servedKeys = [keyB];
-    await verifier.verify(`Bearer ${tokenB}`).catch(expectInvalid);
+    await expect(verifier.verify(`Bearer ${tokenB}`)).rejects.toMatchObject({
+      kind: "AUTH_INVALID",
+    });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(30_001);
@@ -70,7 +80,6 @@ describe("remote Clerk JWKS policy", () => {
     await expect(verifier.verify(`Bearer ${tokenB}`)).resolves.toBeDefined();
     await expect(verifier.verify(`Bearer ${tokenB}`)).resolves.toBeDefined();
     expect(fetchImplementation).toHaveBeenCalledTimes(3);
-    vi.useRealTimers();
   });
 
   it("aborts a stalled fetch at five seconds and maps it safely", async () => {
@@ -113,24 +122,31 @@ describe("remote Clerk JWKS policy", () => {
 
     await vi.advanceTimersByTimeAsync(5_001);
     const error = await pending;
-    expectInvalid(error);
+    expectDomainError(error, "DEPENDENCY_NOT_READY");
     expect(String(error)).not.toContain("timeout-provider-canary");
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
-    timeoutSpy.mockRestore();
-    vi.useRealTimers();
   });
 
   it.each([
-    new Response("provider-body-canary-c10dd1", { status: 503 }),
-    new Response("not-json-provider-body-canary-bdd042", {
-      headers: { "content-type": "application/json" },
-      status: 200,
-    }),
-    Response.json({ keys: "not-an-array-provider-canary-255632" }),
+    {
+      kind: "DEPENDENCY_NOT_READY" as const,
+      response: new Response("provider-body-canary-c10dd1", { status: 503 }),
+    },
+    {
+      kind: "AUTH_INVALID" as const,
+      response: new Response("not-json-provider-body-canary-bdd042", {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    },
+    {
+      kind: "AUTH_INVALID" as const,
+      response: Response.json({ keys: "not-an-array-provider-canary-255632" }),
+    },
   ])(
-    "maps malformed and non-success JWKS responses without leakage",
-    async (response) => {
+    "maps JWKS response to $kind without leakage",
+    async ({ kind, response }) => {
       const fetchImplementation = vi.fn((url: string) => {
         expect(url).toBe(jwksUrl);
         return Promise.resolve(response.clone());
@@ -146,7 +162,7 @@ describe("remote Clerk JWKS policy", () => {
       const error = await verifier
         .verify(`Bearer ${token}`)
         .catch((caught: unknown) => caught);
-      expectInvalid(error);
+      expectDomainError(error, kind);
       expect(String(error)).not.toContain("provider");
     },
   );

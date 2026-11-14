@@ -142,7 +142,7 @@ describe.sequential("account privacy and safety", () => {
     ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
   });
 
-  it("retains a durable receipt through provider and storage failures, then retries without exposing identifiers", async () => {
+  it("retires ciphertext through repeated provider failure without erasing unfinished account records", async () => {
     const parents = await fixtures.parents();
     const asset = await fixtures.asset(parents);
     await fixtures.assetObject(asset.id);
@@ -150,11 +150,33 @@ describe.sequential("account privacy and safety", () => {
       await subject(parents.sourceUserId),
     );
     removeIdentity.mockRejectedValueOnce(new Error("provider offline"));
+    removeIdentity.mockRejectedValueOnce(new Error("provider still offline"));
     await expect(service().cleanup()).rejects.toThrow("needs retry");
-    expect(removeObject).not.toHaveBeenCalled();
+    expect(removeObject).toHaveBeenCalledTimes(1);
+    const objects = await context.db
+      .selectFrom("account_deletion_objects")
+      .selectAll()
+      .where("request_id", "=", receipt.requestId)
+      .execute();
+    expect(objects).toHaveLength(1);
+    expect(objects[0]?.deleted_at).toEqual(now);
+    expect(
+      await context.db
+        .selectFrom("assets")
+        .select("id")
+        .where("id", "=", asset.id)
+        .executeTakeFirst(),
+    ).toBeDefined();
+    expect(
+      await context.db
+        .selectFrom("users")
+        .select("id")
+        .where("id", "=", parents.sourceUserId)
+        .executeTakeFirst(),
+    ).toBeDefined();
     now = new Date(now.getTime() + 3600_000);
-    removeObject.mockRejectedValueOnce(new Error("storage offline"));
     await expect(service().cleanup()).rejects.toThrow("needs retry");
+    expect(removeObject).toHaveBeenCalledTimes(1);
     expect((await service().deletionStatus(receipt.requestId)).status).toBe(
       "PENDING",
     );
@@ -170,7 +192,67 @@ describe.sequential("account privacy and safety", () => {
       .executeTakeFirstOrThrow();
     expect(job.clerk_subject).toBeNull();
     expect(job.user_id).toBeNull();
-    expect(removeIdentity).toHaveBeenCalledTimes(2);
+    expect(removeIdentity).toHaveBeenCalledTimes(3);
+    expect(removeObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirms provider deletion independently but preserves records until storage retirement succeeds", async () => {
+    const parents = await fixtures.parents();
+    const asset = await fixtures.asset(parents);
+    const object = await fixtures.assetObject(asset.id);
+    const receipt = await service().requestDeletion(
+      await subject(parents.sourceUserId),
+    );
+    removeObject.mockRejectedValueOnce(new Error("storage offline"));
+    await expect(service().cleanup()).rejects.toThrow("needs retry");
+    const pending = await context.db
+      .selectFrom("account_deletions")
+      .selectAll()
+      .where("id", "=", receipt.requestId)
+      .executeTakeFirstOrThrow();
+    expect(pending.provider_deleted_at).toEqual(now);
+    expect(pending.completed_at).toBeNull();
+    expect((await service().deletionStatus(receipt.requestId)).status).toBe(
+      "PENDING",
+    );
+    expect(
+      await context.db
+        .selectFrom("assets")
+        .select("id")
+        .where("id", "=", asset.id)
+        .executeTakeFirst(),
+    ).toBeDefined();
+    expect(
+      await context.db
+        .selectFrom("users")
+        .select("id")
+        .where("id", "=", parents.sourceUserId)
+        .executeTakeFirst(),
+    ).toBeDefined();
+    expect(
+      (
+        await context.db
+          .selectFrom("account_deletion_objects")
+          .select("deleted_at")
+          .where("request_id", "=", receipt.requestId)
+          .where("object_key", "=", object.s3_key)
+          .executeTakeFirstOrThrow()
+      ).deleted_at,
+    ).toBeNull();
+    now = new Date(now.getTime() + 3600_000);
+    await service().cleanup();
+    expect((await service().deletionStatus(receipt.requestId)).status).toBe(
+      "COMPLETE",
+    );
+    expect(removeIdentity).toHaveBeenCalledTimes(1);
+    expect(removeObject).toHaveBeenCalledTimes(2);
+    expect(
+      await context.db
+        .selectFrom("users")
+        .select("id")
+        .where("id", "=", parents.sourceUserId)
+        .executeTakeFirst(),
+    ).toBeUndefined();
   });
 
   it("erases a guest's sources and membership while preserving the host and unrelated photos", async () => {
@@ -237,6 +319,15 @@ describe.sequential("account privacy and safety", () => {
 
   it("authorizes reports, stops sharing on block and rejects blocked pairs in either direction", async () => {
     const parents = await fixtures.parents();
+    await context.db
+      .updateTable("trips")
+      .set({ state: "ACTIVE", started_at: FIXED_NOW, member_count: 2 })
+      .where("id", "=", parents.tripId)
+      .execute();
+    await fixtures.identity.activeTrip(parents.sourceUserId, parents.tripId);
+    await fixtures.identity.activeTrip(parents.recipientUserId, parents.tripId);
+    const photo = await fixtures.asset(parents);
+    const queued = await fixtures.delivery(photo.id, parents);
     const membership = await context.db
       .selectFrom("trip_members")
       .select("id")
@@ -260,6 +351,40 @@ describe.sequential("account privacy and safety", () => {
       membershipId: membership.id,
     });
     expect((await service().blockedMembers(reporter)).items).toHaveLength(1);
+    expect(
+      await context.db
+        .selectFrom("trip_members")
+        .select(["leaving_at", "left_at", "left_incomplete"])
+        .where("trip_id", "=", parents.tripId)
+        .where("user_id", "=", parents.recipientUserId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ leaving_at: now, left_at: now, left_incomplete: true });
+    expect(
+      await context.db
+        .selectFrom("user_active_trips")
+        .select("user_id")
+        .execute(),
+    ).toEqual([{ user_id: parents.sourceUserId }]);
+    expect(
+      await context.db
+        .selectFrom("deliveries")
+        .select(["state", "saved_at"])
+        .where("id", "=", queued.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "EXPIRED", saved_at: null });
+    expect(
+      await context.db.selectFrom("receipts").selectAll().execute(),
+    ).toEqual([]);
+    expect(
+      await context.db
+        .selectFrom("trip_members")
+        .select(["state", "left_at"])
+        .where("id", "=", membership.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "ACTIVE", left_at: null });
+    expect(
+      await context.db.selectFrom("assets").select(["id", "state"]).execute(),
+    ).toEqual([{ id: photo.id, state: "COMMITTED" }]);
     await expect(
       context.db
         .transaction()

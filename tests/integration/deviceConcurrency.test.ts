@@ -268,7 +268,7 @@ describe("device repository concurrency", () => {
     ).toHaveLength(1);
   });
 
-  it("rolls back the losing user when two subjects race one installation", async () => {
+  it("allows one installation owner and returns a sanitized error when two subjects race", async () => {
     await context.db
       .insertInto("users")
       .values([

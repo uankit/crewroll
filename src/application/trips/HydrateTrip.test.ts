@@ -120,6 +120,7 @@ describe("HydrateTrip.hydrate", () => {
       expectedSenderDeviceId: ownerDeviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt,
       wrappedKey,
     });
     expect(Object.keys(native.importTripKey.mock.calls[0]![0])).toEqual([
@@ -130,6 +131,7 @@ describe("HydrateTrip.hydrate", () => {
       "expectedSenderDeviceId",
       "recipientDeviceId",
       "recipientE2eeKeyVersion",
+      "endsAt",
       "wrappedKey",
     ]);
     expect(api.getTrip.mock.invocationCallOrder[0]).toBeLessThan(

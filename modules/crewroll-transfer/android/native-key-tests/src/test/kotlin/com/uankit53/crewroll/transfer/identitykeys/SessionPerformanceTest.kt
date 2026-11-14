@@ -118,7 +118,7 @@ class SessionPerformanceTest {
     assertEquals(before + 1, disk.writes)
     assertNull(store.loadTrip(scope, trip))
     assertEquals(TripCreateOutcome.TOMBSTONED, store.createTrip(scope, trip) { error("must not recreate") })
-    store.importTrip(scope, trip, ByteArray(32) { 5 })
+    store.importTrip(scope, trip, ByteArray(32) { 5 }, context().metadata.endsAt, Instant.EPOCH)
     val installedWrites = disk.writes
     store.collectExpiredProvisional(Instant.ofEpochSecond(200))
     assertEquals(installedWrites, disk.writes)
@@ -128,7 +128,7 @@ class SessionPerformanceTest {
   @Test fun `failed persistence does not advance durable state`() {
     val disk = TestKeyPersistence()
     val store = AccountScopedKeyStore(disk)
-    store.importTrip(scope, trip, ByteArray(32) { 5 })
+    store.importTrip(scope, trip, ByteArray(32) { 5 }, context().metadata.endsAt, Instant.EPOCH)
     disk.failWrite = true
     assertThrows(IllegalStateException::class.java) { store.activate(scope, context().metadata) }
     assertEquals(KeyState.INSTALLED, store.loadTrip(scope, trip)!!.state)

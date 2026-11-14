@@ -46,6 +46,7 @@ import {
 import {
   CreateDownloadSessionBodySchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesQuerySchema,
   PendingDeliveriesResponseSchema,
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
@@ -58,7 +59,7 @@ import {
 import {
   AssetCommittedEventSchema,
   DeliveryChangedEventSchema,
-  SyncAvailablePushHintSchema,
+  PushSyncHintSchema,
   TripChangedEventSchema,
 } from "./events.js";
 import { ProblemDetailsSchema } from "./problems.js";
@@ -163,13 +164,14 @@ export const publicObjectSchemas = {
   CommitAssetResponseSchema,
   CreateDownloadSessionBodySchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesQuerySchema,
   PendingDeliveriesResponseSchema,
   SavedReceiptBodySchema,
   SavedReceiptResponseSchema,
   AssetCommittedEventSchema,
   DeliveryChangedEventSchema,
   TripChangedEventSchema,
-  SyncAvailablePushHintSchema,
+  PushSyncHintSchema,
   SyncQuerySchema,
   SyncResponseSchema,
   ReconciliationQuerySchema,

@@ -12,6 +12,7 @@ import { createDatabase } from "../../services/control-plane/src/db/database.js"
 import type { Database } from "../../services/control-plane/src/db/schema/tables.js";
 import { classifyTripConstraint } from "../../services/control-plane/src/db/trips/constraintClassifier.js";
 import { createKyselyTripUnitOfWork } from "../../services/control-plane/src/db/trips/kyselyTripUnitOfWork.js";
+import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/trips/kyselyTripLifecycle.js";
 import { createApproveJoinRequest } from "../../services/control-plane/src/modules/trips/approveJoinRequest.js";
 import { createCreateTrip } from "../../services/control-plane/src/modules/trips/createTrip.js";
 import { createGetTrip } from "../../services/control-plane/src/modules/trips/getTrip.js";
@@ -620,6 +621,270 @@ describe("join and projection PostgreSQL concurrency", () => {
       status: "REJECTED",
       tripKeyEnvelope: null,
     });
+  });
+
+  async function replaySnapshot() {
+    return {
+      trips: await context.db
+        .selectFrom("trips")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
+      members: await context.db
+        .selectFrom("trip_members")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
+      invites: await context.db
+        .selectFrom("trip_invites")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
+      commands: await context.db
+        .selectFrom("api_idempotency")
+        .selectAll()
+        .orderBy("idempotency_key")
+        .execute(),
+      active: await context.db
+        .selectFrom("user_active_trips")
+        .selectAll()
+        .orderBy("user_id")
+        .execute(),
+      inbox: await context.db
+        .selectFrom("inbox_events")
+        .selectAll()
+        .orderBy("sequence")
+        .execute(),
+      outbox: await context.db
+        .selectFrom("outbox_events")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
+      envelopes: await context.db
+        .selectFrom("trip_key_envelopes")
+        .selectAll()
+        .orderBy("recipient_device_id")
+        .execute(),
+    };
+  }
+
+  it.each(["END", "LEAVE"] as const)(
+    "replays a retired pending join as terminal after %s without changing durable state",
+    async (action) => {
+      const seed = await pendingRoom(3200);
+      const input = {
+        actor: seed.member,
+        body: joinBody(seed.member, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(103_200),
+      };
+      const lifecycle = createKyselyTripLifecycle(database, {
+        now: () => new Date(),
+      });
+      await lifecycle.change(
+        action === "END" ? seed.room.owner : seed.member,
+        seed.room.body.tripId,
+        {
+          action,
+          expectedVersion: 2,
+        },
+      );
+      const before = await replaySnapshot();
+      expect(
+        before.members.find((row) => row.id === seed.membership.membershipId)
+          ?.left_at,
+      ).toBeInstanceOf(Date);
+      const expected = {
+        ...seed.membership,
+        status: "REJECTED",
+        tripKeyEnvelope: null,
+      };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(
+          successful(
+            await services(createIds(440_000 + attempt * 100)).join.execute(
+              input,
+            ),
+          ),
+        ).toEqual(expected);
+      }
+      expect(await replaySnapshot()).toEqual(before);
+    },
+  );
+
+  it("terminates a pending late join when the started trip ends before membership retirement", async () => {
+    const seed = await readyOwnerRoom(3300);
+    successful(
+      await seed.commands.start.execute({
+        actor: seed.room.owner,
+        body: startBody(2),
+        idempotencyKey: idempotencyKey(330_000),
+        tripId: seed.room.body.tripId,
+      }),
+    );
+    const member = await actor(3301);
+    const input = {
+      actor: member,
+      body: joinBody(member, seed.room.inviteCode),
+      idempotencyKey: idempotencyKey(330_001),
+    };
+    const pending = successful(await seed.commands.join.execute(input));
+    await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
+      seed.room.owner,
+      seed.room.body.tripId,
+      { action: "END", expectedVersion: 4 },
+    );
+    const before = await replaySnapshot();
+    expect(before.trips[0]?.state).toBe("ENDING");
+    expect(
+      before.members.find((row) => row.id === pending.membershipId)?.left_at,
+    ).toBeNull();
+    expect(successful(await services().join.execute(input))).toEqual({
+      ...pending,
+      status: "REJECTED",
+      tripKeyEnvelope: null,
+    });
+    expect(await replaySnapshot()).toEqual(before);
+  });
+
+  it("terminates expired pending approval before cleanup and keeps that outcome after cleanup", async () => {
+    const seed = await pendingRoom(3350);
+    const input = {
+      actor: seed.member,
+      body: joinBody(seed.member, seed.room.inviteCode),
+      idempotencyKey: idempotencyKey(103_350),
+    };
+    // Advance this fixture past its end while preserving the schema's immutable
+    // duration/deletion relationship; original command retention is still live.
+    const endsAt = new Date(Date.now() - 1_000);
+    await context.db
+      .updateTable("trips")
+      .set({
+        created_at: new Date(endsAt.getTime() - DAY_MS),
+        ends_at: endsAt,
+        hard_delete_at: new Date(endsAt.getTime() + 7 * DAY_MS),
+      })
+      .where("id", "=", seed.room.body.tripId)
+      .execute();
+    const before = await replaySnapshot();
+    expect(before.trips[0]?.state).toBe("LOBBY");
+    const expected = {
+      ...seed.membership,
+      status: "REJECTED",
+      tripKeyEnvelope: null,
+    };
+    expect(successful(await services().join.execute(input))).toEqual(expected);
+    expect(await replaySnapshot()).toEqual(before);
+    await createKyselyTripLifecycle(database, {
+      now: () => new Date(),
+    }).expire();
+    expect(successful(await services().join.execute(input))).toEqual(expected);
+  });
+
+  it("does not return an approved but departed phone's envelope on original join replay", async () => {
+    const seed = await readyRoom(3370);
+    await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
+      seed.member,
+      seed.room.body.tripId,
+      { action: "LEAVE", expectedVersion: 5 },
+    );
+    const before = await replaySnapshot();
+    expect(
+      before.envelopes.some(
+        (row) => row.recipient_device_id === seed.member.deviceId,
+      ),
+    ).toBe(true);
+    expect(
+      successful(
+        await services().join.execute({
+          actor: seed.member,
+          body: joinBody(seed.member, seed.room.inviteCode),
+          idempotencyKey: idempotencyKey(103_370),
+        }),
+      ),
+    ).toEqual({
+      ...seed.membership,
+      status: "REJECTED",
+      tripKeyEnvelope: null,
+    });
+    expect(await replaySnapshot()).toEqual(before);
+  });
+
+  it("keeps retired join replay scoped to the original command, account, and nonrevoked phone", async () => {
+    const seed = await pendingRoom(3400);
+    const input = {
+      actor: seed.member,
+      body: joinBody(seed.member, seed.room.inviteCode),
+      idempotencyKey: idempotencyKey(103_400),
+    };
+    await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
+      seed.room.owner,
+      seed.room.body.tripId,
+      { action: "END", expectedVersion: 2 },
+    );
+    const otherDevice = await fixtures.device(seed.member.userId);
+    const otherActor = { ...seed.member, deviceId: otherDevice.id };
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...input,
+          actor: otherActor,
+          body: joinBody(otherActor, seed.room.inviteCode),
+        }),
+      ),
+    ).toBe("IDEMPOTENCY_CONFLICT");
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...input,
+          body: joinBody(seed.member, "WXYZ6789"),
+        }),
+      ),
+    ).toBe("IDEMPOTENCY_CONFLICT");
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...input,
+          actor: { ...seed.member, clerkSubject: seed.room.owner.clerkSubject },
+        }),
+      ),
+    ).toBe("AUTH_INVALID");
+    const otherAccount = await actor(3402);
+    const replayIdentity = {
+      deviceId: seed.member.deviceId,
+      membershipId: seed.membership.membershipId,
+      tripId: seed.room.body.tripId,
+      userId: seed.member.userId,
+    };
+    const unitOfWork = createKyselyTripUnitOfWork(database);
+    for (const wrongIdentity of [
+      { ...replayIdentity, userId: otherAccount.userId },
+      { ...replayIdentity, deviceId: otherDevice.id },
+      { ...replayIdentity, tripId: tripId(999_999) },
+      { ...replayIdentity, membershipId: otherAccount.deviceId },
+    ]) {
+      expect(
+        await unitOfWork.run((transaction) =>
+          transaction.lockJoinReplayMembership(wrongIdentity),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...input,
+          actor: otherAccount,
+          body: joinBody(otherAccount, seed.room.inviteCode),
+        }),
+      ),
+    ).toBe("INVITE_INVALID");
+    await context.db
+      .updateTable("devices")
+      .set({ revoked_at: new Date() })
+      .where("id", "=", seed.member.deviceId)
+      .execute();
+    expect(problemCode(await seed.commands.join.execute(input))).toBe(
+      "DEVICE_REVOKED",
+    );
   });
 
   it("rolls back every real PostgreSQL join write boundary", async () => {
@@ -1235,6 +1500,69 @@ describe("join and projection PostgreSQL concurrency", () => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ started_at: null, state: "LOBBY", version: 2 });
   });
+
+  it.each([false, true])(
+    "preserves an expired room without new Start writes (committed replay: %s)",
+    async (committed) => {
+      const seed = await readyRoom(8351, "ABCD2345", createIds(635_000));
+      const input = {
+        actor: seed.room.owner,
+        body: startBody(5),
+        idempotencyKey: idempotencyKey(183_501),
+        tripId: seed.room.body.tripId,
+      };
+      if (committed) successful(await seed.commands.start.execute(input));
+
+      // Represent a valid row after its deadline but before the cron expires it.
+      // The actual migrated schema permits this; no repository or SQL is faked.
+      await sql`
+        update trips set
+          created_at = statement_timestamp() - interval '1 day',
+          ends_at = statement_timestamp() - interval '1 second',
+          hard_delete_at = statement_timestamp() - interval '1 second' + interval '7 days'
+        where id = ${input.tripId}::uuid
+      `.execute(context.db);
+      const snapshot = () =>
+        Promise.all([
+          context.db
+            .selectFrom("trips")
+            .selectAll()
+            .where("id", "=", input.tripId)
+            .execute(),
+          context.db
+            .selectFrom("api_idempotency")
+            .selectAll()
+            .where("user_id", "=", input.actor.userId)
+            .where("route_key", "=", "trips.start.v1")
+            .execute(),
+          context.db
+            .selectFrom("inbox_events")
+            .selectAll()
+            .where("trip_id", "=", input.tripId)
+            .orderBy("sequence")
+            .execute(),
+          context.db
+            .selectFrom("outbox_events")
+            .selectAll()
+            .where("aggregate_id", "=", input.tripId)
+            .orderBy("id")
+            .execute(),
+        ]);
+      const before = await snapshot();
+
+      const result = await seed.commands.start.execute(input);
+
+      if (committed) {
+        expect(successful(result)).toMatchObject({
+          status: "ACTIVE",
+          version: 6,
+        });
+      } else {
+        expect(problemCode(result)).toBe("TRIP_STATE_CONFLICT");
+      }
+      expect(await snapshot()).toEqual(before);
+    },
+  );
 
   it("starts an eligible room once, keeps its invite, and replays only the exact key", async () => {
     const seed = await readyRoom(8401, "ABCD2345", createIds(640_000));
@@ -1952,15 +2280,18 @@ describe("join and projection PostgreSQL concurrency", () => {
     });
     await held.promise;
     const get = services(createIds(710_000)).get;
-    const oldProjection = successful(
-      await get.execute({ actor: room.owner, tripId: room.body.tripId }),
-    );
-    expect({
-      ready: oldProjection.members[0]?.readiness.fullPhotoLibraryAccess,
-      version: oldProjection.version,
-    }).toEqual({ ready: false, version: 1 });
-    release.resolve();
-    await writer;
+    try {
+      const oldProjection = successful(
+        await get.execute({ actor: room.owner, tripId: room.body.tripId }),
+      );
+      expect({
+        ready: oldProjection.members[0]?.readiness.fullPhotoLibraryAccess,
+        version: oldProjection.version,
+      }).toEqual({ ready: false, version: 1 });
+    } finally {
+      release.resolve();
+      await writer;
+    }
     const newProjection = successful(
       await get.execute({ actor: room.owner, tripId: room.body.tripId }),
     );

@@ -146,8 +146,11 @@ async function currentProjection(
       return tripProblem("DEVICE_NOT_PARTICIPANT");
     case "DEVICE_REVOKED":
       return tripProblem("DEVICE_REVOKED");
-    case "INVARIANT_ERROR":
     case "NOT_FOUND":
+      return tripProblem(
+        result.reason === "EXPIRED" ? "NOT_FOUND" : "INTERNAL_ERROR",
+      );
+    case "INVARIANT_ERROR":
       return tripProblem("INTERNAL_ERROR");
   }
 }
@@ -230,6 +233,13 @@ export function createStartTrip(dependencies: StartTripDependencies) {
             }
             return currentProjection(transaction, input.actor, input.tripId);
           }
+
+          if (trip.endsAt <= now) return tripProblem("TRIP_STATE_CONFLICT");
+
+          // Media admission currently supports immediate delivery only. Preserve
+          // committed command replay above while preventing an unusable new Start.
+          if (trip.release.mode !== "IMMEDIATE")
+            return tripProblem("TRIP_STATE_CONFLICT");
 
           const visibleMemberships = memberships.filter(
             (membership) => membership.state !== "REJECTED",

@@ -169,7 +169,7 @@ describe.sequential("API bootstrap", () => {
     await Promise.all([clerk?.stop(), postgres?.stop()]);
   });
 
-  it("serves physical Trip auth through local Clerk and PostgreSQL, then exits cleanly", async () => {
+  it("serves HTTP Trip auth through local Clerk and PostgreSQL, then exits cleanly", async () => {
     const port = await allocateLoopbackPort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const clerkSubject = "user_bootstrap_trip_route";

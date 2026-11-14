@@ -427,6 +427,8 @@ async function readProjection(
         trip.release_local_time::text,
         trip.started_at,
         trip.ends_at,
+        trip.hard_delete_at,
+        trip.media_metadata_purged_at,
         trip.version,
         caller.id as current_membership_id,
         caller.role as caller_role,
@@ -453,6 +455,8 @@ async function readProjection(
     )
     select
       case
+        when base.hard_delete_at <= statement_timestamp()
+          or base.media_metadata_purged_at is not null then 'EXPIRED'
         when base.current_membership_id is null or base.caller_state <> 'ACTIVE'
           then 'NOT_FOUND'
         when base.caller_participating_device_id <> ${actor.deviceId}::uuid
@@ -487,6 +491,8 @@ async function readProjection(
       base.release_local_time,
       base.started_at,
       base.ends_at,
+      base.hard_delete_at,
+      base.media_metadata_purged_at,
       base.version,
       base.current_membership_id,
       base.owner_device_id,
@@ -536,6 +542,8 @@ async function readProjection(
       base.release_local_time,
       base.started_at,
       base.ends_at,
+      base.hard_delete_at,
+      base.media_metadata_purged_at,
       base.version,
       base.current_membership_id,
       base.caller_role,
@@ -553,6 +561,9 @@ async function readProjection(
       base.self_envelope_wrapped_key
   `.execute(database);
   const row = result.rows[0];
+  if (row?.access_kind === "EXPIRED") {
+    return { kind: "NOT_FOUND", reason: "EXPIRED" };
+  }
   if (row === undefined || row.access_kind === "NOT_FOUND") {
     return { kind: "NOT_FOUND" };
   }
@@ -612,13 +623,17 @@ async function reauthorizeForegroundActor(
 ): Promise<ForegroundActorSnapshot> {
   const user = await transaction
     .selectFrom("users")
-    .select(["id", "clerk_subject", "deleted_at"])
+    .select(["id", "clerk_subject", "deleted_at", "suspended_at"])
     .where("id", "=", actor.userId)
     .where("clerk_subject", "=", actor.clerkSubject)
     .forUpdate()
     .noWait()
     .executeTakeFirst();
-  if (user === undefined || user.deleted_at !== null) {
+  if (
+    user === undefined ||
+    user.deleted_at !== null ||
+    user.suspended_at !== null
+  ) {
     return { kind: "AUTH_INVALID" };
   }
   const device = await transaction
@@ -801,6 +816,7 @@ function transactionAdapter(
         .values({
           aggregate_id: record.aggregateId,
           available_at: record.availableAt,
+          created_at: record.availableAt,
           dedupe_key: `trip.changed:${record.tripId}:v${record.version}`,
           event_type: "trip.changed",
           id: record.eventId,
@@ -890,6 +906,20 @@ function transactionAdapter(
         .forUpdate()
         .executeTakeFirst();
       return row === undefined ? null : mapInvite(row);
+    },
+    async lockJoinReplayMembership(input) {
+      const row = await transaction
+        .selectFrom("trip_members")
+        .select([...membershipSelect(), "left_at"])
+        .where("trip_id", "=", input.tripId)
+        .where("id", "=", input.membershipId)
+        .where("user_id", "=", input.userId)
+        .where("participating_device_id", "=", input.deviceId)
+        .forUpdate()
+        .executeTakeFirst();
+      return row === undefined
+        ? null
+        : { leftAt: row.left_at, membership: mapMembership(row) };
     },
     async lockMembership(tripId, membershipId) {
       const row = await transaction
@@ -1068,6 +1098,8 @@ function callbackTransactionScope(
     lockDevice: (deviceId) => invoke(() => raw.lockDevice(deviceId)),
     lockDevices: (deviceIds) => invoke(() => raw.lockDevices(deviceIds)),
     lockInvite: (inviteId) => invoke(() => raw.lockInvite(inviteId)),
+    lockJoinReplayMembership: (input) =>
+      invoke(() => raw.lockJoinReplayMembership(input)),
     lockMembership: (tripId, membershipId) =>
       invoke(() => raw.lockMembership(tripId, membershipId)),
     lockMembershipForUser: (tripId, userId) =>
@@ -1131,7 +1163,7 @@ export function createKyselyTripUnitOfWork(
         from trip_invites as invite
         join trips as trip on trip.id = invite.trip_id
         join users as caller on caller.id = ${actor.userId}::uuid
-          and caller.clerk_subject = ${actor.clerkSubject} and caller.deleted_at is null
+          and caller.clerk_subject = ${actor.clerkSubject} and caller.deleted_at is null and caller.suspended_at is null
         join devices as caller_device on caller_device.id = ${actor.deviceId}::uuid
           and caller_device.user_id = caller.id and caller_device.revoked_at is null
         join trip_members as member on member.trip_id = trip.id and member.state = 'ACTIVE' and member.left_at is null

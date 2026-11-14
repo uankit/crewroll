@@ -240,7 +240,7 @@ function validateAlterTableAddColumn(alteration, context, opaqueCode) {
     alteration.args.length !== 3 ||
     !isDirectString(alteration.args[0]) ||
     !isDirectString(alteration.args[1]) ||
-    !["boolean", "jsonb"].includes(alteration.args[1].text)
+    !["boolean", "jsonb", "bigint"].includes(alteration.args[1].text)
   ) {
     return { code: opaqueCode, node: alteration.node };
   }
@@ -271,9 +271,12 @@ function validateAlterTableAddColumn(alteration, context, opaqueCode) {
     defaultTo.args.length !== 1 ||
     !(alteration.args[1].text === "boolean"
       ? defaultTo.args[0].kind === ts.SyntaxKind.FalseKeyword
-      : isBoundedSql(defaultTo.args[0], context) &&
-        ts.isNoSubstitutionTemplateLiteral(defaultTo.args[0].template) &&
-        defaultTo.args[0].template.text === "'[]'::jsonb") ||
+      : alteration.args[1].text === "bigint"
+        ? ts.isNumericLiteral(defaultTo.args[0]) &&
+          defaultTo.args[0].getText() === "0"
+        : isBoundedSql(defaultTo.args[0], context) &&
+          ts.isNoSubstitutionTemplateLiteral(defaultTo.args[0].template) &&
+          defaultTo.args[0].template.text === "'[]'::jsonb") ||
     defaultTo.hasTypeArgumentList
   ) {
     return { code: opaqueCode, node: callback.body };
@@ -281,7 +284,7 @@ function validateAlterTableAddColumn(alteration, context, opaqueCode) {
   return null;
 }
 
-function validateAlterColumnDefault(alteration, context, opaqueCode) {
+function validateAlterColumn(alteration, context, opaqueCode, table, mode) {
   if (alteration.args.length !== 2 || !isDirectString(alteration.args[0])) {
     return { code: opaqueCode, node: alteration.node };
   }
@@ -303,6 +306,18 @@ function validateAlterColumnDefault(alteration, context, opaqueCode) {
   }
 
   const [setDefault] = chain.steps;
+  // Retired encrypted payloads need a real NULL erasure state. Keep this
+  // exception confined to the two reviewed media columns and the matching
+  // migration direction; arbitrary constraint relaxation remains forbidden.
+  if (
+    ["assets", "upload_sessions"].includes(table) &&
+    alteration.args[0].text === "encrypted_manifest" &&
+    chain.steps.length === 1 &&
+    setDefault.name === (mode === "up" ? "dropNotNull" : "setNotNull") &&
+    setDefault.args.length === 0 &&
+    !setDefault.hasTypeArgumentList
+  )
+    return null;
   if (
     chain.steps.length !== 1 ||
     setDefault.name !== "setDefault" ||
@@ -514,27 +529,30 @@ function validatePartialIndexType(columnStep, whereStep) {
   if (
     columnStep.typeArguments.length !== 1 ||
     columnStep.args.length !== 1 ||
-    !isDirectString(columnStep.args[0]) ||
+    !(columnStep.name === "column"
+      ? isDirectString(columnStep.args[0])
+      : isDirectStringArray(columnStep.args[0])) ||
     whereStep.args.length !== 3 ||
     !isDirectString(whereStep.args[0])
   ) {
     return false;
   }
+  const runtimeColumns =
+    columnStep.name === "column"
+      ? [columnStep.args[0].text]
+      : columnStep.args[0].elements.map((element) => element.text);
+  const expectedColumns = [...runtimeColumns, whereStep.args[0].text];
   const union = columnStep.typeArguments[0];
-  if (!ts.isUnionTypeNode(union) || union.types.length !== 2) return false;
-  const [runtimeType, predicateType] = union.types;
-  if (
-    !ts.isLiteralTypeNode(runtimeType) ||
-    !ts.isStringLiteral(runtimeType.literal) ||
-    !ts.isLiteralTypeNode(predicateType) ||
-    !ts.isStringLiteral(predicateType.literal)
-  ) {
-    return false;
-  }
-  return (
-    runtimeType.literal.text !== predicateType.literal.text &&
-    runtimeType.literal.text === columnStep.args[0].text &&
-    predicateType.literal.text === whereStep.args[0].text
+  return Boolean(
+    ts.isUnionTypeNode(union) &&
+    union.types.length === expectedColumns.length &&
+    new Set(expectedColumns).size === expectedColumns.length &&
+    union.types.every(
+      (type, index) =>
+        ts.isLiteralTypeNode(type) &&
+        ts.isStringLiteral(type.literal) &&
+        type.literal.text === expectedColumns[index],
+    ),
   );
 }
 
@@ -611,12 +629,12 @@ function validateCreateIndex(chain) {
         phase !== "on" ||
         columnMode ||
         step.args.length !== 1 ||
-        !isDirectStringArray(step.args[0]) ||
-        step.hasTypeArgumentList
+        !isDirectStringArray(step.args[0])
       ) {
         return { code: "MIGRATION_UP_OPAQUE_CALL", node: step.node };
       }
       columnMode = "columns";
+      columnSteps.push(step);
       phase = "columns";
     } else if (step.name === "where") {
       if (
@@ -648,7 +666,6 @@ function validateCreateIndex(chain) {
   if (
     typedColumns.length !== 1 ||
     columnSteps.length !== 1 ||
-    columnMode !== "column" ||
     whereSteps.length !== 1 ||
     !validatePartialIndexType(typedColumns[0], whereSteps[0])
   ) {
@@ -684,7 +701,13 @@ function validateAlterTable(chain, context, mode) {
       : { code: opaqueCode, node: alteration.node };
   }
   if (alteration.name === "alterColumn") {
-    return validateAlterColumnDefault(alteration, context, opaqueCode);
+    return validateAlterColumn(
+      alteration,
+      context,
+      opaqueCode,
+      steps[0].args[0].text,
+      mode,
+    );
   }
   if (alteration.name === "dropColumn") {
     return mode === "down" &&

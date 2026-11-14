@@ -13,6 +13,7 @@ import {
   CreateUploadSessionBodySchema,
   DeliveryIdSchema,
   DownloadSessionResponseSchema,
+  PendingDeliveriesQuerySchema,
   PendingDeliveriesResponseSchema,
   MobileCommandHeadersSchema,
   MobileQueryHeadersSchema,
@@ -30,6 +31,7 @@ import {
   PreviewFeedQuerySchema,
   PreviewFeedResponseSchema,
   type PublishPreviewBody,
+  type PendingDeliveriesQuery,
 } from "@crewroll/contracts";
 import { Type } from "@sinclair/typebox";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -233,19 +235,21 @@ export function mediaRoutes(
         request.body,
       ),
   );
-  app.get(
+  app.get<{ Querystring: PendingDeliveriesQuery }>(
     "/v1/deliveries/pending",
     {
       exposeHeadRoute: false,
       preValidation: authenticate,
       schema: {
         headers: queryHeaders,
+        querystring: PendingDeliveriesQuerySchema,
         response: {
           200: PendingDeliveriesResponseSchema,
         },
       },
     },
-    async (request) => dependencies.service.pending(actor(request)),
+    async (request) =>
+      dependencies.service.pending(actor(request), request.query),
   );
   app.post<{ Params: { deliveryId: string }; Body: CreateDownloadSessionBody }>(
     "/v1/deliveries/:deliveryId/download-session",

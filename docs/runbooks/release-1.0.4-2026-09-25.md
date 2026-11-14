@@ -32,13 +32,13 @@ The Samsung S26 is not attached. These changes address identified startup blocke
 
 ## Distribution
 
-| Destination | Identifier | State |
-| --- | --- | --- |
-| Android OTA, production, runtime 1.0.4 | `01a0d544-5cec-718c-ace2-d79d3d61f325`; group `356a182c-e10b-4f63-94bf-290f82179d5b` | Published and served |
-| iOS OTA, testflight, runtime 1.0.4 | `01a0d545-1a71-7480-9613-04fdd869760d`; group `6ef8f960-4f5d-4431-9fed-65b6b172d80f` | Published and served |
-| Android 1.0.4 (8) | EAS `fbed5c4c-9bb4-4682-8eaa-f0cdddf79728`; Play internal release 3 | Available to internal testers; verified in Play Console, 25 September at 03:23 IST |
-| Android 1.0.4 (8), closed Alpha | Play track `4698875349550938055`, release 1 | Submitted on 25 September at approximately 10:10 IST; Publishing overview shows Changes in review, with automatic prechecks still running |
-| iOS 1.0.4 (20) | EAS `c9a6acf5-364c-4c5d-a895-8d17345fd923`; Apple build `c32d49ce-79e0-4d03-94b2-b26f9a139041` | Uploaded and processed VALID; internal and external status MISSING_EXPORT_COMPLIANCE |
+| Destination                            | Identifier                                                                                     | State                                                                                                                                     |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Android OTA, production, runtime 1.0.4 | `01a0d544-5cec-718c-ace2-d79d3d61f325`; group `356a182c-e10b-4f63-94bf-290f82179d5b`           | Published and served                                                                                                                      |
+| iOS OTA, testflight, runtime 1.0.4     | `01a0d545-1a71-7480-9613-04fdd869760d`; group `6ef8f960-4f5d-4431-9fed-65b6b172d80f`           | Published and served                                                                                                                      |
+| Android 1.0.4 (8)                      | EAS `fbed5c4c-9bb4-4682-8eaa-f0cdddf79728`; Play internal release 3                            | Available to internal testers; verified in Play Console, 25 September at 03:23 IST                                                        |
+| Android 1.0.4 (8), closed Alpha        | Play track `4698875349550938055`, release 1                                                    | Submitted on 25 September at approximately 10:10 IST; Publishing overview shows Changes in review, with automatic prechecks still running |
+| iOS 1.0.4 (20)                         | EAS `c9a6acf5-364c-4c5d-a895-8d17345fd923`; Apple build `c32d49ce-79e0-4d03-94b2-b26f9a139041` | Uploaded and processed VALID; internal and external status MISSING_EXPORT_COMPLIANCE                                                      |
 
 Android bundle: `/Users/uankit/Developer/CrewRoll-1.0.4-8.aab`, 90,343,760 bytes, SHA-256 `dc0248258953d34c325746fdd1dfc134f5c3e48789f33a77959554092c0da9b3`. Bundletool validation, ZIP integrity and signature verification passed. Its manifest retains `com.uankit53.airmesh`, version code 8 and target SDK 36. Play reports unchanged supported-device counts and no blocking release errors; its only warning is the absence of an optional deobfuscation file.
 

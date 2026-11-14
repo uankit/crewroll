@@ -197,6 +197,54 @@ function currentInviteIsValid(
   );
 }
 
+async function joinReplayResponse(
+  transaction: TripTransaction,
+  actor: ForegroundTripActor,
+  trip: TripRecord,
+  membershipId: string,
+  now: Date,
+): Promise<TripPolicyResult<MembershipResponse>> {
+  const replay = await transaction.lockJoinReplayMembership({
+    deviceId: actor.deviceId,
+    membershipId,
+    tripId: trip.tripId,
+    userId: actor.userId,
+  });
+  if (replay === null) return tripProblem("INTERNAL_ERROR");
+  const { membership, leftAt } = replay;
+  if (
+    membership.tripId !== trip.tripId ||
+    membership.membershipId !== membershipId ||
+    membership.userId !== actor.userId ||
+    membership.participatingDeviceId !== actor.deviceId ||
+    membership.role !== "MEMBER" ||
+    (!validPendingMembership(membership) &&
+      !validActiveMembership(membership) &&
+      !validRejectedMembership(membership))
+  ) {
+    return tripProblem("INTERNAL_ERROR");
+  }
+  // Lifecycle retirement preserves the membership and original command. Return
+  // a terminal outcome without reviving it or releasing a departed phone's key.
+  // Pending approval also becomes impossible at end, before cleanup retires it.
+  if (
+    leftAt !== null ||
+    (membership.state === "PENDING_KEY" &&
+      ((trip.state !== "LOBBY" && trip.state !== "ACTIVE") ||
+        trip.endsAt <= now))
+  ) {
+    return tripSuccess({
+      deviceId: actor.deviceId,
+      keyEpoch: 1,
+      membershipId,
+      status: "REJECTED",
+      tripId: trip.tripId,
+      tripKeyEnvelope: null,
+    });
+  }
+  return membershipResponse(transaction, actor, membership);
+}
+
 export function createRequestJoin(dependencies: RequestJoinDependencies) {
   return {
     async execute(
@@ -274,20 +322,15 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
                   result: tripProblem("INTERNAL_ERROR"),
                 } as const;
               }
-              const membership = await transaction.lockMembership(
-                prior.tripId,
-                prior.membershipId,
-              );
               return {
                 kind: "RESOLVED",
-                result:
-                  membership === null
-                    ? tripProblem("INTERNAL_ERROR")
-                    : await membershipResponse(
-                        transaction,
-                        input.actor,
-                        membership,
-                      ),
+                result: await joinReplayResponse(
+                  transaction,
+                  input.actor,
+                  trip,
+                  prior.membershipId,
+                  now,
+                ),
               } as const;
             },
           );
@@ -328,13 +371,15 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
             ) {
               return tripProblem("IDEMPOTENCY_CONFLICT");
             }
-            const membership = await transaction.lockMembership(
-              prior.tripId,
-              prior.membershipId,
-            );
-            return membership === null
+            return trip === null
               ? tripProblem("INTERNAL_ERROR")
-              : membershipResponse(transaction, input.actor, membership);
+              : joinReplayResponse(
+                  transaction,
+                  input.actor,
+                  trip,
+                  prior.membershipId,
+                  now,
+                );
           }
 
           const inviteCodeHmacMatches =

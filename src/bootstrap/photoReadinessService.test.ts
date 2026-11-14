@@ -34,6 +34,24 @@ function setup() {
   };
 }
 
+it("rejects a stalled passive OS read before contacting the server", async () => {
+  jest.useFakeTimers();
+  try {
+    const { check, photoPermission, hydrate, reconcile } = setup();
+    photoPermission.read.mockReturnValueOnce(new Promise(() => {}));
+    const checked = expect(check(trip.id, false)).rejects.toThrow(
+      "OPERATION_DEADLINE_EXCEEDED",
+    );
+    await jest.advanceTimersByTimeAsync(5_000);
+    await checked;
+    expect(hydrate).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(photoPermission.request).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("rechecks the OS locally using the known trip without a trip fetch or a prompt", async () => {
   const { check, photoPermission, hydrate } = setup();
   const onPermission = jest.fn();

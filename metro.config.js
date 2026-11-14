@@ -1,3 +1,10 @@
+const {
+  verifyQueryStringDecoderCompatibility,
+} = require("./tools/query-string-decoder-compat.cjs");
+
+// npm ci --ignore-scripts must never emit a bundle with an unpatched caller.
+verifyQueryStringDecoderCompatibility(__dirname);
+
 const { getDefaultConfig } = require("expo/metro-config");
 
 const config = getDefaultConfig(__dirname);

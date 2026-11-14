@@ -50,6 +50,7 @@ export function createBackgroundDeviceAuthenticator(
           if (
             record === null ||
             record.userDeleted ||
+            record.userSuspended ||
             record.device.revoked ||
             record.device.backgroundCredentialExpiresAt.getTime() <=
               now.getTime()

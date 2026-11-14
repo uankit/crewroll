@@ -73,6 +73,14 @@ final class NativePreviewStore {
         _ = try directory(record.assetID)
         var next = state; next.records[record.assetID] = record; try persist(next)
     }
+    func clearAuthenticationBlockers(tripID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        let blocked = state.records.values.filter { $0.tripID == tripID && $0.blocker == "AUTH_REVOKED" }
+        guard !blocked.isEmpty else { return }
+        var next = state
+        for var record in blocked { record.blocker = nil; next.records[record.assetID] = record }
+        try persist(next)
+    }
     func record(_ assetID: String) -> NativePreviewRecord? { lock.lock(); defer { lock.unlock() }; return state.records[assetID] }
     func directory(_ assetID: String) throws -> URL {
         guard UUID(uuidString: assetID)?.uuidString.lowercased() == assetID else { throw NativeKeyError.invalidCommand }
@@ -99,6 +107,19 @@ final class NativePreviewStore {
             if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
             next.records.removeValue(forKey: record.assetID)
         }
+        try persist(next)
+    }
+    func purgeTrip(_ tripID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        let expired = state.records.values.filter { $0.tripID == tripID }
+        guard !expired.isEmpty || state.cursors[tripID] != nil else { return }
+        var next = state
+        for record in expired {
+            let url = try directory(record.assetID)
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            next.records.removeValue(forKey: record.assetID)
+        }
+        next.cursors.removeValue(forKey: tripID)
         try persist(next)
     }
     private func persist(_ input: PreviewState) throws {

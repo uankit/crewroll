@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { Type } from "@sinclair/typebox";
+import { IanaTimeZoneSchema } from "@crewroll/contracts";
 
 import {
   validRegisterDeviceBody,
@@ -75,6 +76,56 @@ it("Worker response serialization preserves valid union contracts", async () => 
   expect(result.statusCode).toBe(200);
   expect(result.json()).toEqual({ result: "ok" });
 });
+
+it.each([false, true])(
+  "validates custom formats on requests and union responses (Worker: %s)",
+  async (isolateStartup) => {
+    const { dependencies } = createTestDependencies({
+      nodeEnvironment: "production",
+    });
+    const app = track(
+      buildApp(dependencies, {
+        isolateStartup,
+        scheduledMediaCleanup: false,
+      }),
+    );
+    let calls = 0;
+    let responseZone = "Asia/Kolkata";
+    const schema = Type.Object(
+      { timeZone: IanaTimeZoneSchema },
+      { additionalProperties: false },
+    );
+    app.post(
+      "/format-proof",
+      {
+        schema: {
+          body: schema,
+          response: { 200: Type.Union([schema, Type.Null()]) },
+        },
+      },
+      () => {
+        calls += 1;
+        return { timeZone: responseZone };
+      },
+    );
+    const request = (timeZone: string) =>
+      app.inject({
+        method: "POST",
+        url: "/format-proof",
+        payload: { timeZone },
+      });
+    const valid = await request("UTC");
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json()).toEqual({ timeZone: "Asia/Kolkata" });
+    const invalid = await request("Mars/Olympus");
+    expect(invalid.statusCode).toBe(400);
+    expect(calls).toBe(1);
+    responseZone = "Mars/Olympus";
+    const invalidResponse = await request("UTC");
+    expect(invalidResponse.statusCode).toBe(500);
+    expect(invalidResponse.body).not.toContain("Mars/Olympus");
+  },
+);
 
 function track<T extends { close(): Promise<void> }>(app: T): T {
   closeApps.push(() => app.close());
@@ -331,12 +382,10 @@ describe("buildApp", () => {
       "/testing/validate",
       {
         schema: {
-          body: {
-            additionalProperties: false,
-            properties: { name: { type: "string" } },
-            required: ["name"],
-            type: "object",
-          },
+          body: Type.Object(
+            { name: Type.String() },
+            { additionalProperties: false },
+          ),
         },
       },
       () => ({ accepted: true }),

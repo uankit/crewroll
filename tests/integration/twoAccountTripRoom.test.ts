@@ -1284,8 +1284,8 @@ describe.sequential("two-account Trip room public-route journey", () => {
         .executeTakeFirstOrThrow(),
     };
 
-    // Step 11: exact replays remain available, while every new post-Start
-    // membership/readiness/Start mutation fails without changing durable state.
+    // Step 11: exact replays remain available in ENDING, while new
+    // membership/readiness/Start mutations fail without changing durable state.
     expect(await requestJoin(invitee, joinBody, joinKey)).toEqual(approved);
     expect(
       await approveJoin(
@@ -1640,7 +1640,7 @@ describe.sequential("two-account Trip room public-route journey", () => {
     expect(kmsCalls).toEqual({ fingerprint: 0, protect: 0 });
   });
 
-  it("physically serializes join-first and Start-first public-route barriers", async () => {
+  it("serializes join-first and Start-first public-route PostgreSQL lock barriers", async () => {
     // Step 13: each race uses two independent production runtime graphs and
     // database pools; only the real Trip UoW callback is paused at lockTrip.
     async function prepareOwnerRoom(

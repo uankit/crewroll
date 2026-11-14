@@ -173,7 +173,7 @@ export function createR2CiphertextStore(options: {
           () => abort.abort(),
           Math.min(60_000, grant.expires - options.now().getTime()),
         );
-        const pumping = request.body!.pipeTo(stream.writable, {
+        const pumping = request.body.pipeTo(stream.writable, {
           signal: abort.signal,
         });
         const writing = options.bucket

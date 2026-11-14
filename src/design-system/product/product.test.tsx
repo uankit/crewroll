@@ -12,7 +12,6 @@ import {
   PhotoGrid,
   PhotoTile,
   ReconciliationRow,
-  ReleaseModeField,
   TransferHealthCard,
   TripSummaryCard,
 } from "./index";
@@ -40,8 +39,7 @@ type ForbiddenProductProp = Extract<
   | keyof ComponentProps<typeof PhotoGrid>
   | keyof ComponentProps<typeof TransferHealthCard>
   | keyof ComponentProps<typeof MemberCoverageCard>
-  | keyof ComponentProps<typeof ReconciliationRow>
-  | keyof ComponentProps<typeof ReleaseModeField>,
+  | keyof ComponentProps<typeof ReconciliationRow>,
   ForbiddenPropName
 >;
 
@@ -284,54 +282,5 @@ describe("CrewRoll product composites", () => {
     );
     await fireEvent.press(resolve);
     expect(onResolve).toHaveBeenCalledTimes(1);
-  });
-
-  test("ReleaseModeField exposes a labeled radio group with checked, disabled, RTL-safe 48-point options", async () => {
-    const onChange = jest.fn();
-    const screen = await render(
-      <ThemeHarness>
-        <View style={{ direction: "rtl" }}>
-          <ReleaseModeField
-            immediateDescription="Photos arrive as soon as they are ready"
-            label="Photo delivery"
-            nightlyDescription="Photos arrive together each night"
-            nightlyDisabled
-            onChange={onChange}
-            testID="release-mode"
-            value="IMMEDIATE"
-          />
-        </View>
-      </ThemeHarness>,
-    );
-
-    expect(screen.getByTestId("release-mode").props).toEqual(
-      expect.objectContaining({
-        accessibilityLabel: "Photo delivery",
-        accessibilityRole: "radiogroup",
-      }),
-    );
-    expect(screen.getByTestId("release-mode").props.accessible).not.toBe(true);
-    const immediate = screen.getByRole("radio", { name: "Immediate" });
-    const nightly = screen.getByRole("radio", { name: "Nightly" });
-
-    expect(immediate.props.accessibilityState).toEqual(
-      expect.objectContaining({ checked: true, disabled: false }),
-    );
-    expect(nightly.props.accessibilityState).toEqual(
-      expect.objectContaining({ checked: false, disabled: true }),
-    );
-    for (const option of [immediate, nightly]) {
-      expect(StyleSheet.flatten(option.props.style)).toEqual(
-        expect.objectContaining({
-          minHeight: spacing.xxxl,
-          minWidth: spacing.xxxl,
-        }),
-      );
-    }
-
-    await fireEvent.press(nightly);
-    await fireEvent.press(immediate);
-    expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith("IMMEDIATE");
   });
 });

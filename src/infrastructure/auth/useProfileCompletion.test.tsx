@@ -49,6 +49,88 @@ function fixture(name: string | null = null) {
 }
 
 describe("profile completion", () => {
+  it.each(["unavailable", "stalled"] as const)(
+    "syncs the server profile when the optional local cache is %s",
+    async (failure) => {
+      jest.useFakeTimers();
+      try {
+        const f = fixture("Riya");
+        if (failure === "unavailable")
+          f.cache.read.mockRejectedValueOnce(new Error("keychain unavailable"));
+        else f.cache.read.mockReturnValueOnce(new Promise(() => undefined));
+        const { result, unmount } = await renderHook(() =>
+          useProfileCompletion(f.options),
+        );
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(2_000);
+        });
+        expect(result.current.ready).toBe(true);
+        expect(result.current.error).toBeNull();
+        expect(f.api.syncProfile).toHaveBeenCalledTimes(1);
+        await unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["unavailable", "stalled"] as const)(
+    "opens the profile gate after server confirmation when cache writes are %s",
+    async (failure) => {
+      jest.useFakeTimers();
+      try {
+        const f = fixture();
+        if (failure === "unavailable")
+          f.cache.write.mockRejectedValueOnce(
+            new Error("keychain unavailable"),
+          );
+        else f.cache.write.mockReturnValueOnce(new Promise(() => undefined));
+        const { result, unmount } = await renderHook(() =>
+          useProfileCompletion(f.options),
+        );
+        await act(() => result.current.setName("Riya"));
+        await act(() => result.current.save());
+        expect(result.current.ready).toBe(true);
+        expect(result.current.error).toBeNull();
+        expect(result.current.busy).toBe(false);
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(2_000);
+        });
+        expect(result.current.ready).toBe(true);
+        await unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("shows a retryable form after a stalled sync and ignores its late response", async () => {
+    jest.useFakeTimers();
+    try {
+      const f = fixture("Riya");
+      const pending = deferred<{ displayName: string }>();
+      f.api.syncProfile.mockReturnValueOnce(pending.promise);
+      const { result, unmount } = await renderHook(() =>
+        useProfileCompletion(f.options),
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(20_000);
+      });
+      expect(result.current.ready).toBe(false);
+      expect(result.current.checking).toBe(false);
+      expect(result.current.error).toMatch(/try again/);
+      await act(() => pending.resolve({ displayName: "Riya" }));
+      expect(result.current.ready).toBe(false);
+      expect(f.cache.write).not.toHaveBeenCalled();
+      await act(() => result.current.retry());
+      expect(result.current.ready).toBe(true);
+      expect(f.api.syncProfile).toHaveBeenCalledTimes(2);
+      await unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("normalizes a display name without requiring a surname and rejects empty or hidden controls", () => {
     expect(profileName("  Jose\u0301   李  ")).toBe("José 李");
     expect(profileName("Riya")).toBe("Riya");

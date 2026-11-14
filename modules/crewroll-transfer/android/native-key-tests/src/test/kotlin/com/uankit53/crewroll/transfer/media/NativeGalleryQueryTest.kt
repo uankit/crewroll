@@ -27,6 +27,14 @@ class NativeGalleryQueryTest {
         assertEquals(2, NativeGalleryQuery().page(records, 1, 24, null).first.size)
         assertEquals(1, NativeGalleryQuery(sourceMembershipId = b).page(records, 1, 24, null).first.size)
     }
+    @Test fun `sorting uses actual instants with stable asset tie break across pages`() {
+        val records = listOf(row(1, stamp = "2026-09-16T12:00:00Z"), row(2, stamp = "2026-09-16T17:30:00+05:30"), row(3, stamp = "2026-09-16T11:59:59.999Z"))
+        val query = NativeGalleryQuery()
+        val first = query.page(records, 4, 2, null)
+        assertEquals(listOf("0002", "0001"), first.first.map { it["assetId"] })
+        assertEquals(listOf("0003"), query.page(records, 4, 2, first.second).first.map { it["assetId"] })
+        assertEquals(listOf("0003", "0001", "0002"), NativeGalleryQuery(order = "OLDEST").page(records, 4, 3, null).first.map { it["assetId"] })
+    }
     @Test fun `cursor is invalid after the query or revision changes`() {
         val rows = (1..5).map { row(it) }
         val cursor = NativeGalleryQuery().page(rows, 1, 2, null).second

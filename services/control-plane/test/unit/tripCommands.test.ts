@@ -470,6 +470,22 @@ async function executeStart(
 }
 
 describe("create Trip command", () => {
+  it("rejects unsupported nightly delivery before hashing or any transaction", async () => {
+    const test = setup();
+    const before = structuredClone(test.harness.state);
+    const result = await executeCreate(
+      test,
+      body({
+        // @ts-expect-error Deliberately exercise runtime defence for an unsupported old-client request.
+        release: { mode: "NIGHTLY", timeZone: "UTC", localTime: "21:30" },
+      }),
+    );
+    expect(problemCode(result)).toBe("INVALID_REQUEST");
+    expect(test.hashedCodes).toEqual([]);
+    expect(test.harness.trace).toEqual([]);
+    expect(test.harness.state).toEqual(before);
+  });
+
   it("rejects an owner-device mismatch before HMAC or transaction work", async () => {
     const test = setup();
     const result = await executeCreate(
@@ -618,6 +634,25 @@ describe("create Trip command", () => {
       "lock.idempotency",
       "transaction.commit",
     ]);
+  });
+
+  it("returns conclusive not-found when committed replay can no longer read its expired projection", async () => {
+    const test = setup();
+    successful(await executeCreate(test));
+    const trip = test.harness.state.trips.get(TRIP_ID)!;
+    test.harness.state.trips.set(TRIP_ID, { ...trip, hardDeleteAt: NOW });
+    const before = structuredClone(test.harness.state);
+    expect(problemCode(await executeCreate(test))).toBe("NOT_FOUND");
+    expect(
+      problemCode(
+        await test.outcome.execute({
+          actor: ACTOR,
+          idempotencyKey: IDEMPOTENCY_KEY,
+          tripId: TRIP_ID,
+        }),
+      ),
+    ).toBe("NOT_FOUND");
+    expect(test.harness.state).toEqual(before);
   });
 
   it("maps current state conflicts without relying on database messages", async () => {
@@ -1475,7 +1510,7 @@ describe("approve Trip join request", () => {
     ]);
   });
 
-  it("replays the current active membership after freeze without another mutation", async () => {
+  it("replays the current active membership after Start without another mutation", async () => {
     const test = await setupApprove();
     const first = successful(await executeApprove(test));
     const trip = test.harness.state.trips.get(TRIP_ID);
@@ -1700,7 +1735,7 @@ describe("reject Trip join request", () => {
     });
   });
 
-  it("replays the exact rejection after freeze without a second decrement or event", async () => {
+  it("replays the exact rejection after Start without a second decrement or event", async () => {
     const test = await setupReject();
     successful(await executeReject(test));
     const trip = test.harness.state.trips.get(TRIP_ID);
@@ -1916,7 +1951,7 @@ describe("set Trip readiness", () => {
     });
   });
 
-  it("records a same-value no-op and replays it after freeze without a version or event", async () => {
+  it("records a same-value no-op and replays it after Start without a version or event", async () => {
     const seeded = await setupReadiness();
     const test = {
       ...seeded,
@@ -2105,6 +2140,93 @@ describe("set Trip readiness", () => {
 });
 
 describe("start Trip command", () => {
+  it("accepts a new Start immediately before the trip deadline", async () => {
+    const test = await setupStart();
+    const trip = test.harness.state.trips.get(TRIP_ID);
+    if (!trip) throw new Error("Missing Trip");
+    test.harness.setAuthoritativeNow(new Date(trip.endsAt.getTime() - 1));
+
+    expect(successful(await executeStart(test))).toMatchObject({
+      startsAt: new Date(trip.endsAt.getTime() - 1).toISOString(),
+      status: "ACTIVE",
+      version: 6,
+    });
+  });
+
+  it.each([0, 1_000])(
+    "rejects a new Start %s milliseconds after the trip deadline without writes",
+    async (afterDeadline) => {
+      const test = await setupStart();
+      const trip = test.harness.state.trips.get(TRIP_ID);
+      if (!trip) throw new Error("Missing Trip");
+      test.harness.setAuthoritativeNow(
+        new Date(trip.endsAt.getTime() + afterDeadline),
+      );
+      const before = structuredClone(test.harness.state);
+
+      expect(problemCode(await executeStart(test))).toBe("TRIP_STATE_CONFLICT");
+      expect(test.harness.state).toEqual(before);
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    },
+  );
+
+  it("preserves a committed Start replay after the trip deadline without new writes", async () => {
+    const test = await setupStart();
+    successful(await executeStart(test));
+    const trip = test.harness.state.trips.get(TRIP_ID);
+    if (!trip) throw new Error("Missing Trip");
+    test.harness.setAuthoritativeNow(new Date(trip.endsAt.getTime() + 1_000));
+    const before = structuredClone(test.harness.state);
+    test.harness.trace.splice(0);
+
+    expect(successful(await executeStart(test))).toMatchObject({
+      startsAt: NOW.toISOString(),
+      status: "ACTIVE",
+      version: 6,
+    });
+    expect(test.harness.state).toEqual(before);
+    expect(
+      test.harness.trace.filter((entry) => entry.startsWith("write.")),
+    ).toEqual([]);
+  });
+
+  it.each([false, true])(
+    "keeps an existing nightly lobby unchanged (expired command: %s)",
+    async (expiredCommand) => {
+      const test = await setupStart();
+      const trip = test.harness.state.trips.get(TRIP_ID);
+      if (!trip) throw new Error("Missing Trip");
+      test.harness.state.trips.set(TRIP_ID, {
+        ...trip,
+        release: { mode: "NIGHTLY", timeZone: "UTC", localTime: "21:30" },
+      });
+      if (expiredCommand) {
+        test.harness.state.idempotencies.set(
+          `${ACTOR.userId}:trips.start.v1:${START_IDEMPOTENCY_KEY}`,
+          {
+            actorDeviceId: ACTOR.deviceId,
+            expiresAt: new Date(NOW.getTime() - 1),
+            idempotencyKey: START_IDEMPOTENCY_KEY,
+            kind: "START",
+            requestSha256: new Uint8Array(32),
+            responseStatus: 200,
+            routeKey: "trips.start.v1",
+            tripId: TRIP_ID,
+            userId: ACTOR.userId,
+          },
+        );
+      }
+      const before = structuredClone(test.harness.state);
+      expect(problemCode(await executeStart(test))).toBe("TRIP_STATE_CONFLICT");
+      expect(test.harness.state).toEqual(before);
+      expect(
+        test.harness.trace.filter((entry) => entry.startsWith("write.")),
+      ).toEqual([]);
+    },
+  );
+
   it("starts one fully ready lobby atomically and notifies only the other nominated device", async () => {
     const test = await setupStart();
     const inboxesBefore = test.harness.state.inboxes.length;

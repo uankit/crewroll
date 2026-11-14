@@ -3,6 +3,7 @@ package com.uankit53.crewroll.transfer.identitykeys
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import javax.crypto.spec.SecretKeySpec
 import kotlin.concurrent.thread
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -19,14 +20,14 @@ class AccountScopedLifecycleTest {
 
   @Test fun `restart restores only valid credentials for the same account installation and server`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
-    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    val scope = fixture.ensureAndInstall(accountA, deviceA, fixture.clock.now.plusSeconds(8 * 86_400))
     val restarted = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
     assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
     assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
     assertNull(restarted.restoreDeviceSession(accountB, scope.installationId, "https://api.crewroll.app"))
     assertNull(restarted.restoreDeviceSession(accountA, "another_installation", "https://api.crewroll.app"))
     assertNull(restarted.restoreDeviceSession(accountA, scope.installationId, "https://other.crewroll.app"))
-    fixture.clock.now = Instant.ofEpochSecond(600)
+    fixture.clock.now = Instant.ofEpochSecond(100 + 8 * 86_400 - 300)
     assertNull(restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
     fixture.clock.now = Instant.ofEpochSecond(100)
     restarted.clearDeviceSession()
@@ -35,11 +36,146 @@ class AccountScopedLifecycleTest {
 
   @Test fun `restore fails closed if persisted private keys are damaged`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA))
-    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    val scope = fixture.ensureAndInstall(accountA, deviceA, fixture.clock.now.plusSeconds(8 * 86_400))
     fixture.store.corruptPrivateKey(scope)
     assertThrows(NativeKeyException::class.java) {
       fixture.subject.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app")
     }
+  }
+
+  @Test fun `restart requests renewal within server window without replacing identity or trip key`() {
+    listOf(8 * 86_400L, 7 * 86_400L + 1, 7 * 86_400L, 6 * 86_400L, 0L, -1L).forEach { remainingSeconds ->
+      val fixture = ScopedFixture(mapOf(accountA to hashA))
+      val expiry = fixture.clock.now.plusSeconds(remainingSeconds)
+      val scope = fixture.ensureAndInstall(accountA, deviceA, expiry)
+      val identity = fixture.subject.ensureDeviceIdentity(accountA)
+      fixture.subject.createTripKey(tripA, 1)
+      val originalKey = fixture.store.trip(scope, tripA)!!.key.copyOf()
+      val restarted = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
+
+      assertEquals(if (remainingSeconds > 7 * 86_400L) deviceA else null,
+        restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"),
+        "remainingSeconds=$remainingSeconds")
+      assertEquals(identity, restarted.ensureDeviceIdentity(accountA))
+      val unchangedSession = fixture.store.activeSession()!!
+      assertEquals(scope, unchangedSession.scope)
+      assertEquals(deviceA, unchangedSession.session.deviceId)
+      assertEquals(expiry, unchangedSession.session.expiresAt)
+      assertArrayEquals(originalKey, fixture.store.trip(scope, tripA)!!.key)
+
+      // A thirty-day renewal installs the same device and retains queued keys.
+      restarted.installDeviceSession(accountA, scope.installationId, deviceA,
+        "crb_renewed_fixture_bearer", fixture.clock.now.plusSeconds(30 * 86_400), "https://api.crewroll.app")
+      val reopened = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
+      assertEquals(deviceA, reopened.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+      assertEquals(identity, reopened.ensureDeviceIdentity(accountA))
+      assertArrayEquals(originalKey, fixture.store.trip(scope, tripA)!!.key)
+    }
+  }
+
+  @Test fun `same selection refresh preserves active trip and already owned transfer context`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA))
+    val cipher = AesGcmScopedSecretCipher(SecretKeySpec(ByteArray(32) { 1 }, "AES"))
+    var bytes: ByteArray? = null
+    val disk = object : ScopedDatabasePersistence {
+      override fun load() = bytes?.let { AndroidScopedDatabaseCodec.decode(it, cipher) } ?: AndroidScopedDatabase()
+      override fun save(database: AndroidScopedDatabase) { bytes = AndroidScopedDatabaseCodec.encode(database, cipher) }
+    }
+    val store = AccountScopedKeyStore(disk)
+    val subject = NativeKeyLifecycle(fixture.clock, store, fixture.crypto, fixture.p256, fixture.hasher)
+    val identity = subject.ensureDeviceIdentity(accountA)
+    val scope = NativeKeyScope(hashA, identity.installationId)
+    subject.installDeviceSession(accountA, scope.installationId, deviceA, "crb_fixture_write_only",
+      fixture.clock.now.plusSeconds(6 * 86_400), "https://api.crewroll.app")
+    subject.createTripKey(tripA, 1)
+    val key = store.loadTrip(scope, tripA)!!.key
+    val metadata = fixture.metadata(tripA)
+    store.importTrip(scope, tripA, key, metadata.endsAt, fixture.clock.now)
+    subject.activateTrip(metadata)
+    val owned = subject.mediaContext()!!
+    val fence = NativeTransferCommandFence()
+    val epoch = fence.current()
+    val changed = fence.runIfCurrent(epoch) {
+      subject.refreshDeviceSession(accountA, scope.installationId, deviceA,
+        "crb_refreshed_same_selection", fixture.clock.now.plusSeconds(30 * 86_400), "https://api.crewroll.app")
+    }
+    assertTrue(changed)
+    assertFalse(subject.refreshDeviceSession(accountA, scope.installationId, deviceA,
+      "crb_refreshed_same_selection", fixture.clock.now.plusSeconds(30 * 86_400), "https://api.crewroll.app"),
+      "unchanged credentials must not clear a genuine current-credential rejection")
+    assertTrue(fence.matches(epoch), "refresh must not supersede an in-flight command")
+    val refreshed = subject.mediaContext()!!
+    assertEquals(scope, refreshed.scope)
+    assertEquals(metadata, refreshed.metadata)
+    assertArrayEquals(key, refreshed.tripKey)
+    assertArrayEquals("crb_refreshed_same_selection".toByteArray(), refreshed.session.backgroundBearer)
+    assertArrayEquals("crb_fixture_write_only".toByteArray(), owned.session.backgroundBearer)
+    assertArrayEquals(key, owned.tripKey, "a refresh must not erase an existing transfer's owned buffers")
+    assertEquals(identity, subject.ensureDeviceIdentity(accountA))
+    val restarted = NativeKeyLifecycle(fixture.clock, AccountScopedKeyStore(disk), fixture.crypto, fixture.p256, fixture.hasher)
+    assertEquals(metadata, restarted.mediaContext()!!.metadata)
+    assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
+  }
+
+  @Test fun `refresh rejects mismatched selection and expired or regressing lease without mutation`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
+    val expiry = fixture.clock.now.plusSeconds(8 * 86_400)
+    val scope = fixture.ensureAndInstall(accountA, deviceA, expiry)
+    fixture.subject.createTripKey(tripA, 1)
+    val key = fixture.store.trip(scope, tripA)!!.key.copyOf()
+    val later = fixture.clock.now.plusSeconds(30 * 86_400)
+    data class Attempt(val account: String = accountA, val installation: String = scope.installationId,
+      val device: String = deviceA, val api: String = "https://api.crewroll.app", val date: Instant = later,
+      val bearer: String = "crb_refreshed_same_selection")
+    listOf(Attempt(account = accountB), Attempt(installation = "another_installation"), Attempt(device = deviceB),
+      Attempt(api = "https://other.crewroll.app"), Attempt(date = expiry.minusSeconds(1)),
+      Attempt(date = fixture.clock.now), Attempt(bearer = "invalid_bearer")).forEach { attempt ->
+      assertThrows(NativeKeyException::class.java) {
+        fixture.subject.refreshDeviceSession(attempt.account, attempt.installation, attempt.device,
+          attempt.bearer, attempt.date, attempt.api)
+      }
+      val unchanged = fixture.store.activeSession()!!
+      assertEquals(scope, unchanged.scope)
+      assertEquals(deviceA, unchanged.session.deviceId)
+      assertEquals(expiry, unchanged.session.expiresAt)
+      assertArrayEquals("crb_fixture_write_only".toByteArray(), unchanged.session.backgroundBearer)
+      assertArrayEquals(key, fixture.store.trip(scope, tripA)!!.key)
+    }
+  }
+
+  @Test fun `late refresh cannot select an account after signout or replacement`() {
+    listOf(false, true).forEach { replaceAccount ->
+      val fixture = ScopedFixture(mapOf(accountA to hashA, accountB to hashB))
+      val scope = fixture.ensureAndInstall(accountA, deviceA)
+      val fence = NativeTransferCommandFence()
+      val requestEpoch = fence.current()
+      val nextEpoch = fence.advance()
+      fence.runIfCurrent(nextEpoch) {
+        if (replaceAccount) fixture.ensureAndInstall(accountB, deviceB) else fixture.subject.clearDeviceSession()
+      }
+      fun refresh() = fixture.subject.refreshDeviceSession(accountA, scope.installationId, deviceA,
+        "crb_late_old_account_response", fixture.clock.now.plusSeconds(30 * 86_400), "https://api.crewroll.app")
+      assertThrows(NativeKeyException::class.java) { fence.runIfCurrent(requestEpoch) { refresh() } }
+      assertThrows(NativeKeyException::class.java) { refresh() }
+      val selected = fixture.store.activeSession()
+      if (replaceAccount) assertEquals(deviceB, selected!!.session.deviceId) else assertNull(selected)
+    }
+  }
+
+  @Test fun `undated installed keys cannot wrap until authenticated import backfills expiry`() {
+    val fixture = ScopedFixture(mapOf(accountA to hashA))
+    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    fixture.subject.createTripKey(tripA, 1)
+    val wrapped = fixture.subject.wrapTripKey(tripA, 1, deviceA, fixture.identityPublicKey(scope), 1)
+    val record = fixture.store.trip(scope, tripA)!!
+    fixture.store.putTrip(scope, tripA, record.copy(state = KeyState.INSTALLED), endsAt = null)
+    assertThrows(NativeKeyException::class.java) { fixture.subject.createTripKey(tripA, 1) }
+    assertThrows(NativeKeyException::class.java) {
+      fixture.subject.wrapTripKey(tripA, 1, deviceA, fixture.identityPublicKey(scope), 1)
+    }
+    fixture.subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey, fixture.metadata(tripA).endsAt)
+    assertDoesNotThrow { fixture.subject.wrapTripKey(tripA, 1, deviceA, fixture.identityPublicKey(scope), 1) }
+    assertNull(fixture.store.mediaContext())
   }
 
   @Test fun `identity is account scoped and rejects orphaned or mismatched material`() {
@@ -159,7 +295,7 @@ class AccountScopedLifecycleTest {
       fixture.subject.wrapTripKey(tripA, 1, deviceB, fixture.identityPublicKey(scopeB), 1)
     }.code)
     assertEquals("KEY_ENVELOPE_INVALID", assertThrows(NativeKeyException::class.java) {
-      fixture.subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrappedForA.wrappedKey)
+      fixture.subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrappedForA.wrappedKey, "2026-09-02T12:00:00.123Z")
     }.code)
     assertEquals("KEY_MATERIAL_LOST", assertThrows(NativeKeyException::class.java) {
       fixture.subject.activateTrip(fixture.metadata(tripA))
@@ -391,6 +527,11 @@ class AccountScopedLifecycleTest {
         "backgroundBearerExpiresAt" to "2026-09-01T12:00:00Z",
         "apiBaseUrl" to "https://api.crewroll.app",
       ), "deviceId"),
+      Triple(NativeCommandKind.REFRESH_DEVICE_SESSION, mapOf(
+        "protocolVersion" to 1, "accountId" to accountA, "installationId" to "install_A-123456",
+        "deviceId" to v4DeviceId, "backgroundBearer" to "crb_fixture_write_only",
+        "backgroundBearerExpiresAt" to "2026-09-01T12:00:00Z", "apiBaseUrl" to "https://api.crewroll.app",
+      ), "deviceId"),
       Triple(
         NativeCommandKind.CREATE_TRIP_KEY,
         mapOf("protocolVersion" to 1, "tripId" to tripA, "keyEpoch" to 1),
@@ -417,6 +558,7 @@ class AccountScopedLifecycleTest {
         "expectedSenderDeviceId" to deviceA,
         "recipientDeviceId" to deviceA,
         "recipientE2eeKeyVersion" to 1,
+        "endsAt" to "2026-09-02T12:00:00.123Z",
         "wrappedKey" to "fixture",
       ), "wrappedKey"),
       Triple(NativeCommandKind.ACTIVATE_TRIP, mapOf(
@@ -470,7 +612,7 @@ class AccountScopedLifecycleTest {
     assertTrue(fixture.crypto.zeroizedSizes.contains(100))
     fixture.crypto.rejectOpen = true
     assertThrows(NativeKeyException::class.java) {
-      fixture.subject.importTripKey(tripB, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey)
+      fixture.subject.importTripKey(tripB, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey, "2026-09-02T12:00:00.123Z")
     }
     assertTrue(fixture.crypto.zeroizedSizes.contains(148))
     assertTrue(fixture.crypto.zeroizedSizes.count { it == 32 } >= 2)
@@ -505,7 +647,7 @@ class AccountScopedLifecycleTest {
     assertTrue(fixture.crypto.returnedRandomBuffers.last().all { it == 0.toByte() })
     assertTrue(fixture.store.lastLoadedBearer!!.all { it == 0.toByte() })
     assertTrue(fixture.store.lastLoadedTripKey!!.all { it == 0.toByte() })
-    fixture.subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey)
+    fixture.subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey, "2026-09-02T12:00:00.123Z")
     assertTrue(fixture.crypto.returnedOpenPlaintext!!.all { it == 0.toByte() })
     assertTrue(fixture.store.lastLoadedPrivate!!.all { it == 0.toByte() })
 
@@ -545,19 +687,19 @@ class AccountScopedLifecycleTest {
       arrayOf(tripA, deviceA, deviceA, wrapped.wrappedKey + "="),
     ).forEach { mutation ->
       assertEquals("KEY_ENVELOPE_INVALID", assertThrows(NativeKeyException::class.java) {
-        fixture.subject.importTripKey(mutation[0], 1, 1, mutation[1], mutation[2], 1, mutation[3])
+        fixture.subject.importTripKey(mutation[0], 1, 1, mutation[1], mutation[2], 1, mutation[3], "2026-09-02T12:00:00.123Z")
       }.code)
     }
 
     val restarted = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
-    restarted.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey)
+    restarted.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey, "2026-09-02T12:00:00.123Z")
     assertEquals(KeyState.INSTALLED, fixture.store.trip(scope, tripA)?.state)
     assertThrows(NativeKeyException::class.java) { restarted.discardProvisionalTripKey(tripA, 1) }
     assertDoesNotThrow { restarted.discardProvisionalTripKey(tripB, 1) }
 
     fixture.store.putTrip(scope, tripA, TripKeyRecord(ByteArray(32) { 0x7a }, KeyState.INSTALLED))
     assertEquals("KEY_ENVELOPE_INVALID", assertThrows(NativeKeyException::class.java) {
-      restarted.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey)
+      restarted.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped.wrappedKey, "2026-09-02T12:00:00.123Z")
     }.code)
     assertArrayEquals(ByteArray(32) { 0x7a }, fixture.store.trip(scope, tripA)?.key)
 
@@ -579,14 +721,14 @@ private class ScopedFixture(
   val hasher = AccountNamespaceHasher { accountId -> hashes[accountId] ?: throw NativeKeyException.invalidCommand() }
   val subject = NativeKeyLifecycle(clock, store, crypto, p256, hasher)
 
-  fun ensureAndInstall(accountId: String, deviceId: String): NativeKeyScope {
+  fun ensureAndInstall(accountId: String, deviceId: String, expiresAt: Instant = Instant.ofEpochSecond(900)): NativeKeyScope {
     val identity = subject.ensureDeviceIdentity(accountId)
     subject.installDeviceSession(
       accountId,
       identity.installationId,
       deviceId,
       "crb_fixture_write_only",
-      Instant.ofEpochSecond(900),
+      expiresAt,
       "https://api.crewroll.app",
     )
     return store.activeSession()!!.scope
@@ -703,6 +845,7 @@ private class ScopedStore : NativeKeyStore {
     val tombstones: MutableSet<String> = mutableSetOf(),
     var activeMetadata: ActiveTripMetadata? = null,
     val frozen: MutableMap<String, ActiveTripMetadata> = mutableMapOf(),
+    val tripEndsAt: MutableMap<String, String> = mutableMapOf(),
   )
 
   private var identities = mutableMapOf<String, DeviceIdentityMaterial>()
@@ -860,16 +1003,23 @@ private class ScopedStore : NativeKeyStore {
       synchronized(this) { concurrentGc -= 1 }
     }
   }
-  override fun importTrip(scope: NativeKeyScope, tripId: String, key: ByteArray): TripImportOutcome = transaction {
+  override fun tripRetentionDeadline(scope: NativeKeyScope, tripId: String): Instant? =
+    scopes[scope]?.tripEndsAt?.get(tripId)?.let(NativeTripRetention::deadline)
+      ?: scopes[scope]?.frozen?.get(tripId)?.let(NativeTripRetention::deadline)
+  override fun importTrip(scope: NativeKeyScope, tripId: String, key: ByteArray, endsAt: String, now: Instant): TripImportOutcome = transaction {
+    if (NativeTripRetention.deadline(endsAt) <= now) throw NativeKeyException.materialLost()
+    tripRetentionDeadline(scope, tripId)?.let { if (it != NativeTripRetention.deadline(endsAt)) return@transaction TripImportOutcome.CONFLICT }
     val state = scopes.getOrPut(scope, ::ScopeState)
     val existing = state.trips[tripId]
     if (existing != null) {
       if (!existing.key.contentEquals(key)) return@transaction TripImportOutcome.CONFLICT
       if (existing.state == KeyState.PROVISIONAL) state.trips[tripId] = existing.copy(state = KeyState.INSTALLED)
-      state.tombstones.remove(tripId)
+      state.tripEndsAt[tripId] = endsAt
+    state.tombstones.remove(tripId)
       return@transaction TripImportOutcome.EXISTING
     }
     state.trips[tripId] = TripKeyRecord(key.copyOf(), KeyState.INSTALLED)
+    state.tripEndsAt[tripId] = endsAt
     state.tombstones.remove(tripId)
     TripImportOutcome.INSTALLED
   }
@@ -902,7 +1052,13 @@ private class ScopedStore : NativeKeyStore {
   fun trip(scope: NativeKeyScope, tripId: String) = scopes[scope]?.trips?.get(tripId)
   fun hasTombstone(scope: NativeKeyScope, tripId: String) = scopes[scope]?.tombstones?.contains(tripId) == true
   fun activeMetadata(scope: NativeKeyScope) = scopes[scope]?.activeMetadata
-  fun putTrip(scope: NativeKeyScope, tripId: String, record: TripKeyRecord) { scopes.getOrPut(scope, ::ScopeState).trips[tripId] = record }
+  fun putTrip(scope: NativeKeyScope, tripId: String, record: TripKeyRecord, endsAt: String? = "2026-09-02T12:00:00.123Z") {
+    val state = scopes.getOrPut(scope, ::ScopeState)
+    state.trips[tripId] = record
+    if (record.state != KeyState.PROVISIONAL) {
+      if (endsAt == null) state.tripEndsAt.remove(tripId) else state.tripEndsAt[tripId] = endsAt
+    }
+  }
   fun addTombstone(accountHash: String, installationId: String, tripId: String) {
     scopes.getOrPut(NativeKeyScope(accountHash, installationId), ::ScopeState).tombstones.add(tripId)
   }
@@ -943,6 +1099,7 @@ private class ScopedStore : NativeKeyStore {
     tombstones.toMutableSet(),
     activeMetadata,
     frozen.toMutableMap(),
+    tripEndsAt.toMutableMap(),
   )
   private fun DeviceIdentityMaterial.deepCopy() = copy(
     authenticationPublicKey = authenticationPublicKey.copyOf(),

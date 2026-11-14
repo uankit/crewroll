@@ -149,9 +149,9 @@ describe("SEC-001 threat model", () => {
       "A first-import, context-correct replacement trip envelope",
       "Sealed boxes are anonymous",
       "`ACTIVE` cannot transition to `REJECTED`",
-      "Start freezes membership, participating device, and key epoch.",
-      "same frozen participating device may fetch and re-import its own opaque envelope",
-      "Loss of that device's X25519 private key cannot be repaired after Start.",
+      "Start does not freeze membership.",
+      "same currently nominated device may fetch and re-import its own opaque envelope",
+      "If no authorized phone retains the key, the backend cannot recover it.",
     ]);
   });
 
@@ -164,7 +164,7 @@ describe("SEC-001 threat model", () => {
       "`capturedAt`",
       "CreateUploadSessionBody",
       "ReconciliationResponseSchema",
-      "Runtime serializer canaries are downstream acceptance gates",
+      "Runtime serializer canaries, real database authorization tests",
       "SEC-001 tests documentation and extant response schemas only.",
     ]);
   });
@@ -200,7 +200,7 @@ describe("SEC-001 key lifecycle", () => {
       "`discardProvisionalTripKey`",
       "24 hours",
       "ACTIVE --deactivate/logout--------------------------------------> INSTALLED",
-      "authenticated trip End",
+      "the current native runtime does not write a separate `RETAINED` transition on End",
       "same-device recovery",
       "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
       "NSFileProtectionCompleteUntilFirstUserAuthentication",

@@ -58,6 +58,13 @@ export type InstallDeviceSessionCommand = Static<
   typeof InstallDeviceSessionCommandSchema
 >;
 
+/** Replaces only the currently selected matching session; never selects an account. */
+export const RefreshDeviceSessionCommandSchema =
+  InstallDeviceSessionCommandSchema;
+export type RefreshDeviceSessionCommand = Static<
+  typeof RefreshDeviceSessionCommandSchema
+>;
+
 /** Reads only the public ID of a valid, account-scoped native credential. */
 export const RestoreDeviceSessionCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
@@ -130,6 +137,7 @@ export const ImportTripKeyCommandSchema = ClosedObject({
   expectedSenderDeviceId: DeviceIdSchema,
   recipientDeviceId: DeviceIdSchema,
   recipientE2eeKeyVersion: Type.Literal(1),
+  endsAt: DateTimeSchema,
   wrappedKey: KeyEnvelopeSchema.properties.wrappedKey,
 });
 export type ImportTripKeyCommand = Static<typeof ImportTripKeyCommandSchema>;

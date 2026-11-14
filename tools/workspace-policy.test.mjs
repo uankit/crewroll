@@ -44,7 +44,7 @@ const dependencyOwners = [
 
 const boundaryToolPins = {
   "eslint-import-resolver-typescript": "4.4.5",
-  "eslint-plugin-boundaries": "7.2.0",
+  "eslint-plugin-boundaries": "7.4.2",
 };
 
 const contractsBuildCommand = "npm run build --workspace @crewroll/contracts";
@@ -71,6 +71,7 @@ const forbiddenDependencies = [
 ];
 
 const alwaysActiveCommands = [
+  "verify:router-decoder",
   "verify:identity",
   "format:check",
   "lint",
@@ -104,7 +105,7 @@ const futureSuiteScripts = [
     publicCommand: "node tools/run-future-suite.mjs native-ios",
     privateName: "test:native:ios:run",
     privateCommand:
-      "swift test --package-path modules/crewroll-transfer/ios --scratch-path .expo/crewroll-native-ios-tests",
+      "swift test --package-path modules/crewroll-transfer/ios/IdentityKeys --disable-index-store --jobs 1",
   },
   {
     publicName: "test:native:android",
@@ -142,6 +143,7 @@ const rootLintPathClasses = [
   "__tests__",
   "tests",
   "tools",
+  "app.config.ts",
   "eslint.config.js",
   "vitest.config.ts",
 ];
@@ -236,8 +238,8 @@ function assertRootLintPolicy(script) {
 function assertLintBuildPrerequisites(rootManifest, controlManifest) {
   assert.equal(
     rootManifest.scripts?.prelint,
-    contractsBuildCommand,
-    "root prelint must build contracts before root/mobile and workspace lint",
+    `${contractsBuildCommand} && npm run build --workspace @crewroll/control-plane`,
+    "root prelint must build contracts then control-plane before tooling and workspace lint",
   );
   assert.equal(
     controlManifest.scripts?.prelint,
@@ -331,7 +333,9 @@ function assertContractsProductionLifecycle(rootManifest) {
   for (const hook of contractsProductionLifecycleHooks) {
     assert.equal(
       rootManifest.scripts?.[hook],
-      contractsBuildCommand,
+      hook === "eas-build-post-install"
+        ? `node tools/query-string-decoder-compat.cjs --apply && ${contractsBuildCommand}`
+        : contractsBuildCommand,
       `${hook} must build dist-only contracts before production mobile resolution`,
     );
   }
@@ -355,8 +359,11 @@ test("greenfield mobile shell does not carry legacy transfer or JS crypto", () =
   }
 });
 
-test("Expo 57 transitive peers stay on the official template versions", () => {
+test("Expo 57 peers retain template versions with the reviewed decoder repair", () => {
   assert.deepEqual(packageJson.overrides, {
+    "query-string@7.1.3": {
+      "decode-uri-component": "0.5.1",
+    },
     "react-dom": "19.2.3",
     "react-native-reanimated": "4.5.1",
     "react-native-worklets": "0.10.1",
@@ -545,6 +552,7 @@ test("aggregate check invokes each always-active gate exactly once", () => {
   );
 
   assert.deepEqual(check.split(/\s*&&\s*/u), [
+    "npm run verify:router-decoder",
     "npm run verify:identity",
     "npm run format:check",
     "npm run lint",
@@ -638,7 +646,7 @@ test("root lint is exhaustive, uncached, warning-clean, and invokes both workspa
   assertRootLintPolicy(packageJson.scripts.lint);
 });
 
-test("root and control lint lifecycle build contracts first", () => {
+test("root lint builds tooling dependencies and control lint builds contracts first", () => {
   assertLintBuildPrerequisites(packageJson, controlPlanePackageJson);
 });
 
@@ -697,6 +705,23 @@ test("lint prerequisite policy rejects removal or a different dependency build",
   }
 });
 
+test("root lint prerequisites reject missing, reordered, or substituted tooling build dependencies", () => {
+  const controlBuild = "npm run build --workspace @crewroll/control-plane";
+  for (const replacement of [
+    contractsBuildCommand,
+    `${controlBuild} && ${contractsBuildCommand}`,
+    `${contractsBuildCommand} && npm run typecheck --workspace @crewroll/control-plane`,
+    `${contractsBuildCommand} && ${controlBuild} || true`,
+  ]) {
+    const mutatedRoot = structuredClone(packageJson);
+    mutatedRoot.scripts.prelint = replacement;
+    assert.throws(
+      () => assertLintBuildPrerequisites(mutatedRoot, controlPlanePackageJson),
+      /root prelint must build contracts/u,
+    );
+  }
+});
+
 test("root lint policy rejects every omitted path class and deterministic flag", () => {
   const lint = packageJson.scripts.lint;
   assert.equal(typeof lint, "string");
@@ -750,13 +775,14 @@ test("typecheck builds contracts before checking root and control-plane projects
   );
 });
 
-test("root TypeScript checks tests and the root Vitest project config", async () => {
+test("root TypeScript checks tests and the root app and Vitest configs", async () => {
   const tsconfig = await readJson("tsconfig.json");
   for (const include of [
     "__tests__/**/*.ts",
     "__tests__/**/*.tsx",
     "tests/**/*.ts",
     "tests/**/*.tsx",
+    "app.config.ts",
     "vitest.config.ts",
   ]) {
     assert.ok(
@@ -769,7 +795,7 @@ test("root TypeScript checks tests and the root Vitest project config", async ()
 test("unit orchestration builds dependencies and runs every suite exactly once", () => {
   assert.equal(
     packageJson.scripts["test:unit"],
-    "npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
+    "npm run verify:router-decoder && npm run build --workspace @crewroll/contracts && npm run build --workspace @crewroll/control-plane && npm run test:production-resolution && npm run test:tools && npm run test:ui && vitest run --config vitest.config.ts",
   );
   assert.equal(packageJson.scripts.test, "npm run test:unit");
   assert.equal(
@@ -926,7 +952,7 @@ test("root Vitest is only the two exact named unit projects", async () => {
 
 test("the approved local quality tools are exact dependency pins", () => {
   assert.equal(packageJson.devDependencies.prettier, "3.9.6");
-  assert.equal(packageJson.devDependencies.vitest, "4.1.11");
+  assert.equal(packageJson.devDependencies.vitest, "4.1.12");
   assert.equal(packageJson.devDependencies["expo-doctor"], "1.20.4");
   assert.equal(contractsPackageJson.devDependencies.eslint, "10.9.1");
   assert.equal(contractsPackageJson.devDependencies["@eslint/js"], "10.0.1");

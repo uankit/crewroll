@@ -1,0 +1,114 @@
+# Manual synthetic-only test; dispatch after deployment and normal enrollment are verified.
+name: CrewRoll bounded synthetic backend test
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Fixed approved scenario (fresh synthetic trip per stage)
+        required: true
+        type: choice
+        options: [smoke, burst]
+      audited_sha:
+        description: Exact backend commit already deployed and verified by root
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crewroll-bounded-production-load
+  cancel-in-progress: false
+
+jobs:
+  bounded-load:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the reviewed manual-dispatch ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned official k6 (no browser, no cloud account)
+        uses: grafana/setup-k6-action@c47136d33d365efbeb9ae7266908b5dcf98cdece # v1.3.0
+        with:
+          k6-version: "2.4.0"
+          browser: false
+
+      - name: Run the bounded scenario with synthetic-only credentials
+        env:
+          CREWROLL_STAGE: ${{ inputs.stage }}
+          CREWROLL_AUDITED_SHA: ${{ inputs.audited_sha }}
+          CREWROLL_SYNTHETIC_LOAD_AUTH: ${{ secrets.CREWROLL_SYNTHETIC_LOAD_AUTH }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil, subprocess, sys
+
+          # These are this step's explicit inputs. No ambient credentials go to k6.
+          stage = os.environ.get('CREWROLL_STAGE', '')
+          sha = os.environ.get('CREWROLL_AUDITED_SHA', '')
+          auth = os.environ.get('CREWROLL_SYNTHETIC_LOAD_AUTH', '')
+          if stage not in ('smoke', 'burst') or not re.fullmatch(r'[a-f0-9]{40}', sha):
+              sys.exit('Invalid nonsecret test scope')
+          try:
+              bundle = json.loads(auth)
+          except Exception:
+              sys.exit('Synthetic credential bundle missing or invalid')
+          if (bundle.get('purpose') != 'crewroll-synthetic-load-only'
+                  or bundle.get('deploymentSha') != sha
+                  or bundle.get('stage') != stage):
+              sys.exit('Synthetic credential scope does not match approved stage and deployment')
+          binary = shutil.which('k6')
+          if not binary:
+              sys.exit('Pinned k6 unavailable')
+          folder = pathlib.Path(os.environ['RUNNER_TEMP']) / 'crewroll-k6'
+          folder.mkdir(mode=0o700, exist_ok=True)
+          config = folder / 'empty-config.json'
+          config.write_text('{}\n')
+          script = (pathlib.Path(os.environ['GITHUB_WORKSPACE']) /
+              'load-tests/wedding.js')
+          child_env = {
+              'PATH': '/usr/local/bin:/usr/bin:/bin',
+              'CREWROLL_STAGE': stage,
+              'CREWROLL_AUDITED_SHA': sha,
+              'CREWROLL_SCRIPT_SHA256': hashlib.sha256(script.read_bytes()).hexdigest(),
+              'CREWROLL_SYNTHETIC_LOAD_AUTH': auth,
+              'K6_NO_USAGE_REPORT': 'true',
+          }
+          result = 1
+          try:
+              # Discard ALL process logs. Only the script's numeric allowlisted summary is retained.
+              completed = subprocess.run(
+                  [binary, 'run', '--config', str(config), '--no-usage-report',
+                   '--quiet', '--log-output=none', str(script)],
+                  cwd=folder, env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  timeout=(450 if stage == 'smoke' else 1050), check=False)
+              result = completed.returncode
+          except subprocess.TimeoutExpired:
+              pass
+          summary = folder / 'sanitized-summary.json'
+          if not summary.exists():
+              summary.write_text(json.dumps({'schemaVersion': 1, 'stage': stage,
+                  'deploymentSha': sha, 'passed': False, 'reason': 'NO_SANITIZED_SUMMARY'}) + '\n')
+          # Exit status and explicit pass are both required; an early stop cannot look successful.
+          try:
+              passed = json.loads(summary.read_text()).get('passed') is True
+          except Exception:
+              passed = False
+          print('Bounded scenario PASS' if result == 0 and passed else 'Bounded scenario FAILED; inspect sanitized summary and server metrics')
+          sys.exit(0 if result == 0 and passed else 1)
+          PY
+
+      - name: Retain only the sanitized aggregate report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crewroll-bounded-${{ inputs.stage }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/crewroll-k6/sanitized-summary.json
+          if-no-files-found: warn
+          retention-days: 1

@@ -80,6 +80,57 @@ function createStore() {
 }
 
 describe("TripRecoveryStore", () => {
+  it("clears exactly the refused pending command and preserves newer or confirmed recovery", async () => {
+    const { store, digest, secureStore } = createStore();
+    await store.save(scope, unknownJoin);
+    await expect(
+      store.clearPendingJoin(scope, unknownJoin.commandId),
+    ).resolves.toBe(true);
+    await expect(store.load(scope)).resolves.toBeNull();
+    const restarted = new TripRecoveryStore({ digest, secureStore });
+    await expect(restarted.load(scope)).resolves.toBeNull();
+    const newer = {
+      ...unknownJoin,
+      commandId: "5a95305d-c558-4c79-b78c-a075be7bff85",
+    };
+    await store.save(scope, newer);
+    await expect(
+      store.clearPendingJoin(scope, unknownJoin.commandId),
+    ).resolves.toBe(false);
+    await expect(store.load(scope)).resolves.toEqual(newer);
+    await store.save(scope, confirmed);
+    await expect(
+      store.clearPendingJoin(scope, unknownJoin.commandId),
+    ).resolves.toBe(false);
+    await expect(store.load(scope)).resolves.toEqual(confirmed);
+  });
+
+  it("keeps a newer save queued during terminal compare-and-clear", async () => {
+    const { store, secureStore } = createStore();
+    await store.save(scope, unknownJoin);
+    const originalRead = secureStore.getItemAsync.getMockImplementation()!;
+    let resumeRead!: () => void;
+    let reading!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      resumeRead = resolve;
+    });
+    secureStore.getItemAsync.mockImplementationOnce(async (key) => {
+      reading();
+      await waiting;
+      return originalRead(key);
+    });
+    const clearing = store.clearPendingJoin(scope, unknownJoin.commandId);
+    await started;
+    const saving = store.save(scope, confirmed);
+    resumeRead();
+    await expect(clearing).resolves.toBe(true);
+    await saving;
+    await expect(store.load(scope)).resolves.toEqual(confirmed);
+  });
+
   it.each([
     ["UUIDv4", "5a95305d-c558-4c79-b78c-a075be7bff84"],
     ["non-lowercase UUIDv7", unknownCreate.tripId.toUpperCase()],

@@ -10,14 +10,12 @@ import {
 } from "../../src/modules/trips/requestFingerprint.js";
 import {
   canonicalTripName,
-  normalizeInviteCode,
   validateTripRelease,
   validateTripWindow,
 } from "../../src/modules/trips/tripPolicy.js";
 import type {
   CanonicalTripName,
   CreateTripFingerprintInput,
-  NormalizedInviteCode,
   TripPolicyResult,
   ValidatedTripRelease,
 } from "../../src/modules/trips/types.js";
@@ -540,8 +538,5 @@ describe("Trip command request fingerprints", () => {
     for (const invalid of invalidCases) {
       expect(invalid).toThrow("Invalid trip fingerprint input");
     }
-
-    const invalidCode = "abcd2345" as NormalizedInviteCode;
-    expect(invalidCode).not.toBe(valueOf(normalizeInviteCode("ABCD2345")));
   });
 });

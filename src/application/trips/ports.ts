@@ -88,6 +88,13 @@ export interface TripRecoveryPort {
   clear(scope: TripRecoveryScope): Promise<void>;
 }
 
+export interface JoinTripRecoveryPort extends TripRecoveryPort {
+  clearPendingJoin(
+    scope: TripRecoveryScope,
+    commandId: string,
+  ): Promise<boolean>;
+}
+
 export type TripMutationJournalRecord =
   | Readonly<{
       version: 1;

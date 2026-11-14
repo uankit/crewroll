@@ -98,7 +98,7 @@ describe("overlay and progress primitives", () => {
     expect(onDialogDismiss).toHaveBeenCalledTimes(1);
   });
 
-  test("Sheet and Dialog keep long 200-percent text scrollable while modal actions remain outside the scroll body", async () => {
+  test("Sheet and Dialog configure scrollable long content with modal actions outside the scroll body", async () => {
     const longItems = Array.from({ length: 24 }, (_, index) => (
       <AppText key={index}>{`Long item ${index + 1}`}</AppText>
     ));

@@ -15,15 +15,15 @@ CrewRoll lets invited trip members share original photos between iPhone and Andr
 
 ## Implemented encryption
 
-| Purpose | Implementation |
-| --- | --- |
-| Photo originals and previews | Bundled libsodium `crypto_secretstream_xchacha20poly1305`, 256-bit keys, authenticated chunks |
-| Encrypted photo manifest | `crypto_aead_xchacha20poly1305_ietf`, 256-bit key and 192-bit nonce |
+| Purpose                      | Implementation                                                                                                                                                  |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Photo originals and previews | Bundled libsodium `crypto_secretstream_xchacha20poly1305`, 256-bit keys, authenticated chunks                                                                   |
+| Encrypted photo manifest     | `crypto_aead_xchacha20poly1305_ietf`, 256-bit key and 192-bit nonce                                                                                             |
 | Recipient trip-key envelopes | `crypto_box_seal` / `crypto_box_seal_open`; bundled `crypto_box` uses Curve25519/XSalsa20-Poly1305, 32-byte public/private keys and 48-byte sealed-box overhead |
-| Key derivation | `crypto_kdf_derive_from_key` (BLAKE2b), separate contexts/subkey identifiers for media and manifests |
-| Integrity checks | SHA-256 of originals and ciphertext |
-| Network transport | HTTPS in addition to the application-layer photo encryption |
-| Platform key services | Apple Keychain and Secure Enclave P-256 identity keys |
+| Key derivation               | `crypto_kdf_derive_from_key` (BLAKE2b), separate contexts/subkey identifiers for media and manifests                                                            |
+| Integrity checks             | SHA-256 of originals and ciphertext                                                                                                                             |
+| Network transport            | HTTPS in addition to the application-layer photo encryption                                                                                                     |
+| Platform key services        | Apple Keychain and Secure Enclave P-256 identity keys                                                                                                           |
 
 The app calls the library primitives; it does not implement their internals. The bundled iOS `version.h` identifies libsodium **1.0.22**. CrewRoll's versioned format supplies chunk framing, authenticated context and integrity checks; no claim is made that this complete app protocol is publicly standardized. Photo encryption and decryption happen on the devices; the relay stages encrypted photo data. The backend also processes readable account and trip metadata, described separately in the privacy policy.
 

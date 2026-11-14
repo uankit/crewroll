@@ -14,6 +14,7 @@ import {
   InstallDeviceSessionCommandSchema,
   NativeDeviceIdentitySchema,
   ReconcileNowCommandSchema,
+  RefreshDeviceSessionCommandSchema,
   RetryCommandSchema,
   RevisionInvalidationSchema,
   SetTransferPolicyCommandSchema,
@@ -125,7 +126,10 @@ describe("native bridge protocol", () => {
     ).toBe(false);
   });
 
-  it("installs only an opaque expiring background bearer", () => {
+  it.each([
+    InstallDeviceSessionCommandSchema,
+    RefreshDeviceSessionCommandSchema,
+  ])("accepts only a closed opaque expiring session bearer (%#)", (schema) => {
     const command = {
       protocolVersion: 1,
       accountId,
@@ -135,7 +139,7 @@ describe("native bridge protocol", () => {
       backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
       apiBaseUrl: "https://api.crewroll.app",
     };
-    expect(Value.Check(InstallDeviceSessionCommandSchema, command)).toBe(true);
+    expect(Value.Check(schema, command)).toBe(true);
     for (const backgroundBearer of [
       `crb_${"A".repeat(42)}`,
       `crb_${"A".repeat(44)}`,
@@ -146,21 +150,21 @@ describe("native bridge protocol", () => {
       `other_${"A".repeat(41)}`,
     ]) {
       expect(
-        Value.Check(InstallDeviceSessionCommandSchema, {
+        Value.Check(schema, {
           ...command,
           backgroundBearer,
         }),
       ).toBe(false);
     }
     expect(
-      Value.Check(InstallDeviceSessionCommandSchema, {
+      Value.Check(schema, {
         ...command,
         clerkToken: "secret",
       }),
     ).toBe(false);
   });
 
-  it("creates trip keys only through an opaque operation", () => {
+  it("publishes an opaque trip-key creation command and result", () => {
     const create = { protocolVersion: 1, tripId, keyEpoch: 1 };
     const created = { protocolVersion: 1, tripId, keyEpoch: 1 };
     expect(Value.Check(CreateTripKeyCommandSchema, create)).toBe(true);
@@ -198,6 +202,7 @@ describe("native bridge protocol", () => {
       expectedSenderDeviceId: deviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt: "2026-09-02T12:00:00.000Z",
       wrappedKey: TRIP_ENVELOPE,
     } as const;
     expect(Value.Check(DiscardProvisionalTripKeyCommandSchema, discard)).toBe(
@@ -206,6 +211,17 @@ describe("native bridge protocol", () => {
     expect(Value.Check(WrapTripKeyCommandSchema, wrap)).toBe(true);
     expect(Value.Check(WrapTripKeyResultSchema, wrapped)).toBe(true);
     expect(Value.Check(ImportTripKeyCommandSchema, imported)).toBe(true);
+    for (const endsAt of [
+      undefined,
+      null,
+      "2030-02-30T00:00:00Z",
+      "invalid",
+      0,
+    ]) {
+      expect(
+        Value.Check(ImportTripKeyCommandSchema, { ...imported, endsAt }),
+      ).toBe(false);
+    }
     expect(
       Value.Check(ImportTripKeyCommandSchema, {
         ...imported,
@@ -244,7 +260,7 @@ describe("native bridge protocol", () => {
     }
   });
 
-  it("activates only an already-installed trip key", () => {
+  it("publishes activation metadata without wrapped trip-key material", () => {
     const activate = {
       protocolVersion: 1,
       tripId,

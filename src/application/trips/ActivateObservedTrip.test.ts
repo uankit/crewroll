@@ -100,6 +100,7 @@ describe("ActivateObservedTrip.activateObserved", () => {
       expectedSenderDeviceId: ownerDeviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt,
       wrappedKey,
     });
     expect(native.activateTrip).toHaveBeenCalledWith({

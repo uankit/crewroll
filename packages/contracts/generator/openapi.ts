@@ -24,6 +24,7 @@ import {
   DeviceResponseSchema,
   DownloadSessionResponseSchema,
   PendingDeliveriesResponseSchema,
+  PendingDeliveryCursorSchema,
   EndTripBodySchema,
   InviteResponseSchema,
   InvitePreviewBodySchema,
@@ -87,6 +88,7 @@ const problemResponses = {
   "409": problemResponse("Conflict"),
   "429": problemResponse("Rate limited"),
   "500": problemResponse("Internal error"),
+  "503": problemResponse("Required services unavailable"),
 };
 
 const deviceHeader = {
@@ -185,7 +187,7 @@ function componentSchemas(): Record<string, unknown> {
     SavedReceiptResponse: SavedReceiptResponseSchema,
     ReconciliationQuery: ReconciliationQuerySchema,
     ReconciliationResponse: ReconciliationResponseSchema,
-    SyncAvailablePushHint: publicObjectSchemas.SyncAvailablePushHintSchema,
+    PushSyncHint: publicObjectSchemas.PushSyncHintSchema,
     ProblemDetails: ProblemDetailsSchema,
   };
 }
@@ -481,9 +483,29 @@ export function createOpenApiDocument(): OpenApiDocument {
         ),
       },
       "/v1/deliveries/pending": {
-        get: operation("getPendingDeliveries", queryHeaders, {
-          "200": response("PendingDeliveriesResponse"),
-        }),
+        get: operation(
+          "getPendingDeliveries",
+          [
+            ...queryHeaders,
+            {
+              name: "tripId",
+              in: "query",
+              required: false,
+              schema: TripIdSchema,
+              description:
+                "Scope a bounded pending-delivery page to this trip.",
+            },
+            {
+              name: "after",
+              in: "query",
+              required: false,
+              schema: PendingDeliveryCursorSchema,
+              description:
+                "Opaque continuation for the same device and trip. Requires tripId.",
+            },
+          ],
+          { "200": response("PendingDeliveriesResponse") },
+        ),
       },
       "/v1/deliveries/{deliveryId}/download-session": {
         post: operation(

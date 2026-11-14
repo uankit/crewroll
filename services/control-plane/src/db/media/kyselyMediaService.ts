@@ -1,11 +1,15 @@
 import { captureAllowed } from "./capturePolicy.js";
 import { cleanupMedia } from "./mediaCleanup.js";
+import { eraseExpiredMediaMetadata } from "./mediaMetadataRetention.js";
 import {
   CommitAssetBodySchema,
   CreateDownloadSessionBodySchema,
   CreateUploadSessionBodySchema,
   SavedReceiptBodySchema,
   PublishPreviewBodySchema,
+  PendingDeliveriesQuerySchema,
+  PendingDeliveryCursorSchema,
+  DeliveryIdSchema,
   type PreviewDownloadResponse,
   type CommitAssetResponse,
   type CreateUploadSessionBody,
@@ -29,6 +33,58 @@ const variants = ["PREVIEW", "ORIGINAL"] as const;
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 function requireBody(schema: TSchema, value: unknown): void {
   if (!Value.Check(schema, value)) throw new DomainError("INVALID_REQUEST");
+}
+
+interface PendingCursor {
+  v: 1;
+  deviceId: string;
+  tripId: string;
+  availableAt: string;
+  deliveryId: string;
+}
+
+function pendingCursor(
+  encoded: string | undefined,
+  actor: MediaActor,
+  tripId: string | undefined,
+): PendingCursor | null {
+  if (encoded === undefined) return null;
+  try {
+    requireBody(PendingDeliveryCursorSchema, encoded);
+    const bytes = Buffer.from(encoded, "base64url");
+    if (bytes.toString("base64url") !== encoded) throw new Error();
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error();
+    const fields = value as Record<string, unknown>;
+    if (
+      Object.keys(fields).sort().join(",") !==
+        "availableAt,deliveryId,deviceId,tripId,v" ||
+      fields.v !== 1 ||
+      tripId === undefined ||
+      fields.deviceId !== actor.deviceId ||
+      fields.tripId !== tripId ||
+      typeof fields.availableAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(
+        fields.availableAt,
+      ) ||
+      fields.availableAt.startsWith("0000-") ||
+      new Date(fields.availableAt).toISOString().slice(0, 23) !==
+        fields.availableAt.slice(0, 23) ||
+      typeof fields.deliveryId !== "string" ||
+      !Value.Check(DeliveryIdSchema, fields.deliveryId)
+    )
+      throw new Error();
+    return {
+      v: 1,
+      deviceId: actor.deviceId,
+      tripId,
+      availableAt: fields.availableAt,
+      deliveryId: fields.deliveryId,
+    };
+  } catch {
+    throw new DomainError("INVALID_REQUEST");
+  }
 }
 
 export function createKyselyMediaService(
@@ -57,6 +113,7 @@ export function createKyselyMediaService(
     if (
       !user ||
       user.deleted_at ||
+      user.suspended_at ||
       !device ||
       device.user_id !== actor.userId ||
       device.revoked_at ||
@@ -258,12 +315,13 @@ export function createKyselyMediaService(
   async function previewGrant(row: {
     assetId: string;
     sourceMembershipId: string;
-    encryptedManifest: Uint8Array;
+    encryptedManifest: Uint8Array | null;
     key: string;
     bytes: string;
     checksum: Uint8Array;
     hardDeleteAt: Date;
   }): Promise<PreviewDownloadResponse> {
+    if (row.encryptedManifest === null) throw new DomainError("NOT_FOUND");
     const expiresAt = new Date(
       Math.min(clock.now().getTime() + 300_000, row.hardDeleteAt.getTime()),
     );
@@ -551,6 +609,11 @@ export function createKyselyMediaService(
             .selectAll()
             .where("upload_session_id", "=", existing.id)
             .execute();
+          if (
+            existing.state === "EXPIRED" ||
+            existing.encrypted_manifest === null
+          )
+            throw new DomainError("CONFLICT");
           const original: CreateUploadSessionBody = {
             tripId: existing.trip_id,
             assetId: existing.client_asset_id,
@@ -574,7 +637,6 @@ export function createKyselyMediaService(
               fingerprint({ ...body, capturedAt: capturedAt.toISOString() })
           )
             throw new DomainError("IDEMPOTENCY_CONFLICT");
-          if (existing.state === "EXPIRED") throw new DomainError("CONFLICT");
           // Renew the same immutable object keys after an interrupted upload.
           if (existing.state !== "COMMITTED" && existing.expires_at <= now)
             await tx
@@ -796,47 +858,75 @@ export function createKyselyMediaService(
           .execute();
         // Departing recipients have a fixed queue. Fan-out is atomic with the
         // commit, including the source receipt; a lost response is safe to retry.
-        for (const member of members) {
+        const deliveries = members.map((member) => {
           const source = member.participating_device_id === actor.deviceId;
-          const deliveryId = randomUUID();
-          await tx
-            .insertInto("deliveries")
-            .values({
-              id: deliveryId,
-              asset_id: assetId,
-              recipient_user_id: member.user_id,
-              recipient_device_id: member.participating_device_id,
-              state: source ? "SAVED_LOCALLY" : "READY",
-              available_at: now,
-              saved_at: source ? now : null,
-              created_at: now,
-            })
-            .execute();
+          return {
+            id: randomUUID(),
+            asset_id: assetId,
+            recipient_user_id: member.user_id,
+            recipient_device_id: member.participating_device_id,
+            state: source ? ("SAVED_LOCALLY" as const) : ("READY" as const),
+            available_at: now,
+            saved_at: source ? now : null,
+            created_at: now,
+          };
+        });
+        const wakeSequences: string[] = [];
+        if (deliveries.length) {
+          // One bounded batch (at most ten members) shortens the trip lock
+          // without weakening its recipient snapshot or transaction boundary.
+          await tx.insertInto("deliveries").values(deliveries).execute();
+          const source = deliveries.find(
+            (delivery) => delivery.recipient_device_id === actor.deviceId,
+          );
           if (source)
             await tx
               .insertInto("receipts")
               .values({
                 id: randomUUID(),
-                delivery_id: deliveryId,
+                delivery_id: source.id,
                 receipt_type: "SOURCE_PRESENT",
                 client_event_id: randomUUID(),
                 client_observed_at: now,
                 accepted_at: now,
               })
               .execute();
-          await tx
+          const inbox = await tx
             .insertInto("inbox_events")
+            .values(
+              deliveries.map((delivery) => ({
+                recipient_device_id: delivery.recipient_device_id,
+                trip_id: trip.id,
+                event_type: "ASSET_COMMITTED",
+                aggregate_id: assetId,
+                available_at: now,
+                payload: { assetId, deliveryId: delivery.id },
+                created_at: now,
+              })),
+            )
+            .returning(["sequence", "recipient_device_id"])
+            .execute();
+          // RETURNING row order is not a contract. Associate wakeups with the
+          // returned recipient, never an index into the input batch.
+          for (const event of inbox)
+            if (event.recipient_device_id !== actor.deviceId)
+              wakeSequences.push(event.sequence);
+        }
+        if (wakeSequences.length)
+          await tx
+            .insertInto("outbox_events")
             .values({
-              recipient_device_id: member.participating_device_id,
-              trip_id: trip.id,
-              event_type: "ASSET_COMMITTED",
+              id: randomUUID(),
+              event_type: "media.committed",
               aggregate_id: assetId,
+              dedupe_key: `media.committed:${assetId}`,
+              payload: { tripId: trip.id, recipientSequences: wakeSequences },
               available_at: now,
-              payload: { assetId, deliveryId },
               created_at: now,
+              published_at: null,
+              last_error: null,
             })
             .execute();
-        }
         await tx
           .updateTable("upload_sessions")
           .set({ state: "COMMITTED" })
@@ -845,9 +935,17 @@ export function createKyselyMediaService(
         return commitResult(tx, assetId, actor.deviceId);
       });
     },
-    async pending(actor) {
+    async pending(actor, query = {}) {
+      requireBody(PendingDeliveriesQuerySchema, query);
+      const tripId = "tripId" in query ? query.tripId : undefined;
+      const cursor = pendingCursor(
+        "after" in query ? query.after : undefined,
+        actor,
+        tripId,
+      );
       return db.transaction().execute(async (tx) => {
         await authorize(tx, actor, true);
+        const now = clock.now();
         const rows = await tx
           .selectFrom("deliveries as d")
           .innerJoin("assets as a", "a.id", "d.asset_id")
@@ -855,7 +953,8 @@ export function createKyselyMediaService(
           .innerJoin("trip_members as m", (join) =>
             join
               .onRef("m.trip_id", "=", "a.trip_id")
-              .onRef("m.participating_device_id", "=", "d.recipient_device_id"),
+              .onRef("m.participating_device_id", "=", "d.recipient_device_id")
+              .onRef("m.user_id", "=", "d.recipient_user_id"),
           )
           .select([
             "d.id as deliveryId",
@@ -863,6 +962,9 @@ export function createKyselyMediaService(
             "a.trip_id as tripId",
             "a.source_device_id as sourceDeviceId",
             "a.committed_at as committedAt",
+            sql<string>`to_char(d.available_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(
+              "cursorAvailableAt",
+            ),
           ])
           .where("d.recipient_device_id", "=", actor.deviceId)
           .where("d.recipient_user_id", "=", actor.userId)
@@ -870,19 +972,46 @@ export function createKyselyMediaService(
           .where("a.state", "=", "COMMITTED")
           .where("m.state", "=", "ACTIVE")
           .where("m.left_at", "is", null)
-          .where("t.hard_delete_at", ">", clock.now())
-          .where("d.available_at", "<=", clock.now())
+          .where("t.hard_delete_at", ">", now)
+          .where("d.available_at", "<=", now)
+          .$if(tripId !== undefined, (q) => q.where("a.trip_id", "=", tripId!))
+          .$if(cursor !== null, (q) =>
+            q.where(
+              sql<boolean>`(d.available_at, d.id) > (${cursor!.availableAt}::timestamptz, ${cursor!.deliveryId}::uuid)`,
+            ),
+          )
           .orderBy("d.available_at")
           .orderBy("d.id")
-          .limit(100)
+          .limit(tripId === undefined ? 100 : 101)
           .execute();
-        // Pending-state polling deliberately has no advancing cursor: an
-        // interrupted receiver can never skip an unacknowledged delivery.
+        const page = rows.slice(0, 100);
+        const items = page.map((row) => ({
+          deliveryId: row.deliveryId,
+          assetId: row.assetId,
+          tripId: row.tripId,
+          sourceDeviceId: row.sourceDeviceId,
+          committedAt: row.committedAt.toISOString(),
+        }));
+        // Legacy consumers retain head polling. Scoped consumers durably admit
+        // a page before its cursor, and wrap to the head when a pass ends.
+        if (tripId === undefined) return { items };
+        const last = page.at(-1);
+        const hasMore = rows.length > 100;
         return {
-          items: rows.map((row) => ({
-            ...row,
-            committedAt: row.committedAt.toISOString(),
-          })),
+          items,
+          hasMore,
+          nextCursor:
+            hasMore && last
+              ? Buffer.from(
+                  JSON.stringify({
+                    v: 1,
+                    deviceId: actor.deviceId,
+                    tripId,
+                    availableAt: last.cursorAvailableAt,
+                    deliveryId: last.deliveryId,
+                  } satisfies PendingCursor),
+                ).toString("base64url")
+              : null,
         };
       });
     },
@@ -899,7 +1028,8 @@ export function createKyselyMediaService(
         if (
           delivery.state !== "READY" ||
           delivery.available_at > now ||
-          asset.state !== "COMMITTED"
+          asset.state !== "COMMITTED" ||
+          asset.encrypted_manifest === null
         )
           throw new DomainError("CONFLICT");
         const expiresAt = new Date(
@@ -997,6 +1127,10 @@ export function createKyselyMediaService(
         };
       });
     },
-    cleanup: () => cleanupMedia(db, store, clock),
+    async cleanup() {
+      const retired = await cleanupMedia(db, store, clock);
+      await eraseExpiredMediaMetadata(db, clock);
+      return retired;
+    },
   };
 }

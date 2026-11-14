@@ -13,7 +13,7 @@ This runbook protects the existing TestFlight, Play, EAS Build, and EAS Update l
 
 | Field                  | Required value                                            |
 | ---------------------- | --------------------------------------------------------- |
-| iOS bundle identifier  | `com.uankit53.airmesh`                                    |
+| iOS bundle identifier  | `app.crewroll.mobile`                                     |
 | Android package        | `com.uankit53.airmesh`                                    |
 | Expo slug              | `AirMesh`                                                 |
 | URL scheme             | `airmesh`                                                 |
@@ -42,6 +42,24 @@ npm run doctor
 ```
 
 Confirm the protected values above in the resolved Expo config. Do not run EAS project initialization, change bundle/package identifiers, or replace remote credentials as part of ordinary feature work.
+
+## Native runtime compatibility
+
+The current candidate is **1.0.6**. Its native credential-refresh command and
+other native changes require runtime 1.0.6 on both platforms. The 1.0.5 sequence
+below is a historical checkpoint; apply the same identity checks using 1.0.6
+for this candidate and do not publish its JavaScript to older binaries.
+
+### Historical 1.0.5 checkpoint
+
+The `appVersion` runtime policy derives compatibility from `expo.version`. Changing native modules, permissions, or native dependencies requires a new app version and new binaries before distributing corresponding JavaScript. EAS remote `autoIncrement: true` increments Android `versionCode` and iOS `buildNumber`; it does not increment `expo.version` or isolate an `appVersion` runtime. See [Expo's runtime guidance](https://docs.expo.dev/eas-update/runtime-versions/) and [app version management](https://docs.expo.dev/build-reference/app-versions/).
+
+The November 2026 audit changes must pass this gate before distribution:
+
+1. Set the app version to **1.0.5** consistently in `app.json`, the root `package.json`, and the root version entries in `package-lock.json`, retaining the protected identifiers and `appVersion` policy.
+2. Build new Android and iOS binaries. Inspect their native metadata and require runtime **1.0.5**: Android `expo_runtime_version` and iOS `EXUpdatesRuntimeVersion`. Incremented build numbers alone do not pass this gate.
+3. Verify the actual release launch with the [SDK 57 Updates API](https://docs.expo.dev/versions/v57.0.0/sdk/updates/). Record `runtimeVersion`, `channel`, `updateId`, `createdAt`, `isEmbeddedLaunch`, and emergency-launch status. For validation of the rebuilt embedded JavaScript, require `isEmbeddedLaunch === true` and runtime **1.0.5**; compare the update identity with the artifact's embedded manifest. A successful build or installation does not establish which JavaScript ran.
+4. Publish any corresponding future update only for runtime **1.0.5**. Do not send this audit's JavaScript to the existing **1.0.4** runtime. Keep production updates enabled and preserve device data during validation.
 
 ## Recovery
 

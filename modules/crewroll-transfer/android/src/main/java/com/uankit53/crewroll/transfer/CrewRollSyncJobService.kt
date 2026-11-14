@@ -13,16 +13,33 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PersistableBundle
 import android.provider.MediaStore
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import com.uankit53.crewroll.transfer.identitykeys.NativeOperationQueue
+import com.uankit53.crewroll.transfer.media.NativePushHint
 
 internal object CrewRollSyncJobs {
   const val PERIODIC = 73101
   const val PHOTOS = 73102
   const val USER = 73103
+  const val PUSH = 73104
+  fun hints(extras: PersistableBundle): List<NativePushHint> = (0 until 8).mapNotNull { index ->
+    NativePushHint.parse(listOf("type", "deviceId", "tripId", "eventId").associateWith { extras.getString("$index.$it") })
+  }
+  @Synchronized fun push(context: Context, cellular: Boolean, hint: NativePushHint) {
+    val scheduler = context.getSystemService(JobScheduler::class.java)
+    val previous = scheduler.getPendingJob(PUSH)?.extras?.let(::hints).orEmpty()
+    if (previous.any { it.deviceId == hint.deviceId && it.tripId == hint.tripId && it.eventId == hint.eventId }) return
+    val combined = (previous.filterNot { it.deviceId == hint.deviceId && it.tripId == hint.tripId } + hint).takeLast(8)
+    val extras = PersistableBundle()
+    combined.forEachIndexed { index, value -> value.data().forEach { (key, field) -> extras.putString("$index.$key", field) } }
+    // A normal, quota-bound network job. Normal-priority FCM may be deferred in
+    // Doze; foreground/periodic reconciliation remains the fallback.
+    scheduler.schedule(builder(context, PUSH, cellular).setExtras(extras).setRequiresStorageNotLow(true).build())
+  }
   private fun builder(context: Context, id: Int, cellular: Boolean) = JobInfo.Builder(id, ComponentName(context, CrewRollSyncJobService::class.java))
     .setRequiredNetworkType(if (cellular) JobInfo.NETWORK_TYPE_ANY else JobInfo.NETWORK_TYPE_UNMETERED)
   fun schedule(context: Context, cellular: Boolean) {
@@ -49,7 +66,7 @@ internal object CrewRollSyncJobs {
     // engine, so an OS quota rejection never loses the durable queue.
     try { context.getSystemService(JobScheduler::class.java).schedule(request.build()) } catch (_: IllegalStateException) { }
   }
-  fun cancel(context: Context) { val scheduler = context.getSystemService(JobScheduler::class.java); listOf(PERIODIC, PHOTOS, USER).forEach(scheduler::cancel) }
+  fun cancel(context: Context) { val scheduler = context.getSystemService(JobScheduler::class.java); listOf(PERIODIC, PHOTOS, USER, PUSH).forEach(scheduler::cancel) }
 }
 
 class CrewRollSyncJobService : JobService() {
@@ -66,7 +83,7 @@ class CrewRollSyncJobService : JobService() {
     operations.submit("beginJob") {
       if (requests[params.jobId] !== request) return@submit
       val runtime = CrewRollNativeRuntime.get(applicationContext)
-      val started = runtime.beginJob(params.jobId)
+      val started = runtime.beginJob(params.jobId, if (params.jobId == CrewRollSyncJobs.PUSH) CrewRollSyncJobs.hints(params.extras) else null)
       handler.post {
         if (requests[params.jobId] !== request) return@post
         if (!started) {

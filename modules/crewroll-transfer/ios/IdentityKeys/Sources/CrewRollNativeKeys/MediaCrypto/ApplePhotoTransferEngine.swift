@@ -17,6 +17,24 @@ private final class NativePhotoFileWork {
 private struct PendingPhotoPage: Decodable {
     struct Item: Decodable { let deliveryId: String; let assetId: String; let tripId: String; let sourceDeviceId: String; let committedAt: String }
     let items: [Item]
+    let nextCursor: String?
+    let hasMore: Bool
+    let scoped: Bool
+    private enum CodingKeys: String, CodingKey { case items, nextCursor, hasMore }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        items = try values.decode([Item].self, forKey: .items)
+        scoped = values.contains(.nextCursor) || values.contains(.hasMore)
+        if scoped {
+            guard values.contains(.nextCursor), values.contains(.hasMore) else { throw NativeKeyError.invalidEnvelope }
+            nextCursor = try values.decodeIfPresent(String.self, forKey: .nextCursor)
+            hasMore = try values.decode(Bool.self, forKey: .hasMore)
+            guard hasMore ? (!items.isEmpty && nextCursor != nil) : nextCursor == nil else { throw NativeKeyError.invalidEnvelope }
+            if let nextCursor {
+                guard nextCursor.range(of: "^[A-Za-z0-9_-]{1,512}$", options: .regularExpression) != nil else { throw NativeKeyError.invalidEnvelope }
+            }
+        } else { nextCursor = nil; hasMore = false }
+    }
 }
 private struct UploadGrant: Decodable {
     struct Object: Decodable { let variant: String; let url: String; let requiredHeaders: [String: String]; let uploadedEtag: String? }
@@ -27,19 +45,22 @@ private struct DownloadGrant: Decodable {
     let assetId: String; let deliveryId: String; let encryptedManifest: String; let objects: [Object]
 }
 
-final class NativeTransferCommandFence {
-    private let lock = NSLock()
-    private var revision = 0
-    func advance() -> Int { lock.lock(); defer { lock.unlock() }; revision += 1; return revision }
-    func matches(_ value: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return value == revision }
-}
-
 public actor ApplePhotoTransferEngine {
     private let contextProvider: () throws -> NativeMediaContext?
     private let library: NativePhotoLibraryPort
     private let transportFactory: (Bool) -> NativePhotoTransportPort
     private let root: URL
     private let invalidated: (Int) -> Void
+    private let expiredTrips: () throws -> [NativeExpiredTrip]
+    private let nextRetentionDeadline: () throws -> Date?
+    private let purgeExpiredKey: (NativeExpiredTrip, () throws -> Void) throws -> Bool
+    private var retentionRunning = false
+    private var retentionNextCheck = Date.distantPast
+    private var retentionRetryAt: Date?
+    private let retentionRetryDelay: TimeInterval
+    private var retentionTimer: Task<Void, Never>?
+    private var policyRevision = 0
+    private var retentionResume: (revision: Int, cellular: Bool)?
     private let fileWork = NativePhotoFileWork()
     private var journal: NativeTransferJournal?
     private var journalScope: NativeKeyScope?
@@ -66,21 +87,41 @@ public actor ApplePhotoTransferEngine {
     private var previewIdle = 0
     private var visible = true
     private var globalBlocker: String?
+    private var credentialRecovery: (deviceID: String, ifCurrent: () -> Bool)?
     private var poll: Task<Void, Never>?
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
-    public init(root: URL, contextProvider: @escaping () throws -> NativeMediaContext?, invalidated: @escaping (Int) -> Void) {
+    public init(root: URL, contextProvider: @escaping () throws -> NativeMediaContext?, invalidated: @escaping (Int) -> Void,
+                expiredTrips: @escaping () throws -> [NativeExpiredTrip] = { [] },
+                nextRetentionDeadline: @escaping () throws -> Date? = { nil },
+                purgeExpiredKey: @escaping (NativeExpiredTrip, () throws -> Void) throws -> Bool = { _, cleanup in try cleanup(); return true }) {
         self.root = root; self.contextProvider = contextProvider; self.invalidated = invalidated
+        self.expiredTrips = expiredTrips; self.purgeExpiredKey = purgeExpiredKey
+        self.nextRetentionDeadline = nextRetentionDeadline
+        self.retentionRetryDelay = 30
         self.library = ApplePhotoLibrary(); self.transportFactory = { NativePhotoTransport(cellularAllowed: $0) }
     }
     init(root: URL, contextProvider: @escaping () throws -> NativeMediaContext?, invalidated: @escaping (Int) -> Void,
-         library: NativePhotoLibraryPort, transportFactory: @escaping (Bool) -> NativePhotoTransportPort) {
+         library: NativePhotoLibraryPort, transportFactory: @escaping (Bool) -> NativePhotoTransportPort,
+         expiredTrips: @escaping () throws -> [NativeExpiredTrip] = { [] },
+         nextRetentionDeadline: @escaping () throws -> Date? = { nil },
+         purgeExpiredKey: @escaping (NativeExpiredTrip, () throws -> Void) throws -> Bool = { _, cleanup in try cleanup(); return true },
+         retentionRetryDelay: TimeInterval = 30) {
         self.root = root; self.contextProvider = contextProvider; self.invalidated = invalidated
+        self.expiredTrips = expiredTrips; self.purgeExpiredKey = purgeExpiredKey
+        self.nextRetentionDeadline = nextRetentionDeadline
+        self.retentionRetryDelay = retentionRetryDelay
         self.library = library; self.transportFactory = transportFactory
     }
     public func activate(ifCurrent: () -> Bool = { true }) async {
         guard ifCurrent() else { return }
+        policyRevision += 1
+        retentionResume = nil
         cellularAllowed = true
+        await start(ifCurrent: ifCurrent)
+    }
+    private func start(ifCurrent: () -> Bool = { true }) async {
+        guard ifCurrent() else { return }
         paused = false
         library.onChange = { [weak self] in Task { await self?.libraryChanged() } }
         if poll == nil {
@@ -105,6 +146,12 @@ public actor ApplePhotoTransferEngine {
     }
     public func setPolicy(paused: Bool, cellularAllowed: Bool, ifCurrent: () -> Bool = { true }) async {
         guard ifCurrent() else { return }
+        policyRevision += 1
+        retentionResume = nil
+        await changePolicy(paused: paused, cellularAllowed: cellularAllowed, ifCurrent: ifCurrent)
+    }
+    private func changePolicy(paused: Bool, cellularAllowed: Bool, ifCurrent: () -> Bool = { true }) async {
+        guard ifCurrent() else { return }
         generation += 1
         let policyGeneration = generation
         self.paused = paused; self.cellularAllowed = cellularAllowed
@@ -116,19 +163,25 @@ public actor ApplePhotoTransferEngine {
         // sign-out boundary we are stopped until that operation has settled.
         if running || previewRunning || !activeOriginals.isEmpty { await withCheckedContinuation { idleWaiters.append($0) } }
         if paused && generation == policyGeneration { try? previews?.clearRenders() }
-        if !paused && generation == policyGeneration && ifCurrent() { await activate(ifCurrent: ifCurrent) }
+        if !paused && generation == policyGeneration && ifCurrent() { await start(ifCurrent: ifCurrent) }
     }
     public func stop() async { await setPolicy(paused: true, cellularAllowed: cellularAllowed) }
-    public func eraseAccount(accountHash: String) async throws {
+    public func eraseAccount(accountHash: String, ifCurrent: @escaping () -> Bool = { true },
+                             protectedMutation: (() throws -> Void) throws -> Void = { try $0() }) async throws {
         guard accountHash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw NativeKeyError.invalidCommand }
-        await stop()
-        if journalScope?.accountHash == accountHash {
-            journal = nil; journalScope = nil; previews = nil; progressScope = nil
-            globalBlocker = nil; previewBlocker = nil
-        }
-        if FileManager.default.fileExists(atPath: root.path) {
-            for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where directory.lastPathComponent.hasPrefix(accountHash + ".") {
-                try FileManager.default.removeItem(at: directory)
+        guard ifCurrent() else { throw CancellationError() }
+        await setPolicy(paused: true, cellularAllowed: cellularAllowed, ifCurrent: ifCurrent)
+        guard ifCurrent() else { throw CancellationError() }
+        try protectedMutation {
+            guard ifCurrent() else { throw CancellationError() }
+            if journalScope?.accountHash == accountHash {
+                journal = nil; journalScope = nil; previews = nil; progressScope = nil
+                globalBlocker = nil; previewBlocker = nil
+            }
+            if FileManager.default.fileExists(atPath: root.path) {
+                for directory in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where directory.lastPathComponent.hasPrefix(accountHash + ".") {
+                    try FileManager.default.removeItem(at: directory)
+                }
             }
         }
         invalidated(0)
@@ -149,9 +202,36 @@ public actor ApplePhotoTransferEngine {
         Task { await self.wake() }
     }
 
+    /// Called only after a validated same-scope refresh installed different
+    /// credentials. Preserve policy, work checkpoints, and all other blockers.
+    public func credentialRefreshed(deviceID: String, ifCurrent: @escaping () -> Bool = { true }) throws {
+        guard ifCurrent() else { return }
+        credentialRecovery = (deviceID, ifCurrent)
+        do { try recoverCredentialRotation() }
+        catch { originalNextCheck = Date().addingTimeInterval(5); throw error }
+        if !paused {
+            originalNextCheck = .distantPast; previewNextCheck = .distantPast
+            Task { await self.wakePreviews() }; Task { await self.wake() }
+        }
+    }
+    private func recoverCredentialRotation() throws {
+        guard let recovery = credentialRecovery else { return }
+        guard recovery.ifCurrent() else { credentialRecovery = nil; return }
+        guard var context = try contextProvider() else { return }
+        defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
+        guard context.session.deviceID == recovery.deviceID else { credentialRecovery = nil; return }
+        let ledger = try currentJournal(context)
+        try ledger.clearAuthenticationBlockers(tripID: context.metadata.tripID)
+        try previews?.clearAuthenticationBlockers(tripID: context.metadata.tripID)
+        if globalBlocker == "AUTH_REVOKED" { globalBlocker = nil }
+        if previewBlocker == "AUTH_REVOKED" { previewBlocker = nil }
+        credentialRecovery = nil
+    }
+
     public func foreground(_ value: Bool) async {
         visible = value
         if value {
+            retentionNextCheck = .distantPast
             originalNextCheck = .distantPast; previewNextCheck = .distantPast
             Task { await self.wakePreviews() }; Task { await self.wake() }
         }
@@ -183,6 +263,8 @@ public actor ApplePhotoTransferEngine {
     }
 
     public func wake() async {
+        do { try await reconcileRetention() } catch { globalBlocker = blocker(error); return }
+        guard !retentionRunning else { return }
         guard !paused, !running, Date() >= originalNextCheck else { return }
         running = true
         defer {
@@ -192,6 +274,7 @@ public actor ApplePhotoTransferEngine {
         }
         let epoch = generation
         do {
+            try recoverCredentialRotation()
             guard var context = try contextProvider() else { return }
             defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
             let ledger = try currentJournal(context)
@@ -207,17 +290,24 @@ public actor ApplePhotoTransferEngine {
             let policy = try JSONDecoder().decode(NativeCapturePolicy.self, from: policyData)
             guard policy.tripId == context.metadata.tripID else { throw NativeKeyError.invalidEnvelope }
             if policy.left { return }
-            let pageData = try await network.json(path: "/v1/deliveries/pending", method: "GET", body: nil, context: context, commandID: UUID().uuidString)
+            let after = ledger.pendingDeliveryCursor(context.metadata.tripID)
+            var pendingPath = "/v1/deliveries/pending?tripId=\(context.metadata.tripID)"
+            if let after { pendingPath += "&after=\(after)" }
+            let pageData = try await network.json(path: pendingPath, method: "GET", body: nil, context: context, commandID: UUID().uuidString)
             try assertCurrent(context, epoch)
             let page = try JSONDecoder().decode(PendingPhotoPage.self, from: pageData)
             guard page.items.count <= 100 else { throw NativeKeyError.invalidEnvelope }
+            guard !page.hasMore || page.nextCursor != after,
+                  !page.scoped || page.items.allSatisfy({ $0.tripId == context.metadata.tripID }) else { throw NativeKeyError.invalidEnvelope }
+            var admitted: [NativePhotoWork] = []
             for item in page.items where item.tripId == context.metadata.tripID {
-                guard UUID(uuidString: item.assetId) != nil, UUID(uuidString: item.deliveryId) != nil else { throw NativeKeyError.invalidEnvelope }
-                if ledger.record(item.deliveryId) == nil {
-                    try ledger.put(NativePhotoWork(workID: item.deliveryId, assetID: item.assetId, tripID: item.tripId,
-                        capturedAt: date(item.committedAt) ?? Date(), sourceLocalID: nil, deliveryID: item.deliveryId))
-                }
+                guard UUID(uuidString: item.assetId)?.uuidString.lowercased() == item.assetId,
+                      UUID(uuidString: item.deliveryId)?.uuidString.lowercased() == item.deliveryId,
+                      let committedAt = date(item.committedAt) else { throw NativeKeyError.invalidEnvelope }
+                admitted.append(NativePhotoWork(workID: item.deliveryId, assetID: item.assetId, tripID: item.tripId,
+                    capturedAt: committedAt, sourceLocalID: nil, deliveryID: item.deliveryId))
             }
+            try ledger.admitPendingDeliveries(admitted, tripID: context.metadata.tripID, nextCursor: page.nextCursor)
             Task { await self.wakePreviews() }
             let pending = ledger.snapshot().works.filter { $0.tripID == context.metadata.tripID && !$0.complete && $0.blocker == nil }
                 .sorted { $0.capturedAt < $1.capturedAt }
@@ -238,6 +328,7 @@ public actor ApplePhotoTransferEngine {
             }
             originalIdle = activeOriginals.isEmpty ? min(5, originalIdle + 1) : 0
             originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (visible ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
+            if page.hasMore { originalNextCheck = min(originalNextCheck, Date().addingTimeInterval(1)) }
             if let retry = pending.compactMap(\.nextAttemptAt).filter({ $0 > Date() }).min() { originalNextCheck = min(originalNextCheck, retry) }
         } catch {
             if epoch == generation {
@@ -269,7 +360,7 @@ public actor ApplePhotoTransferEngine {
             if record.sourceLocalID != nil { previewNextCheck = .distantPast; Task { await self.wakePreviews() } }
         } catch {
             if !paused && generation == epoch {
-                if var current = ledger.record(record.workID), let reason = blocker(error) {
+                if var current = ledger.record(record.workID), let reason = blocker(error, context: context) {
                     current.blocker = reason
                     do { try ledger.put(current) } catch { globalBlocker = blocker(error); retryAt = Date().addingTimeInterval(5) }
                     if reason == "AUTH_REVOKED" { globalBlocker = reason }
@@ -521,6 +612,8 @@ public actor ApplePhotoTransferEngine {
     }
 
     public func wakePreviews() async {
+        do { try await reconcileRetention() } catch { previewBlocker = blocker(error); return }
+        guard !retentionRunning else { return }
         guard !paused && !previewRunning && Date() >= previewNextCheck else { return }
         previewRunning = true
         defer { previewRunning = false; finishWaiters() }
@@ -587,7 +680,7 @@ public actor ApplePhotoTransferEngine {
                             continue
                         }
                     }
-                    if var failed = ledger.record(work.workID), let code = blocker(error) { failed.blocker = code; try ledger.put(failed) }
+                    if var failed = ledger.record(work.workID), let code = blocker(error, context: context) { failed.blocker = code; try ledger.put(failed) }
                 }
             }
             // Final capture discovery and original uploads determine this
@@ -642,7 +735,7 @@ public actor ApplePhotoTransferEngine {
                 do { try await materializePreview(record, context: context, epoch: epoch, cache: cache, network: network) }
                 catch {
                     try assertCurrent(context, epoch)
-                    if var failed = cache.record(record.assetID), let code = blocker(error) { failed.blocker = code; try cache.put(failed) }
+                    if var failed = cache.record(record.assetID), let code = blocker(error, context: context) { failed.blocker = code; try cache.put(failed) }
                 }
             }
             lastPreviewCheckedAt = Date()
@@ -666,6 +759,81 @@ public actor ApplePhotoTransferEngine {
         return ((lastCheckedAt ?? .distantPast) >= since && (lastPreviewCheckedAt ?? .distantPast) >= since,
                 running || previewRunning || !activeOriginals.isEmpty,
                 pending || globalBlocker != nil || previewBlocker != nil || retryAt != nil)
+    }
+
+    public func reconcileRetention(force: Bool = false) async throws {
+        guard !retentionRunning, force || Date() >= retentionNextCheck else { return }
+        retentionRunning = true
+        defer { retentionRunning = false; scheduleRetention() }
+        // No secure-storage scans for every one-second status/poll tick.
+        retentionNextCheck = Date().addingTimeInterval(30)
+        retentionRetryAt = nil
+        let expired: [NativeExpiredTrip]
+        do { expired = try expiredTrips() }
+        catch {
+            retentionRetryAt = Date().addingTimeInterval(retentionRetryDelay)
+            retentionNextCheck = retentionRetryAt!
+            throw error
+        }
+        guard !expired.isEmpty else { await restoreRetentionPolicy(); return }
+        // Keep the original running intent across failed cleanup attempts. A
+        // public pause, sign-out, or activation invalidates it via revision.
+        if retentionResume == nil && !paused { retentionResume = (policyRevision, cellularAllowed) }
+        let epoch = generation + 1
+        await changePolicy(paused: true, cellularAllowed: cellularAllowed)
+        guard paused, generation == epoch else { retentionNextCheck = .distantPast; throw CancellationError() }
+        do {
+            for trip in expired {
+                guard generation == epoch, paused else { throw CancellationError() }
+                guard trip.scope.accountHash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+                      trip.scope.installationID.range(of: "^[A-Za-z0-9_-]{8,128}$", options: .regularExpression) != nil,
+                      UUID(uuidString: trip.tripID) != nil, trip.deadline <= Date() else { throw NativeKeyError.invalidState }
+                let directory = root.appendingPathComponent(trip.scope.accountHash + "." + trip.scope.installationID)
+                // The key store revalidates this candidate and holds its
+                // transaction lock across file cleanup and key deletion. A
+                // concurrent authenticated legacy backfill skips both.
+                _ = try purgeExpiredKey(trip) {
+                    if FileManager.default.fileExists(atPath: directory.path) {
+                        let ledger = journalScope == trip.scope ? journal : nil
+                        try (ledger ?? NativeTransferJournal(directory: directory)).purgeTrip(trip.tripID)
+                        let cache = journalScope == trip.scope ? previews : nil
+                        try (cache ?? NativePreviewStore(directory: directory)).purgeTrip(trip.tripID)
+                    }
+                }
+            }
+            invalidated(journal?.snapshot().revision ?? 0)
+            if generation == epoch { await restoreRetentionPolicy() }
+        } catch {
+            retentionRetryAt = Date().addingTimeInterval(retentionRetryDelay)
+            retentionNextCheck = retentionRetryAt!
+            throw error
+        }
+    }
+
+    private func restoreRetentionPolicy() async {
+        guard let intent = retentionResume, intent.revision == policyRevision, paused else { return }
+        retentionResume = nil
+        // Normal wake processing handles absent/locked context without turning
+        // a transient secure-storage failure into a permanent policy pause.
+        await changePolicy(paused: false, cellularAllowed: intent.cellular)
+    }
+
+    private func scheduleRetention() {
+        retentionTimer?.cancel(); retentionTimer = nil
+        let delay: TimeInterval
+        do {
+            let candidates = [try nextRetentionDeadline(), retentionRetryAt].compactMap { $0 }
+            guard let deadline = candidates.min() else { return }
+            let remaining = deadline.timeIntervalSinceNow
+            // A blocked deletion retries without a busy loop. A long deadline
+            // is rechecked daily, including while sharing is paused/signed out.
+            delay = remaining <= 0 ? 30 : min(86_400, max(0.01, remaining))
+        } catch { delay = 30 }
+        retentionTimer = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return }
+            try? await self?.reconcileRetention(force: true)
+        }
     }
 
     private func cacheSourcePreview(_ record: NativePhotoWork, context: NativeMediaContext, ledger: NativeTransferJournal) throws {
@@ -723,7 +891,7 @@ public actor ApplePhotoTransferEngine {
                 invalidated(ledger.snapshot().revision + cache.snapshot(tripID: work.tripID).revision)
             } catch {
                 try assertCurrent(context, epoch)
-                if let code = blocker(error) { record.blocker = code; try cache.put(record) }
+                if let code = blocker(error, context: context) { record.blocker = code; try cache.put(record) }
             }
         }
     }
@@ -768,7 +936,7 @@ public actor ApplePhotoTransferEngine {
         guard current.scope == context.scope, current.metadata.tripID == context.metadata.tripID,
               current.session.deviceID == context.session.deviceID else { throw CancellationError() }
     }
-    private func blocker(_ error: Error) -> String? {
+    private func blocker(_ error: Error, context: NativeMediaContext? = nil) -> String? {
         if let http = error as? NativeTransferHTTPError, http.authenticated && http.code == "TRIP_STORAGE_LIMIT" { return "SHARING_LIMIT" }
         if let photo = error as? PhotoLibraryFailure {
             switch photo { case .permission: return "PHOTO_PERMISSION"; case .missing: return "SOURCE_MISSING"; default: return "INTEGRITY_FAILURE" }
@@ -777,8 +945,21 @@ public actor ApplePhotoTransferEngine {
         if let native = error as? NativeKeyError { return ["KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST"].contains(native.code) ? native.code : "INTEGRITY_FAILURE" }
         let disk = error as NSError
         if disk.domain == NSCocoaErrorDomain && disk.code == NSFileWriteOutOfSpaceError { return "STORAGE_FULL" }
-        if let http = error as? NativeTransferHTTPError, http.authenticated && (http.status == 401 || http.status == 403) { return "AUTH_REVOKED" }
+        if let http = error as? NativeTransferHTTPError, http.authenticated && (http.status == 401 || http.status == 403) {
+            if let context, rotatedCredential(since: context) { return nil }
+            return "AUTH_REVOKED"
+        }
         return nil
+    }
+    private func rotatedCredential(since previous: NativeMediaContext) -> Bool {
+        guard var current = try? contextProvider() else { return false }
+        defer { current.tripKey.resetBytes(in: 0..<current.tripKey.count); current.session.backgroundBearer.resetBytes(in: 0..<current.session.backgroundBearer.count) }
+        guard current.scope == previous.scope, current.metadata.tripID == previous.metadata.tripID,
+              current.session.deviceID == previous.session.deviceID,
+              current.session.apiBaseURL == previous.session.apiBaseURL else { return false }
+        let left = current.session.backgroundBearer, right = previous.session.backgroundBearer
+        guard left.count == right.count else { return true }
+        return left.count > 0 && left.withUnsafeBytes { a in right.withUnsafeBytes { b in sodium_memcmp(a.baseAddress, b.baseAddress, left.count) != 0 } }
     }
     private func json(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) }
     private func iso(_ date: Date) -> String { let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return formatter.string(from: date) }

@@ -1,4 +1,5 @@
 import type { TripView } from "../domain/trips/model";
+import { withDeadline } from "../application/shared/withDeadline";
 import type {
   PhotoLibraryPermissionPort,
   PhotoLibraryPermissionState,
@@ -24,7 +25,7 @@ export function createPhotoReadinessService(
   ) => {
     const permission = requestPermission
       ? await dependencies.photoPermission.request()
-      : await dependencies.photoPermission.read();
+      : await withDeadline(() => dependencies.photoPermission.read(), 5_000);
     options.onPermission?.(permission);
     const current =
       options.knownTrip?.id === tripId

@@ -39,6 +39,13 @@ describe("SessionLoadingScreen", () => {
       screen.getByRole("button", { name: "Retry connection" }),
     );
     expect(reloadAppAsync).toHaveBeenCalledWith("crewroll-session-retry");
+    await act(() => jest.advanceTimersByTimeAsync(5_000));
+    expect(
+      screen.getByText("Close and reopen CrewRoll after reconnecting."),
+    ).toBeOnTheScreen();
+    expect(
+      screen.getByRole("button", { name: "Retry connection" }),
+    ).toBeEnabled();
     await view.unmount();
   });
 

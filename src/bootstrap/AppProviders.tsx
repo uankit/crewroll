@@ -1,6 +1,6 @@
 import { createUuidV4, createInviteCode } from "../domain/ids/random";
 import type { TripLifecycleBody } from "@crewroll/contracts";
-import { ClerkProvider, useAuth } from "@clerk/expo";
+import { ClerkProvider, useAuth, useClerk } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
 import { QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
@@ -9,6 +9,7 @@ import { Platform } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { createProvisionCurrentDevice } from "../application/auth/ProvisionDevice";
+import { createRefreshDeviceSession } from "../application/auth/RefreshDeviceSession";
 import { createActivateObservedTrip } from "../application/trips/ActivateObservedTrip";
 import { createApproveMember } from "../application/trips/ApproveMember";
 import { createCreateImmediateTrip } from "../application/trips/CreateImmediateTrip";
@@ -23,7 +24,7 @@ import { createSetTripReadiness } from "../application/trips/SetTripReadiness";
 import { createPhotoReadinessService } from "./photoReadinessService";
 import { createStartAndActivateTrip } from "../application/trips/StartAndActivateTrip";
 import { CrewRollThemeProvider } from "../design-system/theme/CrewRollThemeProvider";
-import { AccountSetupProvider } from "./AccountSetup";
+import { SessionAccountSetupProvider } from "./SessionAccountSetupProvider";
 import { AccountPrivacyProvider } from "./AccountPrivacy";
 import { useAccountTerms } from "./useAccountTerms";
 import {
@@ -49,7 +50,9 @@ import {
 } from "./AppSessionProvider";
 import { createMobileDependencies } from "./mobileDependencies";
 import { createNativeSessionFence } from "./nativeSessionFence";
+import { useApiSessionBinding } from "./useApiSessionBinding";
 import { queryClient } from "./queryClient";
+import { PushWakeProvider } from "./PushWakeProvider";
 import {
   createDevelopmentAcceptanceControl,
   composeDevelopmentAcceptance,
@@ -64,7 +67,11 @@ function publicEnv(): PublicEnv {
   });
 }
 
-function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
+function createProductionComposition(
+  env: PublicEnv,
+  getToken: ClerkGetToken,
+  sessionBinding: () => string | null,
+) {
   const sessionTokenSource = new ClerkSessionTokenSource((options) =>
     options ? getToken(options) : getToken(),
   );
@@ -72,6 +79,7 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
     apiBaseUrl: env.apiUrl,
     fetch: globalThis.fetch,
     sessionTokenSource,
+    sessionBinding,
   });
   const random = new ExpoRandomBytesPort();
   const recoveryStore = createExpoTripRecoveryStore();
@@ -83,10 +91,19 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
   const acceptedResponse: AcceptedTripMutationResponsePort =
     developmentCut ?? noAcceptedTripMutationResponse;
   const nativeSessions = createNativeSessionFence(crewRollTransfer);
+  const refreshDeviceSession = createRefreshDeviceSession({
+    native: () => nativeSessions.capture(),
+    random,
+    registration: mobileDependencies.deviceRegistration,
+    sessionBinding,
+  });
   let provisionGeneration = -1;
   let provisionCurrentDevice: ReturnType<typeof createProvisionCurrentDevice>;
 
   const runtime: AppSessionRuntime = Object.freeze({
+    invalidatePendingSetup() {
+      nativeSessions.invalidate();
+    },
     async pauseTransfers(options) {
       nativeSessions.invalidate();
       const generation = nativeSessions.generation;
@@ -113,6 +130,7 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
       }
       return provisionCurrentDevice(input);
     },
+    refreshDeviceSession,
     async getNativeSnapshot() {
       const snapshot = await crewRollTransfer.getSnapshot();
       return Object.freeze({ activeTripId: snapshot.activeTripId });
@@ -333,6 +351,7 @@ function createProductionComposition(env: PublicEnv, getToken: ClerkGetToken) {
 
   return Object.freeze({
     accountApi: mobileDependencies.accountApi,
+    pushApi: mobileDependencies.pushApi,
     async eraseLocalAccount(accountId: string) {
       await runtime.pauseTransfers?.();
       if (!crewRollTransfer.eraseAccount)
@@ -356,8 +375,14 @@ function ProductionSessionBridge({
   fontsReady: boolean;
 }>) {
   const auth = useAuth();
+  const clerk = useClerk();
+  const currentSessionBinding =
+    auth.isLoaded && auth.isSignedIn
+      ? JSON.stringify([auth.userId, auth.sessionId])
+      : null;
+  const sessionBinding = useApiSessionBinding(clerk, currentSessionBinding);
   const [composition] = useState(() =>
-    createProductionComposition(env, auth.getToken),
+    createProductionComposition(env, auth.getToken, sessionBinding),
   );
   const profile = useProfileCompletion({
     api: composition.profileApi,
@@ -383,9 +408,12 @@ function ProductionSessionBridge({
       : { isLoaded: true, isSignedIn: false };
 
   const signOut = auth.signOut;
+  const clerkSessionId = auth.sessionId;
   const onAuthInvalid = useCallback(async () => {
-    await signOut();
-  }, [signOut]);
+    // A timed-out sign-out request may finish after an account switch. Target
+    // the session that requested teardown instead of every current session.
+    if (clerkSessionId) await signOut({ sessionId: clerkSessionId });
+  }, [clerkSessionId, signOut]);
   const acceptance =
     __DEV__ && composition.developmentCut !== null
       ? Object.freeze({
@@ -423,16 +451,20 @@ function ProductionSessionBridge({
           queryClient={queryClient}
           runtime={composition.runtime}
         >
-          <AccountSetupProvider
+          <SessionAccountSetupProvider
             terms={terms}
             accountId={fontsReady && auth.isSignedIn ? auth.userId : null}
             profile={profile}
             scope={env.apiUrl}
             permission={composition.photoPermission}
-            onUseAnotherAccount={() => void signOut()}
           >
-            {children}
-          </AccountSetupProvider>
+            <PushWakeProvider
+              api={composition.pushApi}
+              sessionBinding={sessionBinding}
+            >
+              {children}
+            </PushWakeProvider>
+          </SessionAccountSetupProvider>
         </AppSessionProvider>
       </DevelopmentAcceptanceProvider>
     </AccountPrivacyProvider>

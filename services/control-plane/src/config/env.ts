@@ -257,9 +257,9 @@ export function loadEnvironment(
       if (source[key] !== undefined) invalidKeys.add(key);
     }
     for (const key of productionOnlyKeys) {
-      // These integrations belong to the Node push worker, not the Cloudflare
-      // foreground API. Cloudflare validates its actual R2/Hyperdrive bindings
-      // and independent token-encryption secret at the Worker entrypoint.
+      // Legacy Node provider settings are not Cloudflare bindings. Cloudflare
+      // validates R2/Hyperdrive and token protection independently; enabled push
+      // dispatch reads its explicitly configured provider secret separately.
       if (
         options.platform === "cloudflare" &&
         [

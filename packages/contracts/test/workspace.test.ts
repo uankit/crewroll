@@ -20,10 +20,6 @@ it("boots the contracts workspace through explicit exports and exact dependencie
       types: "./dist/native/protocol.d.ts",
       import: "./dist/native/protocol.js",
     },
-    "./storage/ports": {
-      types: "./dist/storage/ports.d.ts",
-      import: "./dist/storage/ports.js",
-    },
   });
   expect(manifest.files).toEqual(["dist", "generated/crewroll.openapi.json"]);
   expect(Object.keys(manifest.exports)).not.toEqual(

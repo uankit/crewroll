@@ -2,13 +2,14 @@ import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { CrewRollWordmark } from "./CrewRollWordmark";
 import { spacing } from "../tokens/spacing";
 import { useCrewRollTheme } from "../theme/useCrewRollTheme";
+import { AppText } from "../primitives/AppText";
 
 /** The same quiet brand treatment while auth or native restoration finishes. */
-export function BrandLoading() {
+export function BrandLoading({ message }: Readonly<{ message?: string }>) {
   const colors = useCrewRollTheme();
   return (
     <View
-      accessibilityLabel="Getting ready"
+      accessibilityLabel={message ?? "Getting ready"}
       accessibilityRole="summary"
       accessibilityState={{ busy: true }}
       accessible
@@ -16,6 +17,7 @@ export function BrandLoading() {
     >
       <CrewRollWordmark />
       <ActivityIndicator color={colors.action} size="small" />
+      {message ? <AppText tone="secondary">{message}</AppText> : null}
     </View>
   );
 }

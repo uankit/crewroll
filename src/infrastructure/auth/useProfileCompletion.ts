@@ -1,7 +1,11 @@
 import { useUser } from "@clerk/expo";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { profileName } from "../../domain/auth/profileName";
+import { withDeadline } from "../../application/shared/withDeadline";
 import { profileSyncCache, type ProfileSyncCache } from "./profileSyncCache";
+
+const CACHE_READ_DEADLINE_MS = 2_000;
+const PROFILE_OPERATION_DEADLINE_MS = 20_000;
 
 type ProfileApi = { syncProfile(): Promise<{ displayName: string }> };
 type State = {
@@ -57,14 +61,25 @@ export function useProfileCompletion({
     const operation = {};
     working.current = operation;
     void (async () => {
-      const cached = await cache.read(scope, accountId);
+      // This cache only avoids a redundant profile sync. A locked/unavailable
+      // keychain must never become the source of truth for account readiness.
+      const cached = await withDeadline(
+        () => cache.read(scope, accountId),
+        CACHE_READ_DEADLINE_MS,
+      ).catch(() => null);
       if (!current()) return;
       if (cached !== canonicalName) {
-        const response = await api.syncProfile();
+        const response = await withDeadline(
+          () => api.syncProfile(),
+          PROFILE_OPERATION_DEADLINE_MS,
+        );
         if (!current()) return;
         if (response.displayName !== canonicalName)
           throw new Error("PROFILE_SYNC_PENDING");
-        await cache.write(scope, accountId, canonicalName);
+        void withDeadline(
+          () => cache.write(scope, accountId, canonicalName),
+          CACHE_READ_DEADLINE_MS,
+        ).catch(() => undefined);
       }
       if (current())
         setState({
@@ -120,13 +135,22 @@ export function useProfileCompletion({
     setState({ accountId, scope, name, ready: false, busy: true, error: null });
     try {
       if (name !== canonicalName)
-        await user.update({ firstName: name, lastName: null });
+        await withDeadline(
+          () => user.update({ firstName: name, lastName: null }),
+          PROFILE_OPERATION_DEADLINE_MS,
+        );
       if (epoch !== generation.current) return;
-      const response = await api.syncProfile();
+      const response = await withDeadline(
+        () => api.syncProfile(),
+        PROFILE_OPERATION_DEADLINE_MS,
+      );
       if (epoch !== generation.current) return;
       if (response.displayName !== name)
         throw new Error("PROFILE_SYNC_PENDING");
-      await cache.write(scope, accountId, name);
+      void withDeadline(
+        () => cache.write(scope, accountId, name),
+        CACHE_READ_DEADLINE_MS,
+      ).catch(() => undefined);
       if (epoch === generation.current)
         setState({
           accountId,

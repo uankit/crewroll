@@ -16,6 +16,521 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class NativePhotoTransferEngineTest {
+    @Test fun `legacy pending pages retain current trip deliveries without a discovery cursor`() {
+        Fixture().use { f ->
+            val foreign = "01990000-0000-4000-8001-000000000099"
+            f.pendingPage = {
+                JSONObject().put("items", JSONArray().apply {
+                    put(JSONObject().put("deliveryId", foreign).put("assetId", foreign)
+                        .put("tripId", "01990000-0000-7000-8000-000000000099").put("committedAt", "2026-09-09T12:00:00Z"))
+                    if (!f.acknowledged) put(JSONObject().put("deliveryId", f.delivery).put("assetId", f.asset)
+                        .put("tripId", f.trip).put("committedAt", "2026-09-09T12:00:01Z"))
+                })
+            }
+            val engine = f.engine()
+            f.start(engine)
+            val journal = NativeTransferJournal(File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}"))
+            assertEquals(1, f.receipts)
+            assertEquals(1, f.saves)
+            assertNull(journal.pendingDeliveryCursor(f.trip))
+            assertNull(journal.record(foreign))
+            assertTrue(journal.record(f.delivery)!!.getBoolean("complete"))
+        }
+    }
+
+    @Test fun `pending discovery resumes after restart and wraps to its head`() {
+        Fixture().use { f ->
+            val directory = File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            val id = "01990000-0000-4000-8001-000000000001"
+            val blocked = JSONObject().put("deliveryId", id).put("assetId", id).put("tripId", f.trip)
+                .put("committedAt", "2026-09-09T12:00:00Z")
+            NativeTransferJournal(directory).put(JSONObject(blocked.toString()).put("workId", id).put("complete", false)
+                .put("capturedAt", blocked.getString("committedAt")).put("blocker", "INTEGRITY_FAILURE"))
+            f.pendingPage = { path ->
+                if (path.contains("&after=") || f.acknowledged) {
+                    JSONObject().put("items", JSONArray().apply {
+                        if (!f.acknowledged) put(JSONObject().put("deliveryId", f.delivery).put("assetId", f.asset)
+                            .put("tripId", f.trip).put("committedAt", "2026-09-09T12:00:01Z"))
+                    }).put("nextCursor", JSONObject.NULL).put("hasMore", false)
+                } else JSONObject().put("items", JSONArray().put(blocked)).put("nextCursor", "cGFnZTI").put("hasMore", true)
+            }
+            val first = f.engine()
+            first.activate().get(5, TimeUnit.SECONDS)
+            f.await {
+                File(directory, "journal.json").let { file ->
+                    file.exists() && JSONObject(file.readText()).optJSONObject("pendingDeliveryCursors")?.optString(f.trip) == "cGFnZTI"
+                }
+            }
+            f.stop(first)
+            assertEquals(0, f.receipts)
+            f.pendingPaths.clear()
+            val restarted = f.engine()
+            restarted.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            f.stop(restarted)
+            assertEquals("/v1/deliveries/pending?tripId=${f.trip}&after=cGFnZTI", f.pendingPaths.first())
+            assertNull(NativeTransferJournal(directory).pendingDeliveryCursor(f.trip))
+            assertEquals(1, f.saves)
+            assertEquals("INTEGRITY_FAILURE", NativeTransferJournal(directory).record(id)!!.getString("blocker"))
+        }
+    }
+
+    @Test fun `malformed continuation or foreign trip rejects the complete page without cursor advancement`() {
+        listOf("foreign-trip", "missing-field", "same-cursor", "cursor-at-end", "empty-continuation", "invalid-cursor").forEach { invalid ->
+            Fixture().use { f ->
+                val directory = File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+                NativeTransferJournal(directory).admitPendingDeliveries(emptyList(), f.trip, "cHJldg")
+                val items = JSONArray().put(JSONObject().put("deliveryId", f.delivery).put("assetId", f.asset)
+                    .put("tripId", f.trip).put("committedAt", "2026-09-09T12:00:00Z"))
+                val response = JSONObject().put("items", items).put("nextCursor", "cGFnZTI").put("hasMore", true)
+                when (invalid) {
+                    "foreign-trip" -> items.put(JSONObject(items.getJSONObject(0).toString()).put("tripId", "01990000-0000-7000-8000-000000000099"))
+                    "missing-field" -> response.remove("hasMore")
+                    "same-cursor" -> response.put("nextCursor", "cHJldg")
+                    "cursor-at-end" -> response.put("hasMore", false)
+                    "empty-continuation" -> response.put("items", JSONArray())
+                    "invalid-cursor" -> response.put("nextCursor", "not/a+cursor")
+                }
+                f.pendingPage = { response }
+                val engine = f.engine()
+                engine.activate().get(5, TimeUnit.SECONDS)
+                f.await { (engine.snapshot().get(5, TimeUnit.SECONDS)["blockers"] as List<*>).contains("INTEGRITY_FAILURE") }
+                f.stop(engine)
+                val journal = NativeTransferJournal(directory)
+                assertTrue(journal.records().isEmpty(), invalid)
+                assertEquals("cHJldg", journal.pendingDeliveryCursor(f.trip), invalid)
+                assertEquals(0, f.receipts, invalid)
+                assertEquals(0, f.saves, invalid)
+            }
+        }
+    }
+
+    @Test fun `a late pending page cannot cross pause or account selection`() {
+        listOf(false, true).forEach { switchAccount -> Fixture().use { f ->
+            val directory = File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.pendingPage = {
+                entered.countDown(); check(release.await(5, TimeUnit.SECONDS))
+                JSONObject().put("items", JSONArray().put(JSONObject().put("deliveryId", f.delivery).put("assetId", f.asset)
+                    .put("tripId", f.trip).put("committedAt", "2026-09-09T12:00:00Z")))
+                    .put("nextCursor", "cGFnZTI").put("hasMore", true)
+            }
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            try {
+                if (switchAccount) {
+                    f.context = f.context.copy(scope = NativeKeyScope("b".repeat(64), f.context.scope.installationId))
+                    release.countDown()
+                    f.run(engine)
+                    f.stop(engine)
+                } else {
+                    val stopped = engine.stop()
+                    release.countDown()
+                    stopped.get(5, TimeUnit.SECONDS)
+                }
+                val journal = NativeTransferJournal(directory)
+                assertTrue(journal.records().isEmpty())
+                assertNull(journal.pendingDeliveryCursor(f.trip))
+                assertEquals(0, f.receipts)
+                assertEquals(0, f.saves)
+            } finally { release.countDown() }
+        } }
+    }
+
+    @Test fun `a full blocked first page cannot hide a later valid original`() {
+        Fixture().use { f ->
+            val ledger = NativeTransferJournal(File(f.root, "journals/${f.context.scope.accountHash}.${f.context.scope.installationId}"))
+            val first = JSONArray()
+            repeat(100) { index ->
+                val id = "01990000-0000-4000-8001-${index.toString().padStart(12, '0')}"
+                val item = JSONObject().put("deliveryId", id).put("assetId", id).put("tripId", f.trip)
+                    .put("committedAt", "2026-09-09T12:00:00Z")
+                first.put(item)
+                ledger.put(JSONObject(item.toString()).put("workId", id).put("capturedAt", item.getString("committedAt"))
+                    .put("complete", false).put("blocker", "INTEGRITY_FAILURE"))
+            }
+            f.pendingPage = { path ->
+                if (path.endsWith("&after=cGFnZTI")) {
+                    JSONObject().put("items", JSONArray().apply {
+                        if (!f.acknowledged) put(JSONObject().put("deliveryId", f.delivery).put("assetId", f.asset)
+                            .put("tripId", f.trip).put("committedAt", "2026-09-09T12:00:01Z"))
+                    }).put("nextCursor", JSONObject.NULL).put("hasMore", false)
+                } else JSONObject().put("items", first).put("nextCursor", "cGFnZTI").put("hasMore", true)
+            }
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            f.stop(engine)
+            assertEquals(1, f.saves)
+            assertEquals(100, f.count(engine, "blocked"))
+            assertTrue(f.pendingPaths.contains("/v1/deliveries/pending?tripId=${f.trip}&after=cGFnZTI"))
+            assertEquals(100, NativeTransferJournal(ledger.directory).records().count { it.optionalString("blocker") == "INTEGRITY_FAILURE" })
+        }
+    }
+
+    @Test fun `credential rotation recovers preinstall and late old bearer rejections`() {
+        listOf(false, true).forEach { lateFailure -> Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val old = f.context
+            val rejected = java.util.concurrent.atomic.AtomicBoolean(false)
+            val rejectOld: (NativeMediaContext) -> Unit = { context ->
+                if (MessageDigest.isEqual(context.session.backgroundBearer, old.session.backgroundBearer)) {
+                    if (lateFailure) { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+                    rejected.set(true); throw TransferHttpException(401, true)
+                }
+            }
+            if (lateFailure) f.savedReceiptHook = rejectOld else f.downloadGrantHook = rejectOld
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                if (lateFailure) assertTrue(entered.await(5, TimeUnit.SECONDS))
+                else f.await { f.count(engine, "blocked") == 1 }
+                f.context = old.copy(session = old.session.copy(backgroundBearer = "fresh-credential".toByteArray(), expiresAt = Instant.now().plusSeconds(30 * 86_400)))
+                engine.credentialRefreshed(old.session.deviceId).get(5, TimeUnit.SECONDS)
+                release.countDown()
+                f.await(8) { f.receipts == 1 }
+                assertTrue(rejected.get())
+                assertEquals(1, f.saves); assertArrayEquals(f.source, f.saved)
+                assertEquals(0, f.count(engine, "blocked"))
+                assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            } finally { release.countDown() }
+        } }
+    }
+
+    @Test fun `current credential rejection stays blocked and refresh preserves unrelated failures and pause`() {
+        Fixture().use { f ->
+            val directory = File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId)
+            val unrelated = "01990000-0000-4000-8000-000000000099"
+            NativeTransferJournal(directory).put(JSONObject().put("workId", unrelated).put("assetId", unrelated).put("tripId", f.trip)
+                .put("capturedAt", Instant.now().toString()).put("complete", false).put("deliveryId", unrelated).put("blocker", "INTEGRITY_FAILURE"))
+            val rejected = java.util.concurrent.atomic.AtomicInteger()
+            f.downloadGrantHook = { rejected.incrementAndGet(); throw TransferHttpException(403, true) }
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.count(engine, "blocked") == 2 }
+            engine.stop().get(5, TimeUnit.SECONDS)
+            engine.credentialRefreshed(f.context.session.deviceId) { false }.get(5, TimeUnit.SECONDS)
+            assertEquals(2, f.count(engine, "blocked"))
+            f.context = f.context.copy(session = f.context.session.copy(backgroundBearer = "fresh-rejected-credential".toByteArray(), expiresAt = Instant.now().plusSeconds(30 * 86_400)))
+            engine.credentialRefreshed(f.context.session.deviceId).get(5, TimeUnit.SECONDS)
+            assertEquals(1, f.count(engine, "blocked"))
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            assertEquals(0, f.saves); assertEquals(0, f.receipts)
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.count(engine, "blocked") == 2 }
+            assertEquals(2, rejected.get(), "the newly current rejected credential stays blocked instead of looping")
+        }
+    }
+
+    @Test fun `an intervening engine generation rejects erasure instead of acknowledging incomplete cleanup`() {
+        Fixture().use { f ->
+            val engine = f.engine()
+            val directory = File(f.root, f.context.scope.accountHash + ".still-pending").apply { mkdirs() }
+            val marker = File(directory, "pending-work").apply { writeText("retry") }
+            val erasure = engine.eraseAccount(f.context.scope.accountHash, protectedMutation = { mutation ->
+                engine.stop() // A retention stop may advance this without a new selection command.
+                mutation()
+            })
+            assertThrows(java.util.concurrent.ExecutionException::class.java) { erasure.get(5, TimeUnit.SECONDS) }
+            assertTrue(marker.exists())
+        }
+    }
+    @Test fun `account erasure takes the ownership fence before deleting local files`() {
+        Fixture().use { f ->
+            val fence = NativeTransferCommandFence(); val epoch = fence.advance()
+            val engine = f.engine()
+            val directory = File(f.root, f.context.scope.accountHash + ".old").apply { mkdirs() }
+            File(directory, "old-work").writeText("old")
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val erasure = engine.eraseAccount(f.context.scope.accountHash, protectedMutation = { mutation ->
+                entered.countDown(); check(release.await(8, TimeUnit.SECONDS))
+                fence.runIfCurrent(epoch, mutation)
+            }) { fence.matches(epoch) }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val replacement = fence.advance()
+                val marker = fence.runIfCurrent(replacement) { File(directory, "new-work").apply { writeText("new") } }
+                release.countDown()
+                assertThrows(java.util.concurrent.ExecutionException::class.java) { erasure.get(5, TimeUnit.SECONDS) }
+                assertTrue(marker.exists())
+            } finally { release.countDown() }
+        }
+    }
+    @Test fun `a stale OS lease stop cannot pause newer foreground work`() {
+        Fixture().use { f ->
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            engine.stop { false }.get(5, TimeUnit.SECONDS)
+            assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            f.await { f.receipts == 1 }
+        }
+    }
+    @Test fun `account file erasure is fenced again after an asynchronous drain`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val current = java.util.concurrent.atomic.AtomicBoolean(true)
+            f.observeHook = { enabled -> if (!enabled) { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) } }
+            val engine = f.engine()
+            val directory = File(f.root, f.context.scope.accountHash + ".replacement").apply { mkdirs() }
+            try {
+                val erase = engine.eraseAccount(f.context.scope.accountHash) { current.get() }
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                current.set(false)
+                val marker = File(directory, "new-session-work").apply { writeText("retained") }
+                release.countDown()
+                assertThrows(java.util.concurrent.ExecutionException::class.java) { erase.get(5, TimeUnit.SECONDS) }
+                assertTrue(marker.exists())
+            } finally { release.countDown(); f.observeHook = null }
+        }
+    }
+    @Test fun `expired background wake predicate cannot unpause after a delayed retention scan`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.retentionScanHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            var current = true
+            val engine = f.engine()
+            try {
+                val activation = engine.activate { current }
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                current = false
+                release.countDown()
+                activation.get(5, TimeUnit.SECONDS)
+                assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+                assertEquals(0, f.receipts)
+                f.retentionScanHook = null
+                engine.activate().get(5, TimeUnit.SECONDS)
+                f.await { f.receipts == 1 }
+            } finally { release.countDown() }
+        }
+    }
+    @Test fun `failed observer registration stays paused and a later activation rebuilds its timers`() {
+        Fixture().use { f ->
+            var failed = false
+            f.observeHook = { enabled ->
+                if (enabled && !failed) { failed = true; throw PhotoLibraryException("PHOTO_PERMISSION") }
+            }
+            val engine = f.engine()
+            assertThrows(java.util.concurrent.ExecutionException::class.java) { engine.activate().get(5, TimeUnit.SECONDS) }
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            assertArrayEquals(f.source, f.saved)
+            assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+        }
+    }
+
+    @Test fun `stale retention candidate skips journal and staged files after authenticated backfill`() {
+        Fixture().use { f ->
+            val directory = File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId)
+            val journal = NativeTransferJournal(directory)
+            journal.put(JSONObject().put("workId", "new-work").put("assetId", f.asset).put("tripId", f.trip)
+                .put("state", "RECEIVING").put("directory", "stage-01990000-0000-7000-8000-000000000099"))
+            val stage = File(directory, "stage-01990000-0000-7000-8000-000000000099").apply { mkdirs() }
+            File(stage, "original.ciphertext").writeBytes(byteArrayOf(7))
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, Instant.now().minusSeconds(1)))
+            f.retentionCandidateCurrent = false
+            val engine = f.engine()
+            engine.reconcileRetention().get(5, TimeUnit.SECONDS)
+            assertTrue(f.purgedTrips.isEmpty())
+            assertNotNull(NativeTransferJournal(directory).record("new-work"))
+            assertTrue(File(stage, "original.ciphertext").isFile)
+            assertTrue(f.contextAvailable)
+        }
+    }
+
+    @Test fun `a successful retention retry restores the current valid trip without another activation`() {
+        assertRetentionRetryRespectsPolicy(stopBetweenRetries = false)
+    }
+
+    @Test fun `an explicit stop between retention retries prevents automatic resume`() {
+        assertRetentionRetryRespectsPolicy(stopBetweenRetries = true)
+    }
+
+    private fun assertRetentionRetryRespectsPolicy(stopBetweenRetries: Boolean) {
+        Fixture().use { f ->
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            val otherTrip = "01990000-0000-7000-8000-000000000009"
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, otherTrip, Instant.now().minusSeconds(1)))
+            var failed = false
+            f.purgeHook = {
+                if (!failed) { failed = true; throw IOException("transient key store failure") }
+            }
+            assertThrows(java.util.concurrent.ExecutionException::class.java) {
+                engine.reconcileRetention().get(5, TimeUnit.SECONDS)
+            }
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            assertTrue(f.purgedTrips.isEmpty())
+            if (stopBetweenRetries) engine.stop().get(5, TimeUnit.SECONDS)
+            engine.reconcileRetention().get(5, TimeUnit.SECONDS)
+            assertEquals(listOf(otherTrip), f.purgedTrips.map { it.tripId })
+            assertEquals(stopBetweenRetries, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            assertTrue(f.contextAvailable)
+            assertArrayEquals(f.source, f.saved)
+        }
+    }
+
+    @Test fun `an empty retry after a committed purge restores the requested running policy`() {
+        Fixture().use { f ->
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            val expired = NativeExpiredTrip(f.context.scope, "01990000-0000-7000-8000-000000000009", Instant.now().minusSeconds(1))
+            f.retentionTrips = listOf(expired)
+            f.purgeHook = { trip ->
+                f.purgedTrips.add(trip); f.retentionTrips = emptyList()
+                throw IOException("purge committed before its acknowledgement failed")
+            }
+            assertThrows(java.util.concurrent.ExecutionException::class.java) {
+                engine.reconcileRetention().get(5, TimeUnit.SECONDS)
+            }
+            assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            engine.reconcileRetention().get(5, TimeUnit.SECONDS)
+            assertEquals(listOf(expired), f.purgedTrips)
+            assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+            assertArrayEquals(f.source, f.saved)
+        }
+    }
+
+    @Test fun `an older activation cannot undo a stop while the retention scan is pending`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.retentionScanHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                val activation = engine.activate()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                engine.stop().get(5, TimeUnit.SECONDS)
+                release.countDown()
+                activation.get(5, TimeUnit.SECONDS)
+                assertEquals(true, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+                assertEquals(0, f.downloads)
+                f.retentionScanHook = null
+                engine.activate().get(5, TimeUnit.SECONDS)
+                f.await { f.receipts == 1 }
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun `activation still starts the current valid trip after purging another expired trip`() {
+        Fixture().use { f ->
+            val otherTrip = "01990000-0000-7000-8000-000000000009"
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, otherTrip, Instant.now().minusSeconds(1)))
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.receipts == 1 }
+            assertEquals(listOf(otherTrip), f.purgedTrips.map { it.tripId })
+            assertTrue(f.contextAvailable)
+            assertArrayEquals(f.source, f.saved)
+            assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+        }
+    }
+
+    @Test fun `a newer activation joins cleanup and resumes the current valid trip`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.originalDownloadHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val otherTrip = "01990000-0000-7000-8000-000000000009"
+                f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, otherTrip, Instant.now().minusSeconds(1)))
+                val cleanup = engine.reconcileRetention()
+                f.await { engine.snapshot().get(1, TimeUnit.SECONDS)["paused"] == true }
+                val activation = engine.activate()
+                release.countDown()
+                cleanup.get(5, TimeUnit.SECONDS)
+                activation.get(5, TimeUnit.SECONDS)
+                f.await { f.receipts == 1 }
+                assertEquals(listOf(otherTrip), f.purgedTrips.map { it.tripId })
+                assertEquals(false, engine.snapshot().get(5, TimeUnit.SECONDS)["paused"])
+                assertArrayEquals(f.source, f.saved)
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun `retention timer preserves the delivery window and never removes a saved system photo`() {
+        Fixture().use { f ->
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, Instant.now().plusMillis(300)))
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            assertTrue(f.purgedTrips.isEmpty())
+            f.await { f.receipts == 1 }
+            assertArrayEquals(f.source, f.saved)
+            f.await { f.purgedTrips.size == 1 }
+            assertArrayEquals(f.source, f.saved)
+            assertTrue(NativeTransferJournal(File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId)).records().isEmpty())
+        }
+    }
+
+    @Test fun `an interleaved pause invalidates retention before its destructive phase`() {
+        Fixture().use { f ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.originalDownloadHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, Instant.now().minusSeconds(1)))
+                val cleanup = engine.reconcileRetention()
+                f.await { engine.snapshot().get(1, TimeUnit.SECONDS)["paused"] == true }
+                val newerPause = engine.stop()
+                release.countDown()
+                newerPause.get(5, TimeUnit.SECONDS)
+                assertThrows(java.util.concurrent.ExecutionException::class.java) { cleanup.get(5, TimeUnit.SECONDS) }
+                assertTrue(f.purgedTrips.isEmpty())
+                assertTrue(f.contextAvailable)
+                val ledger = NativeTransferJournal(File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId))
+                assertTrue(ledger.records().any { it.getString("tripId") == f.trip })
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun `hard expiry drains in-flight work then purges only that trip before deleting its key`() {
+        Fixture().use { f ->
+            val otherTrip = "01990000-0000-7000-8000-000000000009"
+            val otherWork = "01990000-0000-4000-8000-000000000008"
+            val scopeRoot = File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId)
+            val ledger = NativeTransferJournal(scopeRoot)
+            val otherStage = File(scopeRoot, "stage-$otherWork").apply { mkdirs() }
+            File(otherStage, "original.ciphertext").writeText("other-trip")
+            ledger.put(JSONObject().put("workId", otherWork).put("tripId", otherTrip).put("complete", false).put("directory", otherStage.name))
+            val cache = NativePreviewStore(scopeRoot)
+            cache.enqueue(listOf(JSONObject().put("assetId", otherWork).put("tripId", otherTrip)
+                .put("retainUntil", Instant.now().plusSeconds(3600).toString())), otherTrip, "1")
+            val otherPreview = cache.directory(otherWork).apply { mkdirs() }
+            File(otherPreview, "preview.jpg").writeText("other-preview")
+            File(otherPreview, "preview.ciphertext").writeText("other-encrypted-preview")
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.originalDownloadHook = { entered.countDown(); check(release.await(8, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, Instant.now().minusSeconds(1)))
+                f.purgeHook = {
+                    assertTrue(NativeTransferJournal(scopeRoot).records().none { it.getString("tripId") == f.trip })
+                    assertTrue(NativePreviewStore(scopeRoot).records(f.trip).isEmpty())
+                    assertTrue(otherStage.exists())
+                }
+                val cleanup = engine.reconcileRetention()
+                assertThrows(java.util.concurrent.TimeoutException::class.java) { cleanup.get(50, TimeUnit.MILLISECONDS) }
+                assertTrue(f.purgedTrips.isEmpty())
+                release.countDown()
+                cleanup.get(5, TimeUnit.SECONDS)
+                assertEquals(listOf(f.trip), f.purgedTrips.map { it.tripId })
+                assertNull(f.saved)
+                val reopened = NativeTransferJournal(scopeRoot)
+                assertEquals(listOf(otherWork), reopened.records().map { it.getString("workId") })
+                assertTrue(File(otherStage, "original.ciphertext").exists())
+                assertTrue(File(otherPreview, "preview.ciphertext").exists())
+                assertTrue(f.root.resolve("fixture-original").exists())
+            } finally { release.countDown() }
+        }
+    }
+
     @Test fun `saved original rebuilds its preview even when the server gallery is unavailable`() {
         Fixture().use { f ->
             f.saved = f.source.copyOf(); f.acknowledged = true; f.previewFeedMissing = true
@@ -149,9 +664,20 @@ class NativePhotoTransferEngineTest {
         var savedHook: (() -> Unit)? = null
         var originalDownloadHook: (() -> Unit)? = null
         var originalUploadHook: (() -> Unit)? = null
+        var downloadGrantHook: ((NativeMediaContext) -> Unit)? = null
+        var savedReceiptHook: ((NativeMediaContext) -> Unit)? = null
+        var pendingPage: ((String) -> JSONObject)? = null
+        val pendingPaths = java.util.concurrent.CopyOnWriteArrayList<String>()
         var previewFeed = false
         var previewPublications = 0
-        val context = NativeMediaContext(
+        @Volatile var retentionCandidateCurrent = true
+        @Volatile var retentionTrips = emptyList<NativeExpiredTrip>()
+        val purgedTrips = java.util.concurrent.CopyOnWriteArrayList<NativeExpiredTrip>()
+        @Volatile var contextAvailable = true
+        var purgeHook: ((NativeExpiredTrip) -> Unit)? = null
+        var retentionScanHook: (() -> Unit)? = null
+        var observeHook: ((Boolean) -> Unit)? = null
+        @Volatile var context = NativeMediaContext(
             NativeKeyScope("a".repeat(64), "installation-1234"),
             DeviceSessionRecord("01990000-0000-4000-8000-000000000004", "fake-native-bearer".toByteArray(), Instant.now().plusSeconds(3600), "https://crewroll.invalid"),
             ActiveTripMetadata(trip, "01990000-0000-4000-8000-000000000005", Instant.now().minusSeconds(3600).toString(), Instant.now().plusSeconds(3600).toString(), null, 1), key,
@@ -177,7 +703,7 @@ class NativePhotoTransferEngineTest {
             } finally { content.fill(0) }
         }
         val photos = object : NativePhotoLibraryPort {
-            override fun observe(changed: (() -> Unit)?) = Unit
+            override fun observe(changed: (() -> Unit)?) { observeHook?.invoke(changed != null) }
             override fun discover(startsAt: Instant, endsAt: Instant, excluding: Set<String>, limit: Int) =
                 if (discover && "source" !in excluding) listOf(DiscoveredPhoto("source", Instant.parse("2026-09-09T12:00:00Z"))) else emptyList()
             override fun exportOriginal(localId: String, destination: File): PhotoMetadata {
@@ -216,11 +742,15 @@ class NativePhotoTransferEngineTest {
                 }
                 path.endsWith("/preview") && method == "POST" -> { previewPublications++; JSONObject() }
                 path.endsWith("/preview") -> if (previewFeed) JSONObject(previewGrant.toString()) else throw IOException("preview unavailable in legacy fixture")
-                path == "/v1/deliveries/pending" -> JSONObject().put("items", JSONArray().apply {
-                    if ((!discover || receiveWhileSending) && !acknowledged) put(JSONObject().put("tripId", trip).put("assetId", asset).put("deliveryId", delivery).put("committedAt", "2026-09-09T12:00:00Z"))
-                })
-                path.endsWith("download-session") -> JSONObject(grant.toString())
+                path.startsWith("/v1/deliveries/pending") -> {
+                    pendingPaths.add(path)
+                    pendingPage?.invoke(path) ?: JSONObject().put("items", JSONArray().apply {
+                        if ((!discover || receiveWhileSending) && !acknowledged) put(JSONObject().put("tripId", trip).put("assetId", asset).put("deliveryId", delivery).put("committedAt", "2026-09-09T12:00:00Z"))
+                    })
+                }
+                path.endsWith("download-session") -> { downloadGrantHook?.invoke(context); JSONObject(grant.toString()) }
                 path.endsWith("saved-receipt") -> {
+                    savedReceiptHook?.invoke(context)
                     assertNotNull(saved); assertArrayEquals(source, saved); receipts++; acknowledged = true
                     if (receiptLost) { receiptLost = false; throw IOException("lost receipt response") }
                     JSONObject()
@@ -245,8 +775,20 @@ class NativePhotoTransferEngineTest {
         }
         val connectionPolicies = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
         fun engine(): NativePhotoTransferEngine = NativePhotoTransferEngine(root.resolve("journals"), {
-            context.copy(session = context.session.copy(backgroundBearer = context.session.backgroundBearer.copyOf()), tripKey = key.copyOf())
-        }, photos, crypto, { cellular -> connectionPolicies.add(cellular); network }, {}).also(engines::add)
+            if (!contextAvailable) null else context.copy(session = context.session.copy(backgroundBearer = context.session.backgroundBearer.copyOf()), tripKey = key.copyOf())
+        }, photos, crypto, { cellular -> connectionPolicies.add(cellular); network }, {},
+            expiredTrips = { retentionScanHook?.invoke(); retentionTrips },
+            purgeTripKey = { expired, cleanup ->
+                if (!retentionCandidateCurrent) false else {
+                    cleanup()
+                    purgeHook?.invoke(expired); purgedTrips.add(expired)
+                    retentionTrips = retentionTrips.filterNot { it == expired }
+                    if (expired.tripId == trip) contextAvailable = false
+                    true
+                }
+            },
+            nextRetentionDeadline = { retentionTrips.minOfOrNull { it.deadline } },
+        ).also(engines::add)
         fun start(engine: NativePhotoTransferEngine) {
             val completed = if (discover) commits else receipts
             engine.activate().get(5, TimeUnit.SECONDS)
@@ -254,8 +796,8 @@ class NativePhotoTransferEngineTest {
             // Await the original lane's durable write after its mocked HTTP result.
             engine.stop().get(5, TimeUnit.SECONDS)
         }
-        fun await(condition: () -> Boolean) {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        fun await(timeoutSeconds: Long = 5, condition: () -> Boolean) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
             while (!condition()) { check(System.nanoTime() < deadline) { "native condition timed out" }; Thread.sleep(2) }
         }
         fun run(engine: NativePhotoTransferEngine) { engine.wake().get(5, TimeUnit.SECONDS); engine.snapshot().get(5, TimeUnit.SECONDS) }

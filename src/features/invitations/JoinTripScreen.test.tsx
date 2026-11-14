@@ -43,6 +43,9 @@ describe("JoinTripScreen", () => {
     screen.getByText("Arjun");
     screen.getByText("Host");
     screen.getByText("Crew · 2 joined");
+    screen.getByText(
+      "Sharing starts after Riya approves and the trip is live. Photos from before that moment stay private.",
+    );
     const submit = screen.getByRole("button", { name: "Request to join" });
     await fireEvent.press(submit);
     await fireEvent.press(submit);

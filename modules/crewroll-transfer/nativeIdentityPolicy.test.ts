@@ -15,6 +15,7 @@ describe("native identity and trip-key production policy", () => {
     for (const method of [
       "ensureDeviceIdentity",
       "installDeviceSession",
+      "refreshDeviceSession",
       "clearDeviceSession",
       "createTripKey",
       "discardProvisionalTripKey",
@@ -51,6 +52,37 @@ describe("native identity and trip-key production policy", () => {
       );
       expect(install).toMatch(/accountI[dD].*accountId/s);
       expect(install).toMatch(/installationI[dD].*installationId/s);
+    }
+  });
+
+  it("refreshes only the existing selection without advancing account ownership or changing transfer policy", () => {
+    const swift = read(
+      "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
+    );
+    const kotlin = read(
+      "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/CrewRollTransferModule.kt",
+    );
+    const swiftRefresh = swift.slice(
+      swift.indexOf('AsyncFunction("refreshDeviceSession")'),
+      swift.indexOf('AsyncFunction("clearDeviceSession")'),
+    );
+    const kotlinRefresh = kotlin.slice(
+      kotlin.indexOf('AsyncFunction("refreshDeviceSession")'),
+      kotlin.indexOf('AsyncFunction("clearDeviceSession")'),
+    );
+    expect(swiftRefresh).toContain("transferCommands.current()");
+    expect(swiftRefresh).toContain("transferCommands.withCurrent(epoch)");
+    expect(swiftRefresh).not.toContain(".advance()");
+    expect(kotlinRefresh).toContain(
+      'bridge("refreshDeviceSession", promise, after =',
+    );
+    expect(kotlinRefresh).not.toContain("changesSelection = true");
+    for (const refresh of [swiftRefresh, kotlinRefresh]) {
+      expect(refresh).toMatch(/if\s*\(?changed\)?\s*\{/);
+      expect(refresh).toContain("credentialRefreshed");
+      expect(refresh).not.toMatch(
+        /\.activate\(|\.setPolicy\(|\.stop\(|\.policy\(/,
+      );
     }
   });
 
@@ -220,7 +252,7 @@ describe("native identity and trip-key production policy", () => {
     }
   });
 
-  it("routes all nine shells through closed-object decoders and lowercase UUIDv7 trip validation", () => {
+  it("routes identity and trip shells through closed-object decoders and lowercase UUIDv7 trip validation", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
     );
@@ -229,7 +261,7 @@ describe("native identity and trip-key production policy", () => {
     );
     expect(
       swift.match(/NativeCommandDecoder\.require\(command, for:/g),
-    ).toHaveLength(9);
+    ).toHaveLength(10);
     expect(swift).toContain("NativeCommandDecoder.activation");
     expect(
       swift.slice(0, swift.indexOf('AsyncFunction("setTransferPolicy")')),
@@ -239,7 +271,7 @@ describe("native identity and trip-key production policy", () => {
       kotlin.match(
         /NativeCommandDecoder\.require\(command, NativeCommandKind\./g,
       ),
-    ).toHaveLength(9);
+    ).toHaveLength(10);
     expect(kotlin).toContain("NativeCommandDecoder.activation");
     expect(
       kotlin.slice(0, kotlin.indexOf('AsyncFunction("setTransferPolicy")')),

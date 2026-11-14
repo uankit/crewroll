@@ -21,13 +21,18 @@ export function createKyselyForegroundActorSnapshotReader(
         .select([
           "users.id as user_id",
           "users.deleted_at as user_deleted_at",
+          "users.suspended_at as user_suspended_at",
           "devices.id as device_id",
           "devices.revoked_at as device_revoked_at",
         ])
         .where("users.clerk_subject", "=", clerkSubject)
         .executeTakeFirst();
 
-      if (row === undefined || row.user_deleted_at !== null) {
+      if (
+        row === undefined ||
+        row.user_deleted_at !== null ||
+        row.user_suspended_at !== null
+      ) {
         return { kind: "AUTH_INVALID" };
       }
       if (row.device_id === null) return { kind: "DEVICE_NOT_OWNED" };

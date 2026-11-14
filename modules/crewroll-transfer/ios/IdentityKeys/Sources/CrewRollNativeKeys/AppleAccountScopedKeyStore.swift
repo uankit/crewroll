@@ -9,6 +9,36 @@ private struct AppleScopedState: Codable {
     var tombstones: Set<String> = []
     var activeMetadata: ActiveTripMetadata?
     var frozenMetadata: [String: ActiveTripMetadata] = [:]
+    var tripEndsAt: [String: String] = [:]
+    // A migration bound, never presented as the trip's authoritative expiry.
+    var legacyReconciliationDeadlines: [String: Date] = [:]
+
+    private enum CodingKeys: String, CodingKey {
+        case scope, session, trips, tombstones, activeMetadata, frozenMetadata
+        case tripEndsAt, legacyReconciliationDeadlines
+    }
+    init(scope: NativeKeyScope) { self.scope = scope }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try values.decode(NativeKeyScope.self, forKey: .scope)
+        session = try values.decodeIfPresent(DeviceSessionRecord.self, forKey: .session)
+        trips = try values.decodeIfPresent([String: TripKeyRecord].self, forKey: .trips) ?? [:]
+        tombstones = try values.decodeIfPresent(Set<String>.self, forKey: .tombstones) ?? []
+        activeMetadata = try values.decodeIfPresent(ActiveTripMetadata.self, forKey: .activeMetadata)
+        frozenMetadata = try values.decodeIfPresent([String: ActiveTripMetadata].self, forKey: .frozenMetadata) ?? [:]
+        tripEndsAt = try values.decodeIfPresent([String: String].self, forKey: .tripEndsAt) ?? [:]
+        legacyReconciliationDeadlines = try values.decodeIfPresent([String: Date].self, forKey: .legacyReconciliationDeadlines) ?? [:]
+    }
+    func authoritativeDeadline(_ tripID: String) throws -> Date? {
+        if let end = tripEndsAt[tripID] { return try NativeTripRetention.deadline(endsAt: end) }
+        if let metadata = frozenMetadata[tripID] ?? (activeMetadata?.tripID == tripID ? activeMetadata : nil) {
+            return try NativeTripRetention.deadline(metadata)
+        }
+        return nil
+    }
+    func cleanupDeadline(_ tripID: String) throws -> Date? {
+        try authoritativeDeadline(tripID) ?? legacyReconciliationDeadlines[tripID]
+    }
 }
 
 private struct AppleScopedDatabase: Codable {
@@ -253,11 +283,28 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
     }
 
     public func collectExpiredProvisional(now: Date) throws -> Date? {
-        try transaction { database in
+        let result = try transaction(commitIf: { $0.changed }) { database in
+            var changed = false
             for key in Array(database.scopes.keys) {
                 guard database.scopes[key] != nil else { continue }
                 for tripID in Array(database.scopes[key]!.trips.keys) {
+                    if let metadata = database.scopes[key]!.frozenMetadata[tripID] ??
+                        (database.scopes[key]!.activeMetadata?.tripID == tripID ? database.scopes[key]!.activeMetadata : nil) {
+                        if let existing = database.scopes[key]!.tripEndsAt[tripID] {
+                            guard try NativeTripRetention.deadline(endsAt: existing) == NativeTripRetention.deadline(metadata) else {
+                                throw NativeKeyError.materialLost
+                            }
+                        } else {
+                            database.scopes[key]!.tripEndsAt[tripID] = metadata.endsAt
+                            changed = true
+                        }
+                    }
                     guard database.scopes[key]?.trips[tripID]?.state == .provisional else {
+                        if database.scopes[key]!.tripEndsAt[tripID] == nil,
+                           database.scopes[key]!.legacyReconciliationDeadlines[tripID] == nil {
+                            database.scopes[key]!.legacyReconciliationDeadlines[tripID] = now.addingTimeInterval(NativeTripRetention.reconciliationGrace)
+                            changed = true
+                        }
                         continue
                     }
                     guard let expiresAt = database.scopes[key]?.trips[tripID]?.provisionalExpiresAt else {
@@ -268,9 +315,10 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                     else { continue }
                     database.scopes[key]!.secureRemoveTrip(tripID)
                     database.scopes[key]!.tombstones.insert(tripID)
+                    changed = true
                 }
             }
-            return try database.scopes.values.reduce(nil as Date?) { next, state in
+            let nextExpiry = try database.scopes.values.reduce(nil as Date?) { next, state in
                 try state.trips.values.reduce(next) { earliest, record in
                     guard record.state == .provisional else { return earliest }
                     guard let expiresAt = record.provisionalExpiresAt else {
@@ -279,23 +327,33 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                     return min(earliest ?? expiresAt, expiresAt)
                 }
             }
+            return (nextExpiry: nextExpiry, changed: changed)
         }
+        return result.nextExpiry
     }
 
     public func importTrip(
         scope: NativeKeyScope,
         tripID: String,
         key: Data,
+        endsAt: String,
+        now: Date,
         constantTimeEquals: (Data, Data) -> Bool
     ) throws -> TripImportOutcome {
         try transaction { database in
             guard key.count == 32 else { throw NativeKeyError.invalidEnvelope }
             let alias = scopeKey(scope)
             var state = database.scopes[alias] ?? AppleScopedState(scope: scope)
+            let deadline = try NativeTripRetention.deadline(endsAt: endsAt)
+            guard deadline > now else { throw NativeKeyError.materialLost }
+            if let frozen = try state.authoritativeDeadline(tripID), frozen != deadline { return .conflict }
+            if state.tombstones.contains(tripID), try state.authoritativeDeadline(tripID) != nil { return .conflict }
             if var existing = state.trips[tripID] {
                 guard constantTimeEquals(existing.key, key) else { return .conflict }
                 if existing.state == .provisional { existing.state = .installed }
                 state.trips[tripID] = existing
+                state.tripEndsAt[tripID] = endsAt
+                state.legacyReconciliationDeadlines.removeValue(forKey: tripID)
                 state.tombstones.remove(tripID)
                 database.scopes[alias] = state
                 return .existing
@@ -304,6 +362,8 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                 key: scopedSecretCopy(key),
                 state: .installed
             )
+            state.tripEndsAt[tripID] = endsAt
+            state.legacyReconciliationDeadlines.removeValue(forKey: tripID)
             state.tombstones.remove(tripID)
             database.scopes[alias] = state
             return .installed
@@ -318,6 +378,9 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                   target.key.count == 32,
                   target.state == .installed || target.state == .active
             else { throw NativeKeyError.materialLost }
+            guard try state.authoritativeDeadline(metadata.tripID) == NativeTripRetention.deadline(metadata) else {
+                throw NativeKeyError.invalidState
+            }
             if let frozen = state.frozenMetadata[metadata.tripID], frozen != metadata {
                 throw NativeKeyError.invalidState
             }
@@ -357,7 +420,57 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                   let session = state.session,
                   let metadata = state.activeMetadata,
                   let trip = state.trips[metadata.tripID], trip.state == .active else { return nil }
+            guard try state.authoritativeDeadline(metadata.tripID) == NativeTripRetention.deadline(metadata) else {
+                throw NativeKeyError.materialLost
+            }
             return NativeMediaContext(scope: scope, session: session, metadata: metadata, tripKey: trip.key)
+        }
+    }
+
+    public func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata? {
+        try read { $0.scopes[scopeKey(scope)]?.frozenMetadata[tripID] }
+    }
+
+    public func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date? {
+        try read { try $0.scopes[scopeKey(scope)]?.authoritativeDeadline(tripID) }
+    }
+
+    public func expiredTrips(now: Date) throws -> [NativeExpiredTrip] {
+        try read { database in
+            try database.scopes.values.flatMap { state in
+                try state.trips.keys.compactMap { tripID in
+                    guard let deadline = try state.cleanupDeadline(tripID) else { return nil }
+                    return deadline <= now ? NativeExpiredTrip(scope: state.scope, tripID: tripID, deadline: deadline) : nil
+                }
+            }
+        }
+    }
+
+    public func nextTripRetentionDeadline() throws -> Date? {
+        try read { database in
+            try database.scopes.values.flatMap { state in
+                try state.trips.keys.compactMap { try state.cleanupDeadline($0) }
+            }.min()
+        }
+    }
+
+    public func purgeExpiredTrip(_ trip: NativeExpiredTrip, now: Date, beforeKeyRemoval: () throws -> Void) throws -> Bool {
+        try transaction(commitIf: { $0 }) { database in
+            let key = scopeKey(trip.scope)
+            guard try database.scopes[key]?.cleanupDeadline(trip.tripID) == trip.deadline,
+                  trip.deadline <= now else { return false }
+            guard database.scopes[key]?.trips[trip.tripID] != nil else { return false }
+            // Keep the store transaction lock while removing local transfer
+            // files: import/backfill cannot invalidate this candidate midway.
+            try beforeKeyRemoval()
+            database.scopes[key]!.secureRemoveTrip(trip.tripID)
+            database.scopes[key]!.tombstones.insert(trip.tripID)
+            if database.scopes[key]?.activeMetadata?.tripID == trip.tripID {
+                database.scopes[key]!.activeMetadata = nil
+            }
+            // Authoritative timing stays as a replay fence. An undated legacy
+            // quarantine tombstone can recover only through a dated valid import.
+            return true
         }
     }
 
@@ -374,6 +487,7 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
     }
 
     private func transaction<T>(
+        commitIf: (T) -> Bool = { _ in true },
         _ body: (inout AppleScopedDatabase) throws -> T
     ) throws -> T {
         lock.lock()
@@ -381,7 +495,7 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
         var database = try loadDatabase()
         defer { database.scopedZeroize() }
         let result = try body(&database)
-        try saveDatabase(database)
+        if commitIf(result) { try saveDatabase(database) }
         return result
     }
 

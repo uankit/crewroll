@@ -12,6 +12,8 @@ import type { DeviceRegistrationPort } from "./ports";
 
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const APP_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
+// Keep native restore and delayed install retries aligned with server renewal.
+const BACKGROUND_CREDENTIAL_RENEWAL_WINDOW_MS = 7 * 86_400_000;
 
 type DevicePlatform = "android" | "ios";
 
@@ -58,7 +60,7 @@ export type ProvisionCurrentDeviceDependencies = Readonly<{
   registration: DeviceRegistrationPort;
 }>;
 
-type ProvisioningContext = Readonly<{
+export type DeviceRegistrationContext = Readonly<{
   accountId: string;
   apiBaseUrl: string;
   appVersion: string;
@@ -67,7 +69,7 @@ type ProvisioningContext = Readonly<{
 
 type PendingAttempt = {
   commandId: string;
-  readonly context: ProvisioningContext;
+  readonly context: DeviceRegistrationContext;
   identity?: NativeDeviceIdentity;
   registrationBody?: RegisterDeviceBody;
   response?: DeviceResponse;
@@ -81,7 +83,9 @@ function isSupportedPlatform(value: string): value is DevicePlatform {
   return value === "android" || value === "ios";
 }
 
-function parseContext(input: ProvisionCurrentDeviceInput): ProvisioningContext {
+export function parseDeviceRegistrationContext(
+  input: ProvisionCurrentDeviceInput,
+): DeviceRegistrationContext {
   const appVersion = input.appVersion;
   if (
     input.accountId.length < 1 ||
@@ -112,8 +116,8 @@ function parseContext(input: ProvisionCurrentDeviceInput): ProvisioningContext {
 }
 
 function sameContext(
-  left: ProvisioningContext,
-  right: ProvisioningContext,
+  left: DeviceRegistrationContext,
+  right: DeviceRegistrationContext,
 ): boolean {
   return (
     left.accountId === right.accountId &&
@@ -123,9 +127,9 @@ function sameContext(
   );
 }
 
-function registrationBody(
+export function createDeviceRegistrationBody(
   identity: NativeDeviceIdentity,
-  context: ProvisioningContext,
+  context: DeviceRegistrationContext,
 ): RegisterDeviceBody {
   return {
     installationId: identity.installationId,
@@ -149,7 +153,7 @@ export function createProvisionCurrentDevice({
   const inFlight = new Map<string, Promise<ProvisionedDevice>>();
 
   async function provision(
-    context: ProvisioningContext,
+    context: DeviceRegistrationContext,
   ): Promise<ProvisionedDevice> {
     let attempt = pendingAttempt;
 
@@ -179,11 +183,14 @@ export function createProvisionCurrentDevice({
       if (pendingAttempt === attempt) pendingAttempt = undefined;
       return { deviceId: restored.deviceId, identity };
     }
-    attempt.registrationBody ??= registrationBody(identity, context);
+    attempt.registrationBody ??= createDeviceRegistrationBody(
+      identity,
+      context,
+    );
     if (
       attempt.response &&
       new Date(attempt.response.backgroundBearerExpiresAt).getTime() <=
-        Date.now() + 300_000
+        Date.now() + BACKGROUND_CREDENTIAL_RENEWAL_WINDOW_MS
     ) {
       // A long-delayed native install retry must obtain a fresh credential,
       // rather than replaying the old idempotency response indefinitely.
@@ -212,7 +219,7 @@ export function createProvisionCurrentDevice({
   return async function provisionCurrentDevice(
     input: ProvisionCurrentDeviceInput,
   ): Promise<ProvisionedDevice> {
-    const context = parseContext(input);
+    const context = parseDeviceRegistrationContext(input);
     const key = JSON.stringify(context);
     const pending = inFlight.get(key);
     if (pending) return pending;

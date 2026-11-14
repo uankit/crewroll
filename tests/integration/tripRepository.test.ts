@@ -22,6 +22,15 @@ const NOW = new Date("2026-08-30T12:00:00.000Z");
 const ONE_DAY_MS = 86_400_000;
 const IDEMPOTENCY_KEY = "850e8400-e29b-41d4-a716-446655440000";
 
+function liveTripDates() {
+  const created_at = new Date();
+  return {
+    created_at,
+    ends_at: new Date(created_at.getTime() + ONE_DAY_MS),
+    hard_delete_at: new Date(created_at.getTime() + 8 * ONE_DAY_MS),
+  };
+}
+
 function projectionOf(read: TripProjectionRead): TripProjection {
   expect(read.kind).toBe("FOUND");
   if (read.kind !== "FOUND") throw new Error("Expected Trip projection");
@@ -537,7 +546,11 @@ describe("Kysely Trip transaction repository", () => {
     const rejectedDevice = await fixtures.device(rejected.id, {
       e2ee_public_key: new Uint8Array(32).fill(0x55),
     });
-    const trip = await fixtures.trip(owner.id, { member_count: 4, version: 7 });
+    const trip = await fixtures.trip(owner.id, {
+      ...liveTripDates(),
+      member_count: 4,
+      version: 7,
+    });
     const ownerMember = await fixtures.member(
       trip.id,
       owner.id,
@@ -642,7 +655,10 @@ describe("Kysely Trip transaction repository", () => {
     const peerDevice = await fixtures.device(peer.id, {
       e2ee_public_key: new Uint8Array(32).fill(0x72),
     });
-    const trip = await fixtures.trip(owner.id, { member_count: 2 });
+    const trip = await fixtures.trip(owner.id, {
+      ...liveTripDates(),
+      member_count: 2,
+    });
     await fixtures.member(trip.id, owner.id, ownerDevice.id, { role: "OWNER" });
     const peerMember = await fixtures.member(trip.id, peer.id, peerDevice.id);
     await fixtures.envelope(trip.id, ownerDevice.id, ownerDevice.id, {
@@ -689,7 +705,10 @@ describe("Kysely Trip transaction repository", () => {
     const fixtures = createIdentityTripFixtures(context.db);
     const owner = await fixtures.user({ clerk_subject: "user_barrier_owner" });
     const ownerDevice = await fixtures.device(owner.id);
-    const trip = await fixtures.trip(owner.id, { version: 1 });
+    const trip = await fixtures.trip(owner.id, {
+      ...liveTripDates(),
+      version: 1,
+    });
     const member = await fixtures.member(trip.id, owner.id, ownerDevice.id, {
       full_photo_library_access: false,
       role: "OWNER",
@@ -768,7 +787,7 @@ describe("Kysely Trip transaction repository", () => {
       revoked_at: state === "revoked" ? NOW : null,
     });
     const wrongDevice = await fixtures.device(caller.id);
-    const trip = await fixtures.trip(owner.id);
+    const trip = await fixtures.trip(owner.id, liveTripDates());
     await fixtures.member(trip.id, owner.id, ownerDevice.id, { role: "OWNER" });
     await fixtures.envelope(trip.id, ownerDevice.id, ownerDevice.id);
     if (state !== "unrelated") {

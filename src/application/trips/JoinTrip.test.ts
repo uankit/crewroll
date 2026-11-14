@@ -2,8 +2,12 @@ import type { MembershipResponse, ProblemCode } from "@crewroll/contracts";
 
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { TripTransportProblem } from "./CreateImmediateTrip";
-import { createJoinTrip } from "./JoinTrip";
-import type { TripApiPort, TripRecoveryPort } from "./ports";
+import { createJoinTrip, JoinTripTerminalProblem } from "./JoinTrip";
+import type {
+  TripApiPort,
+  JoinTripRecoveryPort,
+  TripRecoveryRecord,
+} from "./ports";
 
 const tripId = "0191a203-227b-7011-9213-141516171819";
 const membershipId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140";
@@ -99,8 +103,9 @@ function harness() {
       return Uint8Array.from({ length: 16 }, (_, index) => index);
     }),
   };
-  const recoveryStore: jest.Mocked<TripRecoveryPort> = {
+  const recoveryStore: jest.Mocked<JoinTripRecoveryPort> = {
     clear: jest.fn().mockResolvedValue(undefined),
+    clearPendingJoin: jest.fn().mockResolvedValue(true),
     load: jest.fn().mockResolvedValue(unknownJoinRecord),
     save: jest.fn().mockResolvedValue(undefined),
   };
@@ -120,6 +125,104 @@ function harness() {
 }
 
 describe("JoinTrip.request", () => {
+  it.each(["request", "replay"] as const)(
+    "clears only the exact pending join after a conclusive server invalid invite during %s",
+    async (stage) => {
+      const { api, recoveryStore, service } = harness();
+      const clearPendingJoin = recoveryStore.clearPendingJoin;
+      api.requestJoin.mockRejectedValueOnce(
+        new CrewRollApiProblem("INVITE_INVALID", { status: 404 }),
+      );
+      const operation =
+        stage === "request"
+          ? service.request(inviteCode)
+          : service.replayUnknownJoin();
+      await expect(operation).rejects.toMatchObject({
+        name: "JoinTripTerminalProblem",
+        code: "INVITE_INVALID",
+      });
+      expect(clearPendingJoin).toHaveBeenCalledWith(scope, commandId);
+      expect(recoveryStore.clear).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not clear or terminate a newer recovery command when an older invalid reply arrives", async () => {
+    const { api, recoveryStore, service } = harness();
+    const clearPendingJoin =
+      recoveryStore.clearPendingJoin.mockResolvedValue(false);
+    api.requestJoin.mockRejectedValueOnce(
+      new CrewRollApiProblem("INVITE_INVALID", { status: 404 }),
+    );
+    await expect(service.request(inviteCode)).rejects.toEqual(
+      new CrewRollApiProblem("INTERNAL_ERROR"),
+    );
+    expect(clearPendingJoin).toHaveBeenCalledWith(scope, commandId);
+    expect(recoveryStore.clear).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new CrewRollApiProblem("INVITE_INVALID"),
+    new CrewRollApiProblem("INVITE_INVALID", { status: 500 }),
+    new CrewRollApiProblem("CONFLICT", { status: 409 }),
+    new CrewRollApiProblem("IDEMPOTENCY_CONFLICT", { status: 409 }),
+    { kind: "API_PROBLEM", code: "INVITE_INVALID", serverStatus: 404 },
+    new TripTransportProblem(),
+  ])(
+    "preserves recovery for an unconfirmed or nonterminal failure: %j",
+    async (failure) => {
+      const { api, recoveryStore, service } = harness();
+      api.requestJoin.mockRejectedValueOnce(failure);
+      const operation = service.request(inviteCode);
+      await expect(operation).rejects.not.toBeInstanceOf(
+        JoinTripTerminalProblem,
+      );
+      expect(recoveryStore.clearPendingJoin).not.toHaveBeenCalled();
+      expect(recoveryStore.clear).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps recovery retryable if safe terminal cleanup fails", async () => {
+    const { api, recoveryStore, service } = harness();
+    api.requestJoin.mockRejectedValueOnce(
+      new CrewRollApiProblem("INVITE_INVALID", { status: 404 }),
+    );
+    recoveryStore.clearPendingJoin.mockRejectedValueOnce(
+      new Error("secure storage unavailable"),
+    );
+    await expect(service.request(inviteCode)).rejects.toEqual(
+      new CrewRollApiProblem("INTERNAL_ERROR"),
+    );
+    expect(recoveryStore.clear).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a terminal invalid command after restarting the workflow", async () => {
+    const dependencies = harness();
+    let saved: TripRecoveryRecord | null = null;
+    dependencies.recoveryStore.save.mockImplementation(
+      async (_scope, record) => {
+        saved = record;
+      },
+    );
+    dependencies.recoveryStore.load.mockImplementation(async () => saved);
+    dependencies.recoveryStore.clearPendingJoin.mockImplementation(
+      async (_scope, id) => {
+        if (saved?.state !== "UNKNOWN_JOIN" || saved.commandId !== id)
+          return false;
+        saved = null;
+        return true;
+      },
+    );
+    dependencies.api.requestJoin.mockRejectedValue(
+      new CrewRollApiProblem("INVITE_INVALID", { status: 404 }),
+    );
+    await expect(
+      dependencies.service.request(inviteCode),
+    ).rejects.toBeInstanceOf(JoinTripTerminalProblem);
+    const restarted = createJoinTrip({ ...dependencies, deviceId, scope });
+    await expect(restarted.replayUnknownJoin()).resolves.toBeNull();
+    expect(dependencies.api.requestJoin).toHaveBeenCalledTimes(1);
+  });
+
   it("cuts an accepted response before confirming recovery", async () => {
     const { afterAccepted, recoveryStore, service } = harness();
     afterAccepted.afterAccepted.mockRejectedValue(new TripTransportProblem());
@@ -197,7 +300,10 @@ describe("JoinTrip.request", () => {
     expect(result).toEqual({ status: "REJECTED" });
     expect(Object.keys(result)).toEqual(["status"]);
     expect(recoveryStore.save).toHaveBeenCalledTimes(1);
-    expect(recoveryStore.clear).toHaveBeenCalledWith(scope);
+    expect(recoveryStore.clearPendingJoin).toHaveBeenCalledWith(
+      scope,
+      commandId,
+    );
     expect(api.getTrip).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toMatch(
       /envelope|wrapped|device|command|invite|membership|trip/i,
@@ -269,7 +375,7 @@ describe("JoinTrip.request", () => {
   );
 
   it.each(canonicalProblemCodes)(
-    "sanitizes canonical API problem %s and preserves UNKNOWN_JOIN",
+    "sanitizes a canonical API problem without server provenance %s and preserves UNKNOWN_JOIN",
     async (code) => {
       const { api, recoveryStore, service } = harness();
       const privateFailure = Object.assign(new CrewRollApiProblem(code), {
@@ -409,7 +515,10 @@ describe("JoinTrip.replayUnknownJoin", () => {
       status: "REJECTED",
     });
     expect(recoveryStore.save).not.toHaveBeenCalled();
-    expect(recoveryStore.clear).toHaveBeenCalledWith(scope);
+    expect(recoveryStore.clearPendingJoin).toHaveBeenCalledWith(
+      scope,
+      commandId,
+    );
     expect(api.getTrip).not.toHaveBeenCalled();
   });
 

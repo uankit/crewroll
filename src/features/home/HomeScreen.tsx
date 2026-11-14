@@ -26,6 +26,7 @@ export type HomeScreenState =
     }>;
 
 export type HomeScreenProps = Readonly<{
+  inviteUnavailable?: boolean;
   accountControl?: ReactNode;
   onCreateTrip: () => void;
   onJoinTrip: () => void;
@@ -84,6 +85,7 @@ function CrewConstellation() {
 }
 
 export function HomeScreen({
+  inviteUnavailable = false,
   accountControl,
   onCreateTrip,
   onJoinTrip,
@@ -157,9 +159,11 @@ export function HomeScreen({
       title="Start your first trip."
       centerContent
       description={
-        state.creationFailed
-          ? "Your trip wasn’t created. Give it another try."
-          : "Create one, or join your crew with a code."
+        inviteUnavailable
+          ? "This invite is no longer available. Ask your host for a new code."
+          : state.creationFailed
+            ? "Your trip wasn’t created. Give it another try."
+            : "Create one, or join your crew with a code."
       }
       footer={
         <>

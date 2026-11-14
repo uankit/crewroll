@@ -329,53 +329,63 @@ export function createKyselyAccountService(
       let failed = false;
       for (const job of jobs) {
         try {
-          if (
-            (!job.provider_deleted_at || job.apple_grant) &&
-            job.clerk_subject
-          ) {
-            await deleteIdentity(job.clerk_subject, {
-              appleGrant: job.apple_grant,
-              appleRevoked: job.apple_revoked,
-              async checkpoint(grant, revoked) {
-                const updated = await db
+          // Either provider may be unavailable. Retire ciphertext independently
+          // and checkpoint each success; record erasure still requires both.
+          const dependencies = await Promise.allSettled([
+            (async () => {
+              if (
+                (!job.provider_deleted_at || job.apple_grant) &&
+                job.clerk_subject
+              ) {
+                await deleteIdentity(job.clerk_subject, {
+                  appleGrant: job.apple_grant,
+                  appleRevoked: job.apple_revoked,
+                  async checkpoint(grant, revoked) {
+                    const updated = await db
+                      .updateTable("account_deletions")
+                      .set({ apple_grant: grant, apple_revoked: revoked })
+                      .where("id", "=", job.id)
+                      .where("lease_token", "=", job.token)
+                      .executeTakeFirst();
+                    if (updated.numUpdatedRows !== 1n)
+                      throw new Error("Account deletion lease expired");
+                  },
+                });
+                await db
                   .updateTable("account_deletions")
-                  .set({ apple_grant: grant, apple_revoked: revoked })
+                  .set({ provider_deleted_at: clock.now() })
                   .where("id", "=", job.id)
                   .where("lease_token", "=", job.token)
-                  .executeTakeFirst();
-                if (updated.numUpdatedRows !== 1n)
-                  throw new Error("Account deletion lease expired");
-              },
-            });
-            await db
-              .updateTable("account_deletions")
-              .set({ provider_deleted_at: clock.now() })
-              .where("id", "=", job.id)
-              .where("lease_token", "=", job.token)
-              .execute();
-          }
-          const objects = await db
-            .selectFrom("account_deletion_objects")
-            .select("object_key")
-            .where("request_id", "=", job.id)
-            .where("deleted_at", "is", null)
-            .limit(100)
-            .execute();
-          for (let index = 0; index < objects.length; index += 4) {
-            const results = await Promise.allSettled(
-              objects.slice(index, index + 4).map(async (object) => {
-                await store.delete(object.object_key);
-                await db
-                  .updateTable("account_deletion_objects")
-                  .set({ deleted_at: clock.now() })
-                  .where("request_id", "=", job.id)
-                  .where("object_key", "=", object.object_key)
                   .execute();
-              }),
-            );
-            if (results.some((result) => result.status === "rejected"))
-              throw new Error("Account storage cleanup needs retry");
-          }
+              }
+            })(),
+            (async () => {
+              const objects = await db
+                .selectFrom("account_deletion_objects")
+                .select("object_key")
+                .where("request_id", "=", job.id)
+                .where("deleted_at", "is", null)
+                .limit(100)
+                .execute();
+              for (let index = 0; index < objects.length; index += 4) {
+                const results = await Promise.allSettled(
+                  objects.slice(index, index + 4).map(async (object) => {
+                    await store.delete(object.object_key);
+                    await db
+                      .updateTable("account_deletion_objects")
+                      .set({ deleted_at: clock.now() })
+                      .where("request_id", "=", job.id)
+                      .where("object_key", "=", object.object_key)
+                      .execute();
+                  }),
+                );
+                if (results.some((result) => result.status === "rejected"))
+                  throw new Error("Account storage cleanup needs retry");
+              }
+            })(),
+          ]);
+          if (dependencies.some((result) => result.status === "rejected"))
+            throw new Error("Account cleanup needs retry");
           await db.transaction().execute(async (tx) => {
             // Match user-before-trip lock order even on repeated cleanup runs.
             if (job.user_id)

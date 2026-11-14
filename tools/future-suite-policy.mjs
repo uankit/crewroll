@@ -37,17 +37,19 @@ export const FUTURE_SUITE_DEFINITIONS = deepFreeze({
     ownerTask: "IOS-001",
     privateScript: "test:native:ios:run",
     privateCommand:
-      "swift test --package-path modules/crewroll-transfer/ios --scratch-path .expo/crewroll-native-ios-tests",
-    ownedRoot: "modules/crewroll-transfer/ios/Tests",
-    sentinel: "modules/crewroll-transfer/ios/.crewroll-suite.json",
+      "swift test --package-path modules/crewroll-transfer/ios/IdentityKeys --disable-index-store --jobs 1",
+    ownedRoot: "modules/crewroll-transfer/ios/IdentityKeys/Tests",
+    sentinel: "modules/crewroll-transfer/ios/IdentityKeys/.crewroll-suite.json",
     fixedHarness: [],
     discoveredHarness: [
       {
-        under: "modules/crewroll-transfer/ios/Tests",
+        under: "modules/crewroll-transfer/ios/IdentityKeys/Tests",
         suffixes: [".swift"],
       },
     ],
-    activationArtifacts: ["modules/crewroll-transfer/ios/Package.swift"],
+    activationArtifacts: [
+      "modules/crewroll-transfer/ios/IdentityKeys/Package.swift",
+    ],
     passiveHarness: [],
   },
   "native-android": {
@@ -55,17 +57,20 @@ export const FUTURE_SUITE_DEFINITIONS = deepFreeze({
     ownerTask: "AND-001",
     privateScript: "test:native:android:run",
     privateCommand: "node tools/run-android-native-tests.mjs",
-    ownedRoot: "modules/crewroll-transfer/android/src/test",
-    sentinel: "modules/crewroll-transfer/android/.crewroll-suite.json",
+    ownedRoot: "modules/crewroll-transfer/android/native-key-tests/src/test",
+    sentinel:
+      "modules/crewroll-transfer/android/native-key-tests/.crewroll-suite.json",
     fixedHarness: [],
     discoveredHarness: [
       {
-        under: "modules/crewroll-transfer/android/src/test",
+        under: "modules/crewroll-transfer/android/native-key-tests/src/test",
         suffixes: [".kt"],
       },
     ],
     activationArtifacts: ["tools/run-android-native-tests.mjs"],
-    passiveHarness: ["modules/crewroll-transfer/android/build.gradle"],
+    passiveHarness: [
+      "modules/crewroll-transfer/android/native-key-tests/build.gradle.kts",
+    ],
   },
   e2e: {
     suite: "e2e",

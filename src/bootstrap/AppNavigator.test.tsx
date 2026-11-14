@@ -59,6 +59,7 @@ describe("AppNavigator", () => {
   it.each([
     ["SIGNED_OUT", "sign-in"],
     ["PROVISIONING_DEVICE", "provision"],
+    ["SIGNING_OUT", "provision"],
     ["RECOVERABLE_FAILURE", "provision"],
     ["READY_NO_TRIP", "(app)"],
     ["READY_UNKNOWN_CREATE", "(app)"],
@@ -70,7 +71,7 @@ describe("AppNavigator", () => {
     await render(<AppNavigator />);
 
     expect(screen.getByText("screen:index")).toBeOnTheScreen();
-    expect(screen.getByText("screen:invite/[code]")).toBeOnTheScreen();
+    expect(screen.queryByText("screen:invite/[code]")).toBeNull();
     expect(screen.getByText(`screen:${allowed}`)).toBeOnTheScreen();
     for (const denied of ["sign-in", "provision", "(app)"].filter(
       (name) => name !== allowed,
@@ -86,7 +87,7 @@ describe("AppNavigator", () => {
     await render(<AppNavigator />);
 
     expect(screen.getByText("screen:index")).toBeOnTheScreen();
-    expect(screen.getByText("screen:invite/[code]")).toBeOnTheScreen();
+    expect(screen.queryByText("screen:invite/[code]")).toBeNull();
     expect(screen.queryByText("screen:sign-in")).toBeNull();
     expect(screen.queryByText("screen:provision")).toBeNull();
     expect(screen.queryByText("screen:(app)")).toBeNull();
@@ -101,4 +102,22 @@ describe("AppNavigator", () => {
     expect(screen.queryByText("screen:(app)")).toBeNull();
     expect(screen.queryByText("screen:provision")).toBeNull();
   });
+
+  it.each([
+    { phase: "SIGNING_OUT" },
+    {
+      phase: "RECOVERABLE_FAILURE",
+      publicErrorCode: "SESSION_TEARDOWN_FAILED",
+    },
+  ])(
+    "keeps teardown visible when account setup also needs attention",
+    async (snapshot) => {
+      mockSetupRequired = true;
+      mockUseAppSession.mockReturnValue({ snapshot });
+      await render(<AppNavigator />);
+      expect(screen.getByText("screen:provision")).toBeOnTheScreen();
+      expect(screen.queryByText("screen:setup")).toBeNull();
+      expect(screen.queryByText("screen:(app)")).toBeNull();
+    },
+  );
 });

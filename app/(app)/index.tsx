@@ -35,6 +35,8 @@ export default function ProtectedHomeRoute() {
     }
   }, [approvedTripId, focused, router, snapshot.phase]);
   const actions = {
+    inviteUnavailable:
+      snapshot.phase === "READY_NO_TRIP" && snapshot.inviteUnavailable === true,
     accountControl: <AccountMenu />,
     onCreateTrip: () => router.push("/trips/create"),
     onJoinTrip: () => router.push("/trips/join"),

@@ -8,7 +8,7 @@ import { TripTransportProblem } from "./CreateImmediateTrip";
 import type {
   AcceptedTripMutationResponsePort,
   TripApiPort,
-  TripRecoveryPort,
+  JoinTripRecoveryPort,
   TripRecoveryRecord,
   TripRecoveryScope,
 } from "./ports";
@@ -21,12 +21,20 @@ export type JoinTripResult =
     }>
   | Readonly<{ status: "REJECTED" }>;
 
+/** The original command was conclusively refused and its recovery was cleared. */
+export class JoinTripTerminalProblem extends CrewRollApiProblem {
+  constructor() {
+    super("INVITE_INVALID");
+    this.name = "JoinTripTerminalProblem";
+  }
+}
+
 export type JoinTripDependencies = Readonly<{
   afterAccepted: AcceptedTripMutationResponsePort;
   api: TripApiPort;
   deviceId: string;
   random: RandomBytesPort;
-  recoveryStore: TripRecoveryPort;
+  recoveryStore: JoinTripRecoveryPort;
   scope: TripRecoveryScope;
 }>;
 
@@ -198,7 +206,8 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
 
     if (response.status === "REJECTED") {
       try {
-        await recoveryStore.clear(scope);
+        if (!(await recoveryStore.clearPendingJoin(scope, commandId)))
+          throw internalProblem();
       } catch {
         throw internalProblem();
       }
@@ -237,6 +246,27 @@ export function createJoinTrip(dependencies: JoinTripDependencies) {
         deviceId,
       });
     } catch (error) {
+      if (
+        error instanceof CrewRollApiProblem &&
+        error.code === "INVITE_INVALID" &&
+        error.serverStatus !== null &&
+        error.serverStatus >= 400 &&
+        error.serverStatus < 500
+      ) {
+        // The server replays an accepted original command before checking the
+        // current invite. This refusal is definitive for this exact command.
+        let cleared: boolean;
+        try {
+          cleared = await recoveryStore.clearPendingJoin(
+            scope,
+            record.commandId,
+          );
+        } catch {
+          throw internalProblem();
+        }
+        if (!cleared) throw internalProblem();
+        throw new JoinTripTerminalProblem();
+      }
       throw sanitizeApiFailure(error);
     }
     return finish(response, record.commandId);

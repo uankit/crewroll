@@ -22,7 +22,7 @@ const identity = {
 const registrationResponse = {
   deviceId,
   backgroundBearer: "crb_opaque_8SFWzE3A0cl3",
-  backgroundBearerExpiresAt: "2026-09-28T12:00:00.000Z",
+  backgroundBearerExpiresAt: "2026-10-28T11:00:00.000Z",
 } as const;
 
 const registrationBody = {
@@ -77,6 +77,14 @@ const input = {
 } as const;
 
 describe("provisionCurrentDevice", () => {
+  beforeEach(() => {
+    jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-09-28T11:00:00.000Z"));
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
   it("reuses a validated native session across new app compositions without a registration request", async () => {
     const { native, random, registration } = harness();
     const persistedNative = {
@@ -102,6 +110,39 @@ describe("provisionCurrentDevice", () => {
       apiBaseUrl,
     });
   });
+
+  it.each(["ios", "android"])(
+    "renews a native restore miss as the same %s installation and device",
+    async (platform) => {
+      const { native, random, registration } = harness();
+      const persistedNative = {
+        ...native,
+        restoreDeviceSession: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ protocolVersion: 1, deviceId }),
+      };
+      for (let launch = 0; launch < 2; launch++) {
+        const provision = createProvisionCurrentDevice({
+          native: persistedNative,
+          random,
+          registration,
+        });
+        await expect(provision({ ...input, platform })).resolves.toEqual({
+          deviceId,
+          identity,
+        });
+      }
+      expect(registration.registerDevice).toHaveBeenCalledTimes(1);
+      expect(registration.registerDevice).toHaveBeenCalledWith(commandId, {
+        ...registrationBody,
+        platform,
+      });
+      expect(native.installDeviceSession).toHaveBeenCalledTimes(1);
+      expect(native.installDeviceSession).toHaveBeenCalledWith(installCommand);
+      expect(native.ensureDeviceIdentity).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("coalesces concurrent cold-start requests into one device registration", async () => {
     const { provisionCurrentDevice, native, registration } = harness();
@@ -190,6 +231,92 @@ describe("provisionCurrentDevice", () => {
       installCommand,
     );
   });
+
+  it("renews a cached registration credential that expires before a delayed install retry", async () => {
+    const { native, provisionCurrentDevice, random, registration } = harness();
+    const failedInstall = new Error("native session unavailable");
+    native.installDeviceSession.mockRejectedValueOnce(failedInstall);
+    await expect(provisionCurrentDevice(input)).rejects.toBe(failedInstall);
+
+    jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-10-28T10:56:00.000Z"));
+    random.getBytes.mockResolvedValueOnce(
+      Uint8Array.from({ length: 16 }, (_, index) => index + 16),
+    );
+    const fresh = {
+      ...registrationResponse,
+      backgroundBearer: "crb_fresh_retry_credential",
+      backgroundBearerExpiresAt: "2026-11-27T10:56:00.000Z",
+    };
+    registration.registerDevice.mockResolvedValueOnce(fresh);
+    await expect(provisionCurrentDevice(input)).resolves.toEqual({
+      deviceId,
+      identity,
+    });
+    expect(registration.registerDevice).toHaveBeenCalledTimes(2);
+    expect(registration.registerDevice.mock.calls[1]?.[0]).not.toBe(commandId);
+    expect(registration.registerDevice.mock.calls[1]?.[1]).toBe(
+      registration.registerDevice.mock.calls[0]?.[1],
+    );
+    expect(native.installDeviceSession).toHaveBeenLastCalledWith({
+      ...installCommand,
+      backgroundBearer: fresh.backgroundBearer,
+      backgroundBearerExpiresAt: fresh.backgroundBearerExpiresAt,
+    });
+  });
+
+  it.each([
+    { remainingDays: 8, renew: false },
+    { remainingDays: 7, renew: true },
+    { remainingDays: 6, renew: true },
+    { remainingDays: -1, renew: true },
+  ])(
+    "rechecks a delayed native install retry with $remainingDays credential days left",
+    async ({ remainingDays, renew }) => {
+      const { native, provisionCurrentDevice, random, registration } =
+        harness();
+      const failedInstall = new Error("native session unavailable");
+      native.installDeviceSession.mockRejectedValueOnce(failedInstall);
+      await expect(provisionCurrentDevice(input)).rejects.toBe(failedInstall);
+      const retryNow =
+        Date.parse(registrationResponse.backgroundBearerExpiresAt) -
+        remainingDays * 86_400_000;
+      jest.spyOn(Date, "now").mockReturnValue(retryNow);
+      random.getBytes.mockResolvedValueOnce(
+        Uint8Array.from({ length: 16 }, (_, index) => index + 16),
+      );
+      const renewed = {
+        ...registrationResponse,
+        backgroundBearer: "crb_renewed_same_device",
+        backgroundBearerExpiresAt: new Date(
+          retryNow + 30 * 86_400_000,
+        ).toISOString(),
+      };
+      registration.registerDevice.mockResolvedValueOnce(renewed);
+
+      await expect(provisionCurrentDevice(input)).resolves.toEqual({
+        deviceId,
+        identity,
+      });
+      expect(native.ensureDeviceIdentity).toHaveBeenCalledTimes(1);
+      expect(registration.registerDevice).toHaveBeenCalledTimes(renew ? 2 : 1);
+      if (renew) {
+        expect(registration.registerDevice.mock.calls[1]?.[0]).not.toBe(
+          commandId,
+        );
+        expect(registration.registerDevice.mock.calls[1]?.[1]).toBe(
+          registration.registerDevice.mock.calls[0]?.[1],
+        );
+      }
+      const expectedResponse = renew ? renewed : registrationResponse;
+      expect(native.installDeviceSession).toHaveBeenLastCalledWith({
+        ...installCommand,
+        backgroundBearer: expectedResponse.backgroundBearer,
+        backgroundBearerExpiresAt: expectedResponse.backgroundBearerExpiresAt,
+      });
+    },
+  );
 
   it("projects Android Platform.OS without changing the closed body", async () => {
     const { provisionCurrentDevice, registration } = harness();

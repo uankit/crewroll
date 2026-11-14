@@ -16,6 +16,7 @@ import {
   useCrewRollTheme,
 } from "../../design-system";
 import { PhotoAccessScreen } from "./PhotoAccessScreen";
+import type { PhotoAccessReason } from "../../domain/trips/photoAccess";
 import { JoinRequestRow } from "./JoinRequestRow";
 import type { ScrollRestoration } from "../../design-system";
 
@@ -33,12 +34,14 @@ export type LobbyActivationState =
       retrying?: boolean;
     }>;
 
-export type LobbyPhotoPermissionState =
+export type LobbyPhotoPermissionState = (
   | Readonly<{ kind: "CHECKING" }>
   | Readonly<{ kind: "UNAVAILABLE" }>
   | Readonly<{ kind: "FULL" }>
   | Readonly<{ kind: "REQUESTABLE" }>
-  | Readonly<{ kind: "SETTINGS_REQUIRED" }>;
+  | Readonly<{ kind: "SETTINGS_REQUIRED" }>
+) &
+  Readonly<{ reason?: PhotoAccessReason }>;
 
 export type LobbyScreenProps = Readonly<{
   trip: TripView;
@@ -138,8 +141,12 @@ export function LobbyScreen({
     current?.status === "ACTIVE" &&
     !checking &&
     photoPermission.kind !== "FULL";
+  const showingPhotoSetup =
+    photoSetupOpen &&
+    current?.status === "ACTIVE" &&
+    photoPermission.kind !== "FULL";
   useEffect(() => {
-    if (!photoSetupOpen || !needsPermission) return;
+    if (!showingPhotoSetup) return;
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
@@ -148,20 +155,23 @@ export function LobbyScreen({
       },
     );
     return () => subscription.remove();
-  }, [needsPermission, photoSetupOpen]);
+  }, [showingPhotoSetup]);
   // Initial setup belongs to account onboarding. A skipped/revoked grant must
   // not replace the trip; let the user explicitly reopen the same explainer.
-  if (needsPermission && photoSetupOpen)
+  if (showingPhotoSetup)
     return (
       <PhotoAccessScreen
         {...(actionError ? { error: actionError } : {})}
         checking={checking}
         unavailable={photoPermission.kind === "UNAVAILABLE"}
         settingsRequired={photoPermission.kind === "SETTINGS_REQUIRED"}
+        reason={photoPermission.reason}
         onContinue={
-          photoPermission.kind === "SETTINGS_REQUIRED"
-            ? (onOpenPhotoSettings ?? (() => {}))
-            : (onRequestPhotoAccess ?? (() => {}))
+          photoPermission.kind === "UNAVAILABLE"
+            ? (onRetryPhotoReadiness ?? (() => {}))
+            : photoPermission.kind === "SETTINGS_REQUIRED"
+              ? (onOpenPhotoSettings ?? (() => {}))
+              : (onRequestPhotoAccess ?? (() => {}))
         }
         onLater={() => setPhotoSetupOpen(false)}
       />

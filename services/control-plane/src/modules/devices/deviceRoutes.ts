@@ -12,6 +12,7 @@ import {
   type UpdatePushTokenBody,
 } from "@crewroll/contracts";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { Type } from "@sinclair/typebox";
 
 import type { ClerkTokenVerifier } from "../../shared/auth/clerkTokenVerifier.js";
 import type { ClerkActor } from "../../shared/auth/actor.js";
@@ -124,9 +125,10 @@ export function deviceRoutes(
       preValidation: authenticate,
       schema: {
         body: UpdatePushTokenBodySchema,
+        operationId: "updatePushToken",
         headers: CommandTransportHeadersSchema,
         params: DevicePathSchema,
-        response: errorResponses,
+        response: { 204: Type.Null(), ...errorResponses },
         security: [{ ClerkBearer: [] }],
       },
     },

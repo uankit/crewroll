@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+import { withDeadline } from "../application/shared/withDeadline";
 
 import type {
   PhotoLibraryPermissionPort,
@@ -33,6 +34,7 @@ export function usePhotoAccessSetup({
   const [state, setState] = useState<State | null>(null);
   const generation = useRef(0);
   const working = useRef(false);
+  const [attempt, setAttempt] = useState(0);
   const visible =
     state?.accountId === accountId && state?.scope === scope ? state : null;
   const awaitingAccess = visible !== null && !visible.complete;
@@ -50,8 +52,11 @@ export function usePhotoAccessSetup({
     const epoch = generation.current;
     let disposed = false;
     void Promise.all([
-      permission.read().catch(() => null),
-      cache.read(scope, accountId).catch(() => false),
+      withDeadline(() => permission.read(), 5_000).catch(() => null),
+      // Remembering onboarding is optional; storage cannot hold the flow open.
+      withDeadline(() => cache.read(scope, accountId), 1_500).catch(
+        () => false,
+      ),
     ]).then(([access, remembered]) => {
       if (disposed || epoch !== generation.current) return;
       setState({
@@ -68,7 +73,7 @@ export function usePhotoAccessSetup({
     return () => {
       disposed = true;
     };
-  }, [accountId, scope, permission, cache]);
+  }, [accountId, scope, permission, cache, attempt]);
 
   useEffect(() => {
     if (!accountId || !awaitingAccess) return;
@@ -80,8 +85,7 @@ export function usePhotoAccessSetup({
       // Native prompts also emit foreground events. Their request owns the result.
       if (!returned || working.current) return;
       working.current = true;
-      void permission
-        .read()
+      void withDeadline(() => permission.read(), 5_000)
         .then((access) => {
           if (epoch !== generation.current) return;
           setState({
@@ -113,7 +117,7 @@ export function usePhotoAccessSetup({
     setState({ ...visible, busy: true, unavailable: false });
     try {
       if (visible.permission?.kind === "SETTINGS_REQUIRED") {
-        await permission.openSettings();
+        await withDeadline(() => permission.openSettings(), 5_000);
       } else {
         const access = await permission.request();
         if (epoch !== generation.current) return;
@@ -145,13 +149,21 @@ export function usePhotoAccessSetup({
     void cache.write(scope, accountId).catch(() => {});
   }
 
+  function retry() {
+    if (working.current) return;
+    setState(null);
+    setAttempt((value) => value + 1);
+  }
+
   return {
     complete: accountId === null || visible?.complete === true,
     checking: accountId !== null && visible === null,
     busy: visible?.busy ?? false,
     unavailable: visible?.unavailable ?? false,
     settingsRequired: visible?.permission?.kind === "SETTINGS_REQUIRED",
+    reason: visible?.permission?.reason,
     request,
+    retry,
     defer,
   };
 }

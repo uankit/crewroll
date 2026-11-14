@@ -10,7 +10,7 @@ import {
   ONE_HOUR_MS,
   type MediaCoordinationFixtures,
 } from "./support/mediaFixtures.js";
-import { migrateDown } from "./support/migrations.js";
+import { migrateTo } from "./support/migrations.js";
 import {
   startMigratedPostgres,
   truncateIdentityTripTables,
@@ -150,7 +150,7 @@ describe.sequential("media and coordination schema", () => {
         "media_type:text:NO:NO",
         "key_epoch:int2:NO:NO",
         "encryption_version:int2:NO:NO",
-        "encrypted_manifest:bytea:NO:NO",
+        "encrypted_manifest:bytea:YES:NO",
         "state:text:NO:NO",
         "purge_pending_at:timestamptz:YES:NO",
         "purged_at:timestamptz:YES:NO",
@@ -229,7 +229,7 @@ describe.sequential("media and coordination schema", () => {
         "media_type:text:NO:NO",
         "key_epoch:int2:NO:NO",
         "encryption_version:int2:NO:NO",
-        "encrypted_manifest:bytea:NO:NO",
+        "encrypted_manifest:bytea:YES:NO",
         "state:text:NO:NO",
         "expires_at:timestamptz:NO:NO",
         "created_at:timestamptz:NO:NO",
@@ -238,7 +238,7 @@ describe.sequential("media and coordination schema", () => {
     });
   });
 
-  it("keeps plaintext content and location metadata out of PostgreSQL", async () => {
+  it("omits named plaintext-content and location columns from media tables", async () => {
     const prohibited = await sql<{ column_name: string }>`
       select column_name
       from information_schema.columns
@@ -1096,17 +1096,7 @@ describe.sequential("media and coordination schema", () => {
     const prior = await startMigratedPostgres();
 
     try {
-      await migrateDown(prior.db); // 011
-      await migrateDown(prior.db); // 010
-      await migrateDown(prior.db); // 009
-      await migrateDown(prior.db); // 008
-      await migrateDown(prior.db); // 007
-      await migrateDown(prior.db); // 006
-      await migrateDown(prior.db); // one migration
-
-      await migrateDown(prior.db);
-      await migrateDown(prior.db);
-      await migrateDown(prior.db);
+      await migrateTo(prior.db, "001_identity_and_trips");
       const priorFixture = createMediaCoordinationFixtures(prior.db);
       const user = await priorFixture.identity.user();
       const trip = await priorFixture.identity.trip(user.id);
@@ -1140,20 +1130,18 @@ describe.sequential("media and coordination schema", () => {
         "upload_sessions",
       ]);
     } finally {
-      await prior.stop();
+      try {
+        await migrateToLatest(prior.db);
+      } finally {
+        await prior.stop();
+      }
     }
   });
 
   it("migrates an empty database up, fully down, and up again", async () => {
-    await migrateDown(db); // 011
-    await migrateDown(db); // 010
-    await migrateDown(db); // 009
-    await migrateDown(db); // 008
-    await migrateDown(db); // 007
-    await migrateDown(db); // 006
-    await migrateDown(db); // 005
+    await migrateTo(db, "004_identity_device_hardening");
 
-    const readinessAfterFifthDown = await sql<{ column_name: string }>`
+    const readinessAfterBaseline = await sql<{ column_name: string }>`
       select column_name
       from information_schema.columns
       where table_schema = 'public'
@@ -1197,7 +1185,7 @@ describe.sequential("media and coordination schema", () => {
         and constraint_record.conrelid = 'devices'::regclass
     `.execute(db);
 
-    expect(readinessAfterFifthDown.rows).toEqual([]);
+    expect(readinessAfterBaseline.rows).toEqual([]);
     expect(priorVersionDefault.rows).toEqual([{ column_default: "0" }]);
     expect(priorTripChecks.rows).toHaveLength(2);
     expect(priorTripChecks.rows.every(({ convalidated }) => convalidated)).toBe(
@@ -1224,10 +1212,7 @@ describe.sequential("media and coordination schema", () => {
       "octet_length(authentication_public_key) = 65",
     );
 
-    await migrateDown(db);
-    await migrateDown(db);
-    await migrateDown(db);
-    await migrateDown(db);
+    await migrateTo(db, null);
 
     const tablesAfterDown = await sql<{ table_name: string }>`
       select table_name
@@ -1284,6 +1269,7 @@ describe.sequential("media and coordination schema", () => {
       "inbox_events",
       "media_cleanup_claims",
       "outbox_events",
+      "push_wakeups",
       "receipts",
       "request_limits",
       "safety_reports",

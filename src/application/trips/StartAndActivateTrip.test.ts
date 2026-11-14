@@ -282,6 +282,7 @@ describe("StartAndActivateTrip.start", () => {
       expectedSenderDeviceId: deviceId,
       recipientDeviceId: deviceId,
       recipientE2eeKeyVersion: 1,
+      endsAt,
       wrappedKey,
     });
     expect(native.activateTrip).toHaveBeenCalledWith({

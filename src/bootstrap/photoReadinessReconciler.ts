@@ -1,7 +1,17 @@
 import type { TripSessionActions } from "./AppSessionProvider";
+import type { TripView } from "../domain/trips/model";
 import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+
+export function canPublishPhotoReadiness(trip: TripView | null): boolean {
+  const member = trip?.members.find(
+    (candidate) =>
+      candidate.isCurrentMember &&
+      candidate.membershipId === trip.currentMembershipId,
+  );
+  return member?.status === "ACTIVE" && member.deviceState === "AVAILABLE";
+}
 
 export function usePhotoReadinessEntryBoundary(
   actions: TripSessionActions | null,
@@ -99,10 +109,28 @@ export function usePhotoReadinessRecovery(
     actions,
     tripId,
     focused: false,
+    ready,
     checked: false,
     failed: false,
   });
   usePhotoReadinessEntryBoundary(actions, focused, tripId, ready);
+  // Reset derived entry state before committing a changed eligibility/route.
+  // A passive effect can run too late for same-frame replacement recovery.
+  if (
+    entry.actions !== actions ||
+    entry.tripId !== tripId ||
+    entry.focused !== focused ||
+    entry.ready !== ready
+  ) {
+    setEntry({
+      actions,
+      tripId,
+      focused,
+      ready,
+      checked: false,
+      failed: false,
+    });
+  }
   useEffect(() => {
     let disposed = false;
     let foreground =
@@ -111,18 +139,32 @@ export function usePhotoReadinessRecovery(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
     let running = false;
-    const check = (request = false) => {
+    let foregroundFollowUp = false;
+    const check = (request = false, returnedToForeground = false) => {
       if (disposed || !actions || !focused || !ready || !foreground) return;
       // The reconciler preserves an explicit permission tap behind a passive
       // check. Only the final drain owns the result and the retry timer.
       if (running) {
-        if (request)
+        if (request) {
           void reconciler.current
             .reconcile(actions, tripId, true)
             .catch(() => {});
+        } else if (returnedToForeground) {
+          // Settings may change access while permission/readiness work is in
+          // flight. Drain it first, then read the current grant once more.
+          foregroundFollowUp = true;
+        }
         return;
       }
       running = true;
+      setEntry({
+        actions,
+        tripId,
+        focused,
+        ready,
+        checked: false,
+        failed: false,
+      });
       clearTimeout(timer);
       void reconciler.current
         .reconcile(actions, tripId, request)
@@ -134,13 +176,21 @@ export function usePhotoReadinessRecovery(
               actions,
               tripId,
               focused,
+              ready,
               checked: true,
               failed: false,
             });
           },
           () => {
             if (disposed) return;
-            setEntry({ actions, tripId, focused, checked: true, failed: true });
+            setEntry({
+              actions,
+              tripId,
+              focused,
+              ready,
+              checked: true,
+              failed: true,
+            });
             if (foreground) {
               const delay = Math.min(2_000 * 2 ** failures++, 30_000);
               timer = setTimeout(() => check(), delay);
@@ -149,18 +199,22 @@ export function usePhotoReadinessRecovery(
         )
         .finally(() => {
           running = false;
+          if (foregroundFollowUp) {
+            foregroundFollowUp = false;
+            check();
+          }
         });
     };
     refresh.current = check;
     void Promise.resolve().then(() => {
       if (disposed) return;
-      setEntry({ actions, tripId, focused, checked: false, failed: false });
       check();
     });
     const subscription = AppState.addEventListener("change", (state) => {
+      const returnedToForeground = !foreground && state === "active";
       foreground = state === "active";
       clearTimeout(timer);
-      if (foreground) check();
+      if (foreground) check(false, returnedToForeground);
     });
     return () => {
       disposed = true;
@@ -170,6 +224,8 @@ export function usePhotoReadinessRecovery(
     };
   }, [actions, focused, ready, tripId]);
   const matches =
+    ready &&
+    entry.ready &&
     focused &&
     entry.focused &&
     entry.actions === actions &&

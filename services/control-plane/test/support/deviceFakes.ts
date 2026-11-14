@@ -16,6 +16,7 @@ export const fixedDeviceId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3120";
 
 type FakeUserRecord = LocalUserRecord & {
   readonly state: "active" | "deleted";
+  readonly suspended?: boolean;
 };
 
 export function createDeviceTestHarness() {
@@ -24,6 +25,8 @@ export function createDeviceTestHarness() {
   const users = new Map<string, FakeUserRecord>();
   const devices = new Map<string, DeviceRecord>();
   const idempotencies = new Map<string, DeviceIdempotencyRecord>();
+  const pushRequestRevisions = new Map<string, bigint>();
+  const committedPushRevisions = new Map<string, bigint>();
   const ids = [fixedUserId, fixedDeviceId];
   let snapshotOverride: RegistrationAuthorizationSnapshot | undefined;
   let beforeTransaction: (() => void) | undefined;
@@ -54,6 +57,7 @@ export function createDeviceTestHarness() {
       return Promise.resolve({
         device,
         userDeleted: user?.deleted ?? true,
+        userSuspended: user?.suspended ?? false,
       });
     },
     findDeviceByOwnerAndId(userId, deviceId) {
@@ -89,6 +93,14 @@ export function createDeviceTestHarness() {
     updateDevice(device) {
       devices.set(device.installationId, device);
       return Promise.resolve(device);
+    },
+    updatePushTokenIfNewer(device, revision) {
+      const next = BigInt(revision);
+      if (next > (committedPushRevisions.get(device.deviceId) ?? 0n)) {
+        committedPushRevisions.set(device.deviceId, next);
+        devices.set(device.installationId, device);
+      }
+      return Promise.resolve();
     },
     writeIdempotency(record) {
       idempotencies.set(
@@ -177,6 +189,11 @@ export function createDeviceTestHarness() {
       },
     },
     unitOfWork: {
+      reservePushTokenRevision(_userId, deviceId) {
+        const revision = (pushRequestRevisions.get(deviceId) ?? 0n) + 1n;
+        pushRequestRevisions.set(deviceId, revision);
+        return Promise.resolve(revision.toString());
+      },
       async run<Result>(operation: (tx: DeviceTransaction) => Promise<Result>) {
         calls.transaction += 1;
         beforeTransaction?.();

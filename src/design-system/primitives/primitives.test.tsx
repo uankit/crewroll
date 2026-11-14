@@ -40,7 +40,7 @@ function icon(glyph: string): ReactNode {
 }
 
 describe("design-system primitives", () => {
-  test("AppText scales through 200 percent and resolves semantic tones in both themes", async () => {
+  test("AppText configures system font scaling up to 2x and resolves semantic tones in both themes", async () => {
     const light = await render(
       <ThemeHarness scheme="light">
         <AppText tone="action">Light action</AppText>
@@ -273,17 +273,17 @@ describe("design-system primitives", () => {
         <View style={{ direction: "rtl" }}>
           <PressableRow
             checked
-            label="Nightly"
+            label="Oldest first"
             onPress={onPress}
             role="radio"
-            supportingText="Photos arrive together each night"
+            supportingText="Show older photos before recent photos"
             trailing={icon("✓")}
           />
         </View>
       </ThemeHarness>,
     );
 
-    const row = screen.getByRole("radio", { name: "Nightly" });
+    const row = screen.getByRole("radio", { name: "Oldest first" });
 
     expect(row.props.accessibilityState).toEqual(
       expect.objectContaining({ checked: true, disabled: false }),
@@ -301,27 +301,29 @@ describe("design-system primitives", () => {
     const screen = await render(
       <ThemeHarness>
         <PressableRow
-          label="Immediate"
+          label="Newest first"
           onPress={jest.fn()}
           role="radio"
-          supportingText="Photos arrive as soon as they are ready"
+          supportingText="Show recent photos before older photos"
         />
         <PressableRow
-          accessibilityHint="Double tap to choose nightly delivery"
-          label="Nightly"
+          accessibilityHint="Double tap to choose oldest photos first"
+          label="Oldest first"
           onPress={jest.fn()}
           role="radio"
-          supportingText="Photos arrive together each night"
+          supportingText="Show older photos before recent photos"
         />
       </ThemeHarness>,
     );
 
     expect(
-      screen.getByRole("radio", { name: "Immediate" }).props.accessibilityHint,
-    ).toBe("Photos arrive as soon as they are ready");
+      screen.getByRole("radio", { name: "Newest first" }).props
+        .accessibilityHint,
+    ).toBe("Show recent photos before older photos");
     expect(
-      screen.getByRole("radio", { name: "Nightly" }).props.accessibilityHint,
-    ).toBe("Double tap to choose nightly delivery");
+      screen.getByRole("radio", { name: "Oldest first" }).props
+        .accessibilityHint,
+    ).toBe("Double tap to choose oldest photos first");
   });
 
   test("Screen supports scrollable and fixed compositions on the semantic background", async () => {

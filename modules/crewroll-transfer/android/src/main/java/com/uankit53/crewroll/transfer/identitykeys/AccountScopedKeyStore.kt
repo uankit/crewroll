@@ -13,6 +13,33 @@ internal interface ScopedDatabasePersistence {
 
 internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePersistence) : NativeKeyStore {
   private val lock = ReentrantLock()
+  override fun expiredTrips(now: Instant): List<NativeExpiredTrip> = read { database ->
+    database.scopes.values.flatMap { state ->
+      state.trips.keys.mapNotNull { tripId ->
+        state.cleanupDeadline(tripId)?.takeIf { it <= now }?.let { NativeExpiredTrip(state.scope, tripId, it) }
+      }
+    }
+  }
+  override fun nextTripRetentionDeadline(): Instant? = read { database ->
+    database.scopes.values.flatMap { state -> state.trips.keys.mapNotNull(state::cleanupDeadline) }.minOrNull()
+  }
+  override fun tripRetentionDeadline(scope: NativeKeyScope, tripId: String): Instant? = read { database ->
+    database.scopes[androidScopeKey(scope)]?.authoritativeDeadline(tripId)
+  }
+  override fun purgeExpiredTrip(trip: NativeExpiredTrip, now: Instant, beforeKeyRemoval: () -> Unit): Boolean = transaction { database ->
+    val state = database.scopes[androidScopeKey(trip.scope)] ?: return@transaction false
+    val deadline = state.cleanupDeadline(trip.tripId) ?: return@transaction false
+    if (deadline != trip.deadline || deadline > now || !state.trips.containsKey(trip.tripId)) return@transaction false
+    // No import/backfill can invalidate eligibility between file cleanup and
+    // the final key deletion while this store transaction lock is held.
+    beforeKeyRemoval()
+    state.trips.remove(trip.tripId)?.key?.fill(0)
+    state.tombstones.add(trip.tripId)
+    if (state.activeMetadata?.tripId == trip.tripId) state.activeMetadata = null
+    // Retain authoritative timing as a replay fence. Undated quarantine
+    // tombstones can recover through an authenticated dated envelope.
+    true
+  }
   override fun eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) -> Unit): Unit = transaction { database ->
     if (!accountHash.matches(Regex("^[a-f0-9]{64}$"))) throw NativeKeyException.invalidCommand()
     val installations = database.scopes.values.filter { it.scope.accountHash == accountHash }.map { it.scope.installationId }.toMutableSet()
@@ -89,7 +116,8 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     val metadata = state.activeMetadata ?: return@read null
     val session = state.session ?: return@read null
     val trip = state.trips[metadata.tripId] ?: throw NativeKeyException.materialLost()
-    if (trip.state != KeyState.ACTIVE) throw NativeKeyException.invalidState()
+    if (trip.state != KeyState.ACTIVE || state.authoritativeDeadline(metadata.tripId) != NativeTripRetention.deadline(metadata))
+      throw NativeKeyException.invalidState()
     NativeMediaContext(scope, session.deepCopy(), metadata, trip.key.copyOf())
   }
 
@@ -162,7 +190,23 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     var changed = false
     database.scopes.values.forEach { state ->
       state.trips.toMap().forEach { (tripId, snapshot) ->
-        if (snapshot.state != KeyState.PROVISIONAL) return@forEach
+        val metadata = state.frozenMetadata[tripId] ?: state.activeMetadata?.takeIf { it.tripId == tripId }
+        if (metadata != null) {
+          val existing = state.tripEndsAt[tripId]
+          if (existing == null) {
+            state.tripEndsAt[tripId] = metadata.endsAt
+            changed = true
+          } else if (NativeTripRetention.deadline(existing) != NativeTripRetention.deadline(metadata)) {
+            throw NativeKeyException.materialLost()
+          }
+        }
+        if (snapshot.state != KeyState.PROVISIONAL) {
+          if (!state.tripEndsAt.containsKey(tripId) && !state.legacyReconciliationDeadlines.containsKey(tripId)) {
+            state.legacyReconciliationDeadlines[tripId] = now.plusSeconds(NativeTripRetention.RECONCILIATION_GRACE_SECONDS)
+            changed = true
+          }
+          return@forEach
+        }
         val expiresAt = snapshot.provisionalExpiresAt ?: throw NativeKeyException.materialLost()
         val current = state.trips[tripId]
         if (!expiresAt.isAfter(now) && current?.state == KeyState.PROVISIONAL) {
@@ -187,19 +231,32 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     scope: NativeKeyScope,
     tripId: String,
     key: ByteArray,
+    endsAt: String,
+    now: Instant,
   ): TripImportOutcome = transaction { database ->
     if (key.size != 32) throw NativeKeyException.invalidEnvelope()
     val state = database.scopes.getOrPut(androidScopeKey(scope)) { AndroidScopedState(scope) }
+    val deadline = NativeTripRetention.deadline(endsAt)
+    if (deadline <= now) throw NativeKeyException.materialLost()
+    state.authoritativeDeadline(tripId)?.let {
+      if (it != deadline) return@transaction TripImportOutcome.CONFLICT
+    }
+    if (state.tombstones.contains(tripId) && state.authoritativeDeadline(tripId) != null)
+      return@transaction TripImportOutcome.CONFLICT
     val existing = state.trips[tripId]
     if (existing != null) {
       if (!MessageDigest.isEqual(existing.key, key)) return@transaction TripImportOutcome.CONFLICT
       if (existing.state == KeyState.PROVISIONAL) {
         state.trips[tripId] = existing.copy(state = KeyState.INSTALLED)
       }
+      state.tripEndsAt[tripId] = endsAt
+      state.legacyReconciliationDeadlines.remove(tripId)
       state.tombstones.remove(tripId)
       return@transaction TripImportOutcome.EXISTING
     }
     state.trips[tripId] = TripKeyRecord(key.copyOf(), KeyState.INSTALLED)
+    state.tripEndsAt[tripId] = endsAt
+    state.legacyReconciliationDeadlines.remove(tripId)
     state.tombstones.remove(tripId)
     TripImportOutcome.INSTALLED
   }
@@ -210,6 +267,8 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     if (target.state != KeyState.INSTALLED && target.state != KeyState.ACTIVE) {
       throw NativeKeyException.materialLost()
     }
+    if (state.authoritativeDeadline(metadata.tripId) != NativeTripRetention.deadline(metadata))
+      throw NativeKeyException.invalidState()
     state.frozenMetadata[metadata.tripId]?.takeIf { it != metadata }?.let {
       throw NativeKeyException.invalidState()
     }

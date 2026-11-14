@@ -113,6 +113,11 @@ public struct ActiveTripMetadata: Codable, Equatable, Sendable {
 }
 
 public protocol NativeKeyStore: AnyObject {
+    func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date?
+    func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata?
+    func expiredTrips(now: Date) throws -> [NativeExpiredTrip]
+    func nextTripRetentionDeadline() throws -> Date?
+    func purgeExpiredTrip(_ trip: NativeExpiredTrip, now: Date, beforeKeyRemoval: () throws -> Void) throws -> Bool
     func eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) throws -> Void) throws
     func clearSession() throws
     func mediaContext() throws -> NativeMediaContext?
@@ -140,6 +145,8 @@ public protocol NativeKeyStore: AnyObject {
         scope: NativeKeyScope,
         tripID: String,
         key: Data,
+        endsAt: String,
+        now: Date,
         constantTimeEquals: (Data, Data) -> Bool
     ) throws -> TripImportOutcome
     func activate(scope: NativeKeyScope, metadata: ActiveTripMetadata) throws
@@ -154,6 +161,17 @@ public struct NativeMediaContext {
 }
 
 public extension NativeKeyStore {
+    func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date? {
+        try frozenMetadata(scope: scope, tripID: tripID).map(NativeTripRetention.deadline)
+    }
+    func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata? { nil }
+    func expiredTrips(now: Date) throws -> [NativeExpiredTrip] { [] }
+    func nextTripRetentionDeadline() throws -> Date? { nil }
+    func purgeExpiredTrip(_ trip: NativeExpiredTrip, now: Date, beforeKeyRemoval: () throws -> Void) throws -> Bool { throw NativeKeyError.invalidState }
+    @discardableResult
+    func purgeExpiredTrip(_ trip: NativeExpiredTrip, now: Date) throws -> Bool {
+        try purgeExpiredTrip(trip, now: now, beforeKeyRemoval: {})
+    }
     func eraseAccount(accountHash: String, removeIdentity: (NativeKeyScope) throws -> Void) throws { throw NativeKeyError.invalidCommand }
     func mediaContext() throws -> NativeMediaContext? { nil }
 }
@@ -272,6 +290,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     case ensureDeviceIdentity
     case restoreDeviceSession
     case installDeviceSession
+    case refreshDeviceSession
     case createTripKey
     case discardProvisionalTripKey
     case wrapTripKey
@@ -285,7 +304,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
             return ["protocolVersion", "accountId"]
         case .restoreDeviceSession:
             return ["protocolVersion", "accountId", "installationId", "apiBaseUrl"]
-        case .installDeviceSession:
+        case .installDeviceSession, .refreshDeviceSession:
             return [
                 "protocolVersion",
                 "accountId",
@@ -316,6 +335,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
                 "recipientDeviceId",
                 "recipientE2eeKeyVersion",
                 "wrappedKey",
+                "endsAt",
             ]
         case .activateTrip:
             return [
@@ -333,7 +353,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     }
 
     fileprivate var hasTripID: Bool {
-        self != .ensureDeviceIdentity && self != .installDeviceSession && self != .restoreDeviceSession
+        self != .ensureDeviceIdentity && self != .installDeviceSession && self != .restoreDeviceSession && self != .refreshDeviceSession
     }
 }
 
@@ -346,6 +366,7 @@ public enum NativeCommandDecoder {
             throw NativeKeyError.invalidCommand
         }
         try requireProtocol(command)
+        if kind == .importTripKey { _ = try date(command, "endsAt") }
         if kind.hasTripID {
             try requireTripID(string(command, "tripId"))
         }
@@ -532,6 +553,7 @@ public final class NativeKeyCleanupCoordinator {
     private var scheduledAt: Date?
     private var generation = 0
     private var isCancelled = false
+    private var reconciled = false
 
     public init(
         runner: NativeKeyCleanupRunner,
@@ -541,17 +563,34 @@ public final class NativeKeyCleanupCoordinator {
         self.scheduler = scheduler
     }
 
+    /// Polling status must not scan and rewrite secure storage on every read.
+    /// Explicit foreground wakes still reconcile, and newly created provisional
+    /// keys arm their own expiry through schedule(at:).
+    public func reconcileIfDue(now: Date) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isCancelled else { return }
+        if !reconciled || scheduledAt.map({ $0 <= now }) == true {
+            try reconcileLocked()
+        }
+    }
+
     public func reconcile() throws {
         lock.lock()
         defer { lock.unlock() }
         guard !isCancelled else { return }
+        try reconcileLocked()
+    }
+
+    private func reconcileLocked() throws {
         generation += 1
         scheduler.cancel()
         scheduledAt = nil
-        let nextExpiry = try runner.run()
-        if let nextExpiry {
+        reconciled = false
+        if let nextExpiry = try runner.run() {
             armLocked(at: nextExpiry)
         }
+        reconciled = true
     }
 
     public func schedule(at date: Date) {
@@ -600,6 +639,7 @@ public final class NativeKeyCleanupCoordinator {
             }
         } catch {
             // Access-locked/transient failures remain disarmed until the next wake.
+            reconciled = false
         }
     }
 }
@@ -699,6 +739,8 @@ public final class NativeKeyLifecycle {
     }
 
     /// Reads only the public device ID; bearer and key material stay native.
+    /// Match registration's seven-day renewal window without clearing the old
+    /// session or identity when an authenticated registration is required.
     public func restoreDeviceSession(accountID: String, installationID: String, apiBaseURL: String) throws -> String? {
         try prepare()
         let accountHash = try hashAccountID(accountID)
@@ -709,7 +751,7 @@ public final class NativeKeyLifecycle {
         defer { crypto.zeroize(&saved.session.backgroundBearer) }
         guard saved.scope == NativeKeyScope(accountHash: accountHash, installationID: installationID),
               saved.session.apiBaseURL == apiBaseURL,
-              saved.session.expiresAt > clock.now.addingTimeInterval(300) else { return nil }
+              saved.session.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else { return nil }
         try withValidatedIdentity(scope: saved.scope) { _ in () }
         _ = try TripKeyEnvelopeV1.encodeUUID(saved.session.deviceID)
         return saved.session.deviceID
@@ -758,9 +800,37 @@ public final class NativeKeyLifecycle {
         )
     }
 
+    /// The bridge holds the process-wide command fence across this synchronous
+    /// check and write. Refresh cannot select another account or shorten a lease.
+    @discardableResult
+    public func refreshDeviceSession(
+        accountID: String,
+        installationID: String,
+        deviceID: String,
+        backgroundBearer: String,
+        expiresAt: Date,
+        apiBaseURL: String
+    ) throws -> Bool {
+        try prepare()
+        let scope = NativeKeyScope(accountHash: try hashAccountID(accountID), installationID: installationID)
+        guard var saved = try store.activeSession() else { throw NativeKeyError.materialLost }
+        defer { crypto.zeroize(&saved.session.backgroundBearer) }
+        guard saved.scope == scope, saved.session.deviceID == deviceID,
+              saved.session.apiBaseURL == apiBaseURL,
+              expiresAt > clock.now, expiresAt >= saved.session.expiresAt else {
+            throw NativeKeyError.materialLost
+        }
+        try installDeviceSession(accountID: accountID, installationID: installationID,
+            deviceID: deviceID, backgroundBearer: backgroundBearer, expiresAt: expiresAt, apiBaseURL: apiBaseURL)
+        var installedBearer = Data(backgroundBearer.utf8)
+        defer { crypto.zeroize(&installedBearer) }
+        return !crypto.constantTimeEquals(saved.session.backgroundBearer, installedBearer)
+    }
+
     public func createTripKey(tripID: String, keyEpoch: Int) throws -> CreateTripKeyResult {
         let session = try currentSession()
         try requireV1(tripID: tripID, keyEpoch: keyEpoch)
+        try requireRetainedTrip(scope: session.scope, tripID: tripID)
         var createdExpiry: Date?
         let result = try store.createTrip(
             scope: session.scope,
@@ -816,6 +886,7 @@ public final class NativeKeyLifecycle {
     ) throws -> WrapTripKeyResult {
         let scopedSession = try currentSession()
         try requireV1(tripID: tripID, keyEpoch: keyEpoch)
+        try requireRetainedTrip(scope: scopedSession.scope, tripID: tripID)
         guard recipientE2EEKeyVersion == 1 else { throw NativeKeyError.materialLost }
         guard var record = try store.loadTrip(
             scope: scopedSession.scope,
@@ -859,7 +930,8 @@ public final class NativeKeyLifecycle {
         expectedSenderDeviceID: String,
         recipientDeviceID: String,
         recipientE2EEKeyVersion: Int,
-        wrappedKey: String
+        wrappedKey: String,
+        endsAt: String
     ) throws {
         var envelope = Data()
         var plaintext = Data()
@@ -872,6 +944,9 @@ public final class NativeKeyLifecycle {
         do {
             let scopedSession = try currentSession()
             try requireV1(tripID: tripID, keyEpoch: keyEpoch)
+            guard try NativeTripRetention.deadline(endsAt: endsAt) > clock.now else {
+                throw NativeKeyError.materialLost
+            }
             guard algorithmVersion == 1, recipientE2EEKeyVersion == 1,
                   scopedSession.deviceID == recipientDeviceID
             else { throw NativeKeyError.invalidEnvelope }
@@ -894,6 +969,8 @@ public final class NativeKeyLifecycle {
                 scope: scopedSession.scope,
                 tripID: tripID,
                 key: key,
+                endsAt: endsAt,
+                now: clock.now,
                 constantTimeEquals: crypto.constantTimeEquals
             ) == .conflict {
                 throw NativeKeyError.invalidEnvelope
@@ -909,6 +986,7 @@ public final class NativeKeyLifecycle {
 
     public func activateTrip(_ metadata: ActiveTripMetadata) throws {
         try NativeCommandDecoder.validate(metadata)
+        guard try NativeTripRetention.deadline(metadata) > clock.now else { throw NativeKeyError.materialLost }
         let session = try currentSession()
         try store.activate(scope: session.scope, metadata: metadata)
     }
@@ -929,17 +1007,57 @@ public final class NativeKeyLifecycle {
     /// Native-only: key and bearer never cross the JavaScript bridge.
     public func mediaContext() throws -> NativeMediaContext? {
         try prepare()
-        guard let context = try store.mediaContext() else { return nil }
-        try withValidatedIdentity(scope: context.scope) { _ in () }
-        guard context.tripKey.count == 32, context.session.expiresAt > clock.now else {
-            throw NativeKeyError.materialLost
+        guard var context = try store.mediaContext() else { return nil }
+        do {
+            try withValidatedIdentity(scope: context.scope) { _ in () }
+            guard context.tripKey.count == 32, context.session.expiresAt > clock.now,
+                  try NativeTripRetention.deadline(context.metadata) > clock.now else {
+                throw NativeKeyError.materialLost
+            }
+            try NativeCommandDecoder.validate(context.metadata)
+            return context
+        } catch {
+            crypto.zeroize(&context.tripKey)
+            crypto.zeroize(&context.session.backgroundBearer)
+            throw error
         }
-        try NativeCommandDecoder.validate(context.metadata)
-        return context
+    }
+
+    public func expiredTrips() throws -> [NativeExpiredTrip] {
+        // Retention-only wakes must migrate legacy records even without an
+        // active session or any JS/module initialization.
+        try prepare()
+        return try store.expiredTrips(now: clock.now)
+    }
+    public func nextTripRetentionDeadline() throws -> Date? { try store.nextTripRetentionDeadline() }
+
+    /// The transfer engine calls this only after its lanes and local files drain.
+    @discardableResult
+    public func purgeExpiredTrip(_ trip: NativeExpiredTrip, beforeKeyRemoval: () throws -> Void = {}) throws -> Bool {
+        try store.purgeExpiredTrip(trip, now: clock.now, beforeKeyRemoval: beforeKeyRemoval)
+    }
+
+    private func requireRetainedTrip(scope: NativeKeyScope, tripID: String) throws {
+        if let deadline = try store.tripRetentionDeadline(scope: scope, tripID: tripID) {
+            guard deadline > clock.now else { throw NativeKeyError.materialLost }
+            return
+        }
+        // Owner-created provisional keys have a separate 24h lifetime. Imported
+        // legacy keys cannot wrap until an authenticated import backfills expiry.
+        if var record = try store.loadTrip(scope: scope, tripID: tripID) {
+            defer { crypto.zeroize(&record.key) }
+            guard record.state == .provisional,
+                  let expiry = record.provisionalExpiresAt, expiry > clock.now
+            else { throw NativeKeyError.materialLost }
+        }
     }
 
     private func prepare() throws {
-        try reconcileCleanup()
+        if let cleanupCoordinator {
+            try cleanupCoordinator.reconcileIfDue(now: clock.now)
+        } else {
+            _ = try cleanupRunner.run()
+        }
     }
 
     private func reconcileCleanup() throws {

@@ -485,7 +485,7 @@ describe("AAD mutations", () => {
     ).toThrow(/unexpected field/u);
   });
 
-  it("authenticates trip, asset, variant, epoch, format, order, endian, width, and every byte", async () => {
+  it("authenticates trip, asset, variant, epoch, format, order, endian, width, and representative byte changes", async () => {
     const record = mediaRecord("PREVIEW", 1);
     const blob = await fixture(record.file);
     const swappedIds = previewAad.slice();

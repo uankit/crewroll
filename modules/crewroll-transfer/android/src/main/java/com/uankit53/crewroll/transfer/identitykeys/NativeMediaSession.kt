@@ -21,7 +21,8 @@ class NativeMediaSession(
       loaded = true
     }
     val value = context ?: return null
-    if (value.session.expiresAt <= clock()) {
+    val now = clock()
+    if (value.session.expiresAt <= now || NativeTripRetention.deadline(value.metadata) <= now) {
       clear()
       throw NativeKeyException.materialLost()
     }

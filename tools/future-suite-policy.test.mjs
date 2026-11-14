@@ -41,17 +41,19 @@ const expectedSuites = [
     ownerTask: "IOS-001",
     privateScript: "test:native:ios:run",
     privateCommand:
-      "swift test --package-path modules/crewroll-transfer/ios --scratch-path .expo/crewroll-native-ios-tests",
-    ownedRoot: "modules/crewroll-transfer/ios/Tests",
-    sentinel: "modules/crewroll-transfer/ios/.crewroll-suite.json",
+      "swift test --package-path modules/crewroll-transfer/ios/IdentityKeys --disable-index-store --jobs 1",
+    ownedRoot: "modules/crewroll-transfer/ios/IdentityKeys/Tests",
+    sentinel: "modules/crewroll-transfer/ios/IdentityKeys/.crewroll-suite.json",
     fixedHarness: [],
     discoveredHarness: [
       {
-        under: "modules/crewroll-transfer/ios/Tests",
+        under: "modules/crewroll-transfer/ios/IdentityKeys/Tests",
         suffixes: [".swift"],
       },
     ],
-    activationArtifacts: ["modules/crewroll-transfer/ios/Package.swift"],
+    activationArtifacts: [
+      "modules/crewroll-transfer/ios/IdentityKeys/Package.swift",
+    ],
     passiveHarness: [],
   },
   {
@@ -59,17 +61,20 @@ const expectedSuites = [
     ownerTask: "AND-001",
     privateScript: "test:native:android:run",
     privateCommand: "node tools/run-android-native-tests.mjs",
-    ownedRoot: "modules/crewroll-transfer/android/src/test",
-    sentinel: "modules/crewroll-transfer/android/.crewroll-suite.json",
+    ownedRoot: "modules/crewroll-transfer/android/native-key-tests/src/test",
+    sentinel:
+      "modules/crewroll-transfer/android/native-key-tests/.crewroll-suite.json",
     fixedHarness: [],
     discoveredHarness: [
       {
-        under: "modules/crewroll-transfer/android/src/test",
+        under: "modules/crewroll-transfer/android/native-key-tests/src/test",
         suffixes: [".kt"],
       },
     ],
     activationArtifacts: ["tools/run-android-native-tests.mjs"],
-    passiveHarness: ["modules/crewroll-transfer/android/build.gradle"],
+    passiveHarness: [
+      "modules/crewroll-transfer/android/native-key-tests/build.gradle.kts",
+    ],
   },
   {
     suite: "e2e",
@@ -102,9 +107,9 @@ const expectedSuites = [
 const discoveredFixturePaths = {
   integration: "tests/integration/photo-flow.test.ts",
   "native-ios":
-    "modules/crewroll-transfer/ios/Tests/CrewRollTests/TransferTests.swift",
+    "modules/crewroll-transfer/ios/IdentityKeys/Tests/CrewRollTests/TransferTests.swift",
   "native-android":
-    "modules/crewroll-transfer/android/src/test/kotlin/TransferTest.kt",
+    "modules/crewroll-transfer/android/native-key-tests/src/test/kotlin/TransferTest.kt",
   e2e: "tests/maestro/photo-flow.yaml",
 };
 
@@ -226,24 +231,24 @@ async function writeCompleteHarness(root, definition) {
     case "native-ios":
       await writeFixtureFile(
         root,
-        "modules/crewroll-transfer/ios/Package.swift",
+        "modules/crewroll-transfer/ios/IdentityKeys/Package.swift",
         "// swift-tools-version: 6.0\n",
       );
       await writeFixtureFile(
         root,
-        "modules/crewroll-transfer/ios/Tests/CrewRollTests/TransferTests.swift",
+        "modules/crewroll-transfer/ios/IdentityKeys/Tests/CrewRollTests/TransferTests.swift",
         "import Testing\n",
       );
       break;
     case "native-android":
       await writeFixtureFile(
         root,
-        "modules/crewroll-transfer/android/build.gradle",
+        "modules/crewroll-transfer/android/native-key-tests/build.gradle.kts",
         "plugins {}\n",
       );
       await writeFixtureFile(
         root,
-        "modules/crewroll-transfer/android/src/test/kotlin/TransferTest.kt",
+        "modules/crewroll-transfer/android/native-key-tests/src/test/kotlin/TransferTest.kt",
         "class TransferTest\n",
       );
       await writeFixtureFile(
@@ -283,7 +288,7 @@ async function writeHarnessFragment(root, definition) {
     case "native-ios":
       await writeFixtureFile(
         root,
-        "modules/crewroll-transfer/ios/Package.swift",
+        "modules/crewroll-transfer/ios/IdentityKeys/Package.swift",
         "// swift-tools-version: 6.0\n",
       );
       break;
@@ -520,16 +525,22 @@ test("NAT production native parents and passive Android build files do not activ
     "Pod::Spec.new do |spec|\nend\n",
   );
   await mkdir(
-    join(fixture.root, "modules/crewroll-transfer/ios/.build/products"),
+    join(
+      fixture.root,
+      "modules/crewroll-transfer/ios/IdentityKeys/.build/products",
+    ),
     { recursive: true },
   );
   await symlink(
     "products",
-    join(fixture.root, "modules/crewroll-transfer/ios/.build/debug"),
+    join(
+      fixture.root,
+      "modules/crewroll-transfer/ios/IdentityKeys/.build/debug",
+    ),
   );
   await writeFixtureFile(
     fixture.root,
-    "modules/crewroll-transfer/android/build.gradle",
+    "modules/crewroll-transfer/android/native-key-tests/build.gradle.kts",
     "plugins {}\n",
   );
   await writeFixtureFile(
@@ -852,12 +863,12 @@ test("every exact active contract reaches suite-specific availability checks", a
   }
 });
 
-test("two native-iOS runs keep SwiftPM output in the external scratch path and remain active", async (t) => {
+test("two native-iOS runs keep package build output outside the test source root and remain active", async (t) => {
   const fixture = await makeRepositoryFixture(t);
   const definition = expectedSuites[1];
   const packageBuild = join(
     fixture.root,
-    "modules/crewroll-transfer/ios/.build",
+    "modules/crewroll-transfer/ios/IdentityKeys/.build",
   );
   const scratchRoot = join(fixture.root, ".expo/crewroll-native-ios-tests");
   await activateSuite(fixture.root, definition);
@@ -889,9 +900,9 @@ test("two native-iOS runs keep SwiftPM output in the external scratch path and r
   }
 
   assert.deepEqual(statuses, [0, 0]);
-  await assert.rejects(lstat(packageBuild), { code: "ENOENT" });
+  await assert.rejects(lstat(scratchRoot), { code: "ENOENT" });
   assert.equal(
-    (await lstat(join(scratchRoot, "debug"))).isSymbolicLink(),
+    (await lstat(join(packageBuild, "debug"))).isSymbolicLink(),
     true,
   );
 });
@@ -974,30 +985,6 @@ test("active suites reject missing required host, tool, SDK, and load environmen
           ),
           69,
           "Java",
-        );
-
-        assert.equal(
-          await fixture.runner.dispatchFutureSuite(
-            makeRunOptions(definition, fixture.root, {
-              env: { ANDROID_HOME: "", ANDROID_SDK_ROOT: "" },
-              spawn,
-            }),
-          ),
-          69,
-          "Android SDK environment",
-        );
-
-        assert.equal(
-          await fixture.runner.dispatchFutureSuite(
-            makeRunOptions(definition, fixture.root, {
-              env: {
-                ANDROID_HOME: join(fixture.root, "missing-android-sdk"),
-              },
-              spawn,
-            }),
-          ),
-          69,
-          "Android SDK directory",
         );
       }
 
@@ -1168,49 +1155,30 @@ test("toolchain symlinks are accepted because repository anti-symlink policy doe
   assert.equal(await fixture.runner.dispatchFutureSuite(options), 0);
 });
 
-test("Android accepts either configured SDK variable when it names an existing directory", async (t) => {
+test("Android JVM tests need Java but do not require an Android SDK", async (t) => {
   const fixture = await makeRepositoryFixture(t);
   const definition = expectedSuites[2];
-  const validSdkRoot = join(fixture.root, "alternate-android-sdk");
   await activateSuite(fixture.root, definition);
-  await mkdir(validSdkRoot, { recursive: true });
-
+  const probes = [];
   const status = await fixture.runner.dispatchFutureSuite(
     makeRunOptions(definition, fixture.root, {
       env: {
-        ANDROID_HOME: join(fixture.root, "missing-android-home"),
-        ANDROID_SDK_ROOT: validSdkRoot,
+        JAVA_HOME: join(fixture.root, "java-21"),
+        ANDROID_HOME: "",
+        ANDROID_SDK_ROOT: "",
+      },
+      probe: (executable, args, options) => {
+        probes.push({ executable, args, options });
+        return successResult();
       },
     }),
   );
-
   assert.equal(status, 0);
-});
-
-test("invalid nonempty Android SDK paths are unavailable rather than internal", async (t) => {
-  const fixture = await makeRepositoryFixture(t);
-  const definition = expectedSuites[2];
-  const loopPath = join(fixture.root, "sdk-loop");
-  await activateSuite(fixture.root, definition);
-  await symlink("sdk-loop", loopPath);
-
-  const invalidSdkPaths = [
-    { label: "NUL", path: `${fixture.root}/sdk\0root` },
-    { label: "ELOOP", path: loopPath },
-    { label: "ENAMETOOLONG", path: join(fixture.root, "a".repeat(5000)) },
-  ];
-
-  for (const { label, path } of invalidSdkPaths) {
-    const messages = [];
-    const status = await fixture.runner.dispatchFutureSuite(
-      makeRunOptions(definition, fixture.root, {
-        env: { ANDROID_HOME: path, ANDROID_SDK_ROOT: "" },
-        stderr: (message) => messages.push(message),
-      }),
-    );
-    assert.equal(status, 69, label);
-    assert.match(messages.join("\n"), /native-android.*unavailable.*AND-001/u);
-  }
+  assert.equal(
+    probes[1].executable,
+    join(fixture.root, "java-21", "bin", "java"),
+  );
+  assert.equal(probes[1].options.env.JAVA_HOME, join(fixture.root, "java-21"));
 });
 
 test("probe-time private command or hook drift is reclassified before npm spawn", async (t) => {

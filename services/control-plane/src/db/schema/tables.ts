@@ -63,6 +63,8 @@ export interface DeviceTable {
   background_credential_expires_at: Timestamp;
   encrypted_push_token: Uint8Array | null;
   push_token_hash: Uint8Array | null;
+  push_token_request_revision: Generated<string>;
+  push_token_committed_revision: Generated<string>;
   app_version: string;
   last_seen_at: Timestamp;
   created_at: GeneratedTimestamp;
@@ -80,6 +82,7 @@ export interface TripTable {
   release_local_time: string | null;
   ends_at: Timestamp;
   hard_delete_at: Timestamp;
+  media_metadata_purged_at: NullableTimestamp;
   member_count: Generated<number>;
   version: Generated<number>;
   created_at: GeneratedTimestamp;
@@ -173,7 +176,7 @@ export interface UploadSessionTable {
   media_type: MediaType;
   key_epoch: 1;
   encryption_version: 1;
-  encrypted_manifest: Uint8Array;
+  encrypted_manifest: Uint8Array | null;
   state: UploadSessionState;
   expires_at: Timestamp;
   created_at: GeneratedTimestamp;
@@ -203,7 +206,7 @@ export interface AssetTable {
   media_type: MediaType;
   key_epoch: 1;
   encryption_version: 1;
-  encrypted_manifest: Uint8Array;
+  encrypted_manifest: Uint8Array | null;
   state: AssetState;
   purge_pending_at: NullableTimestamp;
   purged_at: NullableTimestamp;
@@ -308,6 +311,21 @@ export interface TripDeviceRequestTable {
   approved_by_device_id: string | null;
 }
 export interface Database {
+  push_wakeups: {
+    id: string;
+    event_id: string;
+    trip_id: string;
+    recipient_device_id: string;
+    recipient_user_id: string;
+    available_at: Timestamp;
+    expires_at: Timestamp;
+    created_at: Timestamp;
+    lease_token: string | null;
+    attempt_count: Generated<number>;
+    completed_at: NullableTimestamp;
+    outcome: string | null;
+    last_error: string | null;
+  };
   account_terms: {
     user_id: string;
     terms_version: string;

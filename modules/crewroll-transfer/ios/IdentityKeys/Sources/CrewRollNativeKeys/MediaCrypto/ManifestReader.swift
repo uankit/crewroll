@@ -54,21 +54,6 @@ public enum ManifestReader {
         }
     }
 
-    public static func assertMatchesMedia(
-        _ descriptor: ManifestVariantDescriptor,
-        _ media: MediaReadResult
-    ) throws {
-        guard descriptor.plaintextBytes == media.plaintextBytes,
-              descriptor.ciphertextBytes == media.ciphertextBytes,
-              bytesEqual(descriptor.plaintextSHA256, media.plaintextSHA256),
-              bytesEqual(descriptor.ciphertextSHA256, media.ciphertextSHA256)
-        else {
-            throw CryptoReadError.checksum(
-                "manifest descriptor disagrees with verified media"
-            )
-        }
-    }
-
     public static func open(
         encryptedManifest: Bytes,
         tripKey: Bytes,

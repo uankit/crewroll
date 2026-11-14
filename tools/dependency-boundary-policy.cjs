@@ -151,13 +151,10 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   ];
   const featurePackages = [
     ...uiPackages,
-    "@hookform/resolvers",
     "@expo/ui",
     "@shopify/flash-list",
     "@tanstack/react-query",
-    "react-hook-form",
     "zod",
-    "zustand",
   ];
   const infrastructurePackages = [
     "@clerk/expo",
@@ -513,6 +510,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
   const shared = element("shared");
   const composition = file("composition");
   const productionComposition = file("production-composition");
+  const workerAdapter = file("worker-adapter");
   const route = file("route");
   const repository = file("repository");
   const migrationRunner = file("migration-runner");
@@ -526,6 +524,8 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     config,
     shared,
     composition,
+    productionComposition,
+    workerAdapter,
   ];
   const nonProduction = file(NON_PRODUCTION_CATEGORIES);
 
@@ -542,6 +542,8 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     "fastify",
     "kysely",
     "pg-boss",
+    "node:async_hooks",
+    "cloudflare:node",
   ];
   const routeForbiddenPackages = [
     "@aws-sdk/*",
@@ -626,6 +628,14 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     allowElements(shared, [shared]),
     allowModules([api, route], routePackages),
     allowModules(worker, [...servicePackages, "pg-boss"]),
+    allowElements(workerAdapter, [
+      element("module", { fileInternalPath: "{port,ports}/**/*.ts" }),
+      config,
+      shared,
+    ]),
+    allowModules(workerAdapter, [...contractPackages, "node:crypto", "zod"]),
+    allowModules(workerAdapter, ["node:crypto"], "core"),
+    allowModules(productionComposition, ["node:async_hooks"], "core"),
     allowModules([app, module, shared], servicePackages),
     allowModules([module, platform], ["node:crypto"], "core"),
     {
@@ -735,6 +745,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       },
       { type: "api", pattern: "src/api", partialMatch: false },
       { type: "worker", pattern: "src/worker", partialMatch: false },
+      { type: "worker", pattern: "worker", partialMatch: false },
       { type: "app", pattern: "src/app", partialMatch: false },
       { type: "db", pattern: "src/db", partialMatch: false },
       { type: "platform", pattern: "src/platform", partialMatch: false },
@@ -749,7 +760,18 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
       },
       {
         category: "production-composition",
-        pattern: "src/api/productionApiFactories.ts",
+        pattern: [
+          "src/api/productionApiFactories.ts",
+          "worker/requestRuntime.ts",
+          "worker/scopedApp.ts",
+        ],
+      },
+      {
+        category: "worker-adapter",
+        pattern: [
+          "worker/r2CiphertextStore.ts",
+          "worker/pushTokenProtector.ts",
+        ],
       },
       {
         category: "route",
@@ -783,6 +805,7 @@ function createControlPlaneBoundaryPolicy({ tsconfigPath }) {
     ],
     include: [
       "src/**/*.{ts,tsx,js,mts}",
+      "worker/**/*.{ts,tsx,js,mts}",
       "test/**/*.ts",
       "*.config.ts",
       "../../src/**/*.{ts,tsx}",

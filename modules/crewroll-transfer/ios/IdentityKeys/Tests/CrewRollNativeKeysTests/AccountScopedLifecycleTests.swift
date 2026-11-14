@@ -14,7 +14,8 @@ final class AccountScopedLifecycleTests: XCTestCase {
 
     func testRestartRestoresOnlyValidCredentialsForSameAccountInstallationAndServer() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
-        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
+            expiresAt: fixture.clock.now.addingTimeInterval(8 * 86_400))
         let restarted = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store, crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
         func restore(_ account: String = "user_A-1", _ installation: String? = nil, _ server: String = "https://api.crewroll.app") throws -> String? {
             try restarted.restoreDeviceSession(accountID: account, installationID: installation ?? scope.installationID, apiBaseURL: server)
@@ -24,7 +25,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
         XCTAssertNil(try restore(accountB))
         XCTAssertNil(try restore(accountA, "another_installation"))
         XCTAssertNil(try restore(accountA, nil, "https://other.crewroll.app"))
-        fixture.clock.now = Date(timeIntervalSince1970: 600)
+        fixture.clock.now = Date(timeIntervalSince1970: 100 + 8 * 86_400 - 300)
         XCTAssertNil(try restore())
         fixture.clock.now = Date(timeIntervalSince1970: 100)
         try restarted.clearDeviceSession()
@@ -33,9 +34,177 @@ final class AccountScopedLifecycleTests: XCTestCase {
 
     func testRestoreFailsClosedForDamagedPrivateKeys() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA])
-        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
+            expiresAt: fixture.clock.now.addingTimeInterval(8 * 86_400))
         fixture.store.corruptPrivateKey(in: scope)
         XCTAssertThrowsError(try fixture.subject.restoreDeviceSession(accountID: accountA, installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"))
+    }
+
+    func testRestartRequestsRenewalWithinServerWindowWithoutReplacingIdentityOrTripKey() throws {
+        for remainingSeconds in [8 * 86_400, 7 * 86_400 + 1, 7 * 86_400, 6 * 86_400, 0, -1] {
+            let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+            let expiry = fixture.clock.now.addingTimeInterval(TimeInterval(remainingSeconds))
+            let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA, expiresAt: expiry)
+            let identity = try fixture.subject.ensureDeviceIdentity(accountID: accountA)
+            _ = try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1)
+            let originalKey = try XCTUnwrap(fixture.store.trip(scope, tripA)).key
+            let restarted = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+                crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
+
+            XCTAssertEqual(try restarted.restoreDeviceSession(accountID: accountA,
+                installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"),
+                remainingSeconds > 7 * 86_400 ? deviceA : nil, "remainingSeconds=\(remainingSeconds)")
+            XCTAssertEqual(try restarted.ensureDeviceIdentity(accountID: accountA), identity)
+            let unchangedSession = try XCTUnwrap(fixture.store.activeSession())
+            XCTAssertEqual(unchangedSession.scope, scope)
+            XCTAssertEqual(unchangedSession.session.deviceID, deviceA)
+            XCTAssertEqual(unchangedSession.session.expiresAt, expiry)
+            XCTAssertEqual(fixture.store.trip(scope, tripA)?.key, originalKey)
+
+            // Registration renews this same device to thirty days; installation
+            // must preserve account-scoped identity and queued trip key material.
+            try restarted.installDeviceSession(accountID: accountA, installationID: scope.installationID,
+                deviceID: deviceA, backgroundBearer: "crb_renewed_fixture_bearer",
+                expiresAt: fixture.clock.now.addingTimeInterval(30 * 86_400), apiBaseURL: "https://api.crewroll.app")
+            let reopened = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+                crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
+            XCTAssertEqual(try reopened.restoreDeviceSession(accountID: accountA,
+                installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"), deviceA)
+            XCTAssertEqual(try reopened.ensureDeviceIdentity(accountID: accountA), identity)
+            XCTAssertEqual(fixture.store.trip(scope, tripA)?.key, originalKey)
+        }
+    }
+
+    func testSameSelectionRefreshPreservesActiveTripAndAlreadyOwnedTransferContext() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
+            expiresAt: fixture.clock.now.addingTimeInterval(6 * 86_400))
+        let identity = try fixture.subject.ensureDeviceIdentity(accountID: accountA)
+        let key = Data(repeating: 0x41, count: 32)
+        fixture.store.putTrip(scope, tripA, TripKeyRecord(key: key, state: .installed))
+        let metadata = fixture.metadata(tripID: tripA)
+        try fixture.subject.activateTrip(metadata)
+        let owned = try XCTUnwrap(fixture.subject.mediaContext())
+        let fence = NativeTransferCommandFence()
+        let epoch = fence.current()
+        let changed = try fence.withCurrent(epoch) {
+            try fixture.subject.refreshDeviceSession(accountID: accountA, installationID: scope.installationID,
+                deviceID: deviceA, backgroundBearer: "crb_refreshed_same_selection",
+                expiresAt: fixture.clock.now.addingTimeInterval(30 * 86_400), apiBaseURL: "https://api.crewroll.app")
+        }
+        XCTAssertTrue(changed)
+        XCTAssertFalse(try fixture.subject.refreshDeviceSession(accountID: accountA, installationID: scope.installationID,
+            deviceID: deviceA, backgroundBearer: "crb_refreshed_same_selection",
+            expiresAt: fixture.clock.now.addingTimeInterval(30 * 86_400), apiBaseURL: "https://api.crewroll.app"),
+            "unchanged credentials must not clear a genuine current-credential rejection")
+        XCTAssertTrue(fence.matches(epoch), "refresh must not supersede an in-flight command")
+        let refreshed = try XCTUnwrap(fixture.subject.mediaContext())
+        XCTAssertEqual(refreshed.scope, scope)
+        XCTAssertEqual(refreshed.metadata, metadata)
+        XCTAssertEqual(refreshed.tripKey, key)
+        XCTAssertEqual(refreshed.session.backgroundBearer, Data("crb_refreshed_same_selection".utf8))
+        XCTAssertEqual(owned.session.backgroundBearer, Data("crb_fixture_write_only".utf8))
+        XCTAssertEqual(owned.tripKey, key, "a refresh must not erase an existing transfer's owned buffers")
+        XCTAssertEqual(try fixture.subject.ensureDeviceIdentity(accountID: accountA), identity)
+        let restarted = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+            crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
+        XCTAssertEqual(try restarted.mediaContext()?.metadata, metadata)
+        XCTAssertEqual(try restarted.restoreDeviceSession(accountID: accountA,
+            installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"), deviceA)
+    }
+
+    func testRefreshRejectsMismatchedSelectionAndExpiredOrRegressingLeaseWithoutMutation() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
+        let expiry = fixture.clock.now.addingTimeInterval(8 * 86_400)
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA, expiresAt: expiry)
+        _ = try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        let saved = try fixture.store.activeSession()
+        let key = fixture.store.trip(scope, tripA)?.key
+        let later = fixture.clock.now.addingTimeInterval(30 * 86_400)
+        for (account, installation, device, api, date, bearer) in [
+            (accountB, scope.installationID, deviceA, "https://api.crewroll.app", later, "crb_refreshed_same_selection"),
+            (accountA, "another_installation", deviceA, "https://api.crewroll.app", later, "crb_refreshed_same_selection"),
+            (accountA, scope.installationID, deviceB, "https://api.crewroll.app", later, "crb_refreshed_same_selection"),
+            (accountA, scope.installationID, deviceA, "https://other.crewroll.app", later, "crb_refreshed_same_selection"),
+            (accountA, scope.installationID, deviceA, "https://api.crewroll.app", expiry.addingTimeInterval(-1), "crb_refreshed_same_selection"),
+            (accountA, scope.installationID, deviceA, "https://api.crewroll.app", fixture.clock.now, "crb_refreshed_same_selection"),
+            (accountA, scope.installationID, deviceA, "https://api.crewroll.app", later, "invalid_bearer"),
+        ] {
+            XCTAssertThrowsError(try fixture.subject.refreshDeviceSession(accountID: account, installationID: installation,
+                deviceID: device, backgroundBearer: bearer, expiresAt: date, apiBaseURL: api))
+            XCTAssertEqual(try fixture.store.activeSession(), saved)
+            XCTAssertEqual(fixture.store.trip(scope, tripA)?.key, key)
+        }
+    }
+
+    func testLateRefreshCannotSelectAnAccountAfterSignoutOrReplacement() throws {
+        for replaceAccount in [false, true] {
+            let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
+            let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+            let fence = NativeTransferCommandFence()
+            let requestEpoch = fence.current()
+            if replaceAccount {
+                _ = try fence.begin { _ in try fixture.ensureAndInstall(accountID: accountB, deviceID: deviceB) }
+            } else {
+                try fence.begin { _ in try fixture.subject.clearDeviceSession() }
+            }
+            let selected = try fixture.store.activeSession()
+            func refresh() throws {
+                try fixture.subject.refreshDeviceSession(accountID: accountA, installationID: scope.installationID,
+                    deviceID: deviceA, backgroundBearer: "crb_late_old_account_response",
+                    expiresAt: fixture.clock.now.addingTimeInterval(30 * 86_400), apiBaseURL: "https://api.crewroll.app")
+            }
+            XCTAssertThrowsError(try fence.withCurrent(requestEpoch) { try refresh() })
+            XCTAssertThrowsError(try refresh(), "same-scope validation also rejects an old response under a newer epoch")
+            XCTAssertEqual(try fixture.store.activeSession(), selected)
+        }
+    }
+
+    func testHardDeadlineBlocksContextActivationAndReimportOfFrozenTrip() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let metadata = fixture.metadata(tripID: tripA)
+        let deadline = try NativeTripRetention.deadline(metadata)
+        try fixture.subject.installDeviceSession(accountID: accountA, installationID: scope.installationID,
+            deviceID: deviceA, backgroundBearer: "crb_fixture_write_only",
+            expiresAt: deadline.addingTimeInterval(3600), apiBaseURL: "https://api.crewroll.app")
+        fixture.store.putTrip(scope, tripA, TripKeyRecord(key: Data(repeating: 0x41, count: 32), state: .installed))
+        let envelope = try fixture.subject.wrapTripKey(tripID: tripA, keyEpoch: 1, recipientDeviceID: deviceA,
+            recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1)
+        try fixture.subject.activateTrip(metadata)
+        fixture.clock.now = deadline.addingTimeInterval(-0.001)
+        XCTAssertNotNil(try fixture.subject.mediaContext())
+        fixture.clock.now = deadline
+        XCTAssertThrowsError(try fixture.subject.mediaContext())
+        XCTAssertThrowsError(try fixture.subject.activateTrip(metadata))
+        XCTAssertThrowsError(try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1))
+        XCTAssertThrowsError(try fixture.subject.wrapTripKey(tripID: tripA, keyEpoch: 1,
+            recipientDeviceID: deviceA, recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1))
+        XCTAssertThrowsError(try fixture.subject.importTripKey(tripID: tripA, keyEpoch: 1,
+            algorithmVersion: 1, expectedSenderDeviceID: deviceA, recipientDeviceID: deviceA,
+            recipientE2EEKeyVersion: 1, wrappedKey: envelope.wrappedKey, endsAt: "2026-09-02T12:00:00.123Z")) {
+            XCTAssertEqual($0 as? NativeKeyError, .materialLost)
+        }
+    }
+
+    func testUndatedInstalledKeyCannotWrapUntilAuthenticatedImportBackfillsExpiry() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        _ = try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        let wrapped = try fixture.subject.wrapTripKey(tripID: tripA, keyEpoch: 1, recipientDeviceID: deviceA,
+            recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1)
+        let record = try XCTUnwrap(fixture.store.trip(scope, tripA))
+        fixture.store.putTrip(scope, tripA, TripKeyRecord(key: record.key, state: .installed), endsAt: nil)
+        XCTAssertThrowsError(try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1))
+        XCTAssertThrowsError(try fixture.subject.wrapTripKey(tripID: tripA, keyEpoch: 1, recipientDeviceID: deviceA,
+            recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1))
+        XCTAssertNil(try fixture.subject.mediaContext())
+        try fixture.subject.importTripKey(tripID: tripA, keyEpoch: 1, algorithmVersion: 1,
+            expectedSenderDeviceID: deviceA, recipientDeviceID: deviceA, recipientE2EEKeyVersion: 1,
+            wrappedKey: wrapped.wrappedKey, endsAt: fixture.metadata(tripID: tripA).endsAt)
+        XCTAssertNoThrow(try fixture.subject.wrapTripKey(tripID: tripA, keyEpoch: 1, recipientDeviceID: deviceA,
+            recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1))
+        XCTAssertNil(try fixture.subject.mediaContext())
     }
 
     func testIdentityIsAccountScopedAndRejectsOrphanedOrMismatchedKeyMaterial() throws {
@@ -178,7 +347,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
             expectedSenderDeviceID: deviceA,
             recipientDeviceID: deviceA,
             recipientE2EEKeyVersion: 1,
-            wrappedKey: wrappedForA.wrappedKey
+            wrappedKey: wrappedForA.wrappedKey, endsAt: "2026-09-02T12:00:00.123Z"
         )) { XCTAssertEqual(($0 as? NativeKeyError)?.code, "KEY_ENVELOPE_INVALID") }
         XCTAssertThrowsError(try fixture.subject.activateTrip(fixture.metadata(tripID: tripA))) {
             XCTAssertEqual(($0 as? NativeKeyError)?.code, "KEY_MATERIAL_LOST")
@@ -247,6 +416,35 @@ final class AccountScopedLifecycleTests: XCTestCase {
         try relaunched.runScheduledCleanup()
         XCTAssertNil(fixture.store.trip(scope, tripB))
         XCTAssertTrue(fixture.store.hasTombstone(scope, tripB))
+    }
+
+    func testStatusReadsOnlyCollectOnceUntilAnExpiryIsDueAndWakeRetriesFailures() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
+            expiresAt: fixture.clock.now.addingTimeInterval(8 * 86_400))
+        let scheduler = ScopedCleanupScheduler()
+        let subject = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+            crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher,
+            cleanupScheduler: scheduler)
+        let before = fixture.store.gcCommitCount
+        for _ in 0..<500 {
+            XCTAssertEqual(try subject.restoreDeviceSession(accountID: accountA,
+                installationID: scope.installationID, apiBaseURL: "https://api.crewroll.app"), deviceA)
+            XCTAssertNil(try subject.mediaContext())
+        }
+        XCTAssertEqual(fixture.store.gcCommitCount, before + 1)
+
+        _ = try subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        fixture.clock.now = Date(timeIntervalSince1970: 86_501)
+        fixture.store.failNextGCWithAccessLocked = true
+        XCTAssertThrowsError(try subject.mediaContext())
+        // A failed collection must remain due; the next read retries it.
+        XCTAssertNil(try subject.mediaContext())
+        XCTAssertNil(fixture.store.trip(scope, tripA))
+        XCTAssertTrue(fixture.store.hasTombstone(scope, tripA))
+        let after = fixture.store.gcCommitCount
+        for _ in 0..<100 { XCTAssertNil(try subject.mediaContext()) }
+        XCTAssertEqual(fixture.store.gcCommitCount, after)
     }
 
     func testInternalSchedulerCleansAtExpiryRetriesOnWakeAndCancelsWithoutDuplicates() throws {
@@ -473,6 +671,11 @@ final class AccountScopedLifecycleTests: XCTestCase {
                 "backgroundBearerExpiresAt": "2026-09-01T12:00:00Z",
                 "apiBaseUrl": "https://api.crewroll.app",
             ], "deviceId"),
+            (.refreshDeviceSession, [
+                "protocolVersion": 1, "accountId": accountA, "installationId": "install_A-123456",
+                "deviceId": v4DeviceID, "backgroundBearer": "crb_fixture_write_only",
+                "backgroundBearerExpiresAt": "2026-09-01T12:00:00Z", "apiBaseUrl": "https://api.crewroll.app",
+            ], "deviceId"),
             (.createTripKey, [
                 "protocolVersion": 1, "tripId": tripA, "keyEpoch": 1,
             ], "tripId"),
@@ -495,6 +698,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
                 "expectedSenderDeviceId": deviceA,
                 "recipientDeviceId": deviceA,
                 "recipientE2eeKeyVersion": 1,
+                "endsAt": "2026-09-02T12:00:00.123Z",
                 "wrappedKey": "fixture",
             ], "wrappedKey"),
             (.activateTrip, [
@@ -631,7 +835,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
             expectedSenderDeviceID: deviceA,
             recipientDeviceID: deviceA,
             recipientE2EEKeyVersion: 1,
-            wrappedKey: wrapped.wrappedKey
+            wrappedKey: wrapped.wrappedKey, endsAt: "2026-09-02T12:00:00.123Z"
         ))
         XCTAssertTrue(fixture.crypto.zeroizedSizes.contains(148))
         XCTAssertTrue(fixture.crypto.zeroizedSizes.filter { $0 == 32 }.count >= 2)
@@ -692,7 +896,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
                 expectedSenderDeviceID: mutation.1,
                 recipientDeviceID: mutation.2,
                 recipientE2EEKeyVersion: 1,
-                wrappedKey: mutation.3
+                wrappedKey: mutation.3, endsAt: "2026-09-02T12:00:00.123Z"
             )) {
                 XCTAssertEqual(($0 as? NativeKeyError)?.code, "KEY_ENVELOPE_INVALID")
             }
@@ -712,7 +916,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
             expectedSenderDeviceID: deviceA,
             recipientDeviceID: deviceA,
             recipientE2EEKeyVersion: 1,
-            wrappedKey: wrapped.wrappedKey
+            wrappedKey: wrapped.wrappedKey, endsAt: "2026-09-02T12:00:00.123Z"
         )
         XCTAssertEqual(fixture.store.trip(scope, tripA)?.state, .installed)
         XCTAssertTrue(fixture.crypto.comparisonPairs.contains { lhs, rhs in
@@ -733,7 +937,7 @@ final class AccountScopedLifecycleTests: XCTestCase {
             expectedSenderDeviceID: deviceA,
             recipientDeviceID: deviceA,
             recipientE2EEKeyVersion: 1,
-            wrappedKey: wrapped.wrappedKey
+            wrappedKey: wrapped.wrappedKey, endsAt: "2026-09-02T12:00:00.123Z"
         )) {
             XCTAssertEqual(($0 as? NativeKeyError)?.code, "KEY_ENVELOPE_INVALID")
         }
@@ -762,14 +966,14 @@ private final class ScopedFixture {
         hasher = ScopedFakeHasher(values: accountHashes)
     }
 
-    func ensureAndInstall(accountID: String, deviceID: String) throws -> NativeKeyScope {
+    func ensureAndInstall(accountID: String, deviceID: String, expiresAt: Date = Date(timeIntervalSince1970: 900)) throws -> NativeKeyScope {
         let identity = try subject.ensureDeviceIdentity(accountID: accountID)
         try subject.installDeviceSession(
             accountID: accountID,
             installationID: identity.installationID,
             deviceID: deviceID,
             backgroundBearer: "crb_fixture_write_only",
-            expiresAt: Date(timeIntervalSince1970: 900),
+            expiresAt: expiresAt,
             apiBaseURL: "https://api.crewroll.app"
         )
         return try store.activeSession()!.scope
@@ -920,6 +1124,7 @@ private final class ScopedMemoryStore: NativeKeyStore {
         var tombstones: Set<String> = []
         var activeMetadata: ActiveTripMetadata?
         var frozen: [String: ActiveTripMetadata] = [:]
+        var tripEndsAt: [String: String] = [:]
     }
 
     private var identities: [String: DeviceIdentityMaterial] = [:]
@@ -939,6 +1144,19 @@ private final class ScopedMemoryStore: NativeKeyStore {
     private var concurrentGC = 0
     private let gcProbeLock = NSLock()
     var promoteDuringNextGC: (NativeKeyScope, String)?
+
+    func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date? {
+        if let end = scopes[scope]?.tripEndsAt[tripID] { return try NativeTripRetention.deadline(endsAt: end) }
+        return try scopes[scope]?.frozen[tripID].map(NativeTripRetention.deadline)
+    }
+    func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata? {
+        scopes[scope]?.frozen[tripID]
+    }
+    func mediaContext() throws -> NativeMediaContext? {
+        guard let scope = selectedScope, let state = scopes[scope], let session = state.session,
+              let metadata = state.activeMetadata, let trip = state.trips[metadata.tripID], trip.state == .active else { return nil }
+        return NativeMediaContext(scope: scope, session: session, metadata: metadata, tripKey: trip.key)
+    }
 
     func loadIdentity(accountHash: String) throws -> DeviceIdentityMaterial? { identities[accountHash] }
     func reservePendingIdentity(
@@ -1085,17 +1303,24 @@ private final class ScopedMemoryStore: NativeKeyStore {
         scope: NativeKeyScope,
         tripID: String,
         key: Data,
+        endsAt: String,
+        now: Date,
         constantTimeEquals: (Data, Data) -> Bool
     ) throws -> TripImportOutcome {
         try transaction {
+            guard try NativeTripRetention.deadline(endsAt: endsAt) > now else { throw NativeKeyError.materialLost }
+            if let deadline = try tripRetentionDeadline(scope: scope, tripID: tripID),
+               try deadline != NativeTripRetention.deadline(endsAt: endsAt) { return .conflict }
             if var existing = scopes[scope]?.trips[tripID] {
                 guard constantTimeEquals(existing.key, key) else { return .conflict }
                 if existing.state == .provisional { existing.state = .installed }
                 scopes[scope]?.trips[tripID] = existing
+                scopes[scope]?.tripEndsAt[tripID] = endsAt
                 scopes[scope]?.tombstones.remove(tripID)
                 return .existing
             }
             scopes[scope, default: ScopeState()].trips[tripID] = TripKeyRecord(key: key, state: .installed)
+            scopes[scope]?.tripEndsAt[tripID] = endsAt
             scopes[scope]?.tombstones.remove(tripID)
             return .installed
         }
@@ -1140,7 +1365,10 @@ private final class ScopedMemoryStore: NativeKeyStore {
     func trip(_ scope: NativeKeyScope, _ tripID: String) -> TripKeyRecord? { scopes[scope]?.trips[tripID] }
     func hasTombstone(_ scope: NativeKeyScope, _ tripID: String) -> Bool { scopes[scope]?.tombstones.contains(tripID) == true }
     func activeMetadata(_ scope: NativeKeyScope) -> ActiveTripMetadata? { scopes[scope]?.activeMetadata }
-    func putTrip(_ scope: NativeKeyScope, _ tripID: String, _ record: TripKeyRecord) { scopes[scope, default: ScopeState()].trips[tripID] = record }
+    func putTrip(_ scope: NativeKeyScope, _ tripID: String, _ record: TripKeyRecord, endsAt: String? = "2026-09-02T12:00:00.123Z") {
+        scopes[scope, default: ScopeState()].trips[tripID] = record
+        if record.state != .provisional { scopes[scope]?.tripEndsAt[tripID] = endsAt }
+    }
     func addTombstone(accountHash: String, installationID: String, tripID: String) {
         scopes[NativeKeyScope(accountHash: accountHash, installationID: installationID), default: ScopeState()].tombstones.insert(tripID)
     }

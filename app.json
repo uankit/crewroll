@@ -2,7 +2,7 @@
   "expo": {
     "name": "CrewRoll",
     "slug": "AirMesh",
-    "version": "1.0.4",
+    "version": "1.0.6",
     "orientation": "portrait",
     "platforms": ["ios", "android"],
     "icon": "./assets/brand/app-icon.png",
@@ -12,7 +12,10 @@
       "icon": "./assets/brand/app-icon.png",
       "bundleIdentifier": "app.crewroll.mobile",
       "supportsTablet": false,
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "allowBackup": false,
@@ -62,6 +65,10 @@
         }
       ],
       "@clerk/expo",
+      [
+        "expo-notifications",
+        { "mode": "production", "enableBackgroundRemoteNotifications": true }
+      ],
       "./modules/crewroll-transfer/plugin/withCrewRollTransfer",
       "expo-web-browser",
       "expo-apple-authentication",

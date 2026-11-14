@@ -1,4 +1,8 @@
 import Clibsodium
+@testable import CrewRollNativeKeys
+
+// Whole-buffer reference reader for the streaming file-crypto regression tests.
+// Keep this oracle outside the native application's production source target.
 
 public struct MediaReadResult: Equatable {
     public let frameCount: Int

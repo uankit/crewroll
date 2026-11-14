@@ -1,4 +1,7 @@
-import { usePhotoReadinessRecovery } from "@/bootstrap/photoReadinessReconciler";
+import {
+  canPublishPhotoReadiness,
+  usePhotoReadinessRecovery,
+} from "@/bootstrap/photoReadinessReconciler";
 import { TripNotificationsSheet } from "@/bootstrap/TripNotificationsSheet";
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
 import { useTripContinuity } from "@/bootstrap/useTripContinuity";
@@ -105,8 +108,9 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     actions,
     tripId,
     focused,
-    session.snapshot.phase === "READY_LOBBY" ||
-      session.snapshot.phase === "READY_ACTIVE",
+    (session.snapshot.phase === "READY_LOBBY" ||
+      session.snapshot.phase === "READY_ACTIVE") &&
+      canPublishPhotoReadiness(projection.trip),
   );
   const [memberBusy, setMemberBusy] = useState<{
     id: string;

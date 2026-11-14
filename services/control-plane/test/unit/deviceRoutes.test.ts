@@ -200,6 +200,7 @@ describe("device routes", () => {
   });
 
   it("rejects path/header mismatch before command execution", async () => {
+    const revokeExecute = vi.spyOn(dependencies.revokeDevice, "execute");
     const { instance } = app();
     const response = await instance.inject({
       headers: {
@@ -212,6 +213,7 @@ describe("device routes", () => {
     });
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ code: "DEVICE_NOT_OWNED" });
+    expect(revokeExecute).not.toHaveBeenCalled();
   });
 
   it("publishes device routes in non-production Swagger without secret logs", async () => {
@@ -220,6 +222,16 @@ describe("device routes", () => {
     const openapi = JSON.stringify(instance.swagger());
     expect(openapi).toContain("/v1/devices");
     expect(openapi).toContain("/v1/devices/{deviceId}/push-token");
+    const pushCanary = "device-route-log-canary";
+    const response = await instance.inject({
+      method: "POST",
+      url: "/v1/devices",
+      headers: { authorization, "idempotency-key": idempotencyKey },
+      payload: { ...validRegisterDeviceBody(), pushToken: pushCanary },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(registerExecute).toHaveBeenCalledTimes(1);
     expect(fixture.logs()).not.toContain(authorization);
+    expect(fixture.logs()).not.toContain(pushCanary);
   });
 });

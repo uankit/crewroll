@@ -7,8 +7,7 @@
     "crypto/**/*.ts",
     "fixtures/**/*.ts",
     "native/**/*.ts",
-    "openapi/**/*.ts",
-    "storage/**/*.ts"
+    "openapi/**/*.ts"
   ],
   "exclude": ["dist", "generator", "test", "vitest.config.ts"]
 }

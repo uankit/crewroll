@@ -23,6 +23,7 @@ import {
   CreateTripBody,
   ProblemDetails,
   RegisterDeviceBody,
+  type UpdatePushTokenBody,
   SetTripReadinessBody,
   StartTripBody,
 } from "@crewroll/contracts";
@@ -59,9 +60,28 @@ export class CrewRollTransportProblem extends Error {
   }
 }
 
+type SessionBinding = () => string | null;
+
+function captureSessionBinding(binding: SessionBinding | undefined) {
+  const key = binding?.() ?? null;
+  return {
+    key,
+    assertCurrent() {
+      if (binding && (key === null || key.length === 0 || key !== binding()))
+        // Stale work must not return AUTH_INVALID and sign out the new account.
+        throw new CrewRollTransportProblem();
+    },
+  };
+}
+
 export type CrewRollApi = DeviceRegistrationPort &
   TripApiPort &
   AccountApi & {
+    updateDevicePushToken(
+      deviceId: string,
+      commandId: string,
+      body: UpdatePushTokenBody,
+    ): Promise<void>;
     rejectMember(
       deviceId: string,
       commandId: string,
@@ -343,12 +363,32 @@ function parseCreateTripOutcome(
 }
 
 class OpenApiCrewRollApi implements CrewRollApi {
-  constructor(private readonly client: MobileClient) {}
+  constructor(
+    private readonly client: MobileClient,
+    private readonly sessionBinding?: SessionBinding,
+  ) {}
 
   private checked<T>(schema: RuntimeSchema, value: T): T {
     if (!matchesRuntimeSchema(schema, value))
       throw new CrewRollTransportProblem();
     return value;
+  }
+  async updateDevicePushToken(
+    deviceId: string,
+    commandId: string,
+    body: UpdatePushTokenBody,
+  ) {
+    await this.request(
+      () =>
+        this.client.PATCH("/v1/devices/{deviceId}/push-token", {
+          body,
+          params: {
+            path: { deviceId },
+            header: commandHeaders(deviceId, commandId),
+          },
+        }),
+      204,
+    );
   }
   async getAccountPolicy() {
     return this.checked(
@@ -686,12 +726,19 @@ class OpenApiCrewRollApi implements CrewRollApi {
 
   private async request<Response>(
     operation: () => Promise<ApiResult<Response>>,
+    noContentStatus?: 204,
   ): Promise<Response> {
+    const session = captureSessionBinding(this.sessionBinding);
     try {
+      session.assertCurrent();
       const result = await operation();
+      session.assertCurrent();
+      if (noContentStatus === 204 && result.response.status === 204)
+        return result.data as Response;
       if (result.data !== undefined) return result.data as Response;
       throw problemFrom(result.error, result.response.status);
     } catch (error) {
+      session.assertCurrent();
       if (
         error instanceof CrewRollApiProblem ||
         error instanceof CrewRollTransportProblem
@@ -715,6 +762,8 @@ export function createCrewRollApi(
     apiBaseUrl: string;
     fetch: typeof fetch;
     sessionTokenSource: SessionTokenSource;
+    /** Production supplies the currently committed Clerk account/session key. */
+    sessionBinding?: SessionBinding;
     timeoutMs?: number;
   }>,
 ): CrewRollApi {
@@ -739,23 +788,33 @@ export function createCrewRollApi(
     }
   };
   const refreshingTokens = new Map<string, Promise<string>>();
-  const refreshToken = (rejectedToken: string): Promise<string> => {
-    const pending = refreshingTokens.get(rejectedToken);
+  const refreshToken = (
+    rejectedToken: string,
+    sessionBinding: string | null,
+  ): Promise<string> => {
+    const key = JSON.stringify([sessionBinding, rejectedToken]);
+    const pending = refreshingTokens.get(key);
     if (pending) return pending;
     // A different session must not inherit another account's pending refresh.
     const refresh = bounded(() =>
       input.sessionTokenSource.getToken({ skipCache: true }),
-    ).finally(() => refreshingTokens.delete(rejectedToken));
-    refreshingTokens.set(rejectedToken, refresh);
+    ).finally(() => refreshingTokens.delete(key));
+    refreshingTokens.set(key, refresh);
     return refresh;
   };
   const client = createClient<MobilePaths>({
     baseUrl: input.apiBaseUrl,
-    fetch: (originalRequest) =>
-      bounded(async (signal) => {
+    fetch: (originalRequest) => {
+      const session = captureSessionBinding(input.sessionBinding);
+      return bounded(async (signal) => {
+        const assertCurrent = () => {
+          session.assertCurrent();
+          if (signal.aborted) throw new CrewRollTransportProblem();
+        };
+        assertCurrent();
         const request = new Request(originalRequest, { signal });
         const token = await input.sessionTokenSource.getToken();
-        if (signal.aborted) throw new CrewRollTransportProblem();
+        assertCurrent();
         if (!token.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
         request.headers.set("Authorization", `Bearer ${token}`);
         // Preserve the body and idempotency key before fetch consumes the request.
@@ -763,11 +822,12 @@ export function createCrewRollApi(
         // Keep the deadline through body consumption too. An accepted TCP
         // connection with a stalled JSON body must not leave a button busy forever.
         const send = async (value: Request) => {
-          if (signal.aborted) throw new CrewRollTransportProblem();
+          assertCurrent();
           const result = await input.fetch(value);
+          assertCurrent();
           const body = await result.text();
-          if (signal.aborted || body.length > 1_048_576)
-            throw new CrewRollTransportProblem();
+          assertCurrent();
+          if (body.length > 1_048_576) throw new CrewRollTransportProblem();
           return new Response(
             result.status === 204 || result.status === 205 ? null : body,
             {
@@ -778,6 +838,7 @@ export function createCrewRollApi(
           );
         };
         const response = await send(request);
+        assertCurrent();
         if (response.status !== 401) return response;
         let problem: CrewRollApiProblem;
         try {
@@ -787,13 +848,16 @@ export function createCrewRollApi(
         }
         if (problem.code !== "AUTH_INVALID" && problem.code !== "AUTH_REQUIRED")
           return response;
-        const freshToken = await refreshToken(token);
+        assertCurrent();
+        const freshToken = await refreshToken(token, session.key);
+        assertCurrent();
         if (!freshToken.trim()) throw new CrewRollApiProblem("AUTH_REQUIRED");
         retry.headers.set("Authorization", `Bearer ${freshToken}`);
         // A rejected fresh token is returned to normal auth handling; never loop.
         return send(retry);
-      }),
+      });
+    },
   });
 
-  return new OpenApiCrewRollApi(client);
+  return new OpenApiCrewRollApi(client, input.sessionBinding);
 }

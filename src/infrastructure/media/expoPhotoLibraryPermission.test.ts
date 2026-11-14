@@ -20,6 +20,7 @@ function response(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Expo 57 full-photo permission adapter", () => {
+  const hostOS = Platform.OS;
   const media = {
     getPermissionsAsync: jest.fn(),
     requestPermissionsAsync: jest.fn(),
@@ -28,7 +29,16 @@ describe("Expo 57 full-photo permission adapter", () => {
     openSettings: jest.fn(),
   } as jest.Mocked<SettingsLinkingApi>;
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Object.defineProperty(Platform, "OS", { value: "ios", configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(Platform, "OS", {
+      value: hostOS,
+      configurable: true,
+    });
+  });
 
   it.each(["undetermined", "denied", "granted"])(
     "reads %s access without opening a prompt before Continue",
@@ -67,42 +77,180 @@ describe("Expo 57 full-photo permission adapter", () => {
     },
   );
 
-  describe("Android exact-original permission", () => {
+  describe("Android independent library and original-metadata permissions", () => {
     const originalOS = Platform.OS;
+    const originalVersion = Platform.Version;
+    const images = PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES;
+    const external = PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+    const selected =
+      PermissionsAndroid.PERMISSIONS.READ_MEDIA_VISUAL_USER_SELECTED;
+    const metadata = PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION;
+    let granted: Set<string>;
+    let check: jest.SpyInstance;
+    let request: jest.SpyInstance;
+    let requestMultiple: jest.SpyInstance;
+    const version = (sdk: number) =>
+      Object.defineProperty(Platform, "Version", {
+        value: sdk,
+        configurable: true,
+      });
+
     beforeEach(() => {
       Object.defineProperty(Platform, "OS", {
         value: "android",
         configurable: true,
       });
-      const full = response({ status: "granted", accessPrivileges: "all" });
-      media.getPermissionsAsync.mockResolvedValue(full);
-      media.requestPermissionsAsync.mockResolvedValue(full);
+      version(34);
+      granted = new Set();
+      check = jest
+        .spyOn(PermissionsAndroid, "check")
+        .mockImplementation(async (permission) => granted.has(permission));
+      request = jest
+        .spyOn(PermissionsAndroid, "request")
+        .mockResolvedValue(PermissionsAndroid.RESULTS.DENIED);
+      requestMultiple = jest
+        .spyOn(PermissionsAndroid, "requestMultiple")
+        .mockResolvedValue({
+          [images]: "denied",
+          [selected]: "denied",
+        } as Awaited<ReturnType<typeof PermissionsAndroid.requestMultiple>>);
+      // Misleading bundled results must never be used on Android: metadata
+      // denial and limited photo-library access are independent decisions.
+      media.getPermissionsAsync.mockResolvedValue(
+        response({ status: "granted", accessPrivileges: "limited" }),
+      );
+      media.requestPermissionsAsync.mockResolvedValue(
+        response({ status: "granted", accessPrivileges: "all" }),
+      );
     });
     afterEach(() => {
       Object.defineProperty(Platform, "OS", {
         value: originalOS,
         configurable: true,
       });
+      Object.defineProperty(Platform, "Version", {
+        value: originalVersion,
+        configurable: true,
+      });
       jest.restoreAllMocks();
     });
 
-    it("does not report ready until original metadata access is granted", async () => {
-      const check = jest
-        .spyOn(PermissionsAndroid, "check")
-        .mockResolvedValue(false);
-      const adapter = new ExpoPhotoLibraryPermission({ linking, media });
-      await expect(adapter.read()).resolves.toMatchObject({
+    it.each([28, 29, 30, 32, 33, 34, 36])(
+      "reads actual grants without prompts on API %i",
+      async (sdk) => {
+        version(sdk);
+        granted.add(sdk >= 33 ? images : external);
+        if (sdk >= 29) granted.add(metadata);
+        await expect(
+          new ExpoPhotoLibraryPermission({ linking, media }).read(),
+        ).resolves.toEqual({
+          kind: "FULL",
+          fullPhotoLibraryAccess: true,
+          canAskAgain: true,
+        });
+        expect(check).toHaveBeenCalledWith(sdk >= 33 ? images : external);
+        expect(request).not.toHaveBeenCalled();
+        expect(requestMultiple).not.toHaveBeenCalled();
+        expect(media.getPermissionsAsync).not.toHaveBeenCalled();
+        if (sdk < 29) expect(check).not.toHaveBeenCalledWith(metadata);
+      },
+    );
+
+    it.each([29, 32, 33, 34, 36])(
+      "distinguishes metadata denial from limited photos on API %i",
+      async (sdk) => {
+        version(sdk);
+        granted.add(sdk >= 33 ? images : external);
+        await expect(
+          new ExpoPhotoLibraryPermission({ linking, media }).read(),
+        ).resolves.toEqual({
+          kind: "REQUESTABLE",
+          fullPhotoLibraryAccess: false,
+          canAskAgain: true,
+          reason: "ORIGINAL_METADATA",
+        });
+        expect(media.getPermissionsAsync).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([34, 36])(
+      "preserves selected-only access on API %i",
+      async (sdk) => {
+        version(sdk);
+        granted.add(selected);
+        await expect(
+          new ExpoPhotoLibraryPermission({ linking, media }).read(),
+        ).resolves.toEqual({
+          kind: "REQUESTABLE",
+          fullPhotoLibraryAccess: false,
+          canAskAgain: true,
+          reason: "LIMITED_LIBRARY",
+        });
+        expect(check).not.toHaveBeenCalledWith(metadata);
+      },
+    );
+
+    it.each([28, 29, 32, 33, 34, 36])(
+      "requests appropriate library access on API %i",
+      async (sdk) => {
+        version(sdk);
+        request.mockResolvedValue(PermissionsAndroid.RESULTS.GRANTED);
+        requestMultiple.mockResolvedValue({
+          [images]: "granted",
+          [selected]: "granted",
+        });
+        await expect(
+          new ExpoPhotoLibraryPermission({ linking, media }).request(),
+        ).resolves.toMatchObject({ kind: "FULL" });
+        if (sdk >= 34)
+          expect(requestMultiple).toHaveBeenCalledWith([images, selected]);
+        else
+          expect(request).toHaveBeenCalledWith(sdk >= 33 ? images : external);
+        if (sdk >= 29)
+          expect(request).toHaveBeenCalledWith(
+            metadata,
+            expect.objectContaining({
+              message: expect.stringContaining("where a photo was taken"),
+            }),
+          );
+        else
+          expect(request).not.toHaveBeenCalledWith(metadata, expect.anything());
+        expect(media.requestPermissionsAsync).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [PermissionsAndroid.RESULTS.DENIED, "REQUESTABLE"],
+      [PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN, "SETTINGS_REQUIRED"],
+    ] as const)(
+      "preserves library denial %s on the next read",
+      async (status, kind) => {
+        requestMultiple.mockResolvedValue({
+          [images]: status,
+          [selected]: status,
+        });
+        const adapter = new ExpoPhotoLibraryPermission({ linking, media });
+        await expect(adapter.request()).resolves.toMatchObject({
+          kind,
+          fullPhotoLibraryAccess: false,
+        });
+        await expect(adapter.read()).resolves.toMatchObject({ kind });
+        expect(request).not.toHaveBeenCalledWith(metadata, expect.anything());
+      },
+    );
+
+    it("does not request metadata after selected-photo access", async () => {
+      requestMultiple.mockResolvedValue({
+        [images]: "denied",
+        [selected]: "granted",
+      });
+      await expect(
+        new ExpoPhotoLibraryPermission({ linking, media }).request(),
+      ).resolves.toMatchObject({
         kind: "REQUESTABLE",
-        fullPhotoLibraryAccess: false,
+        reason: "LIMITED_LIBRARY",
       });
-      expect(check).toHaveBeenCalledWith(
-        PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-      );
-      check.mockResolvedValue(true);
-      await expect(adapter.read()).resolves.toMatchObject({
-        kind: "FULL",
-        fullPhotoLibraryAccess: true,
-      });
+      expect(request).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -110,30 +258,50 @@ describe("Expo 57 full-photo permission adapter", () => {
       [PermissionsAndroid.RESULTS.DENIED, "REQUESTABLE"],
       [PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN, "SETTINGS_REQUIRED"],
     ] as const)(
-      "handles the original metadata grant %s",
-      async (permission, kind) => {
-        const request = jest
-          .spyOn(PermissionsAndroid, "request")
-          .mockResolvedValue(permission);
+      "handles metadata outcome %s without another photo prompt",
+      async (status, kind) => {
+        granted.add(images);
+        request.mockResolvedValue(status);
         const adapter = new ExpoPhotoLibraryPermission({ linking, media });
         await expect(adapter.request()).resolves.toMatchObject({ kind });
-        expect(request).toHaveBeenCalledWith(
-          PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION,
-          expect.objectContaining({
-            message: expect.stringContaining("where a photo was taken"),
-          }),
-        );
+        expect(requestMultiple).not.toHaveBeenCalled();
+        expect(request).toHaveBeenCalledWith(metadata, expect.anything());
+        if (status === "never_ask_again")
+          await expect(adapter.read()).resolves.toMatchObject({
+            kind: "SETTINGS_REQUIRED",
+            reason: "ORIGINAL_METADATA",
+          });
+        granted.add(metadata);
+        await expect(adapter.read()).resolves.toMatchObject({ kind: "FULL" });
       },
     );
 
-    it("does not ask for original metadata when photo access is limited", async () => {
-      media.requestPermissionsAsync.mockResolvedValue(
-        response({ status: "granted", accessPrivileges: "limited" }),
-      );
-      const request = jest.spyOn(PermissionsAndroid, "request");
+    it("reuses complete grants without another prompt", async () => {
+      granted.add(images);
+      granted.add(selected);
+      granted.add(metadata);
       await expect(
         new ExpoPhotoLibraryPermission({ linking, media }).request(),
-      ).resolves.toMatchObject({ kind: "REQUESTABLE" });
+      ).resolves.toMatchObject({ kind: "FULL" });
+      expect(request).not.toHaveBeenCalled();
+      expect(requestMultiple).not.toHaveBeenCalled();
+    });
+
+    it.each(["read", "request"] as const)(
+      "reports raw Android %s errors as unavailable",
+      async (operation) => {
+        check.mockRejectedValue(new Error("private OS details"));
+        await expect(
+          new ExpoPhotoLibraryPermission({ linking, media })[operation](),
+        ).rejects.toThrow("Photo access is unavailable");
+      },
+    );
+
+    it("fails closed when a native result omits a requested grant", async () => {
+      requestMultiple.mockResolvedValue({ [images]: "granted" });
+      await expect(
+        new ExpoPhotoLibraryPermission({ linking, media }).request(),
+      ).rejects.toThrow("Photo access is unavailable");
       expect(request).not.toHaveBeenCalled();
     });
   });
@@ -156,10 +324,22 @@ describe("Expo 57 full-photo permission adapter", () => {
   ] as const)("fails closed for %p", async (native, kind) => {
     media.getPermissionsAsync.mockResolvedValue(native);
     const adapter = new ExpoPhotoLibraryPermission({ linking, media });
-    await expect(adapter.read()).resolves.toEqual({
+    await expect(adapter.read()).resolves.toMatchObject({
       kind,
       fullPhotoLibraryAccess: false,
       canAskAgain: kind === "REQUESTABLE",
+    });
+  });
+
+  it("preserves Selected Photos as a partial grant with an explanation", async () => {
+    media.getPermissionsAsync.mockResolvedValue(
+      response({ status: "granted", accessPrivileges: "limited" }),
+    );
+    await expect(
+      new ExpoPhotoLibraryPermission({ linking, media }).read(),
+    ).resolves.toMatchObject({
+      fullPhotoLibraryAccess: false,
+      reason: "LIMITED_LIBRARY",
     });
   });
 

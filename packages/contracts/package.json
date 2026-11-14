@@ -31,15 +31,11 @@
       "types": "./dist/native/protocol.d.ts",
       "import": "./dist/native/protocol.js"
     },
-    "./storage/ports": {
-      "types": "./dist/storage/ports.d.ts",
-      "import": "./dist/storage/ports.js"
-    },
     "./generated/crewroll.openapi.json": "./generated/crewroll.openapi.json"
   },
   "scripts": {
     "build": "node ../../tools/clean-workspace-dist.mjs && tsc -p tsconfig.build.json",
-    "lint": "eslint crypto fixtures generator native openapi storage test vitest.config.ts --max-warnings=0",
+    "lint": "eslint crypto fixtures generator native openapi test vitest.config.ts --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && vitest run",
     "openapi:generate": "tsx generator/generate-openapi.ts",
@@ -53,11 +49,11 @@
     "@types/node": "22.19.15",
     "eslint": "10.9.1",
     "eslint-import-resolver-typescript": "4.4.5",
-    "eslint-plugin-boundaries": "7.2.0",
+    "eslint-plugin-boundaries": "7.4.2",
     "libsodium-wrappers": "0.8.4",
     "tsx": "4.23.12",
     "typescript": "6.0.3",
     "typescript-eslint": "8.68.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }

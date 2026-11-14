@@ -9,8 +9,18 @@ export default function ProvisionRoute() {
   switch (snapshot.phase) {
     case "PROVISIONING_DEVICE":
       return <ProvisioningScreen status="working" />;
+    case "SIGNING_OUT":
+      return <ProvisioningScreen status="working" purpose="sign-out" />;
     case "RECOVERABLE_FAILURE":
-      return <ProvisioningScreen onRetry={retry} status="failed" />;
+      return (
+        <ProvisioningScreen
+          onRetry={retry}
+          status="failed"
+          {...(snapshot.publicErrorCode === "SESSION_TEARDOWN_FAILED"
+            ? { purpose: "sign-out" as const }
+            : {})}
+        />
+      );
     case "SIGNED_OUT":
       return <Redirect href="/sign-in" withAnchor />;
     case "LOADING_FONTS_OR_CLERK":

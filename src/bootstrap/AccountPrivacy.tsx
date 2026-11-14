@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Linking } from "react-native";
 import type { AccountApi } from "../infrastructure/api/crewRollApi";
+import { withDeadline } from "../application/shared/withDeadline";
 import { AppText, Button, FlowScreen, Stack } from "../design-system";
 import { SessionLoadingScreen } from "./SessionLoadingScreen";
 import {
@@ -46,10 +47,12 @@ export function AccountPrivacyProvider({
     setPending(record);
     setFailed(false);
     try {
-      await rememberPendingErasure(record);
-      await eraseLocalAccount(record.accountId);
-      await signOut();
-      await clearPendingErasure();
+      // Every step is idempotent for this receipt/account. A timeout keeps the
+      // receipt and this gate visible so retry cannot expose uncleared data.
+      await withDeadline(() => rememberPendingErasure(record), 20_000);
+      await withDeadline(() => eraseLocalAccount(record.accountId), 30_000);
+      await withDeadline(() => signOut(), 20_000);
+      await withDeadline(() => clearPendingErasure(), 10_000);
       setFinished(true);
     } catch {
       setFailed(true);
@@ -60,7 +63,7 @@ export function AccountPrivacyProvider({
   useEffect(() => {
     if (!ready || checked) return;
     let active = true;
-    void readPendingErasure().then(
+    void withDeadline(() => readPendingErasure(), 10_000).then(
       (record) => {
         if (!active) return;
         setChecked(true);

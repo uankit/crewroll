@@ -5,7 +5,12 @@ import { useAppSession } from "./AppSessionProvider";
 import { TRIP_LIBRARY_FRESH_MS, tripLibraryQueryKey } from "./queryClient";
 
 export function useTripLibrary(visible = true) {
-  const { actions, queryScope } = useAppSession();
+  const { actions, queryScope, snapshot } = useAppSession();
+  const currentSession = [
+    "READY_LOBBY",
+    "READY_ACTIVE",
+    "READY_PENDING_APPROVAL",
+  ].includes(snapshot.phase);
   const [foreground, setForeground] = useState(
     AppState.currentState === "active",
   );
@@ -26,7 +31,13 @@ export function useTripLibrary(visible = true) {
     },
     enabled: actions !== null && queryScope !== null && visible && foreground,
     staleTime: TRIP_LIBRARY_FRESH_MS,
-    refetchInterval: 5000,
+    // Approval/live membership needs timely feedback. A settled history can
+    // refresh on focus/manual invalidation with a much quieter repair poll.
+    refetchInterval: (query) =>
+      currentSession ||
+      query.state.data?.items.some((trip) => trip.participation !== "LEFT")
+        ? 5_000
+        : 60_000,
     refetchIntervalInBackground: false,
     retry: false,
   });

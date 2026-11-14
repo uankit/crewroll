@@ -14,6 +14,7 @@ import type {
   ListAssetsQuery,
   NativeDeviceIdentity,
   ReconcileNowCommand,
+  RefreshDeviceSessionCommand,
   RetryCommand,
   RevisionInvalidation,
   RestoreDeviceSessionCommand,
@@ -36,6 +37,7 @@ export interface CrewRollTransferNativeModule {
     command: EnsureDeviceIdentityCommand,
   ): Promise<NativeDeviceIdentity>;
   installDeviceSession(command: InstallDeviceSessionCommand): Promise<void>;
+  refreshDeviceSession?(command: RefreshDeviceSessionCommand): Promise<void>;
   clearDeviceSession(command: ClearDeviceSessionCommand): Promise<void>;
   createTripKey(command: CreateTripKeyCommand): Promise<CreateTripKeyResult>;
   discardProvisionalTripKey(
@@ -53,5 +55,9 @@ export interface CrewRollTransferNativeModule {
   addListener(
     eventName: "engineInvalidated",
     listener: (event: RevisionInvalidation) => void,
+  ): CrewRollTransferEventSubscription;
+  addListener(
+    eventName: "pushHint",
+    listener: (event: unknown) => void,
   ): CrewRollTransferEventSubscription;
 }

@@ -2,6 +2,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 
 import type { Database } from "../schema/tables.js";
 import { classifyDeviceConstraint } from "./constraintClassifier.js";
+import { DomainError } from "../../shared/errors/domainError.js";
 
 type DevicePlatform = "android" | "ios";
 type RouteKey =
@@ -51,6 +52,7 @@ interface DeviceIdempotencyRecord {
 interface BackgroundAuthenticationRecord {
   readonly device: DeviceRecord;
   readonly userDeleted: boolean;
+  readonly userSuspended: boolean;
 }
 
 interface DeviceTransaction {
@@ -79,10 +81,12 @@ interface DeviceTransaction {
     limit: 100,
   ): Promise<number>;
   updateDevice(device: DeviceRecord): Promise<DeviceRecord>;
+  updatePushTokenIfNewer(device: DeviceRecord, revision: string): Promise<void>;
   writeIdempotency(record: DeviceIdempotencyRecord): Promise<void>;
 }
 
 interface DeviceUnitOfWork {
+  reservePushTokenRevision(userId: string, deviceId: string): Promise<string>;
   run<Result>(
     operation: (transaction: DeviceTransaction) => Promise<Result>,
   ): Promise<Result>;
@@ -196,7 +200,7 @@ function transactionAdapter(
       if (!candidate) return null;
       const user = await transaction
         .selectFrom("users")
-        .select("deleted_at")
+        .select(["deleted_at", "suspended_at"])
         .where("id", "=", candidate.user_id)
         .forUpdate()
         .executeTakeFirst();
@@ -216,6 +220,7 @@ function transactionAdapter(
         : {
             device: mapDevice(row),
             userDeleted: user.deleted_at !== null,
+            userSuspended: user.suspended_at !== null,
           };
     },
     async findDeviceByOwnerAndId(userId, deviceId) {
@@ -242,10 +247,17 @@ function transactionAdapter(
     async findUserByClerkSubject(clerkSubject) {
       const row = await transaction
         .selectFrom("users")
-        .select(["id", "clerk_subject", "display_name", "deleted_at"])
+        .select([
+          "id",
+          "clerk_subject",
+          "display_name",
+          "deleted_at",
+          "suspended_at",
+        ])
         .where("clerk_subject", "=", clerkSubject)
         .forUpdate()
         .executeTakeFirst();
+      if (row?.suspended_at) throw new DomainError("AUTH_INVALID");
       return row === undefined ? null : mapUser(row);
     },
     async insertDevice(device) {
@@ -263,6 +275,7 @@ function transactionAdapter(
           background_credential_hash: Buffer.from(
             device.backgroundCredentialHash,
           ),
+          created_at: device.lastSeenAt,
           e2ee_key_algorithm: device.e2eeKeyAlgorithm,
           e2ee_key_version: device.e2eeKeyVersion,
           e2ee_public_key: Buffer.from(device.e2eePublicKey),
@@ -363,6 +376,28 @@ function transactionAdapter(
         .executeTakeFirstOrThrow();
       return mapDevice(row);
     },
+    async updatePushTokenIfNewer(device, revision) {
+      await transaction
+        .updateTable("devices")
+        .set({
+          app_version: device.appVersion,
+          encrypted_push_token:
+            device.encryptedPushToken === null
+              ? null
+              : Buffer.from(device.encryptedPushToken),
+          push_token_hash:
+            device.pushTokenHash === null
+              ? null
+              : Buffer.from(device.pushTokenHash),
+          push_token_committed_revision: revision,
+          last_seen_at: device.lastSeenAt,
+          updated_at: device.lastSeenAt,
+        })
+        .where("id", "=", device.deviceId)
+        .where("user_id", "=", device.userId)
+        .where("push_token_committed_revision", "<", revision)
+        .executeTakeFirst();
+    },
     async writeIdempotency(record) {
       await transaction
         .insertInto("api_idempotency")
@@ -384,6 +419,24 @@ export function createKyselyDeviceUnitOfWork(
   database: Kysely<Database>,
 ): DeviceUnitOfWork {
   return {
+    async reservePushTokenRevision(userId, deviceId) {
+      const row = await database
+        .updateTable("devices")
+        .set((eb) => ({
+          push_token_request_revision: eb(
+            "push_token_request_revision",
+            "+",
+            "1",
+          ),
+        }))
+        .where("id", "=", deviceId)
+        .where("user_id", "=", userId)
+        .where("revoked_at", "is", null)
+        .returning("push_token_request_revision")
+        .executeTakeFirst();
+      if (!row) throw new DomainError("DEVICE_NOT_OWNED");
+      return row.push_token_request_revision;
+    },
     async run<Result>(
       operation: (deviceTransaction: DeviceTransaction) => Promise<Result>,
     ): Promise<Result> {

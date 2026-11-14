@@ -43,7 +43,7 @@ export const CreateTripBodySchema = ClosedObject({
   tripId: TripIdSchema,
   name: TripNameSchema,
   inviteCode: InviteCodeSchema,
-  release: ReleaseSchema,
+  release: ImmediateReleaseSchema,
   endsAt: DateTimeSchema,
   ownerDeviceId: DeviceIdSchema,
   ownerKeyEnvelope: KeyEnvelopeSchema,

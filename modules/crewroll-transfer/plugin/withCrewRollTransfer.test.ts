@@ -4,6 +4,37 @@ import {
 } from "./withCrewRollTransfer";
 
 describe("withCrewRollTransfer", () => {
+  it("removes Expo's competing FCM service while preserving unrelated services idempotently", () => {
+    const input = {
+      manifest: {
+        application: [
+          {
+            service: [
+              { $: { "android:name": "other.Service" } },
+              {
+                $: {
+                  "android:name":
+                    "expo.modules.notifications.service.ExpoFirebaseMessagingService",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const result = applyAndroidManifest(input);
+    expect(result.manifest.application?.[0]?.service).toEqual([
+      { $: { "android:name": "other.Service" } },
+      {
+        $: {
+          "android:name":
+            "expo.modules.notifications.service.ExpoFirebaseMessagingService",
+          "tools:node": "remove",
+        },
+      },
+    ]);
+    expect(applyAndroidManifest(result)).toEqual(result);
+  });
   it("produces the exact iOS photo and background processing policy", () => {
     const input = { ExistingKey: "preserved" };
     const first = applyIosInfoPlist(input);
@@ -54,6 +85,11 @@ describe("withCrewRollTransfer", () => {
       { $: { "android:name": "android.permission.READ_MEDIA_IMAGES" } },
       {
         $: {
+          "android:name": "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        },
+      },
+      {
+        $: {
           "android:name": "android.permission.READ_EXTERNAL_STORAGE",
           "android:maxSdkVersion": "32",
         },
@@ -68,5 +104,23 @@ describe("withCrewRollTransfer", () => {
     expect(JSON.stringify(manifest)).not.toContain(
       "android.permission.NEARBY_WIFI_DEVICES",
     );
+    expect(applyAndroidManifest(manifest)).toEqual(manifest);
+  });
+
+  it("declares selected photo access once when upstream plugins duplicate it", () => {
+    const selected = {
+      $: {
+        "android:name": "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+      },
+    };
+    const manifest = applyAndroidManifest({
+      manifest: { "uses-permission": [selected, selected] },
+    });
+    expect(
+      manifest.manifest["uses-permission"]?.filter(
+        (permission) =>
+          permission.$?.["android:name"] === selected.$["android:name"],
+      ),
+    ).toEqual([selected]);
   });
 });

@@ -5,7 +5,9 @@ import { DomainError } from "../../src/shared/errors/domainError.js";
 import {
   createJoseClerkTokenVerifier,
   createRemoteClerkKeyResolver,
+  createRemoteJoseClerkTokenVerifier,
 } from "../../src/platform/clerk/joseClerkTokenVerifier.js";
+import { toProblemDetails } from "../../src/shared/errors/problemMapper.js";
 import { createClerkJwtKey, signClerkJwt } from "../support/clerkJwt.js";
 
 const issuer = "https://clerk.example.test";
@@ -20,7 +22,101 @@ function expectAuthKind(
   expect((error as DomainError).kind).toBe(kind);
 }
 
+async function expectAuthRejection(
+  result: Promise<unknown>,
+  kind: "AUTH_INVALID" | "AUTH_REQUIRED",
+) {
+  // Assert on both resolution paths so an unexpectedly accepted token fails.
+  expectAuthKind(await result.catch((error: unknown) => error), kind);
+}
+
 describe("createJoseClerkTokenVerifier", () => {
+  it.each(["network", "timeout", "http", "body"] as const)(
+    "keeps a %s key-provider failure retryable and verifies the same token after recovery",
+    async (failure) => {
+      const key = await createClerkJwtKey("key-a");
+      const canary = "private-key-provider-failure-canary";
+      const failedResponse = new Response("unreadable");
+      failedResponse.text = () => Promise.reject(new Error(canary));
+      const fetchImplementation = vi
+        .fn(() => Promise.resolve(Response.json({ keys: [key.publicJwk] })))
+        .mockImplementationOnce(() => {
+          if (failure === "http")
+            return Promise.resolve(new Response(canary, { status: 503 }));
+          if (failure === "body") return Promise.resolve(failedResponse);
+          if (failure === "timeout")
+            return Promise.reject(new DOMException(canary, "TimeoutError"));
+          return Promise.reject(new TypeError(canary));
+        });
+      const verifier = createRemoteJoseClerkTokenVerifier({
+        authorizedParties: [],
+        clock: { now: () => now },
+        fetchImplementation,
+        issuer,
+      });
+      const token = await signClerkJwt({ issuer, key, nowSeconds });
+      const failureResult = await verifier.verify(`Bearer ${token}`).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failureResult).toBeInstanceOf(DomainError);
+      expect(failureResult).toMatchObject({ kind: "DEPENDENCY_NOT_READY" });
+      expect(toProblemDetails(failureResult, "request-id")).toMatchObject({
+        status: 503,
+        code: "INTERNAL_ERROR",
+      });
+      expect(String(failureResult)).not.toContain(canary);
+      expect(failureResult).not.toHaveProperty("cause");
+      await expect(verifier.verify(`Bearer ${token}`)).resolves.toEqual({
+        clerkSubject: "user_crewroll_subject",
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["json", "jwks", "key", "unknown-kid", "signature"] as const)(
+    "continues rejecting %s validation failures as authentication errors",
+    async (failure) => {
+      const key = await createClerkJwtKey("key-a");
+      const signingKey =
+        failure === "unknown-kid" || failure === "signature"
+          ? await createClerkJwtKey(
+              failure === "signature" ? key.kid : "unknown-key",
+            )
+          : key;
+      const fetchImplementation = vi.fn(() => {
+        if (failure === "json")
+          return Promise.resolve(new Response("not-json"));
+        if (failure === "jwks")
+          return Promise.resolve(Response.json({ keys: "invalid" }));
+        return Promise.resolve(
+          Response.json({
+            keys: [
+              failure === "key"
+                ? { ...key.publicJwk, n: "not!base64" }
+                : key.publicJwk,
+            ],
+          }),
+        );
+      });
+      const verifier = createRemoteJoseClerkTokenVerifier({
+        authorizedParties: [],
+        clock: { now: () => now },
+        fetchImplementation,
+        issuer,
+      });
+      const token = await signClerkJwt({
+        issuer,
+        key: signingKey,
+        nowSeconds,
+      });
+      await expect(verifier.verify(`Bearer ${token}`)).rejects.toMatchObject({
+        kind: "AUTH_INVALID",
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("reuses public keys across request verifiers, rejects invalid tokens, and refreshes expired keys", async () => {
     const key = await createClerkJwtKey("key-a");
     const fetchImplementation = vi.fn(() =>
@@ -108,9 +204,7 @@ describe("createJoseClerkTokenVerifier", () => {
         resolver: createLocalJWKSet({ keys: [key.publicJwk] }),
       });
 
-      await verifier
-        .verify(header)
-        .catch((error: unknown) => expectAuthKind(error, "AUTH_REQUIRED"));
+      await expectAuthRejection(verifier.verify(header), "AUTH_REQUIRED");
     },
   );
 
@@ -132,9 +226,7 @@ describe("createJoseClerkTokenVerifier", () => {
       resolver: createLocalJWKSet({ keys: [key.publicJwk] }),
     });
 
-    await verifier
-      .verify(header)
-      .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+    await expectAuthRejection(verifier.verify(header), "AUTH_INVALID");
   });
 
   it("rejects a token over 8192 ASCII bytes before key resolution", async () => {
@@ -146,9 +238,10 @@ describe("createJoseClerkTokenVerifier", () => {
       resolver,
     });
 
-    await verifier
-      .verify(`Bearer ${"a".repeat(8193)}`)
-      .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+    await expectAuthRejection(
+      verifier.verify(`Bearer ${"a".repeat(8193)}`),
+      "AUTH_INVALID",
+    );
     expect(resolver).not.toHaveBeenCalled();
   });
 
@@ -195,9 +288,10 @@ describe("createJoseClerkTokenVerifier", () => {
       wrongSignature,
       wrongAlgorithm,
     ]) {
-      await verifier
-        .verify(`Bearer ${token}`)
-        .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+      await expectAuthRejection(
+        verifier.verify(`Bearer ${token}`),
+        "AUTH_INVALID",
+      );
     }
   });
 
@@ -233,9 +327,10 @@ describe("createJoseClerkTokenVerifier", () => {
       if (valid) {
         await expect(verifier.verify(`Bearer ${token}`)).resolves.toBeDefined();
       } else {
-        await verifier
-          .verify(`Bearer ${token}`)
-          .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+        await expectAuthRejection(
+          verifier.verify(`Bearer ${token}`),
+          "AUTH_INVALID",
+        );
       }
     },
   );
@@ -262,9 +357,10 @@ describe("createJoseClerkTokenVerifier", () => {
     });
     const token = await signClerkJwt({ claims, issuer, key, nowSeconds });
 
-    await verifier
-      .verify(`Bearer ${token}`)
-      .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+    await expectAuthRejection(
+      verifier.verify(`Bearer ${token}`),
+      "AUTH_INVALID",
+    );
   });
 
   it("accepts temporal boundaries inside five-second tolerance", async () => {
@@ -301,9 +397,10 @@ describe("createJoseClerkTokenVerifier", () => {
         nowSeconds,
       });
 
-      await verifier
-        .verify(`Bearer ${token}`)
-        .catch((error: unknown) => expectAuthKind(error, "AUTH_INVALID"));
+      await expectAuthRejection(
+        verifier.verify(`Bearer ${token}`),
+        "AUTH_INVALID",
+      );
     },
   );
 

@@ -15,7 +15,6 @@ it("builds a plain-Node runtime package with only approved dist exports", () => 
           ["@crewroll/contracts/fixtures/http", "/dist/fixtures/http.js"],
           ["@crewroll/contracts/crypto/protocol", "/dist/crypto/protocol.js"],
           ["@crewroll/contracts/native/protocol", "/dist/native/protocol.js"],
-          ["@crewroll/contracts/storage/ports", "/dist/storage/ports.js"],
         ];
         for (const [specifier, suffix] of expected) {
           const resolved = import.meta.resolve(specifier);

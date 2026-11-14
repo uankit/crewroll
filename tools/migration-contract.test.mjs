@@ -359,6 +359,22 @@ test("requires every canonical DB target to be a regular non-symlink entry", asy
   }
 });
 
+test("allows the bounded pool adapter only as a regular repository file", async (t) => {
+  const rootPath = await fixture(t);
+  await makeComplete(rootPath);
+  const adapter = "services/control-plane/src/db/boundedPostgresPool.ts";
+  await writeText(rootPath, adapter, "export {};\n");
+  assert.equal(
+    (await classifyMigrationContract({ rootPath })).state,
+    "complete",
+  );
+  await rm(path.join(rootPath, adapter));
+  await symlink("database.ts", path.join(rootPath, adapter));
+  const result = await classifyMigrationContract({ rootPath });
+  assertPartial(result);
+  assertFinding(result, { code: "MIGRATION_SYMLINK", path: adapter });
+});
+
 test("rejects unclassified schema and migration topology while accepting only contiguous migrations", async (t) => {
   for (const [name, mutate, expected] of [
     [
@@ -483,6 +499,7 @@ test("complete topology admits only the exact bounded API repositories", async (
   await mkdir(path.join(rootPath, "services/control-plane/src/db/identity"));
   await mkdir(path.join(rootPath, "services/control-plane/src/db/trips"));
   await mkdir(path.join(rootPath, "services/control-plane/src/db/media"));
+  await mkdir(path.join(rootPath, "services/control-plane/src/db/push"));
 
   const result = await classifyMigrationContract({ rootPath });
 
@@ -506,6 +523,8 @@ test("nearby repository spellings never widen the DB root", async (t) => {
     ["near-name file", "services/control-plane/src/db/trips.ts", "file"],
     ["media sibling", "services/control-plane/src/db/media-copy", "directory"],
     ["media file", "services/control-plane/src/db/media.ts", "file"],
+    ["push sibling", "services/control-plane/src/db/push-copy", "directory"],
+    ["push file", "services/control-plane/src/db/push.ts", "file"],
   ];
 
   for (const [name, relativePath, kind] of cases) {

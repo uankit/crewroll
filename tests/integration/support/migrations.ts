@@ -3,7 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Kysely } from "kysely";
-import { FileMigrationProvider, Migrator } from "kysely/migration";
+import {
+  FileMigrationProvider,
+  Migrator,
+  NO_MIGRATIONS,
+} from "kysely/migration";
 
 import type { Database } from "../../../services/control-plane/src/db/schema/tables.js";
 
@@ -29,15 +33,18 @@ async function assertCanonicalMigrationFolder(): Promise<void> {
   }
 }
 
-export async function migrateDown(database: Kysely<Database>): Promise<void> {
+export async function migrateTo(
+  database: Kysely<Database>,
+  target: string | null,
+): Promise<void> {
   await assertCanonicalMigrationFolder();
 
   const provider = new FileMigrationProvider({ fs, path, migrationFolder });
   const migrator = new Migrator({ db: database, provider });
-  const result = await migrator.migrateDown();
+  const result = await migrator.migrateTo(target ?? NO_MIGRATIONS);
 
   if (result.error !== undefined) {
-    throw new Error("CrewRoll database rollback failed", {
+    throw new Error("CrewRoll database baseline migration failed", {
       cause: result.error,
     });
   }

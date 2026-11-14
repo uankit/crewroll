@@ -1,9 +1,12 @@
 // Local workerd proof fixture. Never deploy this test entrypoint.
 import { createHash } from "node:crypto";
+import { exportPKCS8, generateKeyPair } from "jose";
 import { createR2CiphertextStore } from "../../worker/r2CiphertextStore.js";
 import { workerApp } from "../../worker/scopedApp.js";
 import { createWorkerRequestRuntime } from "../../worker/requestRuntime.js";
 import { createClerkIdentityDeletion } from "../../src/platform/clerk/deleteClerkIdentity.js";
+import { createDirectPushProvider } from "../../src/platform/push/directPushProvider.js";
+import { createDependencyReadinessProbe } from "../../src/shared/observability/dependencyReadiness.js";
 import contract from "@crewroll/contracts/generated/crewroll.openapi.json" with { type: "json" };
 
 export default {
@@ -32,6 +35,20 @@ export default {
       checksum: createHash("sha256").update(body).digest("base64"),
     };
     const expires = new Date(now + 30_000);
+    let storageProbeResult: R2Object | null | undefined;
+    await createDependencyReadinessProbe({
+      database: () => Promise.resolve(),
+      storage: async () => {
+        storageProbeResult = await env.CIPHERTEXT.head(
+          "_crewroll/health/readiness",
+        );
+        return storageProbeResult;
+      },
+    }).check();
+    assert(
+      storageProbeResult === null,
+      "Readiness accepts missing reserved R2 HEAD without creating an object",
+    );
     const url = await adapter.store.upload(object, expires);
     const put = (bytes = body, target = url) =>
       adapter.fetch(
@@ -47,6 +64,95 @@ export default {
         }),
       );
     try {
+      // Injected transport: exercise real workerd crypto/Request construction,
+      // without reading provider credentials or contacting push/OAuth services.
+      const apple = await generateKeyPair("ES256", { extractable: true });
+      const google = await generateKeyPair("RS256", { extractable: true });
+      const hint = {
+        type: "crewroll.sync.v1" as const,
+        deviceId: crypto.randomUUID(),
+        tripId: crypto.randomUUID(),
+        eventId: crypto.randomUUID(),
+      };
+      const providerRequests: Request[] = [];
+      const provider = createDirectPushProvider(
+        {
+          apns: {
+            bundleId: "app.crewroll.mobile",
+            keyId: "APPLEKEY01",
+            teamId: "TEAMID1234",
+            privateKey: await exportPKCS8(apple.privateKey),
+            environment: "sandbox",
+          },
+          firebaseServiceAccountJson: JSON.stringify({
+            project_id: "crewroll-local-proof",
+            client_email: "proof@crewroll-local-proof.iam.gserviceaccount.com",
+            private_key: await exportPKCS8(google.privateKey),
+          }),
+        },
+        {
+          fetch: (input, init) => {
+            const request = new Request(input, init);
+            providerRequests.push(request);
+            assert(
+              request.redirect === "manual",
+              "Push transport rejects redirects in workerd",
+            );
+            return Promise.resolve(
+              request.url === "https://oauth2.googleapis.com/token"
+                ? Response.json({
+                    access_token: "local-proof-only",
+                    token_type: "Bearer",
+                    expires_in: 3600,
+                  })
+                : request.url.startsWith("https://fcm.googleapis.com/")
+                  ? Response.json({
+                      name: "projects/crewroll-local-proof/messages/local",
+                    })
+                  : new Response(null, { status: 200 }),
+            );
+          },
+        },
+      );
+      const pushInput = { hint, expiresAt: new Date(now + 60_000) };
+      assert(
+        (
+          await provider.send({
+            ...pushInput,
+            platform: "ios",
+            token: "a1".repeat(32),
+          })
+        ).kind === "accepted",
+        "APNs JWT signs in workerd with injected transport",
+      );
+      assert(
+        (
+          await provider.send({
+            ...pushInput,
+            platform: "android",
+            token: "local-fcm-token",
+          })
+        ).kind === "accepted",
+        "FCM OAuth JWT signs in workerd with injected transport",
+      );
+      assert(
+        providerRequests.length === 3,
+        "Only APNs, Google OAuth and FCM requests constructed",
+      );
+      const apnsRequest = providerRequests[0]!;
+      assert(
+        apnsRequest.headers.get("apns-push-type") === "background" &&
+          apnsRequest.headers.get("apns-priority") === "5",
+        "Silent APNs headers survive workerd Request construction",
+      );
+      const fcm: {
+        message: { android: { priority: string }; data: unknown };
+      } = await providerRequests[2]!.json();
+      assert(
+        fcm.message.android.priority === "NORMAL" &&
+          JSON.stringify(fcm.message.data) === JSON.stringify(hint),
+        "FCM normal-priority hint survives workerd Request construction",
+      );
       const originalFetch = globalThis.fetch;
       try {
         // Construct real workerd Requests: Node accepts redirect modes the edge rejects.
