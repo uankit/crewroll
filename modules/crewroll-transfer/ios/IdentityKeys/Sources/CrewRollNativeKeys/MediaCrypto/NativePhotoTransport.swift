@@ -87,8 +87,6 @@ public final class NativePhotoTransport: NativePhotoTransportPort {
         let (temporary, response) = try await session.download(for: objectRequest(url))
         defer { try? FileManager.default.removeItem(at: temporary) }
         try requireSuccess(response, authenticated: false)
-        let attributes = try FileManager.default.attributesOfItem(atPath: temporary.path)
-        guard (attributes[.size] as? NSNumber)?.uint64Value == expectedBytes else { throw NativeKeyError.invalidEnvelope }
         try NativeTransferCacheIdentity.verify(temporary, bytes: expectedBytes, sha256: Data(expectedSHA256))
         try FileManager.default.moveItem(at: temporary, to: destination)
         #endif
@@ -128,6 +126,18 @@ enum NativeTransferURLPolicy {
     }
 }
 
+/// Shared with the iOS background delegate, whose implementation cannot run in
+/// the macOS package test host.
+enum NativeTransferDownloadResponse {
+    static func validate(_ response: URLResponse?, requestedURL: URL?) throws {
+        guard let response = response as? HTTPURLResponse,
+              NativeTransferURLPolicy.sameHTTPSOrigin(response.url, requestedURL) else { throw NativeKeyError.invalidEnvelope }
+        guard (200..<300).contains(response.statusCode) else {
+            throw NativeTransferHTTPError(status: response.statusCode, authenticated: false)
+        }
+    }
+}
+
 /// Gateway URLs share a path. Only the verified ciphertext identity can safely
 /// coalesce a renewed capability without aliasing two same-sized photos.
 enum NativeTransferCacheIdentity {
@@ -152,6 +162,9 @@ enum NativeTransferCacheIdentity {
             guard bytes <= expectedBytes else { throw NativeKeyError.invalidEnvelope }
             hash.update(data: chunk)
         }
-        guard bytes == expectedBytes, Data(hash.finalize()) == expectedSHA256 else { throw NativeKeyError.invalidEnvelope }
+        // A server/proxy can close a successful response before all ciphertext
+        // arrives. Retry that transport failure; never decrypt or acknowledge it.
+        guard bytes == expectedBytes else { throw URLError(.networkConnectionLost) }
+        guard Data(hash.finalize()) == expectedSHA256 else { throw NativeKeyError.invalidEnvelope }
     }
 }

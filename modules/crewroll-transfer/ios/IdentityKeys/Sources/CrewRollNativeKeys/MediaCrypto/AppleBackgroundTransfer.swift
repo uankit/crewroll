@@ -152,9 +152,8 @@ public final class AppleBackgroundTransfer: NSObject, URLSessionDownloadDelegate
         if cancelledTasks.contains(ObjectIdentifier(downloadTask)) { return }
         do {
             guard let parts = downloadTask.taskDescription?.split(separator: "|"), parts.count == 3,
-                  let expected = UInt64(parts[1]), let checksum = Data(base64Encoded: String(parts[2])), let response = downloadTask.response as? HTTPURLResponse,
-                  (200..<300).contains(response.statusCode),
-                  NativeTransferURLPolicy.sameHTTPSOrigin(response.url, downloadTask.originalRequest?.url) else { throw NativeKeyError.invalidEnvelope }
+                  let expected = UInt64(parts[1]), let checksum = Data(base64Encoded: String(parts[2])) else { throw NativeKeyError.invalidEnvelope }
+            try NativeTransferDownloadResponse.validate(downloadTask.response, requestedURL: downloadTask.originalRequest?.url)
             try NativeTransferCacheIdentity.verify(location, bytes: expected, sha256: checksum)
             let destination = try root.appendingPathComponent(String(parts[0]) + ".ciphertext")
             if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
