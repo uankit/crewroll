@@ -4,6 +4,7 @@ import com.uankit53.crewroll.transfer.identitykeys.NativeMediaContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.CancellationException
@@ -21,7 +22,11 @@ interface NativePhotoTransportPort {
     fun download(url: String, destination: File, expectedBytes: Long)
 }
 
-class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePhotoTransportPort {
+class NativePhotoTransport internal constructor(
+    private val openConnection: (URI) -> HttpURLConnection,
+    private val networkAllowed: () -> Boolean,
+) : NativePhotoTransportPort {
+    constructor(networkAllowed: () -> Boolean) : this({ it.toURL().openConnection() as HttpURLConnection }, networkAllowed)
     companion object {
         private val deadlines = ScheduledThreadPoolExecutor(1) { task -> Thread(task, "CrewRollNetworkDeadline").apply { isDaemon = true } }.apply { removeOnCancelPolicy = true }
     }
@@ -33,7 +38,7 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
         if (!networkAllowed()) throw PhotoNetworkUnavailable()
         val uri = URI(raw)
         require(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null && uri.fragment == null)
-        return (uri.toURL().openConnection() as HttpURLConnection).also {
+        return openConnection(uri).also {
             it.instanceFollowRedirects = false; it.useCaches = false
             it.connectTimeout = 20_000; it.readTimeout = 30_000
             active = it
@@ -107,7 +112,10 @@ class NativePhotoTransport(private val networkAllowed: () -> Boolean) : NativePh
                     val count = input.read(buffer); if (count < 0) break
                     total += count; require(total <= expectedBytes); output.write(buffer, 0, count)
                 }
-                require(total == expectedBytes); output.fd.sync()
+                // A clean early EOF is an interrupted transfer, not proof of
+                // corrupt authenticated bytes. Retry from a fresh grant.
+                if (total < expectedBytes) throw EOFException("Incomplete photo download")
+                output.fd.sync()
             } }
             complete = true
         } finally { deadline.cancel(false); connection.disconnect(); active = null; if (created && !complete) destination.delete() }

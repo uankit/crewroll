@@ -51,6 +51,10 @@ const ROUTE_REQUESTS = Object.fromEntries(
       counter: new Counter(
         `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_requests`,
       ),
+      transportMetricName: `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_transport_requests`,
+      transportCounter: new Counter(
+        `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_transport_requests`,
+      ),
       unexpectedStatusMetricName: `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_unexpected_status_requests`,
       unexpectedStatusCounter: new Counter(
         `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_unexpected_status_requests`,
@@ -70,6 +74,156 @@ const STATUS_COUNTS = Object.fromEntries(
     },
   ]),
 );
+
+// Finite diagnostic vocabularies: no URL, exception text, body, bearer or grant is retained.
+const FAILURE_CODES = [
+  "ACTOR_CONFIGURATION_INVALID",
+  "AUTH_OR_SCOPE_REJECTED",
+  "BACKEND_NOT_READY",
+  "BODY_HASH_MISMATCH",
+  "BODY_LENGTH_MISMATCH",
+  "COMMIT_INVALID",
+  "COMMIT_REPLAY_CHANGED",
+  "CONTROL_BODY_INVALID",
+  "CONTROL_CACHE_POLICY",
+  "CONTROL_JSON_INVALID",
+  "CREDENTIAL_OR_GRANT_EXPIRED",
+  "DELIVERY_DRAIN_INCOMPLETE",
+  "DOWNLOAD_BYTE_CEILING",
+  "DOWNLOAD_GRANT_INVALID",
+  "DOWNLOAD_SESSION_SCOPE",
+  "DUPLICATE_OR_SOURCE_PENDING",
+  "DURATION_CEILING",
+  "ETAG_MISSING",
+  "FINAL_QUEUE_NOT_EMPTY",
+  "FOREIGN_ASSET_OR_SOURCE",
+  "FOREIGN_DELIVERY",
+  "INVALID_TIMESTAMP",
+  "MANIFEST_MISMATCH",
+  "PENDING_CURSOR_CYCLE",
+  "PENDING_CURSOR_STALLED",
+  "PENDING_PAGE_CEILING",
+  "PENDING_PAGINATION_INVALID",
+  "PREVIEW_CURSOR_STALLED",
+  "PREVIEW_ITEM_INVALID",
+  "PREVIEW_PAGE_CEILING",
+  "PREVIEW_PAGINATION_INVALID",
+  "PUBLICATION_INVALID",
+  "RECEIPT_INVALID",
+  "RECEIPT_REPLAY_CHANGED",
+  "REDIRECT_FORBIDDEN",
+  "REQUEST_CEILING",
+  "RESERVATION_INVALID",
+  "RESERVATION_REPLAY_CHANGED",
+  "RESERVATION_VARIANTS_INVALID",
+  "SECRET_CONFIGURATION_INVALID",
+  "SECRET_UNAVAILABLE",
+  "SETUP_REQUIRED",
+  "TERMINAL_OR_EXPIRED",
+  "TRANSPORT_FAILURE",
+  "TRIP_NOT_EMPTY",
+  "TRIP_NOT_READY",
+  "UNEXPECTED_HTTP_STATUS",
+  "UNKNOWN_FAILURE_CODE",
+  "UNKNOWN_ROUTE_METRIC",
+  "UPLOAD_BYTE_CEILING",
+  "UPLOAD_GRANT_INVALID",
+  "URL_SCOPE",
+  "VU_SCOPE",
+];
+const TRANSPORT_CODES = [
+  0,
+  1000,
+  1010,
+  1020,
+  1050,
+  1100,
+  1101,
+  1110,
+  1111,
+  1200,
+  1201,
+  1202,
+  1210,
+  1211,
+  1212,
+  1213,
+  1220,
+  1300,
+  1301,
+  1310,
+  1311,
+  1600,
+  ...Array.from({ length: 15 }, (_, i) => 1610 + i),
+  ...Array.from({ length: 15 }, (_, i) => 1630 + i),
+  ...Array.from({ length: 15 }, (_, i) => 1650 + i),
+  1701,
+];
+const TIMING_BUCKETS = [
+  "lt_1s",
+  "1_to_5s",
+  "5_to_20s",
+  "20_to_30s",
+  "gte_30s",
+  "unknown",
+];
+const TRANSPORT_PHASES = [
+  "blocked",
+  "connecting",
+  "tls_handshaking",
+  "sending",
+  "waiting",
+  "receiving",
+];
+function diagnosticCounters(prefix, values) {
+  return Object.fromEntries(
+    values.map((value) => [
+      String(value),
+      {
+        metricName: `${prefix}_${String(value).toLowerCase()}`,
+        counter: new Counter(`${prefix}_${String(value).toLowerCase()}`),
+      },
+    ]),
+  );
+}
+const FAILURE_COUNTS = diagnosticCounters("crewroll_failure", FAILURE_CODES);
+const TRANSPORT_CODE_COUNTS = diagnosticCounters(
+  "crewroll_transport_code",
+  TRANSPORT_CODES,
+);
+const TRANSPORT_ELAPSED_COUNTS = diagnosticCounters(
+  "crewroll_transport_elapsed",
+  TIMING_BUCKETS,
+);
+const TRANSPORT_PHASE_COUNTS = Object.fromEntries(
+  TRANSPORT_PHASES.map((phase) => [
+    phase,
+    diagnosticCounters(`crewroll_transport_${phase}`, TIMING_BUCKETS),
+  ]),
+);
+function timingBucket(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0)
+    return "unknown";
+  if (ms < 1000) return "lt_1s";
+  if (ms < 5000) return "1_to_5s";
+  if (ms < 20000) return "5_to_20s";
+  if (ms < 30000) return "20_to_30s";
+  return "gte_30s";
+}
+function transportFailure(name, started, response) {
+  STATUS_COUNTS.transport.counter.add(1);
+  ROUTE_REQUESTS[name].transportCounter.add(1);
+  const code = response?.error_code;
+  const safeCode =
+    Number.isInteger(code) && TRANSPORT_CODE_COUNTS[String(code)] ? code : 0;
+  TRANSPORT_CODE_COUNTS[String(safeCode)].counter.add(1);
+  TRANSPORT_ELAPSED_COUNTS[timingBucket(Date.now() - started)].counter.add(1);
+  for (const phase of TRANSPORT_PHASES)
+    TRANSPORT_PHASE_COUNTS[phase][
+      timingBucket(response?.timings?.[phase])
+    ].counter.add(1);
+  return stop("TRANSPORT_FAILURE");
+}
 
 const serverErrors = new Rate("crewroll_server_error_rate");
 const sent = new Counter("crewroll_ciphertext_uploaded_bytes");
@@ -99,7 +253,7 @@ export const options = {
   },
   setupTimeout: "2m",
   maxRedirects: 0,
-  throw: true, // Catch network exceptions ourselves; do not let k6 warn with capability URLs.
+  throw: true, // Parse/program errors still throw; request network diagnostics require silent runner logs.
   discardResponseBodies: true,
   systemTags: [
     "status",
@@ -140,9 +294,13 @@ let scope;
 let deadline;
 
 function stop(code) {
-  failures.add(1, { reason: code }); // All callers supply fixed, credential-free reason codes.
-  exec.test.abort(code);
-  throw new Error(code);
+  const safeCode = Object.prototype.hasOwnProperty.call(FAILURE_COUNTS, code)
+    ? code
+    : "UNKNOWN_FAILURE_CODE";
+  FAILURE_COUNTS[safeCode].counter.add(1);
+  failures.add(1, { reason: safeCode });
+  exec.test.abort(safeCode);
+  throw new Error(safeCode);
 }
 function requireValue(condition, code) {
   if (!condition) stop(code);
@@ -200,7 +358,9 @@ function request(method, path, body, actor, name, expected, object = false) {
     responseType: object ? (method === "GET" ? "binary" : "none") : "text",
     redirects: 0,
     timeout: object ? "30s" : "20s",
-    throw: true,
+    // Pinned k6 2.4.0 returns numeric error_code instead of discarding the Response.
+    // This can log internally: the reviewed workflow MUST keep --log-output=none and DEVNULL.
+    throw: false,
   };
   let payload = body;
   if (actor && method === "POST") {
@@ -220,9 +380,16 @@ function request(method, path, body, actor, name, expected, object = false) {
   try {
     response = http.request(method, url, payload, params);
   } catch {
-    STATUS_COUNTS.transport.counter.add(1);
-    return stop("TRANSPORT_FAILURE");
-  } // Never stringify the exception or response.
+    return transportFailure(name, started);
+  } // Never inspect/stringify the exception or Response.error.
+  // Body-stream failures can retain HTTP 200; status alone cannot distinguish them.
+  if (
+    response.status === 0 ||
+    (typeof response.error_code === "number" &&
+      response.error_code !== 0 &&
+      !(response.error_code >= 1400 && response.error_code <= 1599))
+  )
+    return transportFailure(name, started, response);
   if (response.status !== expected)
     ROUTE_REQUESTS[name].unexpectedStatusCounter.add(1);
   (STATUS_COUNTS[String(response.status)] || STATUS_COUNTS.other).counter.add(
@@ -867,9 +1034,13 @@ export function handleSummary(data) {
   );
   const routeCounts = {};
   const routeUnexpectedStatusCounts = {};
+  const routeTransportCounts = {};
   for (const name of REQUEST_ROUTES) {
     routeCounts[name] =
       numbers(data.metrics[ROUTE_REQUESTS[name].metricName]).count || 0;
+    routeTransportCounts[name] =
+      numbers(data.metrics[ROUTE_REQUESTS[name].transportMetricName]).count ||
+      0;
     routeUnexpectedStatusCounts[name] =
       numbers(data.metrics[ROUTE_REQUESTS[name].unexpectedStatusMetricName])
         .count || 0;
@@ -878,6 +1049,13 @@ export function handleSummary(data) {
   for (const code of Object.keys(STATUS_COUNTS))
     statusCounts[code] =
       numbers(data.metrics[STATUS_COUNTS[code].metricName]).count || 0;
+  const diagnosticCounts = (registry) =>
+    Object.fromEntries(
+      Object.entries(registry).map(([key, item]) => [
+        key,
+        numbers(data.metrics[item.metricName]).count || 0,
+      ]),
+    );
   const result = {
     schemaVersion: 1,
     execution: "standalone-k6-on-github-standard-runner",
@@ -898,6 +1076,16 @@ export function handleSummary(data) {
     controlRoutes: routes,
     routeRequestCounts: routeCounts,
     routeUnexpectedStatusCounts,
+    routeTransportCounts,
+    failureCodeCounts: diagnosticCounts(FAILURE_COUNTS),
+    transportErrorCodeCounts: diagnosticCounts(TRANSPORT_CODE_COUNTS),
+    transportElapsedBuckets: diagnosticCounts(TRANSPORT_ELAPSED_COUNTS),
+    transportPhaseTimingBuckets: Object.fromEntries(
+      TRANSPORT_PHASES.map((phase) => [
+        phase,
+        diagnosticCounts(TRANSPORT_PHASE_COUNTS[phase]),
+      ]),
+    ),
     statusRequestCounts: statusCounts,
   };
   return { "sanitized-summary.json": JSON.stringify(result, null, 2) + "\n" };

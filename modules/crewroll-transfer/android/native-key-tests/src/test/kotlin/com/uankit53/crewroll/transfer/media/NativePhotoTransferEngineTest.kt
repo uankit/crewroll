@@ -4,6 +4,7 @@ import com.uankit53.crewroll.crypto.VerifiedSodiumProvider
 import com.uankit53.crewroll.transfer.identitykeys.*
 import java.io.File
 import java.io.IOException
+import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.time.Instant
@@ -661,9 +662,15 @@ class NativePhotoTransferEngineTest {
         var saves = 0
         var receipts = 0
         val receiptCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val acceptedReceiptCommands = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val downloadedUrls = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val downloadGrantCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val verifiedLocalIds = java.util.concurrent.CopyOnWriteArrayList<String>()
         var saved: ByteArray? = null
         var savedHook: (() -> Unit)? = null
         var originalDownloadHook: (() -> Unit)? = null
+        var originalDownloadBody: ((String, File, Long) -> Unit)? = null
+        var freshDownloadUrls = false
         var originalUploadHook: (() -> Unit)? = null
         var downloadGrantHook: ((NativeMediaContext) -> Unit)? = null
         var savedReceiptHook: ((NativeMediaContext) -> Unit)? = null
@@ -720,6 +727,7 @@ class NativePhotoTransferEngineTest {
             override fun verify(localId: String, bytes: Long, checksum: ByteArray) {
                 val actual = if (localId == "source") source else saved ?: throw PhotoLibraryException("SOURCE_MISSING")
                 if (verifyCorrupt || actual.size.toLong() != bytes || !MessageDigest.isEqual(MessageDigest.getInstance("SHA-256").digest(actual), checksum)) throw PhotoLibraryException("INTEGRITY_FAILURE")
+                verifiedLocalIds.add(localId)
             }
         }
         val network = object : NativePhotoTransportPort {
@@ -749,11 +757,16 @@ class NativePhotoTransferEngineTest {
                         if ((!discover || receiveWhileSending) && !acknowledged) put(JSONObject().put("tripId", trip).put("assetId", asset).put("deliveryId", delivery).put("committedAt", "2026-09-09T12:00:00Z"))
                     })
                 }
-                path.endsWith("download-session") -> { downloadGrantHook?.invoke(context); JSONObject(grant.toString()) }
+                path.endsWith("download-session") -> {
+                    downloadGrantHook?.invoke(context); downloadGrantCommands.add(commandId)
+                    JSONObject(grant.toString()).also {
+                        if (freshDownloadUrls) it.getJSONArray("objects").getJSONObject(0).put("url", "https://storage.invalid/original?grant=${downloadGrantCommands.size}")
+                    }
+                }
                 path.endsWith("saved-receipt") -> {
                     savedReceiptHook?.invoke(context)
                     assertEquals("/v1/deliveries/$delivery/saved-receipt", path)
-                    assertNotNull(saved); assertArrayEquals(source, saved); receiptCommands.add(commandId); receipts++; acknowledged = true
+                    assertNotNull(saved); assertArrayEquals(source, saved); receiptCommands.add(commandId); acceptedReceiptCommands.add(commandId); receipts++; acknowledged = true
                     if (receiptLost) { receiptLost = false; throw IOException("lost receipt response") }
                     JSONObject()
                 }
@@ -772,7 +785,9 @@ class NativePhotoTransferEngineTest {
             override fun download(url: String, destination: File, expectedBytes: Long) {
                 if (url.endsWith("preview")) { root.resolve("fixture-preview-ciphertext").copyTo(destination); return }
                 originalDownloadHook?.invoke()
-                downloads++; val bytes = encrypted.readBytes(); if (corrupt) bytes[30] = (bytes[30].toInt() xor 1).toByte(); destination.writeBytes(bytes)
+                downloads++; downloadedUrls.add(url)
+                originalDownloadBody?.let { it(url, destination, expectedBytes); return }
+                val bytes = encrypted.readBytes(); if (corrupt) bytes[30] = (bytes[30].toInt() xor 1).toByte(); destination.writeBytes(bytes)
             }
         }
         val connectionPolicies = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
@@ -804,12 +819,99 @@ class NativePhotoTransferEngineTest {
         }
         fun run(engine: NativePhotoTransferEngine) { engine.wake().get(5, TimeUnit.SECONDS); engine.snapshot().get(5, TimeUnit.SECONDS) }
         fun count(engine: NativePhotoTransferEngine, name: String) = (engine.snapshot().get(5, TimeUnit.SECONDS)["counts"] as Map<*, *>)[name]
+        // Reopening a journal runs stage recovery/GC. While an engine is active,
+        // inspect only its atomically replaced JSON file so polling cannot delete
+        // the in-flight receive stage and manufacture a transport failure.
+        fun persistedWork(): JSONObject? = root.resolve("journals/${context.scope.accountHash}.${context.scope.installationId}/journal.json").let {
+            if (!it.isFile) null else JSONObject(it.readText()).getJSONObject("works").optJSONObject(delivery)
+        }
         fun stop(engine: NativePhotoTransferEngine) { engine.stop().get(5, TimeUnit.SECONDS) }
         override fun close() {
             engines.forEach { stop(it); it.close() }; context.erase(); provider.close(); root.deleteRecursively()
         }
         private fun b64(bytes: ByteArray) = Base64.getEncoder().encodeToString(bytes)
     }
+    @Test fun `a short production download backs off automatically and refreshes its grant before one verified save`() {
+        Fixture().use { f ->
+            f.freshDownloadUrls = true
+            f.originalDownloadBody = { url, destination, expected ->
+                val bytes = f.encrypted.readBytes()
+                val body = if (f.downloads == 1) bytes.copyOf(635) else bytes
+                NativePhotoTransport({ NativePhotoTestConnection(ByteArrayInputStream(body)) }, { true }).download(url, destination, expected)
+            }
+            f.savedReceiptHook = { assertTrue(f.verifiedLocalIds.contains("saved")) }
+            val directory = f.root.resolve("journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            val engine = f.engine()
+            engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optInt("retryAttempts") == 1 || f.count(engine, "blocked") == 1 }
+            val waiting = f.persistedWork()!!
+            assertNull(waiting.optionalString("blocker"))
+            assertFalse(waiting.getBoolean("complete"))
+            assertTrue(Instant.parse(waiting.getString("nextAttemptAt")).isAfter(Instant.now()))
+            assertEquals(0, f.saves); assertEquals(0, f.receipts)
+            assertEquals("RETRYING", (engine.snapshot().get(5, TimeUnit.SECONDS)["sync"] as Map<*, *>)["state"])
+            // No manual retry/reconcile/wake: the engine's scheduled backoff must resume it.
+            f.await(12) { f.receipts == 1 }
+            f.stop(engine)
+            assertEquals(2, f.downloadGrantCommands.size)
+            assertEquals(2, f.downloadedUrls.distinct().size)
+            assertEquals(2, f.downloads); assertEquals(1, f.saves); assertEquals(1, f.receipts)
+            assertEquals(setOf(f.delivery), f.acceptedReceiptCommands)
+            assertArrayEquals(f.source, f.saved)
+            assertTrue(NativeTransferJournal(directory).record(f.delivery)!!.getBoolean("complete"))
+            assertTrue(directory.listFiles().orEmpty().none { it.name.startsWith("stage-") })
+        }
+    }
+
+    @Test fun `restart preserves short-download backoff and a lost receipt reuses the saved photo and command`() {
+        Fixture().use { f ->
+            f.freshDownloadUrls = true; f.receiptLost = true
+            f.originalDownloadBody = { url, destination, expected ->
+                val bytes = f.encrypted.readBytes()
+                NativePhotoTransport({ NativePhotoTestConnection(ByteArrayInputStream(if (f.downloads == 1) bytes.copyOf(635) else bytes)) }, { true }).download(url, destination, expected)
+            }
+            f.savedReceiptHook = { assertTrue(f.verifiedLocalIds.contains("saved")) }
+            val directory = f.root.resolve("journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            val first = f.engine(); first.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optInt("retryAttempts") == 1 || f.count(first, "blocked") == 1 }
+            f.stop(first)
+            val backoff = NativeTransferJournal(directory).record(f.delivery)!!
+            assertNull(backoff.optionalString("blocker"))
+            assertTrue(Instant.parse(backoff.getString("nextAttemptAt")).isAfter(Instant.now()))
+            assertEquals(0, f.saves); assertEquals(0, f.receipts)
+            val second = f.engine(); second.activate().get(5, TimeUnit.SECONDS)
+            assertEquals(1, f.downloads)
+            f.await(12) { f.persistedWork()?.optInt("retryAttempts") == 2 }
+            f.stop(second)
+            assertEquals(1, f.saves); assertEquals(1, f.receipts)
+            assertEquals(2, f.downloads); assertEquals(2, f.downloadedUrls.distinct().size)
+            assertFalse(NativeTransferJournal(directory).record(f.delivery)!!.getBoolean("complete"))
+            val third = f.engine(); third.activate().get(5, TimeUnit.SECONDS)
+            f.await(15) { f.receipts == 2 }; f.stop(third)
+            assertEquals(1, f.saves); assertEquals(2, f.downloads)
+            assertEquals(2, f.downloadGrantCommands.size)
+            assertEquals(listOf(f.delivery, f.delivery), f.receiptCommands)
+            assertEquals(setOf(f.delivery), f.acceptedReceiptCommands)
+            assertArrayEquals(f.source, f.saved)
+            assertTrue(NativeTransferJournal(directory).record(f.delivery)!!.getBoolean("complete"))
+        }
+    }
+
+    @Test fun `production overlong and complete corrupt downloads remain blocked without save or receipt`() {
+        for (overlong in listOf(true, false)) Fixture().use { f ->
+            f.originalDownloadBody = { url, destination, expected ->
+                val bytes = f.encrypted.readBytes().let { if (overlong) it + byteArrayOf(1) else it.apply { this[30] = (this[30].toInt() xor 1).toByte() } }
+                NativePhotoTransport({ NativePhotoTestConnection(ByteArrayInputStream(bytes)) }, { true }).download(url, destination, expected)
+            }
+            val engine = f.engine(); f.start(engine)
+            assertEquals(listOf("INTEGRITY_FAILURE"), engine.snapshot().get(5, TimeUnit.SECONDS)["blockers"])
+            assertEquals(0, f.saves); assertEquals(0, f.receipts)
+            assertTrue(f.acceptedReceiptCommands.isEmpty())
+            assertEquals(1, f.downloads)
+            assertEquals(1, f.downloadGrantCommands.size)
+        }
+    }
+
     @Test fun `receiver verifies exact bytes and replays lost receipt after restart without saving again`() {
         Fixture().use { f ->
             f.receiptLost = true

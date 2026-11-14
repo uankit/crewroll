@@ -62,6 +62,15 @@ module.exports = defineConfig([
     },
   },
   {
+    files: ["load-tests/**/*.js"],
+    languageOptions: {
+      globals: { __ENV: "readonly" },
+    },
+    rules: {
+      "import/no-unresolved": ["error", { ignore: ["^k6(?:/|$)"] }],
+    },
+  },
+  {
     files: ["tools/**/*.{js,mjs,cjs}", "*.config.{js,mjs,cjs,ts}"],
     rules: {
       "no-console": "off",

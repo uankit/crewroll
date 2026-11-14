@@ -5,6 +5,63 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testIncompleteOriginalRetriesWithFreshGrantAfterRestartAndLostReceiptNeverSavesTwice() async throws {
+        let fixture = try TransferFixture()
+        defer { fixture.cleanup() }
+        fixture.network.truncateOriginalOnce = true
+        fixture.network.renewOriginalGrants = true
+        fixture.network.loseReceiptOnce = true
+        let first = fixture.engine {}
+        await first.activate()
+        do {
+            try await eventually {
+                guard fixture.network.downloads > 0,
+                      let work = try fixture.readWorks().first else { return false }
+                return work.nextAttemptAt != nil || work.blocker != nil
+            }
+        } catch { await first.stop(); throw error }
+        await first.stop()
+        let interrupted = try XCTUnwrap(fixture.readWorks().first)
+        XCTAssertNil(interrupted.blocker)
+        XCTAssertFalse(interrupted.complete)
+        XCTAssertNil(interrupted.savedLocalID)
+        XCTAssertEqual(interrupted.retryAttempts, 1)
+        let retry = try XCTUnwrap(interrupted.nextAttemptAt)
+        let interruption = try XCTUnwrap(fixture.network.interruptionAt)
+        XCTAssertGreaterThanOrEqual(retry.timeIntervalSince(interruption), 4)
+        XCTAssertLessThan(retry.timeIntervalSince(interruption), 5)
+        XCTAssertEqual(fixture.network.downloads, 1)
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.receipts, 0)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.root.appendingPathComponent(fixture.context.scope.accountHash + "." + fixture.context.scope.installationID).path).contains { $0.hasPrefix("stage-") })
+
+        let second = fixture.engine {}
+        await second.activate()
+        try await eventually(timeout: 8) { fixture.network.receipts == 1 }
+        await second.stop()
+        let saved = try XCTUnwrap(fixture.readWorks().first)
+        XCTAssertFalse(saved.complete) // The server accepted it; its reply was lost.
+        XCTAssertNil(saved.blocker)
+        XCTAssertNotNil(saved.savedLocalID)
+        XCTAssertEqual(fixture.network.downloads, 2)
+        XCTAssertEqual(fixture.network.downloadGrantRequests, 2)
+        XCTAssertEqual(Set(fixture.network.originalURLs).count, 2)
+        XCTAssertEqual(fixture.photos.saves, 1)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+
+        let third = fixture.engine {}
+        await third.activate()
+        try await eventually(timeout: 12) { fixture.network.receipts == 2 }
+        await third.stop()
+        XCTAssertEqual(fixture.network.downloads, 2)
+        XCTAssertEqual(fixture.network.downloadGrantRequests, 2)
+        XCTAssertEqual(fixture.photos.saves, 1)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+        XCTAssertEqual(Set(fixture.network.receiptCommands), [saved.workID])
+        XCTAssertEqual(fixture.network.acceptedReceiptCommands.count, 1)
+        XCTAssertEqual(try fixture.readWorks().first?.complete, true)
+    }
+
     func testPendingPageArrivingAfterPauseCannotPublishWorkOrCursor() async throws {
         let fixture = try TransferFixture(); defer { fixture.cleanup() }
         let entered = expectation(description: "Pending delivery request in flight")
@@ -826,6 +883,13 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
     var receipts = 0
     var downloads = 0
     var loseReceiptOnce = false
+    var truncateOriginalOnce = false
+    var interruptionAt: Date?
+    var renewOriginalGrants = false
+    var downloadGrantRequests = 0
+    var originalURLs: [String] = []
+    var receiptCommands: [String] = []
+    var acceptedReceiptCommands = Set<String>()
     var rejectCapture = false
     var rejectedCaptures = 0
     var outgoing = false
@@ -889,9 +953,20 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
             if loseCommitOnce { loseCommitOnce = false; throw URLError(.networkConnectionLost) }
             return Data("{}".utf8)
         }
-        if path.hasSuffix("/download-session") { try await beforeDownloadGrant?(context); return grant }
+        if path.hasSuffix("/download-session") {
+            try await beforeDownloadGrant?(context)
+            downloadGrantRequests += 1
+            guard renewOriginalGrants else { return grant }
+            var renewed = try XCTUnwrap(JSONSerialization.jsonObject(with: grant) as? [String: Any])
+            var objects = try XCTUnwrap(renewed["objects"] as? [[String: Any]])
+            objects[0]["url"] = "https://objects.example/original?attempt=\(downloadGrantRequests)"
+            renewed["objects"] = objects
+            return try JSONSerialization.data(withJSONObject: renewed)
+        }
         if path.hasSuffix("/saved-receipt") {
             try await beforeSavedReceipt?(context)
+            receiptCommands.append(commandID)
+            acceptedReceiptCommands.insert(commandID)
             receipts += 1
             if loseReceiptOnce { loseReceiptOnce = false; throw URLError(.networkConnectionLost) }
             return Data("{}".utf8)
@@ -915,7 +990,16 @@ private final class MemoryPhotoTransport: NativePhotoTransportPort {
         XCTAssertEqual(Data(expectedSHA256).base64EncodedString(), objects?.first?["checksumSha256"] as? String)
         if let suspendDownload { await withCheckedContinuation { resumeOriginal = $0; suspendDownload() } }
         if let suspendOriginal { await withCheckedContinuation { resumeOriginal = $0; suspendOriginal() } }
-        downloads += 1; try ciphertext.write(to: destination)
+        downloads += 1; originalURLs.append(url)
+        if truncateOriginalOnce {
+            truncateOriginalOnce = false
+            try ciphertext.prefix(60).write(to: destination)
+            interruptionAt = Date()
+            // Exercise the production validator used by the iOS delegate, not
+            // an invented transport error supplied by this fixture.
+            try NativeTransferCacheIdentity.verify(destination, bytes: expectedBytes, sha256: Data(expectedSHA256))
+        }
+        try ciphertext.write(to: destination)
     }
 }
 
