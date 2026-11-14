@@ -51,6 +51,10 @@ const ROUTE_REQUESTS = Object.fromEntries(
       counter: new Counter(
         `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_requests`,
       ),
+      unexpectedStatusMetricName: `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_unexpected_status_requests`,
+      unexpectedStatusCounter: new Counter(
+        `crewroll_route_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_unexpected_status_requests`,
+      ),
     },
   ]),
 );
@@ -219,6 +223,8 @@ function request(method, path, body, actor, name, expected, object = false) {
     STATUS_COUNTS.transport.counter.add(1);
     return stop("TRANSPORT_FAILURE");
   } // Never stringify the exception or response.
+  if (response.status !== expected)
+    ROUTE_REQUESTS[name].unexpectedStatusCounter.add(1);
   (STATUS_COUNTS[String(response.status)] || STATUS_COUNTS.other).counter.add(
     1,
   );
@@ -859,9 +865,14 @@ export function handleSummary(data) {
     ),
   );
   const routeCounts = {};
-  for (const name of REQUEST_ROUTES)
+  const routeUnexpectedStatusCounts = {};
+  for (const name of REQUEST_ROUTES) {
     routeCounts[name] =
       numbers(data.metrics[ROUTE_REQUESTS[name].metricName]).count || 0;
+    routeUnexpectedStatusCounts[name] =
+      numbers(data.metrics[ROUTE_REQUESTS[name].unexpectedStatusMetricName])
+        .count || 0;
+  }
   const statusCounts = {};
   for (const code of Object.keys(STATUS_COUNTS))
     statusCounts[code] =
@@ -885,6 +896,7 @@ export function handleSummary(data) {
     metrics,
     controlRoutes: routes,
     routeRequestCounts: routeCounts,
+    routeUnexpectedStatusCounts,
     statusRequestCounts: statusCounts,
   };
   return { "sanitized-summary.json": JSON.stringify(result, null, 2) + "\n" };

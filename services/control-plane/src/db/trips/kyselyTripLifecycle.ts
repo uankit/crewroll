@@ -29,17 +29,18 @@ export function createKyselyTripLifecycle(
   clock: Clock,
 ): TripLifecycleService {
   async function authorize(tx: Tx, actor: LifecycleActor) {
+    // Fence revocation without blocking recipient FK checks in concurrent fan-out.
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     if (
       !user ||

@@ -64,9 +64,9 @@ export function createIdentityTripFixtures(
 ): IdentityTripFixtures {
   let sequence = 0;
 
-  function uuid(): string {
+  function uuid(version: 4 | 7 = 4): string {
     sequence += 1;
-    return `00000000-0000-4000-8000-${sequence.toString().padStart(12, "0")}`;
+    return `00000000-0000-${version}000-8000-${sequence.toString().padStart(12, "0")}`;
   }
 
   return {
@@ -120,7 +120,7 @@ export function createIdentityTripFixtures(
     },
 
     async trip(ownerUserId, overrides = {}) {
-      const id = uuid();
+      const id = uuid(7);
       const endsAt = new Date(FIXED_NOW.getTime() + 7 * ONE_DAY_MS);
       return db
         .insertInto("trips")

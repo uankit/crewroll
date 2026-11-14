@@ -26,17 +26,18 @@ export function createKyselyTripContinuity(
 ): TripContinuityService {
   const randomUUID = () => crypto.randomUUID();
   async function lock(tx: Tx, actor: ForegroundTripActor, tripId: string) {
+    // Fence revocation without blocking recipient FK checks in concurrent fan-out.
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     if (
       !user ||
@@ -185,6 +186,36 @@ export function createKyselyTripContinuity(
         .map(project),
     };
   }
+  async function lockReplacementDevices(
+    tx: Tx,
+    previousDeviceId: string,
+    nextDeviceId: string,
+    userId: string,
+  ) {
+    // Authorization already holds the actor's device before the trip. Waiting
+    // here would deadlock against an old phone authorized and waiting for trip.
+    // NOWAIT rolls this transaction back instead; retry releases those locks so
+    // the in-flight phone can finish before replacement is reauthorized.
+    const devices = await tx
+      .selectFrom("devices")
+      .selectAll()
+      .where("id", "in", [...new Set([previousDeviceId, nextDeviceId])])
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .noWait()
+      .execute();
+    const previous = devices.find((device) => device.id === previousDeviceId);
+    const next = devices.find((device) => device.id === nextDeviceId);
+    if (
+      !previous ||
+      previous.user_id !== userId ||
+      !next ||
+      next.user_id !== userId ||
+      next.revoked_at
+    )
+      throw new DomainError("DEVICE_REVOKED");
+    return next;
+  }
   async function change(
     tx: Tx,
     actor: ForegroundTripActor,
@@ -306,6 +337,12 @@ export function createKyselyTripContinuity(
       // before either device can access photos. Do not strand a reinstalled app
       // behind an approval for a public key it no longer holds.
       if (member.state === "PENDING_KEY") {
+        await lockReplacementDevices(
+          tx,
+          member.participating_device_id,
+          actor.deviceId,
+          actor.userId,
+        );
         await tx
           .updateTable("trip_members")
           .set({
@@ -382,11 +419,19 @@ export function createKyselyTripContinuity(
         target.participating_device_id !== request.previous_device_id
       )
         throw new DomainError("CONFLICT");
-      const newDevice = await tx
-        .selectFrom("devices")
-        .selectAll()
-        .where("id", "=", request.device_id)
-        .executeTakeFirstOrThrow();
+      const newDevice =
+        body.action === "APPROVE_DEVICE"
+          ? await lockReplacementDevices(
+              tx,
+              request.previous_device_id,
+              request.device_id,
+              target.user_id,
+            )
+          : await tx
+              .selectFrom("devices")
+              .selectAll()
+              .where("id", "=", request.device_id)
+              .executeTakeFirstOrThrow();
       if (newDevice.revoked_at || newDevice.user_id !== target.user_id)
         throw new DomainError("DEVICE_REVOKED");
       if (body.action === "APPROVE_DEVICE") {
@@ -500,24 +545,43 @@ export function createKyselyTripContinuity(
   return {
     read: (actor, tripId) =>
       db.transaction().execute((tx) => projection(tx, actor, tripId)),
-    change: (actor, tripId, body) =>
-      db.transaction().execute(async (tx) => {
-        const before = await projection(tx, actor, tripId);
-        await change(tx, actor, tripId, body);
-        const device = await tx
-          .selectFrom("devices")
-          .select("revoked_at")
-          .where("id", "=", actor.deviceId)
-          .executeTakeFirstOrThrow();
-        if (device.revoked_at)
-          return {
-            ...before,
-            version: before.version + 1,
-            onThisDevice: false,
-            ownerInviteCode: null,
-            approvalRequests: [],
-          };
-        return projection(tx, actor, tripId);
-      }),
+    change: async (actor, tripId, body) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await db.transaction().execute(async (tx) => {
+            const before = await projection(tx, actor, tripId);
+            await change(tx, actor, tripId, body);
+            const device = await tx
+              .selectFrom("devices")
+              .select("revoked_at")
+              .where("id", "=", actor.deviceId)
+              .executeTakeFirstOrThrow();
+            if (device.revoked_at)
+              return {
+                ...before,
+                version: before.version + 1,
+                onThisDevice: false,
+                ownerInviteCode: null,
+                approvalRequests: [],
+              };
+            return projection(tx, actor, tripId);
+          });
+        } catch (error) {
+          // This command performs only transactional database writes. Retry
+          // only a confirmed lock-unavailable rollback, never an uncertain
+          // connection/commit failure or an unrelated deadlock/serialization.
+          if (
+            !(error instanceof Error) ||
+            !("code" in error) ||
+            error.code !== "55P03"
+          )
+            throw error;
+          if (attempt >= 4) throw new DomainError("DEPENDENCY_NOT_READY");
+          await new Promise((resolve) =>
+            setTimeout(resolve, 20 * 2 ** attempt + Math.random() * 15),
+          );
+        }
+      }
+    },
   };
 }
