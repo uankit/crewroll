@@ -45,6 +45,7 @@ export const TRIP_PROBLEM_STATUS = Object.freeze({
   TRIP_FULL: 409,
   TRIP_ID_CONFLICT: 409,
   TRIP_OWNER_REQUIRED: 403,
+  TRIP_REJOIN_UNAVAILABLE: 409,
   TRIP_STATE_CONFLICT: 409,
   VERSION_CONFLICT: 409,
 } satisfies Readonly<Record<TripPolicyProblemCode, TripPolicyStatus>>);

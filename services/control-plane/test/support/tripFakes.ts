@@ -156,6 +156,10 @@ function callbackTransactionScope(raw: TripTransaction) {
       invoke(() => raw.readProjection(actor, tripId)),
     reauthorizeForegroundActor: (actor) =>
       invoke(() => raw.reauthorizeForegroundActor(actor)),
+    lockLobbyRejoin: (tripId, userId) =>
+      invoke(() => raw.lockLobbyRejoin(tripId, userId)),
+    retireDepartedLobbyMembership: (membership) =>
+      invoke(() => raw.retireDepartedLobbyMembership(membership)),
     tryAcquireCreateCommandLock: (identity) =>
       invoke(() => raw.tryAcquireCreateCommandLock(identity)),
     updateInvite: (record) => invoke(() => raw.updateInvite(record)),
@@ -444,6 +448,16 @@ export function createTripTestHarness() {
             membership.participatingDeviceId === input.deviceId
             ? { leftAt: null, membership }
             : null,
+        );
+      },
+      lockLobbyRejoin() {
+        // Departure/re-enrollment is covered against real PostgreSQL; this
+        // command fake contains only current, non-departed memberships.
+        return Promise.resolve({ kind: "NONE" });
+      },
+      retireDepartedLobbyMembership() {
+        throw new Error(
+          "Departed memberships require real PostgreSQL fixtures",
         );
       },
       lockMembership(tripId, membershipId) {

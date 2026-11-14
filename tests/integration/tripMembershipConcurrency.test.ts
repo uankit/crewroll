@@ -668,6 +668,463 @@ describe("join and projection PostgreSQL concurrency", () => {
     };
   }
 
+  it.each([
+    { approved: false, replacementPhone: false },
+    { approved: true, replacementPhone: false },
+    { approved: false, replacementPhone: true },
+    { approved: true, replacementPhone: true },
+  ])(
+    "requires a new approval after a pre-Start departure (%j)",
+    async ({ approved, replacementPhone }) => {
+      const seed = approved ? await readyRoom(3600) : await pendingRoom(3600);
+      const originalInput = {
+        actor: seed.member,
+        body: joinBody(seed.member, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(103_600),
+      };
+      await createKyselyTripLifecycle(database, {
+        now: () => new Date(),
+      }).change(seed.member, seed.room.body.tripId, {
+        action: "LEAVE",
+        expectedVersion: approved ? 5 : 2,
+      });
+      const returning = replacementPhone
+        ? {
+            ...seed.member,
+            deviceId: (await fixtures.device(seed.member.userId)).id,
+          }
+        : seed.member;
+      const before = await replaySnapshot();
+      const input = {
+        actor: returning,
+        body: joinBody(returning, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(363_600),
+      };
+      const pending = successful(await seed.commands.join.execute(input));
+      expect(pending).toMatchObject({
+        deviceId: returning.deviceId,
+        status: "PENDING_KEY",
+        tripKeyEnvelope: null,
+      });
+      expect(pending.membershipId).not.toBe(seed.membership.membershipId);
+      const joined = await replaySnapshot();
+      expect(
+        joined.members.find((row) => row.id === seed.membership.membershipId),
+      ).toBeUndefined();
+      expect(
+        joined.members.find((row) => row.id === pending.membershipId),
+      ).toMatchObject({
+        approved_at: null,
+        key_epoch: null,
+        full_photo_library_access: false,
+        left_at: null,
+        leaving_at: null,
+        left_incomplete: false,
+        drained_at: null,
+        sharing_paused_at: null,
+      });
+      expect(joined.trips[0]?.member_count).toBe(2);
+      expect(joined.trips[0]?.version).toBe(before.trips[0]!.version + 1);
+      expect(joined.invites[0]?.uses_count).toBe(
+        before.invites[0]!.uses_count + 1,
+      );
+      expect(
+        joined.active.filter((row) => row.user_id === returning.userId),
+      ).toHaveLength(1);
+      expect(joined.envelopes.map((row) => row.recipient_device_id)).toEqual([
+        seed.room.owner.deviceId,
+      ]);
+      expect(successful(await seed.commands.join.execute(input))).toEqual(
+        pending,
+      );
+      expect(
+        successful(await seed.commands.join.execute(originalInput)),
+      ).toEqual({
+        ...seed.membership,
+        status: "REJECTED",
+        tripKeyEnvelope: null,
+      });
+      expect(await replaySnapshot()).toEqual(joined);
+      expect(
+        problemCode(
+          await seed.commands.start.execute({
+            actor: seed.room.owner,
+            body: startBody(joined.trips[0]!.version),
+            idempotencyKey: idempotencyKey(363_601),
+            tripId: seed.room.body.tripId,
+          }),
+        ),
+      ).toBe("PENDING_JOIN_REQUESTS");
+      // An old approval target must never authorize the new participation.
+      expect(
+        problemCode(
+          await seed.commands.approve.execute({
+            actor: seed.room.owner,
+            body: approveBody(),
+            idempotencyKey: idempotencyKey(363_602),
+            membershipId: seed.membership.membershipId,
+            tripId: seed.room.body.tripId,
+          }),
+        ),
+      ).toBe("NOT_FOUND");
+      successful(
+        await seed.commands.approve.execute({
+          actor: seed.room.owner,
+          body: approveBody(),
+          idempotencyKey: idempotencyKey(363_603),
+          membershipId: pending.membershipId,
+          tripId: seed.room.body.tripId,
+        }),
+      );
+      for (const [index, readyActor] of [
+        seed.room.owner,
+        returning,
+      ].entries()) {
+        successful(
+          await seed.commands.readiness.execute({
+            actor: readyActor,
+            body: readinessBody(),
+            idempotencyKey: idempotencyKey(363_604 + index),
+            tripId: seed.room.body.tripId,
+          }),
+        );
+      }
+      const ready = await replaySnapshot();
+      successful(
+        await seed.commands.start.execute({
+          actor: seed.room.owner,
+          body: startBody(ready.trips[0]!.version),
+          idempotencyKey: idempotencyKey(363_606),
+          tripId: seed.room.body.tripId,
+        }),
+      );
+      const started = await replaySnapshot();
+      expect(started.trips[0]?.state).toBe("ACTIVE");
+      expect(
+        successful(await seed.commands.join.execute(originalInput)),
+      ).toMatchObject({
+        membershipId: seed.membership.membershipId,
+        status: "REJECTED",
+        tripKeyEnvelope: null,
+      });
+      expect(successful(await seed.commands.join.execute(input))).toMatchObject(
+        {
+          membershipId: pending.membershipId,
+          status: "ACTIVE",
+          tripKeyEnvelope: { wrappedKey: APPROVED_ENVELOPE },
+        },
+      );
+      expect(await replaySnapshot()).toEqual(started);
+    },
+  );
+
+  async function departedRoom() {
+    const seed = await readyRoom(3700);
+    await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
+      seed.member,
+      seed.room.body.tripId,
+      { action: "LEAVE", expectedVersion: 5 },
+    );
+    return {
+      ...seed,
+      freshInput: {
+        actor: seed.member,
+        body: joinBody(seed.member, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(373_700),
+      },
+    };
+  }
+
+  it("serializes concurrent fresh rejoin retries and preserves every unrelated membership", async () => {
+    const seed = await departedRoom();
+    const peer = await actor(3702);
+    const peerInput = {
+      actor: peer,
+      body: joinBody(peer, seed.room.inviteCode),
+      idempotencyKey: idempotencyKey(373_710),
+    };
+    successful(await seed.commands.join.execute(peerInput));
+    const before = await replaySnapshot();
+    const results = await Promise.all([
+      seed.commands.join.execute(seed.freshInput),
+      seed.commands.join.execute(seed.freshInput),
+    ]);
+    expect(successful(results[0]!)).toEqual(successful(results[1]!));
+    const after = await replaySnapshot();
+    expect(after.trips[0]?.member_count).toBe(
+      before.trips[0]!.member_count + 1,
+    );
+    expect(after.trips[0]?.version).toBe(before.trips[0]!.version + 1);
+    expect(after.invites[0]?.uses_count).toBe(
+      before.invites[0]!.uses_count + 1,
+    );
+    expect(after.inbox).toHaveLength(before.inbox.length + 1);
+    expect(after.outbox).toHaveLength(before.outbox.length + 1);
+    expect(
+      after.members.filter((row) => row.user_id !== seed.member.userId),
+    ).toEqual(
+      before.members.filter((row) => row.user_id !== seed.member.userId),
+    );
+    const pending = successful(results[0]!);
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...seed.freshInput,
+          idempotencyKey: idempotencyKey(373_711),
+        }),
+      ),
+    ).toBe("CONFLICT");
+    expect(
+      after.members.filter((row) => row.id === pending.membershipId),
+    ).toHaveLength(1);
+    expect(await replaySnapshot()).toEqual(after);
+  });
+
+  it.each([0, 1, 4, 7])(
+    "rolls back all rejoin retirement and admission writes at boundary %s",
+    async (boundary) => {
+      const seed = await departedRoom();
+      const before = await replaySnapshot();
+      const raw = createKyselyTripUnitOfWork(database);
+      const unitOfWork: TripUnitOfWork =
+        boundary === 0
+          ? {
+              ...raw,
+              run(operation) {
+                return raw.run((transaction) =>
+                  operation({
+                    ...transaction,
+                    async retireDepartedLobbyMembership(membership) {
+                      await transaction.retireDepartedLobbyMembership(
+                        membership,
+                      );
+                      throw new Error("Forced failure after retirement");
+                    },
+                  }),
+                );
+              },
+            }
+          : failAfterJoinWrite(raw, boundary);
+      expect(
+        problemCode(
+          await services(seed.ids, unitOfWork).join.execute(seed.freshInput),
+        ),
+      ).toBe("INTERNAL_ERROR");
+      expect(await replaySnapshot()).toEqual(before);
+      expect(
+        successful(await seed.commands.join.execute(seed.freshInput)).status,
+      ).toBe("PENDING_KEY");
+    },
+  );
+
+  it("rolls back the old envelope and command tombstone on a genuine new-member constraint failure", async () => {
+    const seed = await departedRoom();
+    const before = await replaySnapshot();
+    const ownerId = before.members.find((row) => row.role === "OWNER")!.id;
+    const ids = { uuid: () => ownerId };
+    let rejectedConstraint: unknown;
+    const join = createRequestJoin({
+      classifyConstraint(error) {
+        rejectedConstraint = error;
+        return classifyTripConstraint(error);
+      },
+      hasher: createHmacInviteCodeHasher(HMAC_KEY),
+      ids,
+      unitOfWork: createKyselyTripUnitOfWork(database),
+    });
+    expect(problemCode(await join.execute(seed.freshInput))).toBe(
+      "INTERNAL_ERROR",
+    );
+    expect(rejectedConstraint).toMatchObject({
+      code: "23505",
+      constraint: "trip_members_pkey",
+    });
+    expect(await replaySnapshot()).toEqual(before);
+  });
+
+  it.each([
+    "EXPIRED_UPLOAD",
+    "PURGED_ASSET",
+    "HANDOFF_REQUEST",
+    "DEVICE_HANDOFF",
+    "STARTED",
+  ] as const)(
+    "refuses rejoin without writes when pre-capture safety is not proven: %s",
+    async (history) => {
+      const seed =
+        history === "STARTED" ? await readyRoom(3700) : await departedRoom();
+      const t = seed.room.body.tripId;
+      if (history === "STARTED") {
+        successful(
+          await seed.commands.start.execute({
+            actor: seed.room.owner,
+            body: startBody(5),
+            idempotencyKey: idempotencyKey(373_712),
+            tripId: t,
+          }),
+        );
+        await createKyselyTripLifecycle(database, {
+          now: () => new Date(),
+        }).change(seed.member, t, { action: "LEAVE_NOW", expectedVersion: 6 });
+      } else if (history === "EXPIRED_UPLOAD") {
+        await context.db
+          .insertInto("upload_sessions")
+          .values({
+            id: idempotencyKey(373_713),
+            client_asset_id: idempotencyKey(373_714),
+            trip_id: t,
+            source_device_id: seed.room.owner.deviceId,
+            source_asset_key: "src_" + "a".repeat(64),
+            media_type: "PHOTO",
+            key_epoch: 1,
+            encryption_version: 1,
+            encrypted_manifest: Buffer.from("opaque"),
+            state: "EXPIRED",
+            created_at: new Date(Date.now() - 2000),
+            expires_at: new Date(Date.now() - 1000),
+          })
+          .execute();
+      } else if (history === "PURGED_ASSET") {
+        const now = new Date();
+        await context.db
+          .insertInto("assets")
+          .values({
+            id: idempotencyKey(373_715),
+            trip_id: t,
+            source_device_id: seed.room.owner.deviceId,
+            source_asset_key: "src_" + "b".repeat(64),
+            committed_at: now,
+            media_type: "PHOTO",
+            key_epoch: 1,
+            encryption_version: 1,
+            encrypted_manifest: Buffer.from("opaque"),
+            state: "PURGED",
+            purge_pending_at: now,
+            purged_at: now,
+            expired_at: null,
+          })
+          .execute();
+      } else if (history === "HANDOFF_REQUEST") {
+        const device = await fixtures.device(seed.member.userId);
+        await context.db
+          .insertInto("trip_device_requests")
+          .values({
+            id: idempotencyKey(373_717),
+            trip_id: t,
+            membership_id: seed.membership.membershipId,
+            previous_device_id: seed.member.deviceId,
+            device_id: device.id,
+            state: "CANCELLED",
+            requested_at: new Date(),
+            resolved_at: new Date(),
+            approved_by_device_id: null,
+          })
+          .execute();
+      } else {
+        // A guest-generated envelope for another member indicates key handoff
+        // history outside this deliberately narrow pre-capture repair.
+        await context.db
+          .updateTable("trip_key_envelopes")
+          .set({ sender_device_id: seed.member.deviceId })
+          .where("trip_id", "=", t)
+          .where("recipient_device_id", "=", seed.room.owner.deviceId)
+          .execute();
+      }
+      const before = await replaySnapshot();
+      expect(
+        problemCode(
+          await seed.commands.join.execute({
+            actor: seed.member,
+            body: joinBody(seed.member, seed.room.inviteCode),
+            idempotencyKey: idempotencyKey(373_716),
+          }),
+        ),
+      ).toBe("TRIP_REJOIN_UNAVAILABLE");
+      expect(await replaySnapshot()).toEqual(before);
+      const original = successful(
+        await seed.commands.join.execute({
+          actor: seed.member,
+          body: joinBody(seed.member, seed.room.inviteCode),
+          idempotencyKey: idempotencyKey(103_700),
+        }),
+      );
+      expect(original).toMatchObject({
+        membershipId: seed.membership.membershipId,
+        status: "REJECTED",
+        tripKeyEnvelope: null,
+      });
+      expect(await replaySnapshot()).toEqual(before);
+    },
+  );
+
+  it("does not let retired command expiry, a different phone, revocation or fingerprint changes expose the new key", async () => {
+    const seed = await departedRoom();
+    const pending = successful(
+      await seed.commands.join.execute(seed.freshInput),
+    );
+    successful(
+      await seed.commands.approve.execute({
+        actor: seed.room.owner,
+        body: approveBody(),
+        idempotencyKey: idempotencyKey(373_720),
+        membershipId: pending.membershipId,
+        tripId: seed.room.body.tripId,
+      }),
+    );
+    const oldInput = {
+      actor: seed.member,
+      body: joinBody(seed.member, seed.room.inviteCode),
+      idempotencyKey: idempotencyKey(103_700),
+    };
+    const other = {
+      ...seed.member,
+      deviceId: (await fixtures.device(seed.member.userId)).id,
+    };
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...oldInput,
+          actor: other,
+          body: joinBody(other, seed.room.inviteCode),
+        }),
+      ),
+    ).toBe("IDEMPOTENCY_CONFLICT");
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...oldInput,
+          body: joinBody(seed.member, "WXYZ6789"),
+        }),
+      ),
+    ).toBe("IDEMPOTENCY_CONFLICT");
+    expect(
+      problemCode(
+        await seed.commands.join.execute({
+          ...oldInput,
+          actor: { ...seed.member, clerkSubject: seed.room.owner.clerkSubject },
+        }),
+      ),
+    ).toBe("AUTH_INVALID");
+    await context.db
+      .updateTable("api_idempotency")
+      .set({ expires_at: new Date(Date.now() - 1000) })
+      .where("idempotency_key", "=", oldInput.idempotencyKey)
+      .execute();
+    const before = await replaySnapshot();
+    expect(problemCode(await seed.commands.join.execute(oldInput))).toBe(
+      "CONFLICT",
+    );
+    expect(await replaySnapshot()).toEqual(before);
+    await context.db
+      .updateTable("devices")
+      .set({ revoked_at: new Date() })
+      .where("id", "=", seed.member.deviceId)
+      .execute();
+    expect(problemCode(await seed.commands.join.execute(seed.freshInput))).toBe(
+      "DEVICE_REVOKED",
+    );
+  });
+
   it.each(["END", "LEAVE"] as const)(
     "replays a retired pending join as terminal after %s without changing durable state",
     async (action) => {

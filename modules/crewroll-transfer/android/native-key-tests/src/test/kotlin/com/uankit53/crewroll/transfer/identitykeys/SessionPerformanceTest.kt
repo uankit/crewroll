@@ -133,6 +133,59 @@ class SessionPerformanceTest {
     assertThrows(IllegalStateException::class.java) { store.activate(scope, context().metadata) }
     assertEquals(KeyState.INSTALLED, store.loadTrip(scope, trip)!!.state)
   }
+
+  @Test fun `failed writes and loads invalidate metadata while destructive cleanup always revalidates storage`() {
+    val disk = TestKeyPersistence()
+    val store = AccountScopedKeyStore(disk)
+    store.importTrip(scope, trip, ByteArray(32) { 5 }, context().metadata.endsAt, Instant.EPOCH)
+    val deadline = NativeTripRetention.deadline(context().metadata)
+    val expired = store.expiredTrips(deadline).single()
+    disk.failWrite = true
+    assertThrows(IllegalStateException::class.java) { store.purgeExpiredTrip(expired, deadline) }
+    disk.failWrite = false
+    val before = disk.reads
+    assertEquals(deadline, store.nextTripRetentionDeadline())
+    assertEquals(before + 1, disk.reads, "failed commit must not publish an uncommitted retention index")
+
+    disk.failRead = true
+    assertThrows(IllegalStateException::class.java) { store.loadTrip(scope, trip) }
+    assertThrows(IllegalStateException::class.java) { store.expiredTrips(deadline) }
+    disk.failRead = false
+    assertEquals(listOf(expired), store.expiredTrips(deadline))
+    disk.corruptRecord()
+    var filesPurged = false
+    assertThrows(NativeKeyException::class.java) { store.purgeExpiredTrip(expired, deadline) { filesPurged = true } }
+    assertFalse(filesPurged, "cached expiry alone must never authorize deleting local files")
+    assertThrows(NativeKeyException::class.java) { store.nextTripRetentionDeadline() }
+  }
+
+  @Test fun `read snapshots reject writes including nested upgrades and release their secrets on every exit`() {
+    val disk = TestKeyPersistence()
+    val store = AccountScopedKeyStore(disk)
+    store.importTrip(scope, trip, ByteArray(32) { 5 }, context().metadata.endsAt, Instant.EPOCH)
+    val writes = disk.writes
+    val key = store.readSnapshot {
+      val own = store.loadTrip(scope, trip)!!.key
+      assertThrows(NativeKeyException::class.java) { store.discardProvisional(scope, trip) }
+      assertThrows(NativeKeyException::class.java) { store.commandSnapshot { store.clearSession() } }
+      own
+    }
+    assertEquals(writes, disk.writes)
+    assertEquals(5.toByte(), key[0])
+    key.fill(0)
+    disk.loaded.forEach { database ->
+      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.key.all { byte -> byte == 0.toByte() } } })
+    }
+    val before = disk.reads
+    assertThrows(IllegalStateException::class.java) {
+      store.commandSnapshot { store.loadTrip(scope, trip)!!.key.fill(0); error("command failed") }
+    }
+    assertEquals(5.toByte(), store.loadTrip(scope, trip)!!.key[0])
+    assertEquals(before + 2, disk.reads, "a completed or failed scope must never become a long-lived key cache")
+    disk.loaded.forEach { database ->
+      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.key.all { byte -> byte == 0.toByte() } } })
+    }
+  }
 }
 
 private class TestKeyPersistence : ScopedDatabasePersistence {
@@ -141,7 +194,14 @@ private class TestKeyPersistence : ScopedDatabasePersistence {
   var reads = 0
   var writes = 0
   var failWrite = false
-  override fun load(): AndroidScopedDatabase { reads++; return bytes?.let { AndroidScopedDatabaseCodec.decode(it, cipher) } ?: AndroidScopedDatabase() }
+  var failRead = false
+  val loaded = mutableListOf<AndroidScopedDatabase>()
+  fun corruptRecord() { bytes = bytes!!.copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() } }
+  override fun load(): AndroidScopedDatabase {
+    reads++
+    if (failRead) error("disk unavailable")
+    return (bytes?.let { AndroidScopedDatabaseCodec.decode(it, cipher) } ?: AndroidScopedDatabase()).also(loaded::add)
+  }
   override fun save(database: AndroidScopedDatabase) {
     if (failWrite) error("disk unavailable")
     bytes = AndroidScopedDatabaseCodec.encode(database, cipher)

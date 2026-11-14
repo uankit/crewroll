@@ -56,6 +56,47 @@ it.each(["first trip", "trip library"] as const)(
     expect(join).toHaveBeenCalledTimes(1);
   },
 );
+it.each(["first trip", "trip library"] as const)(
+  "explains a terminal rejoin refusal and keeps Home usable on %s",
+  async (surface) => {
+    const create = jest.fn();
+    const join = jest.fn();
+    const props = {
+      rejoinUnavailable: true,
+      onCreateTrip: create,
+      onJoinTrip: join,
+    };
+    const screen = await render(
+      surface === "first trip" ? (
+        <HomeScreen {...props} />
+      ) : (
+        <TripLibraryScreen
+          {...props}
+          trips={[]}
+          onOpenTrip={jest.fn()}
+          onRetry={jest.fn()}
+        />
+      ),
+    );
+    expect(
+      screen.getByText(
+        "You can’t rejoin this trip. You can join a different trip.",
+      ),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/Ask your host for a new code/)).toBeNull();
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Enter invite code" }),
+    );
+    expect(join).toHaveBeenCalledTimes(1);
+    await fireEvent.press(
+      screen.getByRole("button", {
+        name: surface === "first trip" ? "Start a trip" : "Start a new trip",
+      }),
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+  },
+);
+
 it("waits automatically without a second join or status-check button", async () => {
   const screen = await render(
     <HomeScreen

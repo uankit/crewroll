@@ -221,6 +221,9 @@ function mapIdempotency(row: {
       ...base,
       kind: reference.kind,
       membershipId: reference.membershipId,
+      ...(reference.kind === "JOIN" && reference.retired === true
+        ? { retired: true as const }
+        : {}),
     };
   }
   if (
@@ -241,7 +244,13 @@ function idempotencyReference(record: TripIdempotencyRecord) {
     tripId: record.tripId,
   };
   return "membershipId" in record
-    ? { ...base, membershipId: record.membershipId }
+    ? {
+        ...base,
+        membershipId: record.membershipId,
+        ...(record.kind === "JOIN" && record.retired === true
+          ? { retired: true }
+          : {}),
+      }
     : base;
 }
 
@@ -970,6 +979,85 @@ function transactionAdapter(
     reauthorizeForegroundActor(actor) {
       return reauthorizeForegroundActor(transaction, actor);
     },
+    async lockLobbyRejoin(tripId, userId) {
+      const old = await transaction
+        .selectFrom("trip_members")
+        .selectAll()
+        .where("trip_id", "=", tripId)
+        .where("user_id", "=", userId)
+        .where("left_at", "is not", null)
+        .forUpdate()
+        .executeTakeFirst();
+      if (old === undefined) return { kind: "NONE" };
+      // The caller owns the trip lock. Never replace a participation that could
+      // have captured, received or handed off media. A fresh member ID prevents
+      // old approvals and JOIN commands from observing the new incarnation.
+      const trip = await transaction
+        .selectFrom("trips")
+        .select([
+          "state",
+          "started_at",
+          "ending_started_at",
+          "cancelled_at",
+          "completed_at",
+        ])
+        .where("id", "=", tripId)
+        .executeTakeFirst();
+      if (
+        trip?.state !== "LOBBY" ||
+        trip.started_at !== null ||
+        trip.ending_started_at !== null ||
+        trip.cancelled_at !== null ||
+        trip.completed_at !== null ||
+        old.role !== "MEMBER" ||
+        old.leaving_at === null ||
+        old.left_incomplete ||
+        old.drained_at !== null ||
+        (old.state !== "ACTIVE" && old.state !== "PENDING_KEY")
+      )
+        return { kind: "UNAVAILABLE" };
+      const history = await sql<{ unsafe: boolean }>`
+        select exists(select 1 from upload_sessions where trip_id = ${tripId}::uuid)
+          or exists(select 1 from assets where trip_id = ${tripId}::uuid)
+          or exists(select 1 from trip_device_requests
+            where trip_id = ${tripId}::uuid and membership_id = ${old.id}::uuid)
+          or exists(select 1 from trip_key_envelopes
+            where trip_id = ${tripId}::uuid and sender_device_id = ${old.participating_device_id}::uuid
+              and recipient_device_id <> ${old.participating_device_id}::uuid)
+          as unsafe
+      `.execute(transaction);
+      if (history.rows[0]?.unsafe !== false) return { kind: "UNAVAILABLE" };
+      return { kind: "REJOINABLE", membership: mapMembership(old) };
+    },
+    async retireDepartedLobbyMembership(membership) {
+      const { tripId, userId, membershipId, participatingDeviceId } =
+        membership;
+
+      // Keep original actor/device/fingerprint/expiry intact. Older code ignores
+      // this marker and fails closed on the removed member, never returning the
+      // replacement participation's envelope. No schema migration is required.
+      await transaction
+        .updateTable("api_idempotency")
+        .set({ response_body: sql`response_body || '{"retired":true}'::jsonb` })
+        .where("user_id", "=", userId)
+        .where("route_key", "=", "trips.join.v1")
+        .where(sql<boolean>`response_body->>'kind' = 'JOIN'`)
+        .where(sql<boolean>`response_body->>'tripId' = ${tripId}`)
+        .where(sql<boolean>`response_body->>'membershipId' = ${membershipId}`)
+        .execute();
+      await transaction
+        .deleteFrom("trip_key_envelopes")
+        .where("trip_id", "=", tripId)
+        .where("recipient_device_id", "=", participatingDeviceId)
+        .execute();
+      await transaction
+        .deleteFrom("trip_members")
+        .where("id", "=", membershipId)
+        .where("trip_id", "=", tripId)
+        .where("user_id", "=", userId)
+        .where("left_at", "is not", null)
+        .execute();
+    },
     async tryAcquireCreateCommandLock(identity) {
       const key = advisoryIdentity(identity);
       const result = await sql<{ acquired: boolean }>`
@@ -1111,6 +1199,10 @@ function callbackTransactionScope(
       invoke(() => raw.readProjection(actor, tripId)),
     reauthorizeForegroundActor: (actor) =>
       invoke(() => raw.reauthorizeForegroundActor(actor)),
+    lockLobbyRejoin: (tripId, userId) =>
+      invoke(() => raw.lockLobbyRejoin(tripId, userId)),
+    retireDepartedLobbyMembership: (membership) =>
+      invoke(() => raw.retireDepartedLobbyMembership(membership)),
     tryAcquireCreateCommandLock: (identity) =>
       invoke(() => raw.tryAcquireCreateCommandLock(identity)),
     updateInvite: (record) => invoke(() => raw.updateInvite(record)),

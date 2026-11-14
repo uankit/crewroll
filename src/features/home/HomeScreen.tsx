@@ -1,3 +1,4 @@
+import { toUserFacingProblem } from "../../application/problems/userFacingProblem";
 import type { ReactNode } from "react";
 import type { TripInvitePreview } from "../../domain/trips/model";
 import { Image } from "expo-image";
@@ -27,6 +28,7 @@ export type HomeScreenState =
 
 export type HomeScreenProps = Readonly<{
   inviteUnavailable?: boolean;
+  rejoinUnavailable?: boolean;
   accountControl?: ReactNode;
   onCreateTrip: () => void;
   onJoinTrip: () => void;
@@ -86,6 +88,7 @@ function CrewConstellation() {
 
 export function HomeScreen({
   inviteUnavailable = false,
+  rejoinUnavailable = false,
   accountControl,
   onCreateTrip,
   onJoinTrip,
@@ -159,11 +162,13 @@ export function HomeScreen({
       title="Start your first trip."
       centerContent
       description={
-        inviteUnavailable
-          ? "This invite is no longer available. Ask your host for a new code."
-          : state.creationFailed
-            ? "Your trip wasn’t created. Give it another try."
-            : "Create one, or join your crew with a code."
+        rejoinUnavailable
+          ? toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message
+          : inviteUnavailable
+            ? "This invite is no longer available. Ask your host for a new code."
+            : state.creationFailed
+              ? "Your trip wasn’t created. Give it another try."
+              : "Create one, or join your crew with a code."
       }
       footer={
         <>

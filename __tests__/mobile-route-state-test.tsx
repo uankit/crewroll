@@ -1,3 +1,4 @@
+import { JoinTripTerminalProblem } from "../src/application/trips/JoinTrip";
 import { createTripGalleryCache } from "../src/bootstrap/tripGalleryCache";
 import {
   act,
@@ -254,6 +255,12 @@ jest.mock("../src/bootstrap/AppProviders", () => ({
 jest.mock("../src/bootstrap/AppSessionProvider", () => ({
   useAppSession: mockUseAppSession,
   useTripProjection: mockUseTripProjection,
+  terminalJoinFailureReason: (error: unknown) =>
+    jest
+      .requireActual<typeof import("../src/bootstrap/AppSessionProvider")>(
+        "../src/bootstrap/AppSessionProvider",
+      )
+      .terminalJoinFailureReason(error),
 }));
 
 jest.mock("@expo-google-fonts/manrope", () => ({
@@ -577,7 +584,7 @@ describe("Expo Router mobile journey", () => {
   it("lets a guest replace a conclusively invalid manually entered code", async () => {
     setPhase("READY_NO_TRIP");
     mockActions.join.mockImplementationOnce(async () => {
-      throw { kind: "API_PROBLEM", code: "INVITE_INVALID" };
+      throw new JoinTripTerminalProblem();
     });
     await renderActualRouter("/trips/join");
     await fireEvent.changeText(
@@ -596,6 +603,63 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Use another code" }),
     );
     expect(screen.getByLabelText("Invite code").props.value).toBe("");
+  });
+
+  it.each(["INVITE_INVALID", "TRIP_REJOIN_UNAVAILABLE", "CONFLICT"])(
+    "keeps an unproven %s join failure on the same-request recovery screen",
+    async (code) => {
+      setPhase("READY_NO_TRIP");
+      mockActions.join.mockImplementationOnce(async () => {
+        throw { kind: "API_PROBLEM", code, serverStatus: 409 };
+      });
+      await renderActualRouter("/trips/join");
+      await fireEvent.changeText(
+        screen.getByLabelText("Invite code"),
+        "ABCD2345",
+      );
+      await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Request to join" }),
+      );
+      await waitFor(() =>
+        expect(screen.getByText("Checking your request.")).toBeOnTheScreen(),
+      );
+      expect(
+        screen.queryByRole("button", {
+          name: /Use another code|Back to your trips/,
+        }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Check join request" }),
+      ).toBeOnTheScreen();
+    },
+  );
+
+  it("returns a proven rejoin refusal to usable Home through the real router", async () => {
+    setPhase("READY_NO_TRIP");
+    mockActions.join.mockImplementationOnce(async () => {
+      throw new JoinTripTerminalProblem("TRIP_REJOIN_UNAVAILABLE");
+    });
+    const router = await renderActualRouter("/trips/join");
+    await fireEvent.changeText(
+      screen.getByLabelText("Invite code"),
+      "ABCD2345",
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Request to join" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Can’t rejoin this trip.")).toBeOnTheScreen(),
+    );
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Back to your trips" }),
+    );
+    await waitFor(() => expect(router.getPathname()).toBe("/"));
+    expect(
+      screen.getByRole("button", { name: "Enter invite code" }),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText("Checking your request.")).toBeNull();
   });
 
   it("wires manual create and join screens through pending approval before opening the approved trip", async () => {
@@ -896,15 +960,17 @@ describe("Expo Router mobile journey", () => {
       ...mockCurrentSession,
       ownerInviteCode: "ABCD2345",
     };
+    const privateFailure = "native-clipboard-secret-canary-981b8b42";
     jest
       .mocked(Clipboard.setStringAsync)
-      .mockRejectedValueOnce(new Error("private clipboard payload"));
+      .mockRejectedValueOnce(new Error(privateFailure));
     await renderActualRouter(`/trips/${tripId}`);
 
     await fireEvent.press(screen.getByRole("button", { name: "Invite crew" }));
     await fireEvent.press(screen.getByRole("button", { name: "Copy code" }));
     await act(async () => undefined);
-    expect(JSON.stringify(screen.toJSON())).not.toMatch(/private|payload/i);
+    // Match the injected secret, not asset paths such as /private/tmp/....
+    expect(JSON.stringify(screen.toJSON())).not.toContain(privateFailure);
     screen.getByRole("alert", {
       name: "The code couldn’t be copied. Try again.",
     });

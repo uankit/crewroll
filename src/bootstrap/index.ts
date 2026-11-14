@@ -5,6 +5,7 @@ export { AppProviders } from "./AppProviders";
 export {
   AppSessionProvider,
   resolveLaunchPhase,
+  terminalJoinFailureReason,
   useAppSession,
   useTripProjection,
   type AppSessionAuthSnapshot,

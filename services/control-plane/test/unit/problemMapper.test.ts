@@ -120,6 +120,7 @@ const api003ProblemCases = [
   ["KEY_ENVELOPE_INVALID", "KEY_ENVELOPE_INVALID", 400],
   ["PHOTO_LIBRARY_ACCESS_REQUIRED", "PHOTO_LIBRARY_ACCESS_REQUIRED", 409],
   ["TRIP_STATE_CONFLICT", "TRIP_STATE_CONFLICT", 409],
+  ["TRIP_REJOIN_UNAVAILABLE", "TRIP_REJOIN_UNAVAILABLE", 409],
   ["VERSION_CONFLICT", "VERSION_CONFLICT", 409],
   ["NOT_FOUND", "NOT_FOUND", 404],
   ["CONFLICT", "CONFLICT", 409],
@@ -227,6 +228,11 @@ const api003ProblemText = {
     detail: "The trip state does not allow this operation.",
     title: "Trip state conflict",
   },
+  TRIP_REJOIN_UNAVAILABLE: {
+    detail:
+      "This participation has ended and cannot be rejoined. You can join a different trip.",
+    title: "Trip rejoin unavailable",
+  },
   VERSION_CONFLICT: {
     detail: "The trip version does not match the expected version.",
     title: "Version conflict",
@@ -282,6 +288,7 @@ describe("toProblemDetails", () => {
       "KEY_ENVELOPE_INVALID",
       "PHOTO_LIBRARY_ACCESS_REQUIRED",
       "TRIP_STATE_CONFLICT",
+      "TRIP_REJOIN_UNAVAILABLE",
       "VERSION_CONFLICT",
       "NOT_FOUND",
       "CONFLICT",

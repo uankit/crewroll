@@ -61,6 +61,7 @@ export type TripPolicyProblemCode =
   | "TRIP_FULL"
   | "TRIP_ID_CONFLICT"
   | "TRIP_OWNER_REQUIRED"
+  | "TRIP_REJOIN_UNAVAILABLE"
   | "TRIP_STATE_CONFLICT"
   | "VERSION_CONFLICT";
 

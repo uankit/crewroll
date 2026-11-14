@@ -7972,6 +7972,10 @@
                 "type": "string"
               },
               {
+                "const": "TRIP_REJOIN_UNAVAILABLE",
+                "type": "string"
+              },
+              {
                 "const": "TRIP_OWNER_REQUIRED",
                 "type": "string"
               },
