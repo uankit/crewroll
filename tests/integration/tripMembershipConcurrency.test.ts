@@ -16,6 +16,7 @@ import { createKyselyTripLifecycle } from "../../services/control-plane/src/db/t
 import { createApproveJoinRequest } from "../../services/control-plane/src/modules/trips/approveJoinRequest.js";
 import { createCreateTrip } from "../../services/control-plane/src/modules/trips/createTrip.js";
 import { createGetTrip } from "../../services/control-plane/src/modules/trips/getTrip.js";
+import { createPreviewInvite } from "../../services/control-plane/src/modules/trips/previewInvite.js";
 import type {
   TripTransaction,
   TripUnitOfWork,
@@ -725,9 +726,7 @@ describe("join and projection PostgreSQL concurrency", () => {
       });
       expect(joined.trips[0]?.member_count).toBe(2);
       expect(joined.trips[0]?.version).toBe(before.trips[0]!.version + 1);
-      expect(joined.invites[0]?.uses_count).toBe(
-        before.invites[0]!.uses_count + 1,
-      );
+      expect(joined.invites[0]?.uses_count).toBe(before.invites[0]!.uses_count);
       expect(
         joined.active.filter((row) => row.user_id === returning.userId),
       ).toHaveLength(1);
@@ -818,6 +817,322 @@ describe("join and projection PostgreSQL concurrency", () => {
     },
   );
 
+  async function fullLobbyRoster() {
+    const ids = createIds(380_000);
+    const room = await ownedTrip(3800, "ABCD2345", ids);
+    const commands = services(ids);
+    const guests = [];
+    for (let index = 0; index < 9; index += 1) {
+      const guest = await actor(3801 + index);
+      const input = {
+        actor: guest,
+        body: joinBody(guest, room.inviteCode),
+        idempotencyKey: idempotencyKey(383_800 + index),
+      };
+      const membership = successful(await commands.join.execute(input));
+      successful(
+        await commands.approve.execute({
+          actor: room.owner,
+          body: approveBody(),
+          idempotencyKey: idempotencyKey(383_900 + index),
+          membershipId: membership.membershipId,
+          tripId: room.body.tripId,
+        }),
+      );
+      guests.push({ guest, input, membership });
+    }
+    const full = await replaySnapshot();
+    expect(full.trips[0]?.member_count).toBe(10);
+    expect(full.invites[0]).toMatchObject({ max_uses: 9, uses_count: 9 });
+    const returning = guests[0]!;
+    await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
+      returning.guest,
+      room.body.tripId,
+      { action: "LEAVE", expectedVersion: full.trips[0]!.version },
+    );
+    const preview = createPreviewInvite({
+      unitOfWork: createKyselyTripUnitOfWork(database),
+      hasher: createHmacInviteCodeHasher(HMAC_KEY),
+    });
+    return { room, commands, guests, returning, preview };
+  }
+
+  it.each([false, true])(
+    "previews and rejoins a full-roster guest using the prior admission (other phone: %s)",
+    async (otherPhone) => {
+      const seed = await fullLobbyRoster();
+      const guest = otherPhone
+        ? {
+            ...seed.returning.guest,
+            deviceId: (await fixtures.device(seed.returning.guest.userId)).id,
+          }
+        : seed.returning.guest;
+      const before = await replaySnapshot();
+      const preview = await seed.preview.execute({
+        actor: guest,
+        inviteCode: seed.room.inviteCode,
+      });
+      expect
+        .soft(preview)
+        .toMatchObject({ ok: true, value: { tripId: seed.room.body.tripId } });
+      const input = {
+        actor: guest,
+        body: joinBody(guest, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(384_000),
+      };
+      const result = await seed.commands.join.execute(input);
+      expect(result).toMatchObject({ ok: true });
+      const pending = successful(result);
+      expect(pending).toMatchObject({
+        status: "PENDING_KEY",
+        tripKeyEnvelope: null,
+      });
+      expect(pending.membershipId).not.toBe(
+        seed.returning.membership.membershipId,
+      );
+      const after = await replaySnapshot();
+      expect(after.trips[0]?.member_count).toBe(10);
+      expect(after.trips[0]?.version).toBe(before.trips[0]!.version + 1);
+      expect(after.invites).toEqual(before.invites);
+      expect(
+        after.active.filter((row) => row.user_id === guest.userId),
+      ).toHaveLength(1);
+      expect(
+        after.members.filter((row) => row.user_id !== guest.userId),
+      ).toEqual(before.members.filter((row) => row.user_id !== guest.userId));
+      expect(successful(await seed.commands.join.execute(input))).toEqual(
+        pending,
+      );
+      expect(
+        successful(await seed.commands.join.execute(seed.returning.input)),
+      ).toMatchObject({
+        membershipId: seed.returning.membership.membershipId,
+        status: "REJECTED",
+        tripKeyEnvelope: null,
+      });
+      expect(await replaySnapshot()).toEqual(after);
+      successful(
+        await seed.commands.approve.execute({
+          actor: seed.room.owner,
+          body: approveBody(),
+          idempotencyKey: idempotencyKey(384_001),
+          membershipId: pending.membershipId,
+          tripId: seed.room.body.tripId,
+        }),
+      );
+      expect(successful(await seed.commands.join.execute(input))).toMatchObject(
+        {
+          status: "ACTIVE",
+          membershipId: pending.membershipId,
+        },
+      );
+    },
+  );
+
+  it("supports more than nine leave-preview-rejoin cycles without consuming new admissions", async () => {
+    const seed = await pendingRoom(3900);
+    const preview = createPreviewInvite({
+      unitOfWork: createKyselyTripUnitOfWork(database),
+      hasher: createHmacInviteCodeHasher(HMAC_KEY),
+    });
+    const ids = new Set([seed.membership.membershipId]);
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      const before = await replaySnapshot();
+      await createKyselyTripLifecycle(database, {
+        now: () => new Date(),
+      }).change(seed.member, seed.room.body.tripId, {
+        action: "LEAVE",
+        expectedVersion: before.trips[0]!.version,
+      });
+      const invitation = await preview.execute({
+        actor: seed.member,
+        inviteCode: seed.room.inviteCode,
+      });
+      expect(invitation).toMatchObject({
+        ok: true,
+        value: { tripId: seed.room.body.tripId },
+      });
+      const input = {
+        actor: seed.member,
+        body: joinBody(seed.member, seed.room.inviteCode),
+        idempotencyKey: idempotencyKey(394_000 + cycle),
+      };
+      const pending = successful(await seed.commands.join.execute(input));
+      expect(pending).toMatchObject({
+        status: "PENDING_KEY",
+        tripKeyEnvelope: null,
+      });
+      expect(ids.has(pending.membershipId)).toBe(false);
+      ids.add(pending.membershipId);
+      expect(successful(await seed.commands.join.execute(input))).toEqual(
+        pending,
+      );
+      const after = await replaySnapshot();
+      expect(after.invites[0]?.uses_count).toBe(1);
+      expect(after.trips[0]?.member_count).toBe(2);
+      expect(after.members).toHaveLength(2);
+      expect(after.active).toHaveLength(2);
+    }
+    expect(ids.size).toBe(13);
+  });
+
+  it.each([
+    "EXPIRED",
+    "REVOKED",
+    "WRONG_CODE",
+    "FRESH_ACTOR",
+    "REVOKED_PHONE",
+    "HANDOFF_HISTORY",
+  ] as const)(
+    "does not bypass exhausted invite authority for %s",
+    async (scenario) => {
+      const seed = await fullLobbyRoster();
+      let guest = seed.returning.guest;
+      let code = seed.room.inviteCode;
+      if (scenario === "EXPIRED")
+        await context.db
+          .updateTable("trip_invites")
+          .set({
+            created_at: new Date(Date.now() - 2000),
+            expires_at: new Date(Date.now() - 1000),
+          })
+          .where("trip_id", "=", seed.room.body.tripId)
+          .execute();
+      if (scenario === "REVOKED")
+        await context.db
+          .updateTable("trip_invites")
+          .set({ revoked_at: new Date() })
+          .where("trip_id", "=", seed.room.body.tripId)
+          .execute();
+      if (scenario === "WRONG_CODE") code = "WXYZ6789";
+      if (scenario === "FRESH_ACTOR") guest = await actor(3890);
+      if (scenario === "REVOKED_PHONE")
+        await context.db
+          .updateTable("devices")
+          .set({ revoked_at: new Date() })
+          .where("id", "=", guest.deviceId)
+          .execute();
+      if (scenario === "HANDOFF_HISTORY") {
+        const other = await fixtures.device(guest.userId);
+        await context.db
+          .insertInto("trip_device_requests")
+          .values({
+            id: idempotencyKey(384_002),
+            trip_id: seed.room.body.tripId,
+            membership_id: seed.returning.membership.membershipId,
+            previous_device_id: guest.deviceId,
+            device_id: other.id,
+            state: "CANCELLED",
+            requested_at: new Date(),
+            resolved_at: new Date(),
+            approved_by_device_id: null,
+          })
+          .execute();
+      }
+      const before = await replaySnapshot();
+      expect(
+        problemCode(
+          await seed.preview.execute({ actor: guest, inviteCode: code }),
+        ),
+      ).toBe("INVITE_INVALID");
+      expect(
+        problemCode(
+          await seed.commands.join.execute({
+            actor: guest,
+            body: joinBody(guest, code),
+            idempotencyKey: idempotencyKey(384_003),
+          }),
+        ),
+      ).toBe(
+        scenario === "REVOKED_PHONE"
+          ? "DEVICE_REVOKED"
+          : scenario === "HANDOFF_HISTORY"
+            ? "TRIP_REJOIN_UNAVAILABLE"
+            : "INVITE_INVALID",
+      );
+      expect(await replaySnapshot()).toEqual(before);
+    },
+  );
+
+  it.each(["EXPIRED", "REVOKED"] as const)(
+    "rechecks invite authority after a successful exhausted preview: %s",
+    async (change) => {
+      const seed = await fullLobbyRoster();
+      expect(
+        successful(
+          await seed.preview.execute({
+            actor: seed.returning.guest,
+            inviteCode: seed.room.inviteCode,
+          }),
+        ).tripId,
+      ).toBe(seed.room.body.tripId);
+      await context.db
+        .updateTable("trip_invites")
+        .set(
+          change === "REVOKED"
+            ? { revoked_at: new Date() }
+            : {
+                created_at: new Date(Date.now() - 2000),
+                expires_at: new Date(Date.now() - 1000),
+              },
+        )
+        .where("trip_id", "=", seed.room.body.tripId)
+        .execute();
+      const before = await replaySnapshot();
+      expect(
+        problemCode(
+          await seed.commands.join.execute({
+            actor: seed.returning.guest,
+            body: joinBody(seed.returning.guest, seed.room.inviteCode),
+            idempotencyKey: idempotencyKey(384_004),
+          }),
+        ),
+      ).toBe("INVITE_INVALID");
+      expect(await replaySnapshot()).toEqual(before);
+    },
+  );
+
+  it.each(["PENDING_KEY", "ACTIVE", "REJECTED"] as const)(
+    "conclusively refuses a new command for an existing %s membership without changing the original outcome",
+    async (state) => {
+      const seed =
+        state === "ACTIVE" ? await readyRoom(3950) : await pendingRoom(3950);
+      if (state === "REJECTED")
+        successful(
+          await seed.commands.reject.execute({
+            actor: seed.room.owner,
+            idempotencyKey: idempotencyKey(395_000),
+            membershipId: seed.membership.membershipId,
+            tripId: seed.room.body.tripId,
+          }),
+        );
+      const before = await replaySnapshot();
+      expect(
+        problemCode(
+          await seed.commands.join.execute({
+            actor: seed.member,
+            body: joinBody(seed.member, seed.room.inviteCode),
+            idempotencyKey: idempotencyKey(395_001),
+          }),
+        ),
+      ).toBe("TRIP_REJOIN_UNAVAILABLE");
+      expect(await replaySnapshot()).toEqual(before);
+      expect(
+        successful(
+          await seed.commands.join.execute({
+            actor: seed.member,
+            body: joinBody(seed.member, seed.room.inviteCode),
+            idempotencyKey: idempotencyKey(103_950),
+          }),
+        ),
+      ).toMatchObject({
+        membershipId: seed.membership.membershipId,
+        status: state,
+      });
+      expect(await replaySnapshot()).toEqual(before);
+    },
+  );
+
   async function departedRoom() {
     const seed = await readyRoom(3700);
     await createKyselyTripLifecycle(database, { now: () => new Date() }).change(
@@ -855,9 +1170,7 @@ describe("join and projection PostgreSQL concurrency", () => {
       before.trips[0]!.member_count + 1,
     );
     expect(after.trips[0]?.version).toBe(before.trips[0]!.version + 1);
-    expect(after.invites[0]?.uses_count).toBe(
-      before.invites[0]!.uses_count + 1,
-    );
+    expect(after.invites[0]?.uses_count).toBe(before.invites[0]!.uses_count);
     expect(after.inbox).toHaveLength(before.inbox.length + 1);
     expect(after.outbox).toHaveLength(before.outbox.length + 1);
     expect(
@@ -873,14 +1186,14 @@ describe("join and projection PostgreSQL concurrency", () => {
           idempotencyKey: idempotencyKey(373_711),
         }),
       ),
-    ).toBe("CONFLICT");
+    ).toBe("TRIP_REJOIN_UNAVAILABLE");
     expect(
       after.members.filter((row) => row.id === pending.membershipId),
     ).toHaveLength(1);
     expect(await replaySnapshot()).toEqual(after);
   });
 
-  it.each([0, 1, 4, 7])(
+  it.each([0, 1, 4, 6])(
     "rolls back all rejoin retirement and admission writes at boundary %s",
     async (boundary) => {
       const seed = await departedRoom();
@@ -1112,7 +1425,7 @@ describe("join and projection PostgreSQL concurrency", () => {
       .execute();
     const before = await replaySnapshot();
     expect(problemCode(await seed.commands.join.execute(oldInput))).toBe(
-      "CONFLICT",
+      "TRIP_REJOIN_UNAVAILABLE",
     );
     expect(await replaySnapshot()).toEqual(before);
     await context.db

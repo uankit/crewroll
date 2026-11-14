@@ -192,8 +192,7 @@ function currentInviteIsValid(
     (trip.state === "LOBBY" || trip.state === "ACTIVE") &&
     trip.endsAt > now &&
     invite.revokedAt === null &&
-    invite.expiresAt.getTime() > now.getTime() &&
-    invite.usesCount < invite.maxUses
+    invite.expiresAt.getTime() > now.getTime()
   );
 }
 
@@ -420,7 +419,9 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
               (membership) => membership.userId === input.actor.userId,
             )
           ) {
-            return tripProblem("CONFLICT");
+            // Exact accepted-command replay was resolved above. This new
+            // command cannot create another participation for the same user.
+            return tripProblem("TRIP_REJOIN_UNAVAILABLE");
           }
           const rejoin = await transaction.lockLobbyRejoin(
             trip.tripId,
@@ -428,6 +429,12 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
           );
           if (rejoin.kind === "UNAVAILABLE") {
             return tripProblem("TRIP_REJOIN_UNAVAILABLE");
+          }
+          // A safe returning participant reuses their prior admission. The
+          // invite must still be current, and all ordinary actor/capacity/key
+          // fences remain; only fresh accounts consume its finite use budget.
+          if (rejoin.kind === "NONE" && invite.usesCount >= invite.maxUses) {
+            return tripProblem("INVITE_INVALID");
           }
           const capacity = tripCapacity(
             memberships.map((membership) => membership.state),
@@ -493,11 +500,13 @@ export function createRequestJoin(dependencies: RequestJoinDependencies) {
             tripId: trip.tripId,
             userId: input.actor.userId,
           });
-          await transaction.updateInvite({
-            ...invite,
-            updatedAt: now,
-            usesCount: invite.usesCount + 1,
-          });
+          if (rejoin.kind === "NONE") {
+            await transaction.updateInvite({
+              ...invite,
+              updatedAt: now,
+              usesCount: invite.usesCount + 1,
+            });
+          }
           await transaction.updateTrip({
             ...trip,
             memberCount: trip.memberCount + 1,

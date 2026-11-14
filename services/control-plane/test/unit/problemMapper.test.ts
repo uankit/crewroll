@@ -230,7 +230,7 @@ const api003ProblemText = {
   },
   TRIP_REJOIN_UNAVAILABLE: {
     detail:
-      "This participation has ended and cannot be rejoined. You can join a different trip.",
+      "A new participation cannot be created for this trip. Check your existing trips or join a different trip.",
     title: "Trip rejoin unavailable",
   },
   VERSION_CONFLICT: {
