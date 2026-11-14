@@ -67,7 +67,15 @@ class NativePhotoTransferEngineTest {
             f.pendingPaths.clear()
             val restarted = f.engine()
             restarted.activate().get(5, TimeUnit.SECONDS)
-            f.await { f.receipts == 1 }
+            // Receipt transport completion precedes the journal checkpoint and a
+            // concurrent discovery may still hold the previous continuation.
+            // Stop only after both durable outcomes have actually settled.
+            f.await {
+                val persisted = JSONObject(File(directory, "journal.json").readText())
+                f.receipts == 1 &&
+                    persisted.getJSONObject("works").optJSONObject(f.delivery)?.optBoolean("complete") == true &&
+                    persisted.optJSONObject("pendingDeliveryCursors")?.has(f.trip) != true
+            }
             f.stop(restarted)
             assertEquals("/v1/deliveries/pending?tripId=${f.trip}&after=cGFnZTI", f.pendingPaths.first())
             assertNull(NativeTransferJournal(directory).pendingDeliveryCursor(f.trip))
