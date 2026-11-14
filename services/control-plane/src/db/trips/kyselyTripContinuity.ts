@@ -25,19 +25,26 @@ export function createKyselyTripContinuity(
   normalizeInviteCode: NormalizeContinuityInvite,
 ): TripContinuityService {
   const randomUUID = () => crypto.randomUUID();
-  async function lock(tx: Tx, actor: ForegroundTripActor, tripId: string) {
+  async function lock(
+    tx: Tx,
+    actor: ForegroundTripActor,
+    tripId: string,
+    readOnly = false,
+  ) {
     // Fence revocation without blocking recipient FK checks in concurrent fan-out.
     const user = await tx
       .selectFrom("users")
       .selectAll()
       .where("id", "=", actor.userId)
-      .forNoKeyUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     const device = await tx
       .selectFrom("devices")
       .selectAll()
       .where("id", "=", actor.deviceId)
-      .forNoKeyUpdate()
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     if (
       !user ||
@@ -53,7 +60,9 @@ export function createKyselyTripContinuity(
       .selectFrom("trips")
       .selectAll()
       .where("id", "=", tripId)
-      .forUpdate()
+      // Preserve writer serialization while allowing references to immutable trips.id.
+      .$if(readOnly, (query) => query.forShare())
+      .$if(!readOnly, (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     const member = await tx
       .selectFrom("trip_members")
@@ -70,8 +79,9 @@ export function createKyselyTripContinuity(
     tx: Tx,
     actor: ForegroundTripActor,
     tripId: string,
+    readOnly = false,
   ): Promise<TripContinuity> {
-    const { trip, member } = await lock(tx, actor, tripId);
+    const { trip, member } = await lock(tx, actor, tripId, readOnly);
     const host = await tx
       .selectFrom("users")
       .select("display_name")
@@ -479,7 +489,7 @@ export function createKyselyTripContinuity(
         // only retained, eligible ciphertext; cleanup and this command lock trip.
         const assets = await tx
           .selectFrom("assets")
-          .selectAll()
+          .select("id")
           .where("trip_id", "=", tripId)
           .where("state", "=", "COMMITTED")
           .where((eb) =>
@@ -491,30 +501,37 @@ export function createKyselyTripContinuity(
             ]),
           )
           .execute();
-        for (const asset of assets) {
-          const deliveryId = randomUUID();
-          await tx
-            .insertInto("deliveries")
-            .values({
-              id: deliveryId,
+        // Keep parameter counts and edge/database exchanges bounded. At the
+        // 5,000-photo beta cap this is ten inserts, not 10,000 round trips.
+        // Every batch remains in this same authorization/handoff transaction.
+        for (let offset = 0; offset < assets.length; offset += 1_000) {
+          const deliveries = assets
+            .slice(offset, offset + 1_000)
+            .map((asset) => ({
+              id: randomUUID(),
               asset_id: asset.id,
               recipient_user_id: target.user_id,
               recipient_device_id: newDevice.id,
-              state: "READY",
+              state: "READY" as const,
               available_at: now,
               saved_at: null,
-            })
-            .execute();
+            }));
+          await tx.insertInto("deliveries").values(deliveries).execute();
           await tx
             .insertInto("inbox_events")
-            .values({
-              recipient_device_id: newDevice.id,
-              trip_id: tripId,
-              event_type: "ASSET_COMMITTED",
-              aggregate_id: asset.id,
-              available_at: now,
-              payload: { assetId: asset.id, deliveryId },
-            })
+            .values(
+              deliveries.map((delivery) => ({
+                recipient_device_id: newDevice.id,
+                trip_id: tripId,
+                event_type: "ASSET_COMMITTED",
+                aggregate_id: delivery.asset_id,
+                available_at: now,
+                payload: {
+                  assetId: delivery.asset_id,
+                  deliveryId: delivery.id,
+                },
+              })),
+            )
             .execute();
         }
       }
@@ -544,12 +561,13 @@ export function createKyselyTripContinuity(
   }
   return {
     read: (actor, tripId) =>
-      db.transaction().execute((tx) => projection(tx, actor, tripId)),
+      db.transaction().execute((tx) => projection(tx, actor, tripId, true)),
     change: async (actor, tripId, body) => {
       for (let attempt = 0; ; attempt++) {
         try {
           return await db.transaction().execute(async (tx) => {
-            const before = await projection(tx, actor, tripId);
+            // Mutation projections acquire writer locks from the start, never upgrade SHARE.
+            const before = await projection(tx, actor, tripId, false);
             await change(tx, actor, tripId, body);
             const device = await tx
               .selectFrom("devices")
@@ -564,7 +582,7 @@ export function createKyselyTripContinuity(
                 ownerInviteCode: null,
                 approvalRequests: [],
               };
-            return projection(tx, actor, tripId);
+            return projection(tx, actor, tripId, false);
           });
         } catch (error) {
           // This command performs only transactional database writes. Retry

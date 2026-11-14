@@ -520,6 +520,9 @@ class NativePhotoTransferEngine(
                 } finally { stage.deleteRecursively() }
             }
             photos.verify(requireNotNull(saved), manifest.original.plaintextBytes.toLong(), manifest.original.plaintextSha256); current(c, epoch)
+            // A verified MediaStore match can outlive a lost app journal. Keep
+            // its local reference before acknowledging so gallery recovery works.
+            if (work.optionalString("savedLocalId") != saved) { work.put("savedLocalId", saved); ledger.put(work) }
             n.json("/v1/deliveries/$deliveryId/saved-receipt", "POST", JSONObject().put("assetId", assetId).put("savedAt", Instant.now().toString()).put("engineRevision", ledger.revision()), c, work.getString("workId"))
             current(c, epoch); work.put("complete", true); ledger.put(work)
         } finally { manifest.erase() }

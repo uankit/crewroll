@@ -1067,6 +1067,12 @@ test("every production layer class has an effective forbidden-edge mutation", as
       "openapi/__boundary-source.ts",
     ],
     [
+      "contracts openapi to crypto implementation",
+      "contracts",
+      'import "../crypto/manifest.js";\n',
+      "openapi/__boundary-source.ts",
+    ],
+    [
       "contracts native to fixture",
       "contracts",
       'import "../fixtures/__boundary-target.js";\n',
@@ -1894,6 +1900,12 @@ test("every documented allowed edge passes with zero diagnostics", async (t) => 
       "contracts openapi js-to-ts",
       "contracts",
       'import "./__boundary-target.js";\n',
+      "openapi/__boundary-source.ts",
+    ],
+    [
+      "contracts openapi to canonical crypto format constants",
+      "contracts",
+      'import "../crypto/protocol.js";\n',
       "openapi/__boundary-source.ts",
     ],
     [

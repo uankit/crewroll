@@ -414,7 +414,10 @@ function createContractsBoundaryPolicy({ tsconfigPath }) {
   ];
 
   const policies = [
-    allowElements(openapi, [openapi]),
+    allowElements(openapi, [
+      openapi,
+      element("crypto", { fileInternalPath: "protocol.ts" }),
+    ]),
     allowElements(crypto, [crypto]),
     allowElements(native, [
       native,

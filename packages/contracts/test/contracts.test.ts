@@ -1,4 +1,5 @@
 import { Value } from "@sinclair/typebox/value";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -751,15 +752,21 @@ describe("photo upload contracts", () => {
     rejects(CreateUploadSessionBodySchema, body);
   });
 
-  it("enforces the encrypted manifest decoded byte ceiling", () => {
+  it("enforces the v1 encrypted manifest decoded byte ceiling without requiring server decryption", () => {
     const body = validUploadSessionBody();
-    const maximumManifest = Buffer.alloc(65_536).toString("base64");
+    const maximumManifest = Buffer.alloc(784).toString("base64");
     body.encryptedManifest = maximumManifest;
     expect(Value.Check(CreateUploadSessionBodySchema, body)).toBe(true);
     body.encryptedManifest = `${maximumManifest.slice(0, -3)}B==`;
     rejects(CreateUploadSessionBodySchema, body);
-    body.encryptedManifest = Buffer.alloc(65_537).toString("base64");
+    body.encryptedManifest = Buffer.alloc(785).toString("base64");
     rejects(CreateUploadSessionBodySchema, body);
+    const canonical = readFileSync(
+      new URL("../crypto/vectors/v1/manifest-canonical.bin", import.meta.url),
+    );
+    expect(canonical).toHaveLength(303);
+    body.encryptedManifest = canonical.toString("base64");
+    expect(Value.Check(CreateUploadSessionBodySchema, body)).toBe(true);
   });
 
   it("accepts only the frozen PREVIEW then ORIGINAL photo object tuple", () => {

@@ -7,7 +7,14 @@ import {
   expect,
   it,
 } from "vitest";
-import { sql, TableNode, type Kysely, type KyselyPlugin } from "kysely";
+import { randomUUID } from "node:crypto";
+import {
+  sql,
+  TableNode,
+  ValuesNode,
+  type Kysely,
+  type KyselyPlugin,
+} from "kysely";
 import type { TripContinuityBody } from "@crewroll/contracts";
 import { createDatabase } from "../../services/control-plane/src/db/database.js";
 import type { Database } from "../../services/control-plane/src/db/schema/tables.js";
@@ -208,8 +215,250 @@ describe.sequential("PostgreSQL replacement-phone lock contention", () => {
         .selectAll()
         .orderBy("id")
         .execute(),
+      deliveries: await context.db
+        .selectFrom("deliveries")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
+      receipts: await context.db
+        .selectFrom("receipts")
+        .selectAll()
+        .orderBy("id")
+        .execute(),
     };
   }
+
+  async function seedRetainedPhotos(count: number) {
+    const ids = Array.from({ length: count }, () => randomUUID());
+    const now = clock.now();
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500);
+      await context.db
+        .insertInto("assets")
+        .values(
+          chunk.map((id) => ({
+            id,
+            trip_id: tripId,
+            source_device_id: host.deviceId,
+            source_asset_key: `src_${id.replaceAll("-", "")}`,
+            captured_at: now,
+            committed_at: now,
+            media_type: "PHOTO" as const,
+            key_epoch: 1,
+            encryption_version: 1,
+            encrypted_manifest: Buffer.alloc(784),
+            state: "COMMITTED" as const,
+            purge_pending_at: null,
+            purged_at: null,
+            expired_at: null,
+          })),
+        )
+        .execute();
+      await context.db
+        .insertInto("asset_objects")
+        .values(
+          chunk.flatMap((assetId) =>
+            (["PREVIEW", "ORIGINAL"] as const).map((variant) => ({
+              asset_id: assetId,
+              variant,
+              s3_key: `retained/${assetId}/${variant}`,
+              ciphertext_bytes: "45",
+              ciphertext_sha256: Buffer.alloc(32),
+              etag: "retained-ciphertext",
+              created_at: now,
+              deleted_at: null,
+            })),
+          ),
+        )
+        .execute();
+      const saved = chunk.map((assetId) => ({
+        id: randomUUID(),
+        asset_id: assetId,
+        recipient_user_id: oldPhone.userId,
+        recipient_device_id: oldPhone.deviceId,
+        state: "SAVED_LOCALLY" as const,
+        available_at: now,
+        saved_at: now,
+        created_at: now,
+      }));
+      await context.db
+        .insertInto("deliveries")
+        .values([
+          ...saved,
+          ...chunk.map((assetId) => ({
+            id: randomUUID(),
+            asset_id: assetId,
+            recipient_user_id: host.userId,
+            recipient_device_id: host.deviceId,
+            state: "READY" as const,
+            available_at: now,
+            saved_at: null,
+            created_at: now,
+          })),
+        ])
+        .execute();
+      await context.db
+        .insertInto("receipts")
+        .values(
+          saved.map((delivery) => ({
+            id: randomUUID(),
+            delivery_id: delivery.id,
+            receipt_type: "SAVED_LOCALLY" as const,
+            client_event_id: randomUUID(),
+            client_observed_at: now,
+            accepted_at: now,
+          })),
+        )
+        .execute();
+    }
+    return ids;
+  }
+
+  it("reissues all 5000 retained photos in bounded SQL without treating old-phone saves as new saves", async () => {
+    const command = await approval();
+    const assets = await seedRetainedPhotos(5000);
+    let deliveryInserts = 0,
+      inboxInserts = 0,
+      statements = 0;
+    const observed = db.withPlugin({
+      transformQuery({ node }) {
+        statements++;
+        if (
+          node.kind === "InsertQueryNode" &&
+          node.into &&
+          TableNode.is(node.into)
+        ) {
+          if (node.into.table.identifier.name === "deliveries")
+            deliveryInserts++;
+          if (node.into.table.identifier.name === "inbox_events")
+            inboxInserts++;
+        }
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
+    });
+    const result = await continuity(observed).change(host, tripId, command);
+    expect(result.version).toBe(command.expectedVersion + 1);
+    const deliveries = await context.db
+      .selectFrom("deliveries")
+      .selectAll()
+      .where("recipient_device_id", "=", newPhone.deviceId)
+      .execute();
+    expect(deliveries).toHaveLength(5000);
+    expect(new Set(deliveries.map((delivery) => delivery.asset_id))).toEqual(
+      new Set(assets),
+    );
+    expect(
+      deliveries.every(
+        (delivery) => delivery.state === "READY" && delivery.saved_at === null,
+      ),
+    ).toBe(true);
+    const events = await context.db
+      .selectFrom("inbox_events")
+      .selectAll()
+      .where("recipient_device_id", "=", newPhone.deviceId)
+      .where("event_type", "=", "ASSET_COMMITTED")
+      .execute();
+    expect(events).toHaveLength(5000);
+    const references = new Map(
+      deliveries.map((delivery) => [delivery.id, delivery.asset_id]),
+    );
+    expect(
+      events.every(
+        (event) =>
+          typeof event.payload.deliveryId === "string" &&
+          references.get(event.payload.deliveryId) === event.aggregate_id,
+      ),
+    ).toBe(true);
+    expect(new Set(events.map((event) => event.aggregate_id))).toEqual(
+      new Set(assets),
+    );
+    expect(
+      await context.db
+        .selectFrom("receipts as r")
+        .innerJoin("deliveries as d", "d.id", "r.delivery_id")
+        .select("r.id")
+        .where("d.recipient_device_id", "=", newPhone.deviceId)
+        .execute(),
+    ).toHaveLength(0);
+    expect(
+      await context.db.selectFrom("receipts").select("id").execute(),
+    ).toHaveLength(5000);
+    expect(
+      await context.db
+        .selectFrom("devices")
+        .select("revoked_at")
+        .where("id", "=", oldPhone.deviceId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ revoked_at: clock.now() });
+    expect(
+      await context.db
+        .selectFrom("trip_key_envelopes")
+        .select("recipient_device_id")
+        .where("recipient_device_id", "=", newPhone.deviceId)
+        .execute(),
+    ).toHaveLength(1);
+    const beforeReplay = await snapshot();
+    await continuity().change(host, tripId, command);
+    expect(await snapshot()).toEqual(beforeReplay);
+    process.stdout.write(
+      JSON.stringify({
+        event: "replacement_5000_sql_budget",
+        statements,
+        deliveryInserts,
+        inboxInserts,
+      }) + "\n",
+    );
+    expect(deliveryInserts).toBeLessThanOrEqual(5);
+    // Five asset batches plus the two existing per-member lifecycle notices.
+    expect(inboxInserts).toBeLessThanOrEqual(7);
+    expect(statements).toBeLessThanOrEqual(60);
+  });
+
+  it("rolls back the full 5000-photo handoff if a real inbox publication fails after SQL", async () => {
+    const command = await approval();
+    await seedRetainedPhotos(5000);
+    const before = await snapshot();
+    const failure = new Error("Injected post-insert publication failure");
+    const queries = new WeakMap<object, number>();
+    let publishedRows = 0;
+    const failing = db.withPlugin({
+      transformQuery({ node, queryId }) {
+        if (
+          node.kind === "InsertQueryNode" &&
+          node.into &&
+          TableNode.is(node.into) &&
+          node.into.table.identifier.name === "inbox_events"
+        )
+          queries.set(
+            queryId,
+            node.values && ValuesNode.is(node.values)
+              ? node.values.values.length
+              : 0,
+          );
+        return node;
+      },
+      async transformResult({ result, queryId }) {
+        publishedRows += queries.get(queryId) ?? 0;
+        if (publishedRows === 5000) throw failure;
+        return result;
+      },
+    });
+    await expect(
+      continuity(failing).change(host, tripId, command),
+    ).rejects.toBe(failure);
+    expect(publishedRows).toBe(5000);
+    expect(await snapshot()).toEqual(before);
+    expect(
+      await context.db
+        .selectFrom("deliveries")
+        .select("id")
+        .where("recipient_device_id", "=", newPhone.deviceId)
+        .execute(),
+    ).toHaveLength(0);
+  });
 
   it("lets an authorized old-phone poll finish and commits host approval exactly once", async () => {
     const body = await approval();
@@ -410,7 +659,9 @@ describe.sequential("PostgreSQL replacement-phone lock contention", () => {
                 TableNode.is(table) && table.table.identifier.name === "trips",
             ) &&
             node.endModifiers?.some(
-              (modifier) => modifier.modifier === "ForUpdate",
+              (modifier) =>
+                modifier.modifier === "ForUpdate" ||
+                modifier.modifier === "ForNoKeyUpdate",
             )
           ) {
             attempts++;

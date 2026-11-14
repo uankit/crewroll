@@ -253,7 +253,10 @@ export async function classifyMigrationContract({ rootPath, fsAdapter } = {}) {
       "media",
       "push",
     ];
-    const optionalDatabaseFiles = ["boundedPostgresPool.ts"];
+    const optionalDatabaseFiles = [
+      "boundedPostgresPool.ts",
+      "transactionScopedPostgresDialect.ts",
+    ];
     if (
       !dbEntries ||
       new Set(dbEntries).size !== dbEntries.length ||

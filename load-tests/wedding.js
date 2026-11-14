@@ -424,7 +424,8 @@ function initFixtures() {
       checksum: crypto.sha256(buffer, "base64"),
     };
   }
-  fixtures.manifest = encoding.b64encode(bytes(256, "manifest"), "std");
+  // Worst admitted v1 metadata length. Opaque bytes are not a valid encrypted manifest.
+  fixtures.manifest = encoding.b64encode(bytes(784, "manifest"), "std");
   scope = new Map();
   for (let owner = 0; owner < 10; owner++) {
     for (let photo = 0; photo < PHOTOS; photo++)

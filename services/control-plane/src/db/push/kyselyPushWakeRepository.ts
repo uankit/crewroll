@@ -1,4 +1,4 @@
-import { sql, type Kysely } from "kysely";
+import { sql, type Insertable, type Kysely } from "kysely";
 import type { Database } from "../schema/tables.js";
 import type { Clock } from "../../shared/time/clock.js";
 import type {
@@ -8,6 +8,7 @@ import type {
 
 const LEASE_MS = 120_000;
 const COALESCE_MS = 60_000;
+const MATERIALIZE_DEFER_MS = 60_000;
 const RETAIN_MS = 7 * 24 * 60 * 60 * 1_000;
 const supportedEvents = ["trip.changed", "trip.lifecycle", "media.committed"];
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -38,9 +39,13 @@ export function createKyselyPushWakeRepository(
           .skipLocked()
           .limit(Math.max(1, Math.min(100, limit)))
           .execute();
-        for (const event of events) {
+        if (!events.length) return;
+        const outcomes = new Map<
+          string,
+          "OUTBOX_INVALID_PAYLOAD" | "OUTBOX_EXPIRED" | null
+        >();
+        const candidates = events.flatMap((event) => {
           const { tripId, recipientSequences } = event.payload;
-          let error: string | null = null;
           if (
             !supportedEvents.includes(event.event_type) ||
             typeof tripId !== "string" ||
@@ -48,70 +53,176 @@ export function createKyselyPushWakeRepository(
             !Array.isArray(recipientSequences) ||
             recipientSequences.length > 10 ||
             !recipientSequences.every(
-              (s) => typeof s === "string" && /^[1-9][0-9]{0,18}$/.test(s),
+              (s) =>
+                typeof s === "string" &&
+                /^[1-9][0-9]{0,18}$/.test(s) &&
+                BigInt(s) <= 9_223_372_036_854_775_807n,
             )
           ) {
-            error = "OUTBOX_INVALID_PAYLOAD";
-          } else {
-            const trip = await tx
-              .selectFrom("trips")
-              .select("hard_delete_at")
-              .where("id", "=", tripId)
-              .executeTakeFirst();
-            const expiresAt = new Date(
-              Math.min(
-                event.created_at.getTime() + 3_600_000,
-                trip?.hard_delete_at.getTime() ?? 0,
-              ),
-            );
-            if (expiresAt <= now || expiresAt <= event.created_at)
-              error = "OUTBOX_EXPIRED";
-            else if (recipientSequences.length) {
-              const recipients = await tx
-                .selectFrom("inbox_events as i")
-                .innerJoin("devices as d", "d.id", "i.recipient_device_id")
-                .select(["i.recipient_device_id", "d.user_id"])
-                .where("i.trip_id", "=", tripId)
-                .where("i.sequence", "in", recipientSequences as string[])
-                .distinct()
-                .execute();
-              if (recipients.length)
-                await tx
-                  .insertInto("push_wakeups")
-                  .values(
-                    recipients.map((recipient) => ({
-                      id: crypto.randomUUID(),
-                      event_id: event.id,
-                      trip_id: tripId,
-                      recipient_device_id: recipient.recipient_device_id,
-                      recipient_user_id: recipient.user_id,
-                      available_at: now,
-                      created_at: event.created_at,
-                      expires_at: expiresAt,
-                      lease_token: null,
-                      completed_at: null,
-                      outcome: null,
-                      last_error: null,
-                    })),
-                  )
-                  .onConflict((c) =>
-                    c.columns(["event_id", "recipient_device_id"]).doNothing(),
-                  )
-                  .execute();
-            }
+            outcomes.set(event.id, "OUTBOX_INVALID_PAYLOAD");
+            return [];
           }
-          // Published means atomically fanned out, never device delivery/save.
-          await tx
-            .updateTable("outbox_events")
-            .set({
-              published_at: new Date(
-                Math.max(now.getTime(), event.created_at.getTime()),
-              ),
-              last_error: error,
-            })
-            .where("id", "=", event.id)
-            .execute();
+          return [{ event, tripId, sequences: recipientSequences as string[] }];
+        });
+        // Reads precede the foreign-key writes. Bound work to 100 events and
+        // 1,000 recipient sequences without a network round trip per event:
+        // FK row locks must not span hundreds of edge/database exchanges.
+        const trips = candidates.length
+          ? await tx
+              .selectFrom("trips")
+              .select(["id", "hard_delete_at"])
+              .where("id", "in", [...new Set(candidates.map((c) => c.tripId))])
+              .execute()
+          : [];
+        const deadlines = new Map(
+          trips.map((trip) => [trip.id, trip.hard_delete_at]),
+        );
+        const eligible = candidates.flatMap((candidate) => {
+          const expiresAt = new Date(
+            Math.min(
+              candidate.event.created_at.getTime() + 3_600_000,
+              deadlines.get(candidate.tripId)?.getTime() ?? 0,
+            ),
+          );
+          const expired =
+            expiresAt <= now || expiresAt <= candidate.event.created_at;
+          outcomes.set(candidate.event.id, expired ? "OUTBOX_EXPIRED" : null);
+          return expired ? [] : [{ ...candidate, expiresAt }];
+        });
+        const sequences = [...new Set(eligible.flatMap((c) => c.sequences))];
+        const recipients = sequences.length
+          ? await tx
+              .selectFrom("inbox_events as i")
+              .innerJoin("devices as d", "d.id", "i.recipient_device_id")
+              .select([
+                "i.trip_id",
+                "i.sequence",
+                "i.recipient_device_id",
+                "d.user_id",
+              ])
+              .where("i.trip_id", "in", [
+                ...new Set(eligible.map((c) => c.tripId)),
+              ])
+              .where("i.sequence", "in", sequences)
+              .execute()
+          : [];
+        const bySequence = new Map(
+          recipients.map((r) => [`${r.trip_id}:${r.sequence}`, r]),
+        );
+        const wakes: Insertable<Database["push_wakeups"]>[] = [];
+        for (const candidate of eligible) {
+          const devices = new Set<string>();
+          for (const sequence of candidate.sequences) {
+            const recipient = bySequence.get(`${candidate.tripId}:${sequence}`);
+            if (!recipient || devices.has(recipient.recipient_device_id))
+              continue;
+            devices.add(recipient.recipient_device_id);
+            wakes.push({
+              id: crypto.randomUUID(),
+              event_id: candidate.event.id,
+              trip_id: candidate.tripId,
+              recipient_device_id: recipient.recipient_device_id,
+              recipient_user_id: recipient.user_id,
+              available_at: now,
+              created_at: candidate.event.created_at,
+              expires_at: candidate.expiresAt,
+              lease_token: null,
+              completed_at: null,
+              outcome: null,
+              last_error: null,
+            });
+          }
         }
+        const deferred = new Set<string>();
+        if (wakes.length) {
+          // Interactive paths normally lock users -> devices -> trips; the
+          // trip-first command paths use NOWAIT. Physical erase also locks the
+          // user before deleting outbox rows. We already own
+          // outbox rows, so NEVER wait backwards for these parent keys: skip
+          // busy rows and defer every recipient of the affected event together.
+          const users = await tx
+            .selectFrom("users")
+            .select("id")
+            .where("id", "in", [
+              ...new Set(wakes.map((w) => w.recipient_user_id)),
+            ])
+            .orderBy("id")
+            .forKeyShare()
+            .skipLocked()
+            .execute();
+          const devices = await tx
+            .selectFrom("devices")
+            .select("id")
+            .where("id", "in", [
+              ...new Set(wakes.map((w) => w.recipient_device_id)),
+            ])
+            .orderBy("id")
+            .forKeyShare()
+            .skipLocked()
+            .execute();
+          const parentTrips = await tx
+            .selectFrom("trips")
+            .select("id")
+            .where("id", "in", [...new Set(wakes.map((w) => w.trip_id))])
+            .orderBy("id")
+            .forKeyShare()
+            .skipLocked()
+            .execute();
+          const userIds = new Set(users.map((row) => row.id));
+          const deviceIds = new Set(devices.map((row) => row.id));
+          const tripIds = new Set(parentTrips.map((row) => row.id));
+          for (const wake of wakes)
+            if (
+              !userIds.has(wake.recipient_user_id) ||
+              !deviceIds.has(wake.recipient_device_id) ||
+              !tripIds.has(wake.trip_id)
+            )
+              deferred.add(wake.event_id);
+        }
+        const ready = wakes.filter((wake) => !deferred.has(wake.event_id));
+        if (ready.length)
+          await tx
+            .insertInto("push_wakeups")
+            .values(ready)
+            .onConflict((c) =>
+              c.columns(["event_id", "recipient_device_id"]).doNothing(),
+            )
+            .execute();
+        // One bounded update commits fanout/outcomes together. Busy work stays
+        // unpublished and moves behind older cold work; no partial fanout or
+        // false delivery receipt is created. A failed update rolls all back.
+        const deferredIds = [...deferred];
+        const errorCases = ["OUTBOX_INVALID_PAYLOAD", "OUTBOX_EXPIRED"].flatMap(
+          (error) => {
+            const ids = events
+              .filter((event) => outcomes.get(event.id) === error)
+              .map((event) => event.id);
+            return ids.length
+              ? [sql`when id in (${sql.join(ids)}) then ${error}::varchar`]
+              : [];
+          },
+        );
+        await tx
+          .updateTable("outbox_events")
+          .set({
+            published_at: deferredIds.length
+              ? sql<Date | null>`case when id in (${sql.join(deferredIds)}) then null else greatest(created_at, ${now}::timestamptz) end`
+              : sql<Date>`greatest(created_at, ${now}::timestamptz)`,
+            available_at: deferredIds.length
+              ? sql<Date>`case when id in (${sql.join(deferredIds)}) then ${new Date(now.getTime() + MATERIALIZE_DEFER_MS)}::timestamptz else available_at end`
+              : sql<Date>`available_at`,
+            last_error: errorCases.length
+              ? sql<
+                  string | null
+                >`case ${sql.join(errorCases, sql` `)} else null end`
+              : null,
+          })
+          .where(
+            "id",
+            "in",
+            events.map((event) => event.id),
+          )
+          .execute();
       });
     },
     async claim() {

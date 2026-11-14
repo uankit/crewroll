@@ -775,13 +775,13 @@ describe("canonical OpenAPI artifact", () => {
     expect(
       acceptsWithStandardStringKeywords(
         manifest ?? {},
-        Buffer.alloc(65_536).toString("base64"),
+        Buffer.alloc(784).toString("base64"),
       ),
     ).toBe(true);
     expect(
       acceptsWithStandardStringKeywords(
         manifest ?? {},
-        Buffer.alloc(65_537).toString("base64"),
+        Buffer.alloc(785).toString("base64"),
       ),
     ).toBe(false);
     const decodedWrappedKey = Buffer.from(OPENAPI_TRIP_ENVELOPE, "base64");
@@ -877,7 +877,7 @@ describe("canonical OpenAPI artifact", () => {
     const wrappedKey =
       schemas.CreateTripBody?.properties?.ownerKeyEnvelope?.properties
         ?.wrappedKey;
-    const maximumManifest = Buffer.alloc(65_536).toString("base64");
+    const maximumManifest = Buffer.alloc(784).toString("base64");
     const exactChecksum = Buffer.alloc(32).toString("base64");
 
     expect(

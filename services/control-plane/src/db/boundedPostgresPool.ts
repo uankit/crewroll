@@ -15,11 +15,21 @@ export function boundedPostgresPool(pool: Pool): PostgresPool {
     async connect() {
       const client = await pool.connect();
       let released = false;
+      function connectionFailed() {
+        // pg-pool removes its idle error listener while a client is checked
+        // out. A server idle-transaction limit can fire between our queries.
+        console.error(
+          JSON.stringify({ event: "database_active_connection_failed" }),
+        );
+        release(true);
+      }
       function release(discard = false) {
         if (released) return;
         released = true;
+        client.removeListener("error", connectionFailed);
         client.release(discard);
       }
+      client.on("error", connectionFailed);
       async function execute<R>(
         text: string,
         values: ReadonlyArray<unknown>,

@@ -2,7 +2,10 @@ import { createApiRuntime } from "../src/api/apiRuntime.js";
 import { productionApiFactories } from "../src/api/productionApiFactories.js";
 import type { AppDependencies } from "../src/app/dependencies.js";
 import { loadEnvironment } from "../src/config/env.js";
-import { createDatabase } from "../src/db/database.js";
+import {
+  createDatabase,
+  interactiveDatabaseTimeouts,
+} from "../src/db/database.js";
 import { resolvePushDispatchConfiguration } from "../src/config/pushConfiguration.js";
 import { createKyselyPushWakeRepository } from "../src/db/push/kyselyPushWakeRepository.js";
 import { createPushWakeDispatcher } from "../src/modules/push/dispatchPushWakeups.js";
@@ -87,7 +90,8 @@ export async function createWorkerRequestRuntime(
   const db = createDatabase(connectionString, {
     maxConnections: 2,
     connectionTimeoutMillis: 10_000,
-    queryTimeoutMillis: 15_000,
+    ...interactiveDatabaseTimeouts,
+    transactionPooling: true,
   });
   const clock = { now: () => new Date(Math.floor(Date.now() / 1000) * 1000) };
   const gateway = createR2CiphertextStore({
