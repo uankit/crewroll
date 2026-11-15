@@ -101,6 +101,21 @@ export const PreparedDeviceSessionSchema = ClosedObject({
 });
 export type PreparedDeviceSession = Static<typeof PreparedDeviceSessionSchema>;
 
+/** Public selection metadata only; this never restores credentials or trip keys. */
+export const GetActiveTripSelectionCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+  installationId: NativeDeviceIdentitySchema.properties.installationId,
+});
+export type GetActiveTripSelectionCommand = Static<
+  typeof GetActiveTripSelectionCommandSchema
+>;
+export const ActiveTripSelectionSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  activeTripId: Type.Union([TripIdSchema, Type.Null()]),
+});
+export type ActiveTripSelection = Static<typeof ActiveTripSelectionSchema>;
+
 export const CreateTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,

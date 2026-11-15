@@ -9,6 +9,8 @@ import type {
   DiscardProvisionalTripKeyCommand,
   DurableEngineSnapshot,
   EnsureDeviceIdentityCommand,
+  GetActiveTripSelectionCommand,
+  ActiveTripSelection,
   ImportTripKeyCommand,
   ImportAndActivateTripCommand,
   InstallDeviceSessionCommand,
@@ -32,6 +34,9 @@ export type CrewRollTransferEventSubscription = Readonly<{
 }>;
 
 export interface CrewRollTransferNativeModule {
+  getActiveTripSelection?(
+    command: GetActiveTripSelectionCommand,
+  ): Promise<ActiveTripSelection>;
   prepareDeviceSession?(
     command: PrepareDeviceSessionCommand,
   ): Promise<PreparedDeviceSession>;

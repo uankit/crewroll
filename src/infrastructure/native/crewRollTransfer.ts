@@ -21,6 +21,8 @@ import {
   ListAssetsQuerySchema,
   NativeDeviceIdentitySchema,
   PrepareDeviceSessionCommandSchema,
+  GetActiveTripSelectionCommandSchema,
+  ActiveTripSelectionSchema,
   PreparedDeviceSessionSchema,
   ReconcileNowCommandSchema,
   RefreshDeviceSessionCommandSchema,
@@ -46,6 +48,8 @@ import {
   type ListAssetsQuery,
   type NativeDeviceIdentity,
   type PrepareDeviceSessionCommand,
+  type GetActiveTripSelectionCommand,
+  type ActiveTripSelection,
   type PreparedDeviceSession,
   type ReconcileNowCommand,
   type RefreshDeviceSessionCommand,
@@ -92,6 +96,9 @@ function parse<Schema extends TSchema>(
 }
 
 export interface CrewRollTransferPort {
+  getActiveTripSelection?:
+    | ((command: GetActiveTripSelectionCommand) => Promise<ActiveTripSelection>)
+    | undefined;
   prepareDeviceSession?:
     | ((command: PrepareDeviceSessionCommand) => Promise<PreparedDeviceSession>)
     | undefined;
@@ -142,6 +149,27 @@ export function createCrewRollTransferPort(
   return {
     // Capability discovery is lazy: constructing the port must not load Expo's
     // native module. Only an absent method permits the older binary path.
+    get getActiveTripSelection() {
+      const native = getNativeModule();
+      const operation = native.getActiveTripSelection;
+      if (operation === undefined) return undefined;
+      if (typeof operation !== "function")
+        throw new CrewRollTransferProtocolError(
+          "getActiveTripSelection capability",
+        );
+      return async (command: GetActiveTripSelectionCommand) => {
+        const parsed = parse(
+          GetActiveTripSelectionCommandSchema,
+          command,
+          "getActiveTripSelection command",
+        );
+        return parse(
+          ActiveTripSelectionSchema,
+          await operation.call(native, parsed),
+          "getActiveTripSelection result",
+        );
+      };
+    },
     get prepareDeviceSession() {
       const native = getNativeModule();
       const operation = native.prepareDeviceSession;

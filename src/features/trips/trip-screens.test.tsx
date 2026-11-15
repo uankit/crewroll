@@ -143,6 +143,37 @@ function renderLobby(overrides: Partial<LobbyScreenProps> = {}) {
 }
 
 describe("LobbyScreen", () => {
+  test("keeps trip details available while preparation disables sharing controls", async () => {
+    const onStart = jest.fn();
+    const view = await renderLobby({
+      trip: eligibleOwnerTrip(),
+      canManageTrip: false,
+      sharingReady: false,
+      onStart,
+      statusContent: <View testID="actual-startup-status" />,
+    });
+    view.getByTestId("actual-startup-status");
+    view.getByText("Getting your trip ready…");
+    view.getByText("Preparing…");
+    expect(view.getByRole("button", { name: "Invite crew" })).toBeDisabled();
+    const start = view.getByRole("button", { name: "Start trip" });
+    expect(start).toBeDisabled();
+    await fireEvent.press(start);
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  test("distinguishes an active trip from this phone being ready to share", async () => {
+    const view = await renderLobby({
+      trip: eligibleOwnerTrip({ status: "ACTIVE" }),
+      sharingReady: false,
+      canManageTrip: false,
+      activation: { kind: "failed", onRetry: jest.fn() },
+    });
+    view.getByText("Trip active");
+    expect(view.queryByText("Live")).toBeNull();
+    expect(view.getByRole("button", { name: "Try again" })).toBeDisabled();
+  });
+
   test("explains the brief server update after the user grants full access", async () => {
     const solo = ownerTrip({
       members: [{ ...ownerTrip().members[0]!, fullPhotoLibraryAccess: false }],
@@ -193,7 +224,7 @@ describe("LobbyScreen", () => {
         photoPermission={{ kind: "FULL" }}
       />,
     );
-    screen.getByText("Connecting to your trip…");
+    screen.getByText("Getting your trip ready…");
     await screen.rerender(
       <LobbyScreen
         endsLabel="Tomorrow"

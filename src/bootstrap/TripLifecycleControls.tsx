@@ -8,56 +8,98 @@ export function TripLifecycleControls({
   owner,
   onChanged,
 }: Readonly<{ tripId: string; owner: boolean; onChanged?: () => void }>) {
-  const { actions } = useAppSession();
-  const [state, setState] = useState<TripTransferState | null>(null);
+  const { queryScope } = useAppSession();
+  return (
+    <TripLifecycleContent
+      key={JSON.stringify([
+        queryScope?.opaqueAccountScope,
+        queryScope?.deviceId,
+        tripId,
+      ])}
+      tripId={tripId}
+      owner={owner}
+      {...(onChanged ? { onChanged } : {})}
+    />
+  );
+}
+
+function TripLifecycleContent({
+  tripId,
+  owner,
+  onChanged,
+}: Readonly<{ tripId: string; owner: boolean; onChanged?: () => void }>) {
+  const { actions, capabilities } = useAppSession();
+  const [observed, setState] = useState<TripTransferState | null>(null);
+  const state = observed?.tripId === tripId ? observed : null;
   const [confirmation, setConfirmation] = useState<
     "LEAVE" | "LEAVE_NOW" | "END" | null
   >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const canShare =
-    state?.status === "ACTIVE" && state.participation === "JOINED";
+  const generation = useRef(0);
+  const canPause =
+    capabilities.canMutateTrip &&
+    state?.status === "ACTIVE" &&
+    state.participation === "JOINED";
+  const canResume = canPause && capabilities.canSharePhotos;
   const canExit =
+    capabilities.canMutateTrip &&
     (state?.status === "ACTIVE" || state?.status === "LOBBY") &&
     state.participation !== "LEAVING" &&
     state.participation !== "LEFT";
   const canLeaveNow =
-    state?.participation === "LEAVING" && state.status === "ACTIVE";
+    capabilities.canMutateTrip &&
+    state?.participation === "LEAVING" &&
+    state.status === "ACTIVE";
   useEffect(() => {
+    const epoch = ++generation.current;
     let cancelled = false;
     let reading = false;
+    inFlight.current = false;
+    if (!actions || !capabilities.canReadLibrary) return;
+    let firstRead = true;
     const read = async () => {
       if (!actions || reading || inFlight.current) return;
       reading = true;
       try {
         const value = await actions.getTripLifecycle(tripId);
-        if (!cancelled) {
+        if (!cancelled && epoch === generation.current) {
           setState(value);
           setError(null);
         }
       } catch {
-        if (!cancelled) setError("Trip controls couldn’t refresh. Try again.");
+        if (!cancelled && epoch === generation.current)
+          setError("Trip controls couldn’t refresh. Try again.");
       } finally {
         reading = false;
+        if (!cancelled && epoch === generation.current && firstRead) {
+          firstRead = false;
+          setBusy(false);
+          setConfirmation(null);
+        }
       }
     };
     void read();
     const timer = setInterval(() => void read(), 5000);
     return () => {
       cancelled = true;
+      generation.current = epoch + 1;
       clearInterval(timer);
     };
-  }, [actions, tripId]);
+  }, [actions, capabilities.canReadLibrary, tripId]);
   async function change(action: TripLifecycleBody["action"]) {
     const allowed =
-      action === "PAUSE" || action === "RESUME"
-        ? canShare
-        : action === "LEAVE_NOW"
-          ? canLeaveNow
-          : canExit;
+      action === "PAUSE"
+        ? canPause
+        : action === "RESUME"
+          ? canResume
+          : action === "LEAVE_NOW"
+            ? canLeaveNow
+            : canExit;
     if (!actions || inFlight.current || !state || !allowed) return;
     inFlight.current = true;
+    const epoch = generation.current;
     setBusy(true);
     setError(null);
     try {
@@ -65,21 +107,26 @@ export function TripLifecycleControls({
         action,
         expectedVersion: state.version,
       });
+      if (epoch !== generation.current) return;
       setState(result);
       setConfirmation(null);
       onChanged?.();
     } catch {
+      if (epoch !== generation.current) return;
       setError(
         "The change wasn’t confirmed. Refreshing the trip—please try again.",
       );
       try {
-        setState(await actions.getTripLifecycle(tripId));
+        const refreshed = await actions.getTripLifecycle(tripId);
+        if (epoch === generation.current) setState(refreshed);
       } catch {
         /* Leave the last confirmed state visible. */
       }
     } finally {
-      inFlight.current = false;
-      setBusy(false);
+      if (epoch === generation.current) {
+        inFlight.current = false;
+        setBusy(false);
+      }
     }
   }
   if (confirmation && (confirmation === "LEAVE_NOW" ? canLeaveNow : canExit))
@@ -133,7 +180,7 @@ export function TripLifecycleControls({
         <Button
           variant="secondary"
           label={state.sharingPaused ? "Resume my sharing" : "Pause my sharing"}
-          disabled={!canShare || busy}
+          disabled={!(state.sharingPaused ? canResume : canPause) || busy}
           loading={busy}
           onPress={() => void change(state.sharingPaused ? "RESUME" : "PAUSE")}
         />

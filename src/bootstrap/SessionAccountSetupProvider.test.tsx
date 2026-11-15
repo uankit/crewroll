@@ -6,10 +6,6 @@ import { SessionAccountSetupProvider } from "./SessionAccountSetupProvider";
 import { createTripGalleryCache } from "./tripGalleryCache";
 
 jest.mock("./AppSessionProvider", () => ({ useAppSession: jest.fn() }));
-jest.mock("../infrastructure/media/photoAccessSetupCache", () => ({
-  photoAccessSetupCache: { read: async () => false, write: async () => {} },
-}));
-
 function SetupScreen() {
   return useAccountSetup().screen;
 }
@@ -23,6 +19,13 @@ it.each(["profile", "terms"])(
     jest.mocked(useAppSession).mockReturnValue({
       galleryCache: createTripGalleryCache("setup"),
       snapshot: { phase: "PROVISIONING_DEVICE" },
+      startup: { stage: "account", status: "working", error: null },
+      capabilities: {
+        canUseAuthenticatedShell: true,
+        canReadLibrary: false,
+        canMutateTrip: false,
+        canSharePhotos: false,
+      },
       ownerInviteCode: null,
       pendingTripPreview: null,
       activationFailureTripId: null,
@@ -40,10 +43,10 @@ it.each(["profile", "terms"])(
       <CrewRollThemeProvider reduceMotion>
         <SessionAccountSetupProvider
           accountId="user-a"
-          scope="https://api.example.test"
           profile={{
             accountId: "user-a",
             ready: step === "terms",
+            requiresInput: step === "profile",
             checking: false,
             name: "Riya",
             busy: false,
@@ -56,20 +59,12 @@ it.each(["profile", "terms"])(
             accountId: "user-a",
             ready: false,
             accepted: false,
+            requiresInput: step === "terms",
             checking: false,
             busy: false,
             error: null,
             accept: jest.fn(),
             retry: jest.fn(),
-          }}
-          permission={{
-            read: jest.fn(async () => ({
-              kind: "REQUESTABLE" as const,
-              fullPhotoLibraryAccess: false as const,
-              canAskAgain: true as const,
-            })),
-            request: jest.fn(),
-            openSettings: jest.fn(),
           }}
         >
           <SetupScreen />

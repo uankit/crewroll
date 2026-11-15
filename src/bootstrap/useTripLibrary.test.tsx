@@ -7,12 +7,19 @@ import type { TripListResponse } from "@crewroll/contracts";
 
 const mockListTrips = jest.fn<Promise<TripListResponse>, []>();
 let mockSessionPhase = "READY_NO_TRIP";
+let mockCanReadLibrary = true;
 let mockQueryScope = { opaqueAccountScope: "account-scope", deviceId: "phone" };
 jest.mock("./AppSessionProvider", () => ({
   useAppSession: () => ({
     actions: { listTrips: mockListTrips },
     queryScope: mockQueryScope,
     snapshot: { phase: mockSessionPhase },
+    capabilities: {
+      canUseAuthenticatedShell: true,
+      canReadLibrary: mockCanReadLibrary,
+      canMutateTrip: false,
+      canSharePhotos: false,
+    },
   }),
 }));
 
@@ -85,6 +92,7 @@ test("polls only while Home is visible and the app is active, then refreshes on 
 beforeEach(() => {
   mockListTrips.mockReset().mockResolvedValue({ items: [] });
   mockSessionPhase = "READY_NO_TRIP";
+  mockCanReadLibrary = true;
   mockQueryScope = { opaqueAccountScope: "account-scope", deviceId: "phone" };
 });
 
@@ -231,5 +239,22 @@ it("never displays a previous account's late history response after a scope swit
       await jest.advanceTimersByTimeAsync(1);
     });
     expect(view.result.current.data).toEqual({ items: [] });
+  });
+});
+
+test("allows safe metadata reads during domain provisioning only through explicit capability", async () => {
+  mockSessionPhase = "PROVISIONING_DEVICE";
+  await withLibraryTest(async () => {
+    await act(() => jest.advanceTimersByTimeAsync(1));
+    expect(mockListTrips).toHaveBeenCalledTimes(1);
+  });
+});
+
+test("does not infer read authority from a READY domain phase", async () => {
+  mockSessionPhase = "READY_ACTIVE";
+  mockCanReadLibrary = false;
+  await withLibraryTest(async () => {
+    await act(() => jest.advanceTimersByTimeAsync(1));
+    expect(mockListTrips).not.toHaveBeenCalled();
   });
 });

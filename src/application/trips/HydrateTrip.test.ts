@@ -470,3 +470,51 @@ describe("HydrateTrip.hydrate", () => {
     });
   });
 });
+
+describe("inactive selected-trip key failures", () => {
+  it.each(["LOBBY", "COMPLETE"] as const)(
+    "preserves authoritative %s metadata when local keys are locked or lost",
+    async (status) => {
+      for (const code of ["KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST"] as const) {
+        const response = tripResponse({
+          status,
+          startsAt: status === "COMPLETE" ? startsAt : null,
+        });
+        const { native, service } = harness(response);
+        native.importTripKey.mockRejectedValueOnce(
+          Object.assign(new Error("private local detail"), { code }),
+        );
+        const operation = service.hydrate(tripId);
+        await expect(operation).rejects.toBeInstanceOf(TripActivationFailed);
+        await expect(operation).rejects.toMatchObject({
+          code: "INTERNAL_ERROR",
+          localKeyFailure: code,
+          trip: { id: tripId, status },
+        });
+        await operation.catch((error: unknown) =>
+          expect(JSON.stringify(error)).not.toMatch(
+            /private local detail|KEY_ACCESS|KEY_MATERIAL/,
+          ),
+        );
+      }
+    },
+  );
+
+  it("keeps authentic envelope failures distinct and does not invoke a native code getter", async () => {
+    const getter = jest.fn(() => "KEY_MATERIAL_LOST");
+    const error = new Error("private");
+    Object.defineProperty(error, "code", { get: getter });
+    for (const failure of [
+      error,
+      { code: "KEY_ACCESS_LOCKED" },
+      new CrewRollApiProblem("KEY_ENVELOPE_INVALID"),
+    ]) {
+      const { native, service } = harness();
+      native.importTripKey.mockRejectedValueOnce(failure);
+      await expect(service.hydrate(tripId)).rejects.toEqual(
+        new CrewRollApiProblem("KEY_ENVELOPE_INVALID"),
+      );
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+});

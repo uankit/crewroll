@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TripSummary } from "@/features/home";
 import { useTripLibrary } from "@/bootstrap/useTripLibrary";
 import { TripLifecycleControls } from "@/bootstrap/TripLifecycleControls";
+import { StartupStatus } from "@/bootstrap/StartupStatus";
 import { TripLibraryScreen, HomeScreen } from "@/features/home";
 import { AppText, Sheet } from "@/design-system";
 import { Redirect, useIsFocused, useRouter } from "expo-router";
@@ -15,7 +16,8 @@ export default function ProtectedHomeRoute() {
   const focused = useIsFocused();
   const library = useTripLibrary(focused);
   const [selected, setSelected] = useState<TripSummary | null>(null);
-  const { retry, snapshot, pendingTripPreview } = useAppSession();
+  const { retry, snapshot, pendingTripPreview, startup, capabilities } =
+    useAppSession();
   const awaitingApproval = useRef(false);
   const approvedTripId =
     snapshot.phase === "READY_LOBBY" || snapshot.phase === "READY_ACTIVE"
@@ -24,7 +26,12 @@ export default function ProtectedHomeRoute() {
   useEffect(() => {
     if (snapshot.phase === "READY_PENDING_APPROVAL") {
       awaitingApproval.current = true;
-    } else if (approvedTripId && awaitingApproval.current && focused) {
+    } else if (
+      approvedTripId &&
+      awaitingApproval.current &&
+      focused &&
+      capabilities.canMutateTrip
+    ) {
       awaitingApproval.current = false;
       setSelected(null);
       // Entering the approved trip also publishes this phone's existing photo
@@ -33,18 +40,80 @@ export default function ProtectedHomeRoute() {
     } else if (snapshot.phase === "READY_NO_TRIP") {
       awaitingApproval.current = false;
     }
-  }, [approvedTripId, focused, router, snapshot.phase]);
+  }, [
+    approvedTripId,
+    capabilities.canMutateTrip,
+    focused,
+    router,
+    snapshot.phase,
+  ]);
   const actions = {
     inviteUnavailable:
       snapshot.phase === "READY_NO_TRIP" && snapshot.inviteUnavailable === true,
     rejoinUnavailable:
       snapshot.phase === "READY_NO_TRIP" && snapshot.rejoinUnavailable === true,
     accountControl: <AccountMenu />,
-    onCreateTrip: () => router.push("/trips/create"),
-    onJoinTrip: () => router.push("/trips/join"),
+    onCreateTrip: () => {
+      if (capabilities.canMutateTrip) router.push("/trips/create");
+    },
+    onJoinTrip: () => {
+      if (capabilities.canMutateTrip) router.push("/trips/join");
+    },
+    statusContent:
+      startup.status === "ready" ? undefined : (
+        <StartupStatus
+          startup={startup}
+          onRetry={retry}
+          showRetry={
+            snapshot.phase !== "READY_UNKNOWN_CREATE" &&
+            snapshot.phase !== "READY_UNKNOWN_JOIN"
+          }
+        />
+      ),
+    canOpenTrip: (trip: TripSummary) =>
+      trip.participation === "LEFT" || capabilities.canMutateTrip,
+    sharingReady: capabilities.canSharePhotos,
+    canCreateTrip: capabilities.canMutateTrip,
   };
+  const selectedDetails =
+    selected &&
+    (selected.participation === "LEFT" || capabilities.canMutateTrip) ? (
+      <TripDetailsSheet
+        trip={selected}
+        onDismiss={() => setSelected(null)}
+        onChanged={() => {
+          setSelected(null);
+          retry();
+        }}
+      />
+    ) : null;
 
-  if (selected && !selected.onThisDevice && selected.participation !== "LEFT")
+  if (!capabilities.canUseAuthenticatedShell)
+    return <Redirect href="/" withAnchor />;
+
+  if (!snapshot.phase.startsWith("READY_"))
+    return (
+      <>
+        <TripLibraryScreen
+          {...actions}
+          trips={library.data?.items ?? []}
+          canCreateTrip={false}
+          refreshing={false}
+          onRetry={retry}
+          onOpenTrip={(trip) => {
+            if (trip.participation === "LEFT") setSelected(trip);
+          }}
+        />
+        {selectedDetails}
+      </>
+    );
+
+  if (
+    selected &&
+    !selected.onThisDevice &&
+    selected.participation !== "LEFT" &&
+    capabilities.canMutateTrip
+  )
     return (
       <DeviceRecoveryFlow
         tripId={selected.id}
@@ -69,11 +138,16 @@ export default function ProtectedHomeRoute() {
         <TripLibraryScreen
           {...actions}
           trips={library.data?.items ?? []}
-          canCreateTrip={snapshot.phase === "READY_NO_TRIP"}
+          canCreateTrip={
+            capabilities.canMutateTrip && snapshot.phase === "READY_NO_TRIP"
+          }
           refreshing={library.isPending}
-          error={library.isError}
-          onRetry={() => void library.refetch()}
+          error={startup.status === "ready" && library.isError}
+          onRetry={
+            startup.status === "ready" ? () => void library.refetch() : retry
+          }
           onOpenTrip={(trip) => {
+            if (!actions.canOpenTrip(trip)) return;
             if (
               !trip.onThisDevice ||
               trip.participation === "LEFT" ||
@@ -83,50 +157,7 @@ export default function ProtectedHomeRoute() {
             else router.push(`/trips/${trip.id}`);
           }}
         />
-        {selected ? (
-          <Sheet
-            visible
-            title={selected.name}
-            onDismiss={() => setSelected(null)}
-          >
-            {selected.participation === "JOINING" ? (
-              <>
-                <AppText tone="secondary">
-                  Waiting for your host’s approval. No photos are shared yet.
-                </AppText>
-                <TripLifecycleControls
-                  tripId={selected.id}
-                  owner={false}
-                  onChanged={() => {
-                    setSelected(null);
-                    retry();
-                  }}
-                />
-              </>
-            ) : (
-              <>
-                <AppText variant="headline">
-                  {selected.savedPhotoCount} photos saved
-                </AppText>
-                <AppText tone="secondary">
-                  Your saved originals stay in your phone’s photo library.
-                  Leaving a trip doesn’t delete them.
-                </AppText>
-                <AppText variant="caption" tone="secondary">
-                  {new Date(
-                    selected.startsAt ?? selected.endsAt,
-                  ).toLocaleDateString()}{" "}
-                  ·{" "}
-                  {selected.status === "CANCELLED"
-                    ? "Cancelled"
-                    : selected.status === "INCOMPLETE_EXPIRED"
-                      ? "Some photos weren’t synced"
-                      : "Past trip"}
-                </AppText>
-              </>
-            )}
-          </Sheet>
-        ) : null}
+        {selectedDetails}
       </>
     );
   }
@@ -139,6 +170,7 @@ export default function ProtectedHomeRoute() {
           {...actions}
           trips={[]}
           refreshing
+          canCreateTrip={capabilities.canMutateTrip}
           onRetry={() => void library.refetch()}
           onOpenTrip={(trip) => router.push(`/trips/${trip.id}`)}
         />
@@ -147,14 +179,22 @@ export default function ProtectedHomeRoute() {
       return (
         <HomeScreen
           {...actions}
-          state={{ kind: "unknown-create", onRecover: retry }}
+          state={{
+            kind: "unknown-create",
+            onRecover: retry,
+            recovering: startup.status === "working",
+          }}
         />
       );
     case "READY_UNKNOWN_JOIN":
       return (
         <HomeScreen
           {...actions}
-          state={{ kind: "unknown-join", onRecover: retry }}
+          state={{
+            kind: "unknown-join",
+            onRecover: retry,
+            recovering: startup.status === "working",
+          }}
         />
       );
     case "READY_PENDING_APPROVAL":
@@ -184,4 +224,49 @@ export default function ProtectedHomeRoute() {
     case "RECOVERABLE_FAILURE":
       return <Redirect href="/" withAnchor />;
   }
+}
+
+function TripDetailsSheet({
+  trip,
+  onDismiss,
+  onChanged,
+}: Readonly<{
+  trip: TripSummary;
+  onDismiss(): void;
+  onChanged(): void;
+}>) {
+  return (
+    <Sheet visible title={trip.name} onDismiss={onDismiss}>
+      {trip.participation === "JOINING" ? (
+        <>
+          <AppText tone="secondary">
+            Waiting for your host’s approval. No photos are shared yet.
+          </AppText>
+          <TripLifecycleControls
+            tripId={trip.id}
+            owner={false}
+            onChanged={onChanged}
+          />
+        </>
+      ) : (
+        <>
+          <AppText variant="headline">
+            {trip.savedPhotoCount} photos saved
+          </AppText>
+          <AppText tone="secondary">
+            Your saved originals stay in your phone’s photo library. Leaving a
+            trip doesn’t delete them.
+          </AppText>
+          <AppText variant="caption" tone="secondary">
+            {new Date(trip.startsAt ?? trip.endsAt).toLocaleDateString()} ·{" "}
+            {trip.status === "CANCELLED"
+              ? "Cancelled"
+              : trip.status === "INCOMPLETE_EXPIRED"
+                ? "Some photos weren’t synced"
+                : "Past trip"}
+          </AppText>
+        </>
+      )}
+    </Sheet>
+  );
 }

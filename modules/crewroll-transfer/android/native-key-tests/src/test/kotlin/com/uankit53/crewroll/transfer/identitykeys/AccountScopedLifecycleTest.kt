@@ -48,12 +48,12 @@ class AccountScopedLifecycleTest {
       repeat(2) { subject.runScheduledCleanup(); subject.expiredTrips(); subject.nextTripRetentionDeadline() }
       val bootstrapEpoch = fence.advance()
       val prepared = fence.runIfCurrent(bootstrapEpoch) {
-        media.changeAndPrime({ subject.prepareDeviceSession(accountA, "https://api.crewroll.app") }, { it.context })
+        media.prepareDevice { subject.prepareDeviceSession(accountA, "https://api.crewroll.app") }
       }
       assertEquals(identity, prepared.identity)
       assertEquals(deviceA, prepared.restoredDeviceId)
       assertEquals(if (active) tripA else null, prepared.activeTripId)
-      assertTrue(prepared.context?.tripKey?.all { it == 0.toByte() } != false)
+
       if (command != null) {
         val epoch = fence.advance()
         fence.runIfCurrent(epoch) { media.changeAndPrime({ subject.importAndActivateTrip(command) }, { it }) }
@@ -111,7 +111,7 @@ class AccountScopedLifecycleTest {
     assertEquals(0, f.disk.reads)
     listOf(accountB to "https://api.crewroll.app", accountA to "https://other.crewroll.app").forEach { (account, api) ->
       val media = NativeMediaSession({ f.subject.mediaContext() }, { f.fixture.clock.now })
-      val result = media.changeAndPrime({ f.subject.prepareDeviceSession(account, api) }, { it.context })
+      val result = media.prepareDevice { f.subject.prepareDeviceSession(account, api) }
       assertNull(result.restoredDeviceId)
       assertNull(result.activeTripId)
       assertNull(media.read(), "the old account's selected context cannot leak through a primed null result")
@@ -121,7 +121,7 @@ class AccountScopedLifecycleTest {
     val renewing = f.subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
     assertEquals(f.identity, renewing.identity)
     assertNull(renewing.restoredDeviceId)
-    assertNull(renewing.context)
+    assertNull(renewing.activeTripId)
     assertNull(renewing.activeTripId)
     f.fixture.p256.remove(NativeKeyScope(hashA, f.identity.installationId))
     assertEquals("KEY_MATERIAL_LOST", assertThrows(NativeKeyException::class.java) {
@@ -130,20 +130,149 @@ class AccountScopedLifecycleTest {
     f.disk.loaded.forEach(::assertDatabaseSecretsErased)
   }
 
-  @Test fun `bootstrap discards its trip lease if renewal becomes due during final context validation`() {
+  @Test fun `bootstrap rechecks renewal after metadata selection without opening a trip key`() {
     val f = compositeCase(true)
-    var validations = 0
-    f.fixture.p256.onLoad = {
-      validations++
-      if (validations == 3) f.fixture.clock.now = f.fixture.clock.now.plusSeconds(86_400)
+    val store = object : NativeKeyStore by f.store {
+      override fun activeSelection(): NativeSelectedTrip? = f.store.activeSelection().also {
+        f.fixture.clock.now = f.fixture.clock.now.plusSeconds(86_400)
+      }
     }
-    val prepared = f.subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
-    assertEquals(3, validations)
+    var validations = 0
+    f.fixture.p256.onLoad = { validations++ }
+    val subject = NativeKeyLifecycle(f.fixture.clock, store, f.fixture.crypto, f.fixture.p256,
+      f.fixture.hasher, ScopedCleanupScheduler())
+    val prepared = subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
+    assertEquals(1, validations, "the hardware public anchor is shared only inside this command")
     assertEquals(f.identity, prepared.identity)
     assertNull(prepared.restoredDeviceId)
-    assertNull(prepared.context)
     assertNull(prepared.activeTripId)
     f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+  }
+
+  @Test fun `device preparation and retry selection do not request corrupt trip material`() {
+    val f = compositeCase(true)
+    val selectionOnly = object : NativeKeyStore by f.store {
+      override fun mediaContext(): NativeMediaContext? = throw NativeKeyException.materialLost()
+      override fun loadTrip(scope: NativeKeyScope, tripId: String): TripKeyRecord? = throw NativeKeyException.materialLost()
+    }
+    var publicLookups = 0
+    f.fixture.p256.onLoad = { publicLookups++ }
+    val subject = NativeKeyLifecycle(f.fixture.clock, selectionOnly, f.fixture.crypto, f.fixture.p256,
+      f.fixture.hasher, ScopedCleanupScheduler(), deferMaintenance = true)
+    val prepared = subject.prepareDeviceSession(accountA, "https://api.crewroll.app")
+    assertEquals(deviceA, prepared.restoredDeviceId)
+    assertEquals(tripA, prepared.activeTripId)
+    assertEquals(1, publicLookups)
+    f.disk.protectedOpens = 0
+    publicLookups = 0
+    assertEquals(tripA, subject.getActiveTripSelection(accountA, f.identity.installationId))
+    assertNull(subject.getActiveTripSelection(accountB, f.identity.installationId))
+    assertNull(subject.getActiveTripSelection(accountA, "another_installation"))
+    assertEquals(0, publicLookups)
+    assertEquals(0, f.disk.protectedOpens, "retry selection must not open any identity, bearer or trip secret")
+    assertEquals(tripA, f.store.activeSelection()!!.metadata.tripId, "a read cannot mutate selection")
+    val command = mapOf("protocolVersion" to 1, "accountId" to accountA, "installationId" to f.identity.installationId)
+    assertDoesNotThrow { NativeCommandDecoder.require(command, NativeCommandKind.GET_ACTIVE_TRIP_SELECTION) }
+    listOf(command + ("unexpected" to true), command - "accountId", command + ("protocolVersion" to 2)).forEach {
+      assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(it, NativeCommandKind.GET_ACTIVE_TRIP_SELECTION) }
+    }
+    f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+  }
+
+  @Test fun `deferred maintenance rejects expired credentials before creating trip material`() {
+    val f = compositeCase(false)
+    val pending = mutableListOf<() -> Unit>()
+    val scheduler = object : NativeKeyCleanupScheduling {
+      override fun schedule(at: Instant, action: () -> Unit) { pending += action }
+      override fun cancel() { }
+      override fun close() { }
+    }
+    val subject = NativeKeyLifecycle(f.fixture.clock, f.store, f.fixture.crypto, f.fixture.p256,
+      f.fixture.hasher, scheduler, deferMaintenance = true)
+    f.fixture.clock.now = f.fixture.clock.now.plusSeconds(8 * 86_400)
+    val writes = f.disk.writes
+    assertThrows(NativeKeyException::class.java) { subject.createTripKey(tripB, 1) }
+    assertThrows(NativeKeyException::class.java) {
+      subject.installDeviceSession(accountA, f.identity.installationId, deviceA, "crb_fixture_write_only",
+        f.fixture.clock.now, "https://api.crewroll.app")
+    }
+    assertEquals(writes, f.disk.writes)
+    assertNull(f.store.tripMetadata(NativeKeyScope(hashA, f.identity.installationId), tripB))
+    assertTrue(pending.isEmpty(), "an interactive command must not schedule or join global retention")
+  }
+
+  @Test fun `credential installation and trip use recheck deadlines after slow protected operations`() {
+    run {
+      val f = compositeCase(true)
+      val writes = f.disk.writes
+      val deadline = f.fixture.clock.now.plusSeconds(1)
+      f.fixture.p256.onLoad = { f.fixture.clock.now = deadline }
+      assertThrows(NativeKeyException::class.java) {
+        f.subject.installDeviceSession(accountA, f.identity.installationId, deviceA,
+          "crb_replacement_write_only", deadline, "https://api.crewroll.app")
+      }
+      assertEquals(writes, f.disk.writes, "expired during hardware identity validation must not install")
+    }
+    for (wrap in listOf(false, true)) {
+      val f = compositeCase(true)
+      val deadline = NativeTripRetention.deadline(f.metadata)
+      val delayed = object : NativeKeyStore by f.store {
+        override fun loadTrip(scope: NativeKeyScope, tripId: String): TripKeyRecord? = f.store.loadTrip(scope, tripId).also {
+          f.fixture.clock.now = deadline
+        }
+      }
+      val subject = NativeKeyLifecycle(f.fixture.clock, delayed, f.fixture.crypto, f.fixture.p256,
+        f.fixture.hasher, ScopedCleanupScheduler(), deferMaintenance = true)
+      val writes = f.disk.writes
+      assertThrows(NativeKeyException::class.java) {
+        if (wrap) subject.wrapTripKey(tripA, 1, deviceA, f.identity.e2eePublicKey, 1)
+        else subject.activateTrip(f.metadata)
+      }
+      assertEquals(writes, f.disk.writes, "expired during selected key open must not authorize activation/wrapping")
+    }
+  }
+
+  @Test fun `deferred authenticated import purges only an expired provisional before its separate durable import`() {
+    for (failImportSave in listOf(false, true)) {
+      val f = compositeCase(false)
+      val scope = NativeKeyScope(hashA, f.identity.installationId)
+      val freshKey = ByteArray(32) { 99 }
+      val plain = TripKeyEnvelopeV1.encode(tripA, deviceA, deviceA, 1, freshKey)
+      val wrapped = CanonicalBase64.encode(f.fixture.crypto.seal(plain, CanonicalBase64.decode(f.identity.e2eePublicKey, 32)))
+      plain.fill(0)
+      f.fixture.clock.now = f.fixture.clock.now.plusSeconds(86_401)
+      val subject = NativeKeyLifecycle(f.fixture.clock, f.store, f.fixture.crypto, f.fixture.p256,
+        f.fixture.hasher, ScopedCleanupScheduler(), deferMaintenance = true)
+      f.disk.protectedAads.clear()
+      assertThrows(NativeKeyException::class.java) {
+        subject.wrapTripKey(tripA, 1, deviceA, f.identity.e2eePublicKey, 1)
+      }
+      assertTrue(f.disk.protectedAads.none { it.contentEquals(AndroidScopedDatabaseCodec.tripAad(scope, tripA)) },
+        "an expired provisional is rejected using metadata without opening its key")
+      val writes = f.disk.writes
+      f.fixture.crypto.rejectOpen = true
+      assertThrows(NativeKeyException::class.java) {
+        subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped, f.metadata.endsAt)
+      }
+      assertEquals(writes, f.disk.writes, "a rejected envelope cannot trigger targeted recovery")
+      f.fixture.crypto.rejectOpen = false
+      if (failImportSave) f.disk.failWriteAttempt = f.disk.writeAttempts + 2
+      if (failImportSave) {
+        assertThrows(NativeKeyException::class.java) {
+          subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped, f.metadata.endsAt)
+        }
+        assertEquals(writes + 1, f.disk.writes, "the expiry removal remains its own durable save")
+        assertNull(f.store.tripMetadata(scope, tripA))
+        f.disk.failWriteAttempt = null
+      }
+      subject.importTripKey(tripA, 1, 1, deviceA, deviceA, 1, wrapped, f.metadata.endsAt)
+      val saved = f.store.loadTrip(scope, tripA)!!
+      assertEquals(KeyState.INSTALLED, saved.state)
+      assertArrayEquals(freshKey, saved.key)
+      saved.key.fill(0); freshKey.fill(0)
+      assertEquals(writes + 2, f.disk.writes)
+      f.disk.loaded.forEach(::assertDatabaseSecretsErased)
+    }
   }
 
   @Test fun `composite command rejects mismatched or open nested input before import writes`() {
@@ -213,7 +342,7 @@ class AccountScopedLifecycleTest {
     }
     assertEquals(1, disk.reads, "one protected load must cover the duplicated lifecycle wake")
     assertTrue(disk.loaded.all { database -> database.scopes.values.all { state ->
-      state.trips.values.all { trip -> trip.key.all { it == 0.toByte() } }
+      state.trips.values.all { trip -> trip.secret.isErased }
     } }, "the retention index must not own the loaded key database")
 
     fixture.clock.now = deadline
@@ -277,11 +406,9 @@ class AccountScopedLifecycleTest {
     val restarted = NativeKeyLifecycle(fixture.clock, AccountScopedKeyStore(disk), fixture.crypto, fixture.p256,
       fixture.hasher, ScopedCleanupScheduler())
     disk.reads = 0; disk.writes = 0; disk.loaded.clear()
-    val started = fixture.clock.now
-    // Deterministic cost model from the observed S26 ~3.4s protected read.
-    // This checks the native I/O budget, not real device/network launch time.
-    disk.onProtectedIo = { fixture.clock.now = fixture.clock.now.plusMillis(3_400) }
-
+    // The legacy separate-command path remains compatible. Cipher operation
+    // counts are measured separately; old whole-load timing is not a valid
+    // latency model after selective record materialization.
     repeat(2) { restarted.runScheduledCleanup(); restarted.expiredTrips(); restarted.nextTripRetentionDeadline() }
     assertEquals(identity, restarted.ensureDeviceIdentity(accountA))
     assertEquals(deviceA, restarted.restoreDeviceSession(accountA, scope.installationId, "https://api.crewroll.app"))
@@ -290,9 +417,6 @@ class AccountScopedLifecycleTest {
     restarted.activateTrip(fixture.metadata(tripA))
     assertEquals(6, disk.reads, "cleanup, identity, restore, snapshot, import and activation each load once")
     assertEquals(0, disk.writes, "an already identical imported/active trip needs no encrypted rewrite")
-    assertEquals(20_400, java.time.Duration.between(started, fixture.clock.now).toMillis())
-    assertTrue(java.time.Duration.between(started, fixture.clock.now).toMillis() < 30_000,
-      "the native I/O cost alone must not consume the existing bootstrap deadline")
     disk.loaded.forEach(::assertDatabaseSecretsErased)
 
     fixture.crypto.rejectOpen = true
@@ -388,9 +512,12 @@ class AccountScopedLifecycleTest {
     listOf(8 * 86_400L, 7 * 86_400L + 1, 7 * 86_400L, 6 * 86_400L, 0L, -1L).forEach { remainingSeconds ->
       val fixture = ScopedFixture(mapOf(accountA to hashA))
       val expiry = fixture.clock.now.plusSeconds(remainingSeconds)
-      val scope = fixture.ensureAndInstall(accountA, deviceA, expiry)
+      val scope = fixture.ensureAndInstall(accountA, deviceA, fixture.clock.now.plusSeconds(30 * 86_400))
       val identity = fixture.subject.ensureDeviceIdentity(accountA)
       fixture.subject.createTripKey(tripA, 1)
+      val prior = fixture.store.activeSession()!!
+      fixture.store.installSession(scope, prior.session.copy(expiresAt = expiry))
+      prior.session.backgroundBearer.fill(0)
       val originalKey = fixture.store.trip(scope, tripA)!!.key.copyOf()
       val restarted = NativeKeyLifecycle(fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher)
 
@@ -651,7 +778,7 @@ class AccountScopedLifecycleTest {
     fixture.subject.ensureDeviceIdentity(accountB)
     assertNull(fixture.store.trip(scopeA, tripA))
     assertTrue(fixture.store.hasTombstone(scopeA, tripA))
-    fixture.ensureAndInstall(accountA, deviceA)
+    fixture.ensureAndInstall(accountA, deviceA, fixture.clock.now.plusSeconds(30 * 86_400))
     assertEquals("KEY_MATERIAL_LOST", assertThrows(NativeKeyException::class.java) {
       fixture.subject.createTripKey(tripA, 1)
     }.code)
@@ -696,7 +823,7 @@ class AccountScopedLifecycleTest {
 
   @Test fun `internal scheduler cleans at expiry retries on wake and cancels without duplicates`() {
     val fixture = ScopedFixture(mapOf(accountA to hashA), Instant.ofEpochSecond(100))
-    val scope = fixture.ensureAndInstall(accountA, deviceA)
+    val scope = fixture.ensureAndInstall(accountA, deviceA, fixture.clock.now.plusSeconds(30 * 86_400))
     val scheduler = ScopedCleanupScheduler()
     val scheduled = NativeKeyLifecycle(
       fixture.clock, fixture.store, fixture.crypto, fixture.p256, fixture.hasher, scheduler,
@@ -1088,15 +1215,26 @@ private class StartupEngineProbe(private val media: NativeMediaSession, lifecycl
 }
 
 private fun assertDatabaseSecretsErased(database: AndroidScopedDatabase) {
-  assertTrue(database.identities.values.all { it.e2eePrivateKey.all { byte -> byte == 0.toByte() } })
+  assertTrue(database.identities.values.all { it.privateKey.isErased })
   database.scopes.values.forEach { state ->
-    assertTrue(state.session?.backgroundBearer?.all { it == 0.toByte() } != false)
-    assertTrue(state.trips.values.all { it.key.all { byte -> byte == 0.toByte() } })
+    assertTrue(state.session?.bearer?.isErased != false)
+    assertTrue(state.trips.values.all { it.secret.isErased })
   }
 }
 
 private class StartupCountingPersistence : ScopedDatabasePersistence {
-  private val cipher = AesGcmScopedSecretCipher(SecretKeySpec(ByteArray(32) { 1 }, "AES"))
+  private val actualCipher = AesGcmScopedSecretCipher(SecretKeySpec(ByteArray(32) { 1 }, "AES"))
+  var protectedOpens = 0
+  var protectedSeals = 0
+  val protectedAads = mutableListOf<ByteArray>()
+  private val cipher = object : AndroidScopedSecretCipher {
+    override fun seal(plaintext: ByteArray, aad: ByteArray): ByteArray {
+      protectedSeals++; return actualCipher.seal(plaintext, aad)
+    }
+    override fun open(record: ByteArray, aad: ByteArray): ByteArray {
+      protectedOpens++; protectedAads += aad.copyOf(); return actualCipher.open(record, aad)
+    }
+  }
   private var bytes: ByteArray? = null
   var reads = 0
   var writes = 0

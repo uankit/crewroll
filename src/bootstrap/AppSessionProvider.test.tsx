@@ -411,6 +411,8 @@ function SnapshotProbe() {
 
 type HarnessProps = PropsWithChildren<{
   profileReady?: boolean;
+  accountSetupFailed?: boolean;
+  onRetryAccount?: () => void;
   auth: AppSessionAuthSnapshot;
   runtime: AppSessionRuntime;
   queryClient?: QueryClient;
@@ -419,6 +421,8 @@ type HarnessProps = PropsWithChildren<{
 
 function Harness({
   profileReady = true,
+  accountSetupFailed = false,
+  onRetryAccount,
   auth,
   children,
   runtime,
@@ -432,6 +436,8 @@ function Harness({
       auth={auth}
       fontsReady
       profileReady={profileReady}
+      accountSetupFailed={accountSetupFailed}
+      {...(onRetryAccount === undefined ? {} : { onRetryAccount })}
       {...(onAuthInvalid === undefined ? {} : { onAuthInvalid })}
       provisionInput={{
         apiBaseUrl: "https://api.crewroll.test",
@@ -3565,4 +3571,515 @@ describe("profile completion boundary", () => {
       "PROVISIONING_DEVICE",
     );
   });
+});
+
+function pendingStartup<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+function startupProbe() {
+  const holder = { current: null as ReturnType<typeof useAppSession> | null };
+  function Probe() {
+    const session = useAppSession();
+    useLayoutEffect(() => {
+      holder.current = session;
+    }, [session]);
+    return <SessionProbe />;
+  }
+  return { holder, Probe };
+}
+
+const startupLibrary: TripListResponse = {
+  items: [
+    {
+      id: tripId,
+      name: "Kyoto",
+      status: "LOBBY",
+      participation: "JOINED",
+      role: "OWNER",
+      startsAt: null,
+      endsAt: lobby.endsAt,
+      leftAt: null,
+      sharingPaused: false,
+      onThisDevice: true,
+      memberCount: 1,
+      savedPhotoCount: 0,
+    },
+  ],
+};
+
+describe("staged startup authority", () => {
+  it("mounts the authenticated shell while device preparation is held without exposing trip actions", async () => {
+    const device = pendingStartup<ProvisionedDevice>();
+    const { runtime: base } = createRuntime({
+      provision: () => device.promise,
+    });
+    const pauseTransfers = jest.fn(async () => undefined);
+    const runtime = { ...base, pauseTransfers };
+    const { holder, Probe } = startupProbe();
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(holder.current?.capabilities.canUseAuthenticatedShell).toBe(true),
+    );
+    expect(holder.current?.startup).toEqual({
+      stage: "device",
+      status: "working",
+      error: null,
+    });
+    expect(holder.current?.capabilities).toEqual({
+      canUseAuthenticatedShell: true,
+      canReadLibrary: false,
+      canMutateTrip: false,
+      canSharePhotos: false,
+    });
+    expect(holder.current?.actions).toBeNull();
+    await act(() => device.resolve({ deviceId, identity }));
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(pauseTransfers).toHaveBeenCalledTimes(1);
+    await view.unmount();
+  });
+
+  it("keeps metadata readable while key preparation is held and rejects mutations inside actions", async () => {
+    const hydration = pendingStartup<TripView>();
+    const { runtime: base, scoped } = createRuntime({
+      hydrate: () => hydration.promise,
+    });
+    const listTrips = jest.fn(async () => startupLibrary);
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    const { holder, Probe } = startupProbe();
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(holder.current?.startup.stage).toBe("transfer"));
+    expect(holder.current?.capabilities).toEqual({
+      canUseAuthenticatedShell: true,
+      canReadLibrary: true,
+      canMutateTrip: false,
+      canSharePhotos: false,
+    });
+    const actions = holder.current!.actions!;
+    await expect(actions.listTrips()).resolves.toEqual(startupLibrary);
+    await expect(actions.create({} as never)).rejects.toThrow(
+      "TRIP_SESSION_UNAVAILABLE",
+    );
+    await expect(actions.join("ABCD2345")).rejects.toThrow(
+      "TRIP_SESSION_UNAVAILABLE",
+    );
+    await expect(actions.start(tripId)).rejects.toThrow(
+      "TRIP_SESSION_UNAVAILABLE",
+    );
+    expect(scoped.createTrip).not.toHaveBeenCalled();
+    expect(scoped.startTrip).not.toHaveBeenCalled();
+    await act(() =>
+      hydration.resolve({
+        ...lobby,
+        status: "ACTIVE",
+        startsAt: "2030-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() =>
+      expect(holder.current?.capabilities.canMutateTrip).toBe(true),
+    );
+    expect(holder.current?.capabilities.canSharePhotos).toBe(false);
+    await view.unmount();
+  });
+
+  it("retries a trip-list failure without repeating valid device provisioning", async () => {
+    const { runtime: base, scoped } = createRuntime();
+    const listTrips = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValue({ items: [] });
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    const { holder, Probe } = startupProbe();
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(holder.current?.startup.error?.code).toBe("TRIP_LIST_FAILED"),
+    );
+    expect(holder.current?.capabilities.canReadLibrary).toBe(true);
+    await act(() => holder.current!.retry());
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(base.getNativeSnapshot).toHaveBeenCalledTimes(2);
+    expect(base.getNativeSnapshot).toHaveBeenLastCalledWith({
+      accountId: userId,
+      installationId: identity.installationId,
+    });
+    await view.unmount();
+  });
+
+  it("retains accepted ACTIVE state and scoped local-key recovery while retrying only trip preparation", async () => {
+    const active = {
+      ...lobby,
+      status: "ACTIVE" as const,
+      startsAt: "2030-01-01T00:00:00.000Z",
+    };
+    const hydrate = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new TripActivationFailed("INTERNAL_ERROR", active, "KEY_ACCESS_LOCKED"),
+      )
+      .mockResolvedValue(active);
+    const { runtime: base, scoped } = createRuntime({
+      activeTripId: tripId,
+      hydrate,
+    });
+    const { holder, Probe } = startupProbe();
+    const view = await render(
+      <Harness auth={signedIn} runtime={base}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(holder.current?.startup.error?.code).toBe("LOCAL_STORAGE_LOCKED"),
+    );
+    expect(holder.current?.snapshot.phase).toBe("READY_ACTIVE");
+    expect(holder.current?.activationFailureTripId).toBe(tripId);
+    expect(holder.current?.capabilities.canSharePhotos).toBe(false);
+    await act(() => holder.current!.retry());
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(scoped.startTrip).not.toHaveBeenCalled();
+    expect(hydrate).toHaveBeenCalledTimes(2);
+    await view.unmount();
+  });
+
+  it("restores existing device and safe reads while account checks run, then continues without registration or another native pause", async () => {
+    const { runtime: base, scoped } = createRuntime();
+    const restoreCurrentDevice = jest.fn(async () => ({
+      deviceId,
+      identity,
+      activeTripId: null,
+    }));
+    const pauseTransfers = jest.fn(async () => undefined);
+    const listTrips = jest.fn(async () => ({ items: [] }));
+    const runtime = {
+      ...base,
+      restoreCurrentDevice,
+      pauseTransfers,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    const { holder, Probe } = startupProbe();
+    const client = createQueryClient();
+    const contents = (ready: boolean) => (
+      <Harness
+        auth={signedIn}
+        profileReady={ready}
+        queryClient={client}
+        runtime={runtime}
+      >
+        <Probe />
+      </Harness>
+    );
+    const view = await render(contents(false));
+    await waitFor(() =>
+      expect(holder.current?.capabilities.canReadLibrary).toBe(true),
+    );
+    expect(holder.current?.startup.stage).toBe("account");
+    expect(scoped.replayPendingMutation).not.toHaveBeenCalled();
+    await expect(holder.current!.actions!.listTrips()).resolves.toEqual({
+      items: [],
+    });
+    await view.rerender(contents(true));
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(restoreCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(base.provisionCurrentDevice).not.toHaveBeenCalled();
+    expect(pauseTransfers).toHaveBeenCalledTimes(1);
+    await view.unmount();
+  });
+
+  it("shares one normal library request with early Home while the journal check is pending", async () => {
+    const oldState = AppState.currentState;
+    AppState.currentState = "active";
+    const journal = pendingStartup<TripView | null>();
+    const { runtime: base, scoped } = createRuntime({
+      replayPendingMutation: () => journal.promise,
+    });
+    const listTrips = jest.fn(async () => ({ items: [] }));
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    const client = createQueryClient();
+    function Home() {
+      useTripLibrary();
+      return <SessionProbe />;
+    }
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <Home />
+        </Harness>
+      </QueryClientProvider>,
+    );
+    try {
+      await waitFor(() => expect(listTrips).toHaveBeenCalledTimes(1));
+      await act(() => journal.resolve(null));
+      await waitFor(() =>
+        expect(screen.getByTestId("session-probe")).toHaveTextContent(
+          "READY_NO_TRIP",
+        ),
+      );
+      expect(listTrips).toHaveBeenCalledTimes(1);
+    } finally {
+      await view.unmount();
+      client.clear();
+      AppState.currentState = oldState;
+    }
+  });
+
+  it("cancels a pre-replay library response so it cannot overwrite accepted authoritative state", async () => {
+    const oldState = AppState.currentState;
+    AppState.currentState = "active";
+    const journal = pendingStartup<TripView | null>();
+    const stale = pendingStartup<TripListResponse>();
+    const { runtime: base, scoped } = createRuntime({
+      replayPendingMutation: () => journal.promise,
+    });
+    const listTrips = jest
+      .fn()
+      .mockImplementationOnce(() => stale.promise)
+      .mockResolvedValue(startupLibrary);
+    const runtime = {
+      ...base,
+      createScopedTripSession: () => ({ ...scoped, listTrips }),
+    };
+    const client = createQueryClient();
+    const { holder, Probe } = startupProbe();
+    function Home() {
+      useTripLibrary();
+      return <Probe />;
+    }
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <Home />
+        </Harness>
+      </QueryClientProvider>,
+    );
+    try {
+      await waitFor(() => expect(listTrips).toHaveBeenCalledTimes(1));
+      await act(() => journal.resolve(lobby));
+      await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+      expect(listTrips).toHaveBeenCalledTimes(2);
+      await act(() => stale.resolve({ items: [] }));
+      const cached = client.getQueryData([
+        "trip-library",
+        holder.current!.queryScope!.opaqueAccountScope,
+        deviceId,
+      ]);
+      expect(cached).toEqual(startupLibrary);
+      expect(holder.current?.snapshot).toMatchObject({
+        phase: "READY_LOBBY",
+        tripId,
+      });
+      expect(scoped.hydrateTrip).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+      client.clear();
+      AppState.currentState = oldState;
+    }
+  });
+});
+
+it("replaces an account-check generation's in-flight Home read before authoritative reconciliation", async () => {
+  const oldState = AppState.currentState;
+  AppState.currentState = "active";
+  const stale = pendingStartup<TripListResponse>();
+  const { runtime: base, scoped } = createRuntime();
+  const listTrips = jest
+    .fn()
+    .mockImplementationOnce(() => stale.promise)
+    .mockResolvedValue(startupLibrary);
+  const restoreCurrentDevice = jest.fn(async () => ({
+    deviceId,
+    identity,
+    activeTripId: null,
+  }));
+  const runtime = {
+    ...base,
+    restoreCurrentDevice,
+    createScopedTripSession: () => ({ ...scoped, listTrips }),
+  };
+  const client = createQueryClient();
+  const { holder, Probe } = startupProbe();
+  function Home() {
+    useTripLibrary();
+    return <Probe />;
+  }
+  const contents = (ready: boolean) => (
+    <QueryClientProvider client={client}>
+      <Harness
+        auth={signedIn}
+        profileReady={ready}
+        runtime={runtime}
+        queryClient={client}
+      >
+        <Home />
+      </Harness>
+    </QueryClientProvider>
+  );
+  const view = await render(contents(false));
+  try {
+    await waitFor(() => expect(listTrips).toHaveBeenCalledTimes(1));
+    expect(holder.current?.startup.stage).toBe("account");
+    await view.rerender(contents(true));
+    await waitFor(() =>
+      expect(holder.current?.snapshot.phase).toBe("READY_LOBBY"),
+    );
+    expect(listTrips).toHaveBeenCalledTimes(2);
+    await act(() => stale.resolve({ items: [] }));
+    expect(
+      client.getQueryData([
+        "trip-library",
+        holder.current!.queryScope!.opaqueAccountScope,
+        deviceId,
+      ]),
+    ).toEqual(startupLibrary);
+    expect(restoreCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(base.provisionCurrentDevice).not.toHaveBeenCalled();
+    expect(holder.current?.startup.status).toBe("ready");
+  } finally {
+    await view.unmount();
+    client.clear();
+    AppState.currentState = oldState;
+  }
+});
+
+it("preserves a confirmed replay outcome as read-only when its independent fresh list fails", async () => {
+  const replayPendingMutation = jest
+    .fn()
+    .mockResolvedValueOnce(lobby)
+    .mockResolvedValue(null);
+  const { runtime: base, scoped } = createRuntime({
+    replayPendingMutation,
+    activeTripId: tripId,
+  });
+  const listTrips = jest
+    .fn()
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockResolvedValue(startupLibrary);
+  const runtime = {
+    ...base,
+    createScopedTripSession: () => ({ ...scoped, listTrips }),
+  };
+  const { holder, Probe } = startupProbe();
+  const view = await render(
+    <Harness auth={signedIn} runtime={runtime}>
+      <Probe />
+    </Harness>,
+  );
+  try {
+    await waitFor(() =>
+      expect(holder.current?.startup.error?.code).toBe("TRIP_LIST_FAILED"),
+    );
+    expect(holder.current?.snapshot).toMatchObject({
+      phase: "READY_LOBBY",
+      tripId,
+    });
+    expect(holder.current?.capabilities).toEqual({
+      canUseAuthenticatedShell: true,
+      canReadLibrary: true,
+      canMutateTrip: false,
+      canSharePhotos: false,
+    });
+    await act(() => holder.current!.retry());
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(holder.current?.capabilities.canMutateTrip).toBe(true);
+    expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(scoped.startTrip).not.toHaveBeenCalled();
+    expect(listTrips).toHaveBeenCalledTimes(2);
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("waits for canonical account setup after a restore miss and registers once when allowed", async () => {
+  const { runtime: base } = createRuntime();
+  const restoreCurrentDevice = jest.fn(async () => null);
+  const runtime = { ...base, restoreCurrentDevice };
+  const { holder, Probe } = startupProbe();
+  const client = createQueryClient();
+  const contents = (ready: boolean) => (
+    <Harness
+      auth={signedIn}
+      profileReady={ready}
+      runtime={runtime}
+      queryClient={client}
+    >
+      <Probe />
+    </Harness>
+  );
+  const view = await render(contents(false));
+  try {
+    await waitFor(() => expect(restoreCurrentDevice).toHaveBeenCalledTimes(1));
+    expect(holder.current?.capabilities.canUseAuthenticatedShell).toBe(true);
+    expect(holder.current?.capabilities.canReadLibrary).toBe(false);
+    expect(base.provisionCurrentDevice).not.toHaveBeenCalled();
+    await view.rerender(contents(true));
+    await waitFor(() => expect(holder.current?.startup.status).toBe("ready"));
+    expect(restoreCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(base.provisionCurrentDevice).toHaveBeenCalledTimes(1);
+  } finally {
+    await view.unmount();
+    client.clear();
+  }
+});
+
+it("targets an account-check retry without re-registering or hiding a valid library", async () => {
+  const { runtime: base } = createRuntime();
+  const restoreCurrentDevice = jest.fn(async () => ({
+    deviceId,
+    identity,
+    activeTripId: null,
+  }));
+  const onRetryAccount = jest.fn();
+  const runtime = { ...base, restoreCurrentDevice };
+  const { holder, Probe } = startupProbe();
+  const view = await render(
+    <Harness
+      auth={signedIn}
+      profileReady={false}
+      accountSetupFailed
+      runtime={runtime}
+      onRetryAccount={onRetryAccount}
+    >
+      <Probe />
+    </Harness>,
+  );
+  try {
+    await waitFor(() =>
+      expect(holder.current?.startup.error?.code).toBe("ACCOUNT_SETUP_FAILED"),
+    );
+    expect(holder.current?.capabilities.canReadLibrary).toBe(true);
+    await act(() => holder.current!.retry());
+    expect(onRetryAccount).toHaveBeenCalledTimes(1);
+    expect(base.provisionCurrentDevice).not.toHaveBeenCalled();
+    expect(restoreCurrentDevice).toHaveBeenCalledTimes(1);
+    expect(holder.current?.capabilities.canReadLibrary).toBe(true);
+  } finally {
+    await view.unmount();
+  }
 });

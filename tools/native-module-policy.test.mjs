@@ -122,6 +122,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
   const keyMethodNames = [
     "prepareDeviceSession",
     "ensureDeviceIdentity",
+    "getActiveTripSelection",
     "restoreDeviceSession",
     "installDeviceSession",
     "refreshDeviceSession",
@@ -232,20 +233,30 @@ test("native bridges keep the closed protocol and wire only implemented transfer
   }
   assert.doesNotMatch(swift, /pendingScopeException|inactiveSnapshot/);
   assert.match(swift, /ApplePhotoTransferEngine/);
-  for (const method of ["setPolicy", "wake", "retry", "snapshot", "listAssets"])
+  for (const method of [
+    "setPolicy",
+    "reconcileNow",
+    "retry",
+    "snapshot",
+    "listAssets",
+  ])
     assert.match(swift, new RegExp(`await engine\\.${method}`));
   assert.doesNotMatch(
     kotlin,
     /pendingScopeException|inactiveSnapshot|TRANSFER_SCOPE_PENDING/,
   );
   assert.match(kotlin, /NativePhotoTransferEngine/);
-  for (const method of [
-    "policy",
-    "requestReconcile",
-    "retry",
-    "snapshot",
-    "assets",
-  ])
+  assert.match(kotlin, /runtime\(\)\.applyTransferPolicy\(/);
+  const androidRuntime = readFileSync(
+    path.join(
+      moduleRoot,
+      "android/src/main/java/com/uankit53/crewroll/transfer/CrewRollNativeRuntime.kt",
+    ),
+    "utf8",
+  );
+  assert.match(androidRuntime, /fun applyTransferPolicy\(/);
+  assert.match(androidRuntime, /\.policy\(/);
+  for (const method of ["requestReconcile", "retry", "snapshot", "assets"])
     assert.match(kotlin, new RegExp(`engine\\(\\)\\.${method}`));
   assert.match(swift, /"protocolVersion": 1/);
   assert.match(kotlin, /"protocolVersion" to 1/);

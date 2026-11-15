@@ -397,3 +397,68 @@ describe("combined accepted-trip restoration", () => {
     },
   );
 });
+
+describe("finite local key recovery classification", () => {
+  it.each(["KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST"] as const)(
+    "retains %s from a real pre-import native error without exposing its details",
+    async (code) => {
+      const { native, response, service } = harness();
+      native.importTripKey.mockRejectedValueOnce(
+        Object.assign(new Error("private native details"), { code }),
+      );
+      const operation = service.activateObserved(response);
+      await expect(operation).rejects.toMatchObject({
+        localKeyFailure: code,
+        trip: { id: tripId },
+      });
+      await operation.catch((error: unknown) =>
+        expect(JSON.stringify(error)).not.toMatch(
+          /private native details|localKeyFailure|KEY_ACCESS|KEY_MATERIAL/,
+        ),
+      );
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not misclassify an authentic invalid envelope as missing local keys", async () => {
+    const { native, response, service } = harness();
+    native.importTripKey.mockRejectedValueOnce(
+      new CrewRollApiProblem("KEY_ENVELOPE_INVALID"),
+    );
+    await expect(service.activateObserved(response)).rejects.toMatchObject({
+      code: "KEY_ENVELOPE_INVALID",
+      localKeyFailure: undefined,
+    });
+  });
+
+  it("does not invoke a code getter or trust a plain code-shaped error", async () => {
+    const getter = jest.fn(() => "KEY_MATERIAL_LOST");
+    const shaped = new Error("private");
+    Object.defineProperty(shaped, "code", { get: getter });
+    for (const failure of [shaped, { code: "KEY_ACCESS_LOCKED" }]) {
+      const { native, response, service } = harness();
+      native.importTripKey.mockRejectedValueOnce(failure);
+      await expect(service.activateObserved(response)).rejects.toMatchObject({
+        localKeyFailure: undefined,
+      });
+    }
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("preserves the post-import stage even when its cause looks like a local import failure", async () => {
+    const { native, response } = harness();
+    const service = createActivateObservedTrip({
+      device: { deviceId, identity },
+      native: {
+        ...native,
+        importAndActivateTrip: async () => {
+          throw new ImportedTripActivationFailed();
+        },
+      },
+    });
+    await expect(service.activateObserved(response)).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      localKeyFailure: undefined,
+    });
+  });
+});

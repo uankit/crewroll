@@ -3,6 +3,7 @@ import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 
 import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
+import { nativeLocalKeyFailure } from "../problems/nativeLocalKeyFailure";
 import { userFacingProblems } from "../problems/userFacingProblem";
 import { isClosedTripResponse } from "./ApproveMember";
 import { TripActivationFailed } from "./ActivateObservedTrip";
@@ -166,7 +167,14 @@ export function createHydrateTrip(dependencies: HydrateTripDependencies) {
           wrappedKey: envelope.wrappedKey,
         }),
       );
-    } catch {
+    } catch (error) {
+      const localKeyFailure = nativeLocalKeyFailure(error);
+      if (localKeyFailure !== undefined)
+        throw new TripActivationFailed(
+          "INTERNAL_ERROR",
+          safelyProject(response, device.deviceId),
+          localKeyFailure,
+        );
       throw envelopeProblem();
     }
 

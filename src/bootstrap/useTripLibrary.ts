@@ -5,7 +5,7 @@ import { useAppSession } from "./AppSessionProvider";
 import { TRIP_LIBRARY_FRESH_MS, tripLibraryQueryKey } from "./queryClient";
 
 export function useTripLibrary(visible = true) {
-  const { actions, queryScope, snapshot } = useAppSession();
+  const { actions, queryScope, snapshot, capabilities } = useAppSession();
   const currentSession = [
     "READY_LOBBY",
     "READY_ACTIVE",
@@ -29,7 +29,12 @@ export function useTripLibrary(visible = true) {
       if (!actions) throw new Error("Session unavailable");
       return actions.listTrips();
     },
-    enabled: actions !== null && queryScope !== null && visible && foreground,
+    enabled:
+      capabilities.canReadLibrary &&
+      actions !== null &&
+      queryScope !== null &&
+      visible &&
+      foreground,
     staleTime: TRIP_LIBRARY_FRESH_MS,
     // Approval/live membership needs timely feedback. A settled history can
     // refresh on focus/manual invalidation with a much quieter repair poll.

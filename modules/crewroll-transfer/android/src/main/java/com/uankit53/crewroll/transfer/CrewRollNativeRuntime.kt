@@ -9,6 +9,7 @@ import android.net.NetworkCapabilities
 import com.goterl.lazysodium.SodiumAndroid
 import com.uankit53.crewroll.transfer.identitykeys.AndroidNativeKeyInfrastructure
 import com.uankit53.crewroll.transfer.identitykeys.NativeMediaSession
+import com.uankit53.crewroll.transfer.identitykeys.NativeDeferredMaintenance
 import com.uankit53.crewroll.transfer.identitykeys.NativeTransferCommandFence
 import com.uankit53.crewroll.transfer.media.AndroidPhotoLibrary
 import com.uankit53.crewroll.transfer.media.NativePhotoCrypto
@@ -21,6 +22,8 @@ import com.uankit53.crewroll.transfer.media.nativePhotoAccess
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
 
 /** One journal writer per process, shared by Expo and OS jobs. No JS runtime is
  * needed to reopen the protected native session after the OS kills the process. */
@@ -45,7 +48,7 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     }
   }
   private val connectivity = context.getSystemService(ConnectivityManager::class.java)
-  val engine = NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() },
+  private val engineDelegate = lazy { NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() },
     AndroidPhotoLibrary(context), NativePhotoCrypto(SodiumAndroid()), { cellular ->
       NativePhotoTransport {
         val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
@@ -55,15 +58,33 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     }, { revision -> listeners.forEach { it(revision) } },
     expiredTrips = { lifecycle.expiredTrips() },
     purgeTripKey = { trip, cleanup -> mediaSession.change { lifecycle.purgeExpiredTrip(trip, cleanup) } },
-    nextRetentionDeadline = { lifecycle.nextTripRetentionDeadline() })
+    nextRetentionDeadline = { lifecycle.nextTripRetentionDeadline() }) }
+  val engine get() = engineDelegate.value
+  private val maintenanceExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "CrewRollRetention").apply { isDaemon = true }
+  }
+  private val retentionMaintenance = NativeDeferredMaintenance({ task -> maintenanceExecutor.execute(task) }) {
+    lifecycle.runScheduledCleanup()
+    engine.reconcileRetention()
+  }
+
+  /** Called after an interactive acknowledgement, never joined by that command.
+   * Paused retention needs no current trip, observer, network or JavaScript. */
+  fun requestRetentionMaintenance() = retentionMaintenance.request()
+
+  fun applyTransferPolicy(paused: Boolean, cellular: Boolean, ifCurrent: () -> Boolean): CompletableFuture<Unit> {
+    policy(!paused, cellular)
+    if (paused && !engineDelegate.isInitialized()) return CompletableFuture.completedFuture(Unit)
+    return engine.policy(paused, cellular, ifCurrent)
+  }
 
   fun listen(listener: (Long) -> Unit) { listeners.add(listener) }
   fun unlisten(listener: (Long) -> Unit) { listeners.remove(listener) }
   fun foreground(value: Boolean) {
     val epoch = synchronized(this) { foreground = value; leaseRevision.incrementAndGet(); policyRevision.get() }
     val selection = transferCommands.current()
-    engine.foreground(value)
-    if (value && enabled) engine.activate { foreground && enabled && policyRevision.get() == epoch && transferCommands.matches(selection) }
+    if (engineDelegate.isInitialized()) engine.foreground(value)
+    if (value && enabled && mediaSession.hasPreparedContext()) engine.activate { foreground && enabled && policyRevision.get() == epoch && transferCommands.matches(selection) }
     synchronized(this) { if (!foreground && enabled) CrewRollSyncJobs.schedule(context, cellular) }
   }
   @Synchronized fun policy(enabled: Boolean, cellular: Boolean = this.cellular) {
@@ -77,7 +98,9 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
   fun beginJob(id: Int, hints: List<NativePushHint>? = null): Boolean {
     val epoch = synchronized(this) { if (!enabled) return false; policyRevision.get() }
     val selection = transferCommands.current()
-    // This preflight also collects old non-selected trips on background wakes.
+    // Explicit OS jobs restore independently of JS. Maintenance is dispatched
+    // separately and selected expiry is checked by mediaContext itself.
+    requestRetentionMaintenance()
     engine.reconcileRetention()
     if (hints != null) {
       if (!pushGate.accept(hints, enabled, photosAllowed()) {

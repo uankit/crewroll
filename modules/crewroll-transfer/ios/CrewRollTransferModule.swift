@@ -10,7 +10,6 @@ public final class CrewRollTransferModule: Module {
     Name("CrewRollTransfer")
     Events("engineInvalidated", "pushHint")
     OnCreate {
-      CrewRollAppleRuntime.lifecycleWork.submit { [weak self] in self?.runLifecycleCleanup() }
       self.invalidationObserver = NotificationCenter.default.addObserver(forName: .crewRollEngineInvalidated, object: nil, queue: nil) { [weak self] event in
         if let revision = event.userInfo?["revision"] as? Int { self?.sendEvent("engineInvalidated", ["protocolVersion": 1, "type": "ENGINE_INVALIDATED", "revision": revision]) }
       }
@@ -22,10 +21,8 @@ public final class CrewRollTransferModule: Module {
       }
     }
     OnAppEntersForeground {
-      CrewRollAppleRuntime.lifecycleWork.submit { [weak self] in
-        self?.runLifecycleCleanup()
-        try? CrewRollAppleRuntime.get().foreground(true)
-        if let engine = try? self?.engine() { Task { await engine.wake() } }
+      CrewRollAppleRuntime.lifecycleWork.submit {
+        CrewRollAppleRuntime.setForeground(true)
       }
     }
     OnDestroy {
@@ -65,6 +62,7 @@ public final class CrewRollTransferModule: Module {
         }
         if let tripID = prepared.activeTripID { result["activeTripId"] = tripID }
         promise.resolve(result)
+        CrewRollAppleRuntime.existing()?.requestRetentionMaintenance()
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("ensureDeviceIdentity") { (command: [String: Any], promise: Promise) in
@@ -87,6 +85,20 @@ public final class CrewRollTransferModule: Module {
           "e2eePublicKey": identity.e2eePublicKey,
           "e2eeKeyVersion": identity.e2eeKeyVersion,
         ])
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
+    AsyncFunction("getActiveTripSelection") { (command: [String: Any], promise: Promise) in
+      do {
+        try NativeCommandDecoder.require(command, for: .getActiveTripSelection)
+        let epoch = self.transferCommands.current()
+        let lifecycle = try self.lifecycle()
+        let selected = try self.transferCommands.withCurrent(epoch) {
+          try lifecycle.getActiveTripSelection(accountID: Self.string(command, "accountId"),
+            installationID: Self.string(command, "installationId"))
+        }
+        var result: [String: Any] = ["protocolVersion": 1, "activeTripId": NSNull()]
+        if let selected { result["activeTripId"] = selected }
+        promise.resolve(result)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("restoreDeviceSession") { (command: [String: Any], promise: Promise) in
@@ -153,11 +165,11 @@ public final class CrewRollTransferModule: Module {
         let epoch = self.transferCommands.advance()
         let runtime = try CrewRollAppleRuntime.get()
         let lifecycle = runtime.lifecycle
-        let engine = runtime.engine
+        let engine = runtime.existingEngine
         try self.transferCommands.withCurrent(epoch) { runtime.policy(enabled: false) }
         Task {
           do {
-            await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) })
+            if let engine { await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) }) }
             try await AppleBackgroundTransfer.shared.clear(ifCurrent: { self.transferCommands.matches(epoch) },
               protectedMutation: { work in try self.transferCommands.withCurrent(epoch, work) })
             try self.transferCommands.withCurrent(epoch) { try lifecycle.clearDeviceSession() }
@@ -283,6 +295,7 @@ public final class CrewRollTransferModule: Module {
         Task { try? await engine.reconcileRetention(force: true) }
         Task {
           do {
+            await engine.foreground(runtime.foregroundSnapshot)
             await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
             try self.transferCommands.withCurrent(epoch) { }
             promise.resolve(nil)
@@ -302,6 +315,7 @@ public final class CrewRollTransferModule: Module {
           runtime.policy(enabled: true, cellular: true)
         }
         Task {
+          await engine.foreground(runtime.foregroundSnapshot)
           await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
           promise.resolve(nil)
         }
@@ -330,14 +344,23 @@ public final class CrewRollTransferModule: Module {
         guard let pausedValue = command["paused"] as? NSNumber, CFGetTypeID(pausedValue) == CFBooleanGetTypeID(),
               let cellularValue = command["cellularAllowed"] as? NSNumber, CFGetTypeID(cellularValue) == CFBooleanGetTypeID() else { throw NativeKeyError.invalidCommand }
         let epoch = self.transferCommands.advance()
-        let engine = try self.engine()
         let runtime = try CrewRollAppleRuntime.get()
         try self.transferCommands.withCurrent(epoch) {
           runtime.policy(enabled: !pausedValue.boolValue, cellular: cellularValue.boolValue)
         }
+        if pausedValue.boolValue && runtime.existingEngine == nil {
+          // No native lanes or saves exist to drain in this process. Persisting
+          // the paused policy and advancing the fence is the complete boundary.
+          promise.resolve(nil)
+          runtime.requestRetentionMaintenance()
+          return
+        }
+        let engine = runtime.engine
         Task {
+          if !pausedValue.boolValue { await engine.foreground(runtime.foregroundSnapshot) }
           await engine.setPolicy(paused: pausedValue.boolValue, cellularAllowed: cellularValue.boolValue, ifCurrent: { self.transferCommands.matches(epoch) })
           promise.resolve(nil)
+          runtime.requestRetentionMaintenance()
         }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
@@ -396,15 +419,6 @@ public final class CrewRollTransferModule: Module {
   }
 
   private func lifecycle() throws -> NativeKeyLifecycle { try CrewRollAppleRuntime.get().lifecycle }
-
-  private func runLifecycleCleanup() {
-    do {
-      try lifecycle().runScheduledCleanup()
-      if let engine = try? self.engine() { Task { try? await engine.reconcileRetention(force: true) } }
-    } catch {
-      // Access-locked and transient failures are retried on the next foreground wake.
-    }
-  }
 
   private static func string(_ command: [String: Any], _ key: String) throws -> String {
     try NativeCommandDecoder.string(command, key)

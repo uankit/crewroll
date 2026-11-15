@@ -6,7 +6,7 @@ import { CreateTripScreen, type CreateTripScreenState } from "@/features/trips";
 
 export default function CreateTripRoute() {
   const router = useRouter();
-  const { actions, retry, snapshot } = useAppSession();
+  const { actions, retry, snapshot, capabilities } = useAppSession();
   const [now] = useState(() => new Date());
   const [state, setState] = useState<CreateTripScreenState>({
     kind: "editing",
@@ -14,7 +14,9 @@ export default function CreateTripRoute() {
 
   if (
     state.kind === "editing" &&
-    (snapshot.phase !== "READY_NO_TRIP" || actions === null)
+    (snapshot.phase !== "READY_NO_TRIP" ||
+      actions === null ||
+      !capabilities.canMutateTrip)
   ) {
     return <Redirect href="/(app)" withAnchor />;
   }
@@ -24,7 +26,7 @@ export default function CreateTripRoute() {
       now={now}
       onCancel={() => router.dismissTo("/(app)")}
       onCreate={(input) => {
-        if (actions === null) return;
+        if (actions === null || !capabilities.canMutateTrip) return;
         setState({ kind: "submitting" });
         void actions
           .create(input)

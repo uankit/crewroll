@@ -12,6 +12,97 @@ final class AccountScopedLifecycleTests: XCTestCase {
     private let deviceA = "018f0d98-76fa-7d1a-b4b4-1f742c2e3150"
     private let deviceB = "018f0d98-76fa-7d1a-b4b4-1f742c2e3160"
 
+    func testDevicePreparationAndFreshSelectionDoNotOpenASelectedTripKeyOrRunMaintenance() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        fixture.store.putTrip(scope, tripA, TripKeyRecord(key: Data(repeating: 7, count: 32), state: .installed))
+        try fixture.subject.activateTrip(fixture.metadata(tripID: tripA))
+        // The device credential remains usable even if only the selected trip's
+        // material is corrupt. Photo preparation must report that later.
+        fixture.store.putTrip(scope, tripA, TripKeyRecord(key: Data(), state: .active))
+        var tripReads = 0
+        fixture.store.onMediaContextRead = { tripReads += 1 }
+        let before = fixture.store.gcCommitCount
+        let subject = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+            crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher,
+            cleanupScheduler: ScopedCleanupScheduler(), deferMaintenance: true)
+        let prepared = try subject.prepareDeviceSession(accountID: accountA, apiBaseURL: "https://api.crewroll.app")
+        XCTAssertEqual(prepared.restoredDeviceID, deviceA)
+        XCTAssertEqual(prepared.activeTripID, tripA)
+        XCTAssertEqual(try subject.getActiveTripSelection(accountID: accountA,
+            installationID: scope.installationID), tripA)
+        XCTAssertNil(try subject.getActiveTripSelection(accountID: accountB,
+            installationID: scope.installationID))
+        XCTAssertNil(try subject.getActiveTripSelection(accountID: accountA,
+            installationID: "other_installation"))
+        XCTAssertEqual(tripReads, 0)
+        XCTAssertEqual(fixture.store.gcCommitCount, before)
+        XCTAssertThrowsError(try subject.mediaContext()) {
+            XCTAssertEqual(($0 as? NativeKeyError)?.code, "KEY_MATERIAL_LOST")
+        }
+        XCTAssertEqual(try subject.prepareDeviceSession(accountID: accountA,
+            apiBaseURL: "https://api.crewroll.app").restoredDeviceID, deviceA)
+        try subject.deactivateTrip(tripID: tripA)
+        XCTAssertNil(try subject.getActiveTripSelection(accountID: accountA,
+            installationID: scope.installationID), "a retry reads current metadata instead of a cached hint")
+    }
+
+    func testDeferredMaintenanceCannotExtendCredentialOrProvisionalAccess() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
+            expiresAt: fixture.clock.now.addingTimeInterval(60))
+        let subject = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+            crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher,
+            cleanupScheduler: ScopedCleanupScheduler(), deferMaintenance: true)
+        _ = try subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        let expiry = try XCTUnwrap(fixture.store.trip(scope, tripA)?.provisionalExpiresAt)
+        let before = fixture.store.gcCommitCount
+        fixture.clock.now = fixture.clock.now.addingTimeInterval(60)
+        XCTAssertThrowsError(try subject.createTripKey(tripID: tripB, keyEpoch: 1))
+        XCTAssertNil(fixture.store.trip(scope, tripB))
+        try subject.installDeviceSession(accountID: accountA, installationID: scope.installationID,
+            deviceID: deviceA, backgroundBearer: "crb_renewed_fixture_bearer",
+            expiresAt: fixture.clock.now.addingTimeInterval(30 * 86_400), apiBaseURL: "https://api.crewroll.app")
+        fixture.clock.now = expiry
+        XCTAssertThrowsError(try subject.createTripKey(tripID: tripA, keyEpoch: 1))
+        XCTAssertThrowsError(try subject.wrapTripKey(tripID: tripA, keyEpoch: 1,
+            recipientDeviceID: deviceA, recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1))
+        XCTAssertEqual(fixture.store.gcCommitCount, before)
+        XCTAssertNotNil(fixture.store.trip(scope, tripA), "physical maintenance is deferred, not validity")
+        try subject.runScheduledCleanup()
+        XCTAssertNil(fixture.store.trip(scope, tripA))
+        XCTAssertTrue(fixture.store.hasTombstone(scope, tripA))
+    }
+
+    func testDeferredSelectedImportPreservesFreshAuthenticatedRecoveryWithoutGlobalSweep() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let subject = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
+            crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher,
+            cleanupScheduler: ScopedCleanupScheduler(), deferMaintenance: true)
+        _ = try subject.createTripKey(tripID: tripA, keyEpoch: 1)
+        let wrapped = try subject.wrapTripKey(tripID: tripA, keyEpoch: 1, recipientDeviceID: deviceA,
+            recipientE2EEPublicKey: fixture.identityPublicKey(scope), recipientE2EEKeyVersion: 1)
+        let originalKey = try XCTUnwrap(fixture.store.trip(scope, tripA)?.key)
+        _ = try subject.createTripKey(tripID: tripB, keyEpoch: 1)
+        fixture.clock.now = try XCTUnwrap(fixture.store.trip(scope, tripA)?.provisionalExpiresAt)
+        let before = fixture.store.gcCommitCount
+        fixture.crypto.rejectOpen = true
+        XCTAssertThrowsError(try subject.importTripKey(tripID: tripA, keyEpoch: 1, algorithmVersion: 1,
+            expectedSenderDeviceID: deviceA, recipientDeviceID: deviceA, recipientE2EEKeyVersion: 1,
+            wrappedKey: wrapped.wrappedKey, endsAt: fixture.metadata(tripID: tripA).endsAt))
+        XCTAssertEqual(fixture.store.trip(scope, tripA)?.state, .provisional)
+        fixture.crypto.rejectOpen = false
+        try subject.importTripKey(tripID: tripA, keyEpoch: 1, algorithmVersion: 1,
+            expectedSenderDeviceID: deviceA, recipientDeviceID: deviceA, recipientE2EEKeyVersion: 1,
+            wrappedKey: wrapped.wrappedKey, endsAt: fixture.metadata(tripID: tripA).endsAt)
+        XCTAssertEqual(fixture.store.trip(scope, tripA)?.state, .installed)
+        XCTAssertEqual(fixture.store.trip(scope, tripA)?.key, originalKey)
+        XCTAssertEqual(fixture.store.trip(scope, tripB)?.state, .provisional,
+            "selected recovery must not collect unrelated expired provisional records")
+        XCTAssertEqual(fixture.store.gcCommitCount, before)
+    }
+
     func testPreparedDeviceSessionReturnsOnlyTheMatchingRestoredSelection() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA, accountB: hashB])
         let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA,
@@ -205,11 +296,16 @@ final class AccountScopedLifecycleTests: XCTestCase {
     func testRestartRequestsRenewalWithinServerWindowWithoutReplacingIdentityOrTripKey() throws {
         for remainingSeconds in [8 * 86_400, 7 * 86_400 + 1, 7 * 86_400, 6 * 86_400, 0, -1] {
             let fixture = ScopedFixture(accountHashes: [accountA: hashA])
-            let expiry = fixture.clock.now.addingTimeInterval(TimeInterval(remainingSeconds))
+            let reopenAt = fixture.clock.now
+            let expiry = reopenAt.addingTimeInterval(TimeInterval(remainingSeconds))
+            // Install/create while the credential is valid, then reopen aged
+            // persisted state. Installing an already expired credential is invalid.
+            if expiry <= reopenAt { fixture.clock.now = expiry.addingTimeInterval(-10) }
             let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA, expiresAt: expiry)
             let identity = try fixture.subject.ensureDeviceIdentity(accountID: accountA)
             _ = try fixture.subject.createTripKey(tripID: tripA, keyEpoch: 1)
             let originalKey = try XCTUnwrap(fixture.store.trip(scope, tripA)).key
+            fixture.clock.now = reopenAt
             let restarted = NativeKeyLifecycle(clock: fixture.clock, store: fixture.store,
                 crypto: fixture.crypto, p256: fixture.p256, accountHasher: fixture.hasher)
 
@@ -823,6 +919,8 @@ final class AccountScopedLifecycleTests: XCTestCase {
     func testAllNativeCommandsHaveClosedKeySetsAndTripIDsAreLowercaseUUIDv7() throws {
         let v4DeviceID = "550e8400-e29b-41d4-a716-446655440000"
         let commands: [(NativeCommandKind, [String: Any], String)] = [
+            (.getActiveTripSelection, ["protocolVersion": 1, "accountId": accountA,
+                "installationId": "test_installation"], "installationId"),
             (.prepareDeviceSession, ["protocolVersion": 1, "accountId": accountA, "apiBaseUrl": "https://api.crewroll.app"], "accountId"),
             (.ensureDeviceIdentity, ["protocolVersion": 1, "accountId": accountA], "accountId"),
             (.restoreDeviceSession, ["protocolVersion": 1, "accountId": accountA,
@@ -1143,14 +1241,14 @@ private final class ScopedFixture {
         hasher = ScopedFakeHasher(values: accountHashes)
     }
 
-    func ensureAndInstall(accountID: String, deviceID: String, expiresAt: Date = Date(timeIntervalSince1970: 900)) throws -> NativeKeyScope {
+    func ensureAndInstall(accountID: String, deviceID: String, expiresAt: Date? = nil) throws -> NativeKeyScope {
         let identity = try subject.ensureDeviceIdentity(accountID: accountID)
         try subject.installDeviceSession(
             accountID: accountID,
             installationID: identity.installationID,
             deviceID: deviceID,
             backgroundBearer: "crb_fixture_write_only",
-            expiresAt: expiresAt,
+            expiresAt: expiresAt ?? clock.now.addingTimeInterval(365 * 86_400),
             apiBaseURL: "https://api.crewroll.app"
         )
         return try store.activeSession()!.scope
@@ -1332,6 +1430,11 @@ private final class ScopedMemoryStore: NativeKeyStore {
     }
     func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata? {
         scopes[scope]?.frozen[tripID]
+    }
+    func activeSelection() throws -> NativeSelectedTrip? {
+        guard let scope = selectedScope, let metadata = scopes[scope]?.activeMetadata,
+              scopes[scope]?.trips[metadata.tripID]?.state == .active else { return nil }
+        return NativeSelectedTrip(scope: scope, metadata: metadata)
     }
     func mediaContext() throws -> NativeMediaContext? {
         onMediaContextRead?()

@@ -167,7 +167,7 @@ class TripRetentionTest {
 
   private fun legacyDisk(frozen: ActiveTripMetadata? = null): Persistence = Persistence().also { disk ->
     val state = AndroidScopedState(scope)
-    state.trips[trip] = TripKeyRecord(key.copyOf(), KeyState.INSTALLED)
+    state.trips[trip] = AndroidStoredTrip.from(TripKeyRecord(key.copyOf(), KeyState.INSTALLED))
     if (frozen != null) state.frozenMetadata[trip] = frozen
     disk.save(AndroidScopedDatabase(scopes = mutableMapOf(androidScopeKey(scope) to state)))
   }

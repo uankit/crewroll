@@ -43,6 +43,13 @@ export function createNativeSessionFence(native: CrewRollTransferPort) {
         },
       });
       return Object.freeze({
+        get getActiveTripSelection() {
+          check();
+          const operation = native.getActiveTripSelection;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
         get prepareDeviceSession() {
           check();
           const operation = native.prepareDeviceSession;

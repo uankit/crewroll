@@ -8,10 +8,12 @@ jest.mock("./profileSyncCache", () => ({ profileSyncCache: {} }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function fixture(name: string | null = null) {
@@ -104,7 +106,7 @@ describe("profile completion", () => {
     },
   );
 
-  it("shows a retryable form after a stalled sync and ignores its late response", async () => {
+  it("keeps a known profile unready after a stalled sync without inventing a missing-name form", async () => {
     jest.useFakeTimers();
     try {
       const f = fixture("Riya");
@@ -118,6 +120,7 @@ describe("profile completion", () => {
       });
       expect(result.current.ready).toBe(false);
       expect(result.current.checking).toBe(false);
+      expect(result.current.requiresInput).toBe(false);
       expect(result.current.error).toMatch(/try again/);
       await act(() => pending.resolve({ displayName: "Riya" }));
       expect(result.current.ready).toBe(false);
@@ -145,12 +148,14 @@ describe("profile completion", () => {
       useProfileCompletion(f.options),
     );
     expect(result.current.ready).toBe(false);
+    expect(result.current.requiresInput).toBe(true);
     expect(f.api.syncProfile).not.toHaveBeenCalled();
     await act(() => result.current.setName(" Riya  Shah "));
     await act(async () => {
       await Promise.all([result.current.save(), result.current.save()]);
     });
     await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.requiresInput).toBe(false);
     expect(f.user.update).toHaveBeenCalledTimes(1);
     expect(f.user.update).toHaveBeenCalledWith({
       firstName: "Riya Shah",
@@ -171,9 +176,11 @@ describe("profile completion", () => {
     await act(() => result.current.save());
     expect(result.current.ready).toBe(false);
     expect(result.current.error).toMatch(/try again/);
+    expect(result.current.requiresInput).toBe(true);
     expect(f.cache.write).not.toHaveBeenCalled();
     await act(() => result.current.save());
     expect(result.current.ready).toBe(true);
+    expect(result.current.requiresInput).toBe(false);
     expect(f.user.update).toHaveBeenCalledTimes(1);
     expect(f.api.syncProfile).toHaveBeenCalledTimes(2);
   });
@@ -236,6 +243,54 @@ describe("profile completion", () => {
     const { result } = await renderHook(() => useProfileCompletion(f.options));
     expect(result.current.ready).toBe(false);
     expect(result.current.checking).toBe(true);
+    expect(result.current.requiresInput).toBe(false);
+  });
+
+  it("keeps an initiated missing-name form visible through provider update and a failed server save", async () => {
+    const f = fixture();
+    const pending = deferred<{ displayName: string }>();
+    f.api.syncProfile.mockReturnValueOnce(pending.promise);
+    const { result, rerender } = await renderHook(() =>
+      useProfileCompletion(f.options),
+    );
+    await act(() => result.current.setName("Riya"));
+    let save!: Promise<void>;
+    await act(async () => {
+      save = result.current.save();
+      await Promise.resolve();
+    });
+    expect(f.user.fullName).toBe("Riya");
+    await rerender({});
+    expect(result.current.requiresInput).toBe(true);
+    expect(result.current.busy).toBe(true);
+    await act(async () => {
+      pending.reject(new Error("save unavailable"));
+      await save;
+    });
+    expect(result.current.requiresInput).toBe(true);
+    expect(result.current.ready).toBe(false);
+    await act(() => result.current.save());
+    expect(result.current.ready).toBe(true);
+    expect(result.current.requiresInput).toBe(false);
+  });
+
+  it("does not carry a previous account’s profile form into a known-name account check", async () => {
+    const f = fixture();
+    const pending = deferred<{ displayName: string }>();
+    const { result, rerender } = await renderHook(() =>
+      useProfileCompletion(f.options),
+    );
+    expect(result.current.requiresInput).toBe(true);
+    await act(() => result.current.setName("Riya"));
+    f.user.id = "account-b";
+    f.user.fullName = "Ananya";
+    f.user.firstName = "Ananya";
+    f.api.syncProfile.mockReturnValueOnce(pending.promise);
+    await rerender({});
+    expect(result.current.requiresInput).toBe(false);
+    expect(result.current.name).toBe("Ananya");
+    await act(() => pending.resolve({ displayName: "Ananya" }));
+    expect(result.current.requiresInput).toBe(false);
   });
 
   it("keeps the name form visible while saving instead of switching to a loading screen", async () => {

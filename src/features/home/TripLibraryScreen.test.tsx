@@ -1,6 +1,7 @@
 import { act, fireEvent, render } from "@testing-library/react-native";
 import type { TripSummary } from "../../domain/trips/model";
 import { TripLibraryScreen } from "./TripLibraryScreen";
+import { Text } from "react-native";
 
 // Use the real recycler and the measurement pattern from its Jest setup.
 // These are rendering/interaction checks, not physical-device performance claims.
@@ -107,4 +108,67 @@ it("keeps the current trip and retry state when history refresh fails", async ()
   expect(
     screen.getByRole("button", { name: "Start a new trip" }),
   ).toBeDisabled();
+});
+
+it("shows actual trip metadata during sharing preparation without declaring it live or enabling current-trip actions", async () => {
+  const current = {
+    ...history[0]!,
+    name: "Current trip",
+    status: "ACTIVE" as const,
+    participation: "JOINED" as const,
+    leftAt: null,
+  };
+  const onOpenTrip = jest.fn();
+  const screen = await render(
+    <TripLibraryScreen
+      trips={[current, history[1]!]}
+      statusContent={<Text>Preparing photo sharing</Text>}
+      canCreateTrip={false}
+      sharingReady={false}
+      canOpenTrip={(trip) => trip.participation === "LEFT"}
+      onOpenTrip={onOpenTrip}
+      onCreateTrip={jest.fn()}
+      onJoinTrip={jest.fn()}
+      onRetry={jest.fn()}
+    />,
+  );
+  screen.getByText("Preparing photo sharing");
+  screen.getByText("Current trip");
+  screen.getByText("Sharing is not ready on this phone");
+  expect(screen.queryByText("Live")).toBeNull();
+  const currentButton = screen.getByRole("button", {
+    name: "Open Current trip",
+  });
+  expect(currentButton).toBeDisabled();
+  await fireEvent.press(currentButton);
+  expect(onOpenTrip).not.toHaveBeenCalled();
+  await fireEvent.press(
+    screen.getByRole("button", { name: "View Past trip 1" }),
+  );
+  expect(onOpenTrip).toHaveBeenCalledWith(history[1]);
+});
+
+it("keeps create and invite actions visible but disabled while the phone is restoring", async () => {
+  const create = jest.fn();
+  const join = jest.fn();
+  const screen = await render(
+    <TripLibraryScreen
+      trips={[]}
+      statusContent={<Text>Restoring this phone</Text>}
+      canCreateTrip={false}
+      onOpenTrip={jest.fn()}
+      onCreateTrip={create}
+      onJoinTrip={join}
+      onRetry={jest.fn()}
+    />,
+  );
+  screen.getByText("Restoring this phone");
+  const createButton = screen.getByRole("button", { name: "Start a new trip" });
+  const joinButton = screen.getByRole("button", { name: "Enter invite code" });
+  expect(createButton).toBeDisabled();
+  expect(joinButton).toBeDisabled();
+  await fireEvent.press(createButton);
+  await fireEvent.press(joinButton);
+  expect(create).not.toHaveBeenCalled();
+  expect(join).not.toHaveBeenCalled();
 });

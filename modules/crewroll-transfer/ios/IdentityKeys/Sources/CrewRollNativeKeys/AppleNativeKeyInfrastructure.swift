@@ -129,7 +129,8 @@ public enum AppleNativeKeyInfrastructure {
             crypto: try AppleSodiumCrypto(),
             p256: AppleP256IdentityProvider(),
             accountHasher: AppleAccountNamespaceHasher(),
-            cleanupScheduler: DispatchNativeKeyCleanupScheduler()
+            cleanupScheduler: DispatchNativeKeyCleanupScheduler(),
+            deferMaintenance: true
         )
     }
 }

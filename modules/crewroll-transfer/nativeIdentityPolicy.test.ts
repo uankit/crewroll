@@ -20,6 +20,7 @@ describe("native identity and trip-key production policy", () => {
     );
     for (const method of [
       "ensureDeviceIdentity",
+      "getActiveTripSelection",
       "installDeviceSession",
       "refreshDeviceSession",
       "clearDeviceSession",
@@ -31,7 +32,7 @@ describe("native identity and trip-key production policy", () => {
       "deactivateTrip",
     ]) {
       expect(swift).toContain(`lifecycle.${method}`);
-      expect(kotlin).toContain(`lifecycle.${method}`);
+      expect(kotlin).toMatch(new RegExp(`lifecycle(?:\\(\\))?\\.${method}`));
     }
     expect(swift).not.toContain("ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED");
     expect(kotlin).not.toContain("ERR_CREWROLL_TRANSFER_NOT_IMPLEMENTED");
@@ -92,7 +93,7 @@ describe("native identity and trip-key production policy", () => {
     }
   });
 
-  it("runs one serialized cleanup service at Expo 57 creation, foreground, and expiry across background workers", () => {
+  it("defers interactive retention to the shared native runtime without cancelling OS expiry work on JS teardown", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",
     );
@@ -106,10 +107,20 @@ describe("native identity and trip-key production policy", () => {
     expect(kotlin).toContain("OnActivityEntersForeground {");
     expect(kotlin).toContain("OnDestroy {");
     for (const source of [swift, kotlin]) {
-      expect(source).toContain("runLifecycleCleanup");
-      expect(source).toContain("runScheduledCleanup");
+      expect(source).toContain("requestRetentionMaintenance");
       // JS teardown must not terminate the process-wide OS transfer runtime.
       expect(source).not.toContain("cancelScheduledCleanup");
+    }
+    const swiftRuntime = read(
+      "modules/crewroll-transfer/ios/CrewRollBackgroundTasks.swift",
+    );
+    const kotlinRuntime = read(
+      "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/CrewRollNativeRuntime.kt",
+    );
+    for (const runtime of [swiftRuntime, kotlinRuntime]) {
+      expect(runtime).toContain("runScheduledCleanup");
+      expect(runtime).toContain("requestRetentionMaintenance");
+      expect(runtime).toContain("reconcileRetention");
     }
     const swiftLifecycle = read(
       "modules/crewroll-transfer/ios/IdentityKeys/Sources/CrewRollNativeKeys/NativeKeyLifecycle.swift",
@@ -267,6 +278,7 @@ describe("native identity and trip-key production policy", () => {
     for (const [method, kind] of [
       ["prepareDeviceSession", "PREPARE_DEVICE_SESSION"],
       ["ensureDeviceIdentity", "ENSURE_DEVICE_IDENTITY"],
+      ["getActiveTripSelection", "GET_ACTIVE_TRIP_SELECTION"],
       ["restoreDeviceSession", "RESTORE_DEVICE_SESSION"],
       ["installDeviceSession", "INSTALL_DEVICE_SESSION"],
       ["refreshDeviceSession", "REFRESH_DEVICE_SESSION"],

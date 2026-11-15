@@ -49,7 +49,12 @@ export function TripNotificationsSheet({
     approve: boolean,
     phone = false,
   ) {
-    if (working.current || !session.actions) return;
+    if (
+      working.current ||
+      !session.actions ||
+      !session.capabilities.canMutateTrip
+    )
+      return;
     working.current = true;
     setBusy({ id, action: approve ? "approve" : "decline" });
     setError(null);
@@ -94,7 +99,11 @@ export function TripNotificationsSheet({
               key={member.membershipId}
               name={member.displayName}
               busy={busy?.id === member.membershipId ? busy.action : null}
-              disabled={busy !== null || !session.actions}
+              disabled={
+                busy !== null ||
+                !session.actions ||
+                !session.capabilities.canMutateTrip
+              }
               onApprove={() =>
                 void resolve(member.membershipId, member.displayName, true)
               }
@@ -120,7 +129,11 @@ export function TripNotificationsSheet({
                     : "New Android phone"
                 }
                 busy={busy?.id === request.requestId ? busy.action : null}
-                disabled={busy !== null || !session.actions}
+                disabled={
+                  busy !== null ||
+                  !session.actions ||
+                  !session.capabilities.canMutateTrip
+                }
                 onApprove={() =>
                   void resolve(
                     request.requestId,

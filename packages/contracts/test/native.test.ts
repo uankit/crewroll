@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ActivateTripCommandSchema,
+  GetActiveTripSelectionCommandSchema,
+  ActiveTripSelectionSchema,
   AssetPageSchema,
   CreateTripKeyCommandSchema,
   CreateTripKeyResultSchema,
@@ -63,6 +65,44 @@ describe("crypto protocol metadata", () => {
 });
 
 describe("native bridge protocol", () => {
+  it("keeps selected trip lookup scoped and metadata-only", () => {
+    const command = { protocolVersion: 1, accountId, installationId };
+    expect(Value.Check(GetActiveTripSelectionCommandSchema, command)).toBe(
+      true,
+    );
+    expect(
+      Value.Check(GetActiveTripSelectionCommandSchema, {
+        ...command,
+        accountId: "",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(GetActiveTripSelectionCommandSchema, {
+        ...command,
+        deviceId,
+      }),
+    ).toBe(false);
+    for (const activeTripId of [null, tripId])
+      expect(
+        Value.Check(ActiveTripSelectionSchema, {
+          protocolVersion: 1,
+          activeTripId,
+        }),
+      ).toBe(true);
+    expect(
+      Value.Check(ActiveTripSelectionSchema, {
+        protocolVersion: 1,
+        activeTripId: "invalid",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(ActiveTripSelectionSchema, {
+        protocolVersion: 1,
+        activeTripId: tripId,
+        backgroundBearer: BACKGROUND_BEARER,
+      }),
+    ).toBe(false);
+  });
   it("requires one closed opaque account identity command", () => {
     const command = { protocolVersion: 1, accountId };
     expect(Value.Check(EnsureDeviceIdentityCommandSchema, command)).toBe(true);

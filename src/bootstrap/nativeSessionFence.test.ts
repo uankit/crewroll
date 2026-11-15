@@ -161,3 +161,31 @@ it("keeps optional capability discovery lazy when creating/capturing the account
   expect(captured.prepareDeviceSession).toBeUndefined();
   expect(captured.importAndActivateTrip).toBeUndefined();
 });
+
+it("fences metadata-only selection before dispatch and after late account-change completion", async () => {
+  const { native, fence } = fixture();
+  let finish!: (value: { protocolVersion: 1; activeTripId: null }) => void;
+  const operation = jest.fn(
+    () =>
+      new Promise<{ protocolVersion: 1; activeTripId: null }>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  native.getActiveTripSelection = operation;
+  const old = fence.capture();
+  const selection = old.getActiveTripSelection!;
+  const command = {
+    protocolVersion: 1,
+    accountId: "user_one",
+    installationId: "install_one",
+  } as const;
+  const pending = selection(command);
+  const rejected = expect(pending).rejects.toThrow("Native session ended");
+  fence.invalidate();
+  finish({ protocolVersion: 1, activeTripId: null });
+  await rejected;
+  await expect(selection(command)).rejects.toThrow("Native session ended");
+  expect(operation).toHaveBeenCalledTimes(1);
+  expect(() => old.getActiveTripSelection).toThrow("Native session ended");
+  expect(native.getSnapshot).not.toHaveBeenCalled();
+});

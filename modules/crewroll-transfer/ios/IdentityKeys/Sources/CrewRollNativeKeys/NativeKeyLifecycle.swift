@@ -114,6 +114,7 @@ public struct ActiveTripMetadata: Codable, Equatable, Sendable {
 }
 
 public protocol NativeKeyStore: AnyObject {
+    func activeSelection() throws -> NativeSelectedTrip?
     func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date?
     func frozenMetadata(scope: NativeKeyScope, tripID: String) throws -> ActiveTripMetadata?
     func expiredTrips(now: Date) throws -> [NativeExpiredTrip]
@@ -137,6 +138,8 @@ public protocol NativeKeyStore: AnyObject {
         makeValue: () throws -> TripKeyRecord
     ) throws -> TripCreateOutcome
     func loadTrip(scope: NativeKeyScope, tripID: String) throws -> TripKeyRecord?
+    func tripMetadata(scope: NativeKeyScope, tripID: String) throws -> NativeTripKeyMetadata?
+    func discardExpiredProvisional(scope: NativeKeyScope, tripID: String, now: Date) throws -> Bool
     func discardProvisional(
         scope: NativeKeyScope,
         tripID: String
@@ -161,7 +164,41 @@ public struct NativeMediaContext {
     public var tripKey: Data
 }
 
+/// Selection is only a restoration hint. It contains no trip key or credential
+/// and cannot authorize photo access before server reconciliation.
+public struct NativeSelectedTrip: Equatable, Sendable {
+    public let scope: NativeKeyScope
+    public let metadata: ActiveTripMetadata
+    public init(scope: NativeKeyScope, metadata: ActiveTripMetadata) {
+        self.scope = scope
+        self.metadata = metadata
+    }
+}
+
+public struct NativeTripKeyMetadata: Equatable, Sendable {
+    public let state: KeyState
+    public let createdAt: Date?
+    public let provisionalExpiresAt: Date?
+    public init(state: KeyState, createdAt: Date?, provisionalExpiresAt: Date?) {
+        self.state = state
+        self.createdAt = createdAt
+        self.provisionalExpiresAt = provisionalExpiresAt
+    }
+}
+
 public extension NativeKeyStore {
+    func activeSelection() throws -> NativeSelectedTrip? { nil }
+    func tripMetadata(scope: NativeKeyScope, tripID: String) throws -> NativeTripKeyMetadata? {
+        guard var record = try loadTrip(scope: scope, tripID: tripID) else { return nil }
+        defer { record.key.resetBytes(in: 0..<record.key.count) }
+        return NativeTripKeyMetadata(state: record.state, createdAt: record.createdAt,
+            provisionalExpiresAt: record.provisionalExpiresAt)
+    }
+    func discardExpiredProvisional(scope: NativeKeyScope, tripID: String, now: Date) throws -> Bool {
+        guard let record = try tripMetadata(scope: scope, tripID: tripID), record.state == .provisional,
+              let expiry = record.provisionalExpiresAt, expiry <= now else { return false }
+        return try discardProvisional(scope: scope, tripID: tripID) == .discarded
+    }
     func tripRetentionDeadline(scope: NativeKeyScope, tripID: String) throws -> Date? {
         try frozenMetadata(scope: scope, tripID: tripID).map(NativeTripRetention.deadline)
     }
@@ -296,6 +333,7 @@ public enum TripKeyEnvelopeV1 {
 
 public enum NativeCommandKind: CaseIterable, Sendable {
     case prepareDeviceSession
+    case getActiveTripSelection
     case ensureDeviceIdentity
     case restoreDeviceSession
     case installDeviceSession
@@ -312,6 +350,8 @@ public enum NativeCommandKind: CaseIterable, Sendable {
         switch self {
         case .prepareDeviceSession:
             return ["protocolVersion", "accountId", "apiBaseUrl"]
+        case .getActiveTripSelection:
+            return ["protocolVersion", "accountId", "installationId"]
         case .ensureDeviceIdentity:
             return ["protocolVersion", "accountId"]
         case .restoreDeviceSession:
@@ -367,7 +407,7 @@ public enum NativeCommandKind: CaseIterable, Sendable {
     }
 
     fileprivate var hasTripID: Bool {
-        self != .prepareDeviceSession && self != .ensureDeviceIdentity && self != .installDeviceSession &&
+        self != .prepareDeviceSession && self != .getActiveTripSelection && self != .ensureDeviceIdentity && self != .installDeviceSession &&
             self != .restoreDeviceSession && self != .refreshDeviceSession && self != .importAndActivateTrip
     }
 }
@@ -603,6 +643,7 @@ public final class NativeKeyCleanupCoordinator {
         }
     }
 
+
     public func reconcile() throws {
         lock.lock()
         defer { lock.unlock() }
@@ -680,6 +721,7 @@ public final class NativeKeyLifecycle {
     private let accountHasher: AccountNamespaceHasher
     private let cleanupRunner: NativeKeyCleanupRunner
     private let cleanupCoordinator: NativeKeyCleanupCoordinator?
+    private let deferMaintenance: Bool
 
     public init(
         clock: NativeKeyClock,
@@ -687,13 +729,15 @@ public final class NativeKeyLifecycle {
         crypto: NativeKeyCrypto,
         p256: P256IdentityProvider,
         accountHasher: AccountNamespaceHasher,
-        cleanupScheduler: NativeKeyCleanupScheduling? = nil
+        cleanupScheduler: NativeKeyCleanupScheduling? = nil,
+        deferMaintenance: Bool = false
     ) {
         self.clock = clock
         self.store = store
         self.crypto = crypto
         self.p256 = p256
         self.accountHasher = accountHasher
+        self.deferMaintenance = deferMaintenance
         let runner = NativeKeyCleanupRunner(clock: clock, store: store)
         cleanupRunner = runner
         cleanupCoordinator = cleanupScheduler.map {
@@ -778,26 +822,31 @@ public final class NativeKeyLifecycle {
             installationID: identity.installationID, apiBaseURL: apiBaseURL) else {
             return PreparedDeviceSession(identity: identity, restoredDeviceID: nil, activeTripID: nil)
         }
-        guard var context = try mediaContext() else {
-            return PreparedDeviceSession(identity: identity,
-                restoredDeviceID: restored.expiresAt > clock.now.addingTimeInterval(7 * 86_400) ? restored.deviceID : nil,
-                activeTripID: nil)
-        }
-        defer {
-            crypto.zeroize(&context.tripKey)
-            crypto.zeroize(&context.session.backgroundBearer)
-        }
-        guard context.scope == NativeKeyScope(accountHash: try hashAccountID(accountID),
-                  installationID: identity.installationID),
-              context.session.deviceID == restored.deviceID, context.session.apiBaseURL == apiBaseURL else {
+        let selection = try store.activeSelection()
+        let expectedScope = NativeKeyScope(accountHash: try hashAccountID(accountID),
+            installationID: identity.installationID)
+        guard selection == nil || selection?.scope == expectedScope else {
             throw NativeKeyError.materialLost
         }
-        guard restored.expiresAt > clock.now.addingTimeInterval(7 * 86_400),
-              context.session.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else {
+        // A trip hint must not require opening its key. Corrupt/expired trip
+        // material belongs to later trip preparation, not device restoration.
+        if let selection { try NativeCommandDecoder.requireTripID(selection.metadata.tripID) }
+        guard restored.expiresAt > clock.now.addingTimeInterval(7 * 86_400) else {
             return PreparedDeviceSession(identity: identity, restoredDeviceID: nil, activeTripID: nil)
         }
         return PreparedDeviceSession(identity: identity, restoredDeviceID: restored.deviceID,
-            activeTripID: context.metadata.tripID)
+            activeTripID: selection?.metadata.tripID)
+    }
+
+    /// A fresh, account-scoped public selection read for trip retries. It does
+    /// not construct the engine or open a trip key, identity, or credential.
+    public func getActiveTripSelection(accountID: String, installationID: String) throws -> String? {
+        let accountHash = try hashAccountID(accountID)
+        guard validInstallationID(installationID) else { throw NativeKeyError.invalidCommand }
+        guard let selected = try store.activeSelection(),
+              selected.scope == NativeKeyScope(accountHash: accountHash, installationID: installationID) else { return nil }
+        try NativeCommandDecoder.requireTripID(selected.metadata.tripID)
+        return selected.metadata.tripID
     }
 
     /// Reads only the public device ID; bearer and key material stay native.
@@ -834,6 +883,7 @@ public final class NativeKeyLifecycle {
         expiresAt: Date,
         apiBaseURL: String
     ) throws {
+        guard expiresAt > clock.now else { throw NativeKeyError.materialLost }
         try prepare()
         let accountHash = try hashAccountID(accountID)
         guard validInstallationID(installationID) else { throw NativeKeyError.materialLost }
@@ -853,6 +903,7 @@ public final class NativeKeyLifecycle {
         ) != nil,
               let url = URL(string: apiBaseURL), url.scheme == "https"
         else { throw NativeKeyError.invalidCommand }
+        guard expiresAt > clock.now else { throw NativeKeyError.materialLost }
         guard var bearer = backgroundBearer.data(using: .utf8) else {
             throw NativeKeyError.invalidCommand
         }
@@ -1034,6 +1085,11 @@ public final class NativeKeyLifecycle {
                 recipientDeviceID: recipientDeviceID,
                 recipientE2EEKeyVersion: 1
             )
+            // Deferred maintenance must preserve the former GC/reimport
+            // behavior, without using the expired provisional key or scanning
+            // unrelated records. Preserve purge and import as separate commits.
+            _ = try store.discardExpiredProvisional(scope: scopedSession.scope,
+                tripID: tripID, now: clock.now)
             if try store.importTrip(
                 scope: scopedSession.scope,
                 tripID: tripID,
@@ -1149,8 +1205,7 @@ public final class NativeKeyLifecycle {
         }
         // Owner-created provisional keys have a separate 24h lifetime. Imported
         // legacy keys cannot wrap until an authenticated import backfills expiry.
-        if var record = try store.loadTrip(scope: scope, tripID: tripID) {
-            defer { crypto.zeroize(&record.key) }
+        if let record = try store.tripMetadata(scope: scope, tripID: tripID) {
             guard record.state == .provisional,
                   let expiry = record.provisionalExpiresAt, expiry > clock.now
             else { throw NativeKeyError.materialLost }
@@ -1158,12 +1213,16 @@ public final class NativeKeyLifecycle {
     }
 
     private func prepare() throws {
+        if deferMaintenance {
+            return
+        }
         if let cleanupCoordinator {
             try cleanupCoordinator.reconcileIfDue(now: clock.now)
         } else {
             _ = try cleanupRunner.run()
         }
     }
+
 
     private func reconcileCleanup() throws {
         if let cleanupCoordinator {
@@ -1182,7 +1241,9 @@ public final class NativeKeyLifecycle {
         try prepare()
         guard var session = try store.activeSession() else { throw NativeKeyError.materialLost }
         defer { crypto.zeroize(&session.session.backgroundBearer) }
+        guard session.session.expiresAt > clock.now else { throw NativeKeyError.materialLost }
         try withValidatedIdentity(scope: session.scope) { _ in () }
+        guard session.session.expiresAt > clock.now else { throw NativeKeyError.materialLost }
         return SessionContext(scope: session.scope, deviceID: session.session.deviceID)
     }
 

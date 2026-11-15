@@ -35,7 +35,8 @@ export function SafetyActions({
   const [failed, setFailed] = useState(false);
   const running = useRef(false);
   const send = async () => {
-    if (!privacy || running.current) return;
+    if (!privacy || running.current || !session.capabilities.canMutateTrip)
+      return;
     running.current = true;
     setBusy(true);
     setFailed(false);
@@ -130,7 +131,7 @@ export function SafetyActions({
           </AppText>
           <Button
             label="Send report"
-            disabled={!reason}
+            disabled={!reason || !session.capabilities.canMutateTrip}
             loading={busy}
             onPress={() => void send()}
           />
@@ -150,6 +151,7 @@ export function SafetyActions({
           <Button
             label={target.owner ? "Block & end trip" : "Block & leave trip"}
             variant="critical"
+            disabled={!session.capabilities.canMutateTrip}
             loading={busy}
             onPress={() => void send()}
           />

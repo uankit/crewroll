@@ -5,6 +5,32 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testStaleForegroundDeliveryCannotOverwriteNewerBackgroundVisibility() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let engine = fixture.engine {}
+        let source = NativeForegroundState()
+        let oldForeground = source.update(true)
+        let newerBackground = source.update(false)
+        // The OS transition and a queued activation can reach the actor in
+        // either order. Applying the delayed activation's snapshot must not
+        // restore the shorter foreground polling cadence or wake discovery.
+        await engine.foreground(newerBackground)
+        await engine.foreground(oldForeground)
+        let afterStale = await engine.isForeground
+        XCTAssertFalse(afterStale)
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.previewFeedReads, 0)
+        let currentForeground = source.update(true)
+        await engine.foreground(currentForeground)
+        let afterCurrent = await engine.isForeground
+        XCTAssertTrue(afterCurrent)
+        // An equally old duplicate cannot reverse the newer foreground state.
+        await engine.foreground(newerBackground)
+        let afterDuplicate = await engine.isForeground
+        XCTAssertTrue(afterDuplicate)
+        await engine.stop()
+    }
+
     func testIncompleteOriginalRetriesWithFreshGrantAfterRestartAndLostReceiptNeverSavesTwice() async throws {
         let fixture = try TransferFixture()
         defer { fixture.cleanup() }
@@ -328,7 +354,7 @@ final class ApplePhotoTransferEngineTests: XCTestCase {
             let recovered = try await engine.snapshot()
             XCTAssertEqual(recovered["paused"] as? Bool, stopBetweenAttempts)
             if stopBetweenAttempts {
-                await engine.foreground(true)
+                await engine.foreground(NativeForegroundSnapshot(revision: 1, isForeground: true))
                 await engine.wakePreviews()
                 XCTAssertEqual(fixture.network.previewFeedReads, before)
             } else {

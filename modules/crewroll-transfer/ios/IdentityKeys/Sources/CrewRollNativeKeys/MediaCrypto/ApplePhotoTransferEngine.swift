@@ -85,7 +85,8 @@ public actor ApplePhotoTransferEngine {
     private var previewNextCheck = Date.distantPast
     private var originalIdle = 0
     private var previewIdle = 0
-    private var visible = true
+    private var foregroundSnapshot: NativeForegroundSnapshot?
+    var isForeground: Bool { foregroundSnapshot?.isForeground ?? true }
     private var globalBlocker: String?
     private var credentialRecovery: (deviceID: String, ifCurrent: () -> Bool)?
     private var poll: Task<Void, Never>?
@@ -228,9 +229,10 @@ public actor ApplePhotoTransferEngine {
         credentialRecovery = nil
     }
 
-    public func foreground(_ value: Bool) async {
-        visible = value
-        if value {
+    public func foreground(_ snapshot: NativeForegroundSnapshot) async {
+        if let current = foregroundSnapshot, snapshot.revision <= current.revision { return }
+        foregroundSnapshot = snapshot
+        if snapshot.isForeground {
             retentionNextCheck = .distantPast
             originalNextCheck = .distantPast; previewNextCheck = .distantPast
             Task { await self.wakePreviews() }; Task { await self.wake() }
@@ -327,7 +329,7 @@ public actor ApplePhotoTransferEngine {
                 Task { await self.runOriginal(record, context: copy, epoch: epoch, ledger: ledger, network: worker) }
             }
             originalIdle = activeOriginals.isEmpty ? min(5, originalIdle + 1) : 0
-            originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (visible ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
+            originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (isForeground ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
             if page.hasMore { originalNextCheck = min(originalNextCheck, Date().addingTimeInterval(1)) }
             if let retry = pending.compactMap(\.nextAttemptAt).filter({ $0 > Date() }).min() { originalNextCheck = min(originalNextCheck, retry) }
         } catch {
@@ -629,7 +631,7 @@ public actor ApplePhotoTransferEngine {
                 let worked = revision != initialRevision
                 if worked { lastProgressAt = Date(); invalidated(revision) }
                 previewIdle = worked ? 0 : min(5, previewIdle + 1)
-                previewNextCheck = Date().addingTimeInterval(worked ? 1 : (visible ? min(15, pow(2, Double(previewIdle))) : 30))
+                previewNextCheck = Date().addingTimeInterval(worked ? 1 : (isForeground ? min(15, pow(2, Double(previewIdle))) : 30))
             }
             try cache.purgeExpired(now: Date())
             let network = transportFactory(cellularAllowed)

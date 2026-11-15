@@ -413,6 +413,16 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
         }
     }
 
+    public func activeSelection() throws -> NativeSelectedTrip? {
+        try read { database in
+            guard let scope = database.selectedScope,
+                  let state = database.scopes[scopeKey(scope)],
+                  let metadata = state.activeMetadata,
+                  state.trips[metadata.tripID]?.state == .active else { return nil }
+            return NativeSelectedTrip(scope: scope, metadata: metadata)
+        }
+    }
+
     public func mediaContext() throws -> NativeMediaContext? {
         try read { database in
             guard let scope = database.selectedScope,
@@ -424,6 +434,25 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
                 throw NativeKeyError.materialLost
             }
             return NativeMediaContext(scope: scope, session: session, metadata: metadata, tripKey: trip.key)
+        }
+    }
+
+    public func tripMetadata(scope: NativeKeyScope, tripID: String) throws -> NativeTripKeyMetadata? {
+        try read { database in
+            guard let record = database.scopes[scopeKey(scope)]?.trips[tripID] else { return nil }
+            return NativeTripKeyMetadata(state: record.state, createdAt: record.createdAt,
+                provisionalExpiresAt: record.provisionalExpiresAt)
+        }
+    }
+
+    public func discardExpiredProvisional(scope: NativeKeyScope, tripID: String, now: Date) throws -> Bool {
+        try transaction(commitIf: { $0 }) { database in
+            let alias = scopeKey(scope)
+            guard let record = database.scopes[alias]?.trips[tripID], record.state == .provisional,
+                  let expiry = record.provisionalExpiresAt, expiry <= now else { return false }
+            database.scopes[alias]?.secureRemoveTrip(tripID)
+            database.scopes[alias]?.tombstones.insert(tripID)
+            return true
         }
     }
 

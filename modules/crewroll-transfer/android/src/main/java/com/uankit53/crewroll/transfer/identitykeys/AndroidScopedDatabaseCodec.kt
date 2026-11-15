@@ -5,28 +5,130 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.security.SecureRandom
+import java.security.MessageDigest
 import java.time.Instant
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+/** A secret is opened only when a domain operation requests it. The ciphertext
+ * remains bound to its original canonical record AAD and can be copied through
+ * metadata-only commits without another hardware operation. This object belongs
+ * to one synchronous database snapshot; it never escapes that snapshot. */
+internal class AndroidStoredSecret private constructor(
+  private var plaintext: ByteArray?,
+  private var sealed: ByteArray?,
+  private var boundAad: ByteArray?,
+  private var cipher: AndroidScopedSecretCipher?,
+  private val sizeRange: IntRange,
+) {
+  var isErased = false
+    private set
+  val isMaterialized get() = plaintext != null
+
+  fun copyPlaintext(): ByteArray {
+    if (isErased) throw NativeKeyException.invalidState()
+    val value = plaintext ?: run {
+      val source = sealed ?: throw NativeKeyException.materialLost()
+      val aad = boundAad ?: throw NativeKeyException.materialLost()
+      val opened = (cipher ?: throw NativeKeyException.materialLost()).open(source, aad)
+      if (opened.size !in sizeRange) { opened.fill(0); throw NativeKeyException.materialLost() }
+      plaintext = opened
+      opened
+    }
+    return value.copyOf()
+  }
+
+  fun sealedCopy(aad: ByteArray, sealer: AndroidScopedSecretCipher): ByteArray {
+    if (isErased) throw NativeKeyException.invalidState()
+    boundAad?.let { if (!MessageDigest.isEqual(it, aad)) throw NativeKeyException.materialLost() }
+    val current = sealed
+    if (current != null) return current.copyOf()
+    val value = plaintext ?: throw NativeKeyException.materialLost()
+    if (value.size !in sizeRange) throw NativeKeyException.materialLost()
+    val record = sealer.seal(value, aad)
+    if (record.size != value.size + 28) { record.fill(0); throw NativeKeyException.materialLost() }
+    sealed = record
+    boundAad = aad.copyOf()
+    cipher = sealer
+    return record.copyOf()
+  }
+
+  fun erase() {
+    plaintext?.fill(0); sealed?.fill(0); boundAad?.fill(0)
+    plaintext = null; sealed = null; boundAad = null; cipher = null
+    isErased = true
+  }
+
+  companion object {
+    fun plaintext(value: ByteArray, range: IntRange): AndroidStoredSecret {
+      if (value.size !in range) throw NativeKeyException.materialLost()
+      return AndroidStoredSecret(value.copyOf(), null, null, null, range)
+    }
+    fun sealed(record: ByteArray, aad: ByteArray, cipher: AndroidScopedSecretCipher, range: IntRange): AndroidStoredSecret {
+      if (record.size !in (range.first + 28)..(range.last + 28)) throw NativeKeyException.materialLost()
+      return AndroidStoredSecret(null, record.copyOf(), aad.copyOf(), cipher, range)
+    }
+  }
+}
+
+internal data class AndroidStoredIdentity(
+  val installationId: String,
+  val authenticationPublicKey: ByteArray,
+  val e2eePublicKey: ByteArray,
+  val privateKey: AndroidStoredSecret,
+) {
+  fun materialize() = DeviceIdentityMaterial(installationId, authenticationPublicKey.copyOf(), e2eePublicKey.copyOf(), privateKey.copyPlaintext())
+  companion object {
+    fun from(value: DeviceIdentityMaterial) = AndroidStoredIdentity(value.installationId,
+      value.authenticationPublicKey.copyOf(), value.e2eePublicKey.copyOf(), AndroidStoredSecret.plaintext(value.e2eePrivateKey, 32..32))
+  }
+}
+
+internal data class AndroidStoredSession(
+  val deviceId: String,
+  val bearer: AndroidStoredSecret,
+  val expiresAt: Instant,
+  val apiBaseUrl: String,
+) {
+  fun materialize() = DeviceSessionRecord(deviceId, bearer.copyPlaintext(), expiresAt, apiBaseUrl)
+  companion object {
+    fun from(value: DeviceSessionRecord) = AndroidStoredSession(value.deviceId,
+      AndroidStoredSecret.plaintext(value.backgroundBearer, 16..516), value.expiresAt, value.apiBaseUrl)
+  }
+}
+
+internal data class AndroidStoredTrip(
+  val secret: AndroidStoredSecret,
+  val state: KeyState,
+  val createdAt: Instant? = null,
+  val provisionalExpiresAt: Instant? = null,
+) {
+  fun materialize() = TripKeyRecord(secret.copyPlaintext(), state, createdAt, provisionalExpiresAt)
+  companion object {
+    fun from(value: TripKeyRecord) = AndroidStoredTrip(AndroidStoredSecret.plaintext(value.key, 32..32),
+      value.state, value.createdAt, value.provisionalExpiresAt)
+  }
+}
+
 internal data class AndroidScopedState(
   val scope: NativeKeyScope,
-  var session: DeviceSessionRecord? = null,
-  val trips: MutableMap<String, TripKeyRecord> = mutableMapOf(),
+  var session: AndroidStoredSession? = null,
+  val trips: MutableMap<String, AndroidStoredTrip> = mutableMapOf(),
   val tombstones: MutableSet<String> = mutableSetOf(),
   var activeMetadata: ActiveTripMetadata? = null,
   val frozenMetadata: MutableMap<String, ActiveTripMetadata> = mutableMapOf(),
   val tripEndsAt: MutableMap<String, String> = mutableMapOf(),
   val legacyReconciliationDeadlines: MutableMap<String, Instant> = mutableMapOf(),
 ) {
+  constructor(scope: NativeKeyScope, session: DeviceSessionRecord) : this(scope, AndroidStoredSession.from(session))
   fun authoritativeDeadline(tripId: String): Instant? = tripEndsAt[tripId]?.let(NativeTripRetention::deadline)
     ?: (frozenMetadata[tripId] ?: activeMetadata?.takeIf { it.tripId == tripId })?.let(NativeTripRetention::deadline)
   fun cleanupDeadline(tripId: String): Instant? = authoritativeDeadline(tripId) ?: legacyReconciliationDeadlines[tripId]
 }
 
 internal data class AndroidScopedDatabase(
-  val identities: MutableMap<String, DeviceIdentityMaterial> = mutableMapOf(),
+  val identities: MutableMap<String, AndroidStoredIdentity> = mutableMapOf(),
   val pendingIdentities: MutableMap<String, String> = mutableMapOf(),
   val scopes: MutableMap<String, AndroidScopedState> = mutableMapOf(),
   var selectedScope: NativeKeyScope? = null,
@@ -314,33 +416,29 @@ private class ScopedRecordInput(buffer: ByteArrayInputStream) : DataInputStream(
     }
     return value
   }
-  fun identity() = DeviceIdentityMaterial(text(128), bytes(65), bytes(32), bytes(32))
-  fun session(): DeviceSessionRecord {
+  fun identity(): AndroidStoredIdentity {
+    val material = DeviceIdentityMaterial(text(128), bytes(65), bytes(32), bytes(32))
+    return try { AndroidStoredIdentity.from(material) } finally { material.e2eePrivateKey.fill(0) }
+  }
+  fun session(): AndroidStoredSession {
     val deviceId = text(64)
     val bearerSize = count(516)
     if (bearerSize < 16) throw NativeKeyException.materialLost()
     val bearer = ByteArray(bearerSize).also(::readFully)
     return try {
-      DeviceSessionRecord(
-        deviceId,
-        bearer,
-        Instant.ofEpochMilli(readLong()),
-        text(2048),
-      )
-    } catch (error: Throwable) {
-      bearer.fill(0)
-      throw error
-    }
+      val expiresAt = Instant.ofEpochMilli(readLong())
+      val apiBaseUrl = text(2048)
+      AndroidStoredSession(deviceId, AndroidStoredSecret.plaintext(bearer, 16..516), expiresAt, apiBaseUrl)
+    } finally { bearer.fill(0) }
   }
-  fun trip(): TripKeyRecord {
+  fun trip(): AndroidStoredTrip {
     val key = bytes(32)
     return try {
       val state = KeyState.entries.getOrNull(readInt()) ?: throw NativeKeyException.materialLost()
-      TripKeyRecord(key, state, instant(), instant())
-    } catch (error: Throwable) {
-      key.fill(0)
-      throw error
-    }
+      val createdAt = instant()
+      val expiresAt = instant()
+      AndroidStoredTrip(AndroidStoredSecret.plaintext(key, 32..32), state, createdAt, expiresAt)
+    } finally { key.fill(0) }
   }
   fun metadata() = ActiveTripMetadata(
     text(64),
@@ -370,11 +468,12 @@ private class ScopedRecordOutputV2(
     if (value.size != exact) throw NativeKeyException.materialLost()
     write(value)
   }
-  fun wrapped(value: ByteArray, aad: ByteArray, maximum: Int) {
-    val record = cipher.seal(value, aad)
-    if (record.size !in 29..maximum) throw NativeKeyException.materialLost()
-    writeInt(record.size)
-    write(record)
+  fun wrapped(value: AndroidStoredSecret, aad: ByteArray, maximum: Int) {
+    val record = value.sealedCopy(aad, cipher)
+    try {
+      if (record.size !in 29..maximum) throw NativeKeyException.materialLost()
+      writeInt(record.size); write(record)
+    } finally { record.fill(0); aad.fill(0) }
   }
   fun instant(value: Instant?) = optional(value) { writeLong(it.toEpochMilli()) }
   fun <T> optional(value: T?, body: ScopedRecordOutputV2.(T) -> Unit) {
@@ -385,25 +484,24 @@ private class ScopedRecordOutputV2(
     text(value.accountHash, 64)
     text(value.installationId, 128)
   }
-  fun identity(accountHash: String, value: DeviceIdentityMaterial) {
+  fun identity(accountHash: String, value: AndroidStoredIdentity) {
     val scope = NativeKeyScope(accountHash, value.installationId)
     text(value.installationId, 128)
     bytes(value.authenticationPublicKey, 65)
     bytes(value.e2eePublicKey, 32)
-    wrapped(value.e2eePrivateKey, AndroidScopedDatabaseCodec.identityAad(scope), 128)
+    wrapped(value.privateKey, AndroidScopedDatabaseCodec.identityAad(scope), 128)
   }
-  fun session(scope: NativeKeyScope, value: DeviceSessionRecord) {
+  fun session(scope: NativeKeyScope, value: AndroidStoredSession) {
     text(value.deviceId, 64)
     writeLong(value.expiresAt.toEpochMilli())
     text(value.apiBaseUrl, 2048)
-    if (value.backgroundBearer.size !in 16..516) throw NativeKeyException.materialLost()
-    wrapped(value.backgroundBearer, AndroidScopedDatabaseCodec.sessionAad(scope, value.deviceId), 600)
+    wrapped(value.bearer, AndroidScopedDatabaseCodec.sessionAad(scope, value.deviceId), 600)
   }
-  fun trip(scope: NativeKeyScope, tripId: String, value: TripKeyRecord) {
+  fun trip(scope: NativeKeyScope, tripId: String, value: AndroidStoredTrip) {
     writeInt(value.state.ordinal)
     instant(value.createdAt)
     instant(value.provisionalExpiresAt)
-    wrapped(value.key, AndroidScopedDatabaseCodec.tripAad(scope, tripId), 128)
+    wrapped(value.secret, AndroidScopedDatabaseCodec.tripAad(scope, tripId), 128)
   }
   fun metadata(value: ActiveTripMetadata) {
     text(value.tripId, 64)
@@ -427,14 +525,10 @@ private class ScopedRecordInputV2(
     return String(ByteArray(size).also(::readFully), Charsets.UTF_8)
   }
   fun bytes(exact: Int) = ByteArray(exact).also(::readFully)
-  fun wrapped(aad: ByteArray, range: IntRange, maximum: Int): ByteArray {
+  fun wrapped(aad: ByteArray, range: IntRange, maximum: Int): AndroidStoredSecret {
     val record = ByteArray(count(maximum)).also(::readFully)
-    val value = try { cipher.open(record, aad) } finally { record.fill(0) }
-    if (value.size !in range) {
-      value.fill(0)
-      throw NativeKeyException.materialLost()
-    }
-    return value
+    return try { AndroidStoredSecret.sealed(record, aad, cipher, range) }
+    finally { record.fill(0); aad.fill(0) }
   }
   fun instant(): Instant? = optional { Instant.ofEpochMilli(readLong()) }
   fun <T> optional(body: () -> T): T? = if (readBoolean()) body() else null
@@ -451,32 +545,32 @@ private class ScopedRecordInputV2(
     }
     if (parsed.toString() != value.lowercase()) throw NativeKeyException.materialLost()
   }
-  fun identity(accountHash: String): DeviceIdentityMaterial {
+  fun identity(accountHash: String): AndroidStoredIdentity {
     val installationId = installationId()
     val scope = NativeKeyScope(accountHash, installationId)
-    return DeviceIdentityMaterial(
+    return AndroidStoredIdentity(
       installationId,
       bytes(65),
       bytes(32),
       wrapped(AndroidScopedDatabaseCodec.identityAad(scope), 32..32, 128),
     )
   }
-  fun session(scope: NativeKeyScope): DeviceSessionRecord {
+  fun session(scope: NativeKeyScope): AndroidStoredSession {
     val deviceId = canonicalUuid()
     val expiresAt = Instant.ofEpochMilli(readLong())
     val apiBaseUrl = text(2048)
-    return DeviceSessionRecord(
+    return AndroidStoredSession(
       deviceId,
       wrapped(AndroidScopedDatabaseCodec.sessionAad(scope, deviceId), 16..516, 600),
       expiresAt,
       apiBaseUrl,
     )
   }
-  fun trip(scope: NativeKeyScope, tripId: String): TripKeyRecord {
+  fun trip(scope: NativeKeyScope, tripId: String): AndroidStoredTrip {
     val state = KeyState.entries.getOrNull(readInt()) ?: throw NativeKeyException.materialLost()
     val createdAt = instant()
     val expiresAt = instant()
-    return TripKeyRecord(
+    return AndroidStoredTrip(
       wrapped(AndroidScopedDatabaseCodec.tripAad(scope, tripId), 32..32, 128),
       state,
       createdAt,
@@ -494,14 +588,14 @@ private class ScopedRecordInputV2(
 }
 
 internal fun AndroidScopedDatabase.zeroize() {
-  identities.values.forEach { it.e2eePrivateKey.fill(0) }
+  identities.values.forEach { it.privateKey.erase() }
   scopes.values.forEach { state ->
-    state.session?.backgroundBearer?.fill(0)
-    state.trips.values.forEach { it.key.fill(0) }
+    state.session?.bearer?.erase()
+    state.trips.values.forEach { it.secret.erase() }
   }
 }
 
 internal fun AndroidScopedState.secureReplaceSession(value: DeviceSessionRecord) {
-  session?.backgroundBearer?.fill(0)
-  session = value.copy(backgroundBearer = value.backgroundBearer.copyOf())
+  session?.bearer?.erase()
+  session = AndroidStoredSession.from(value)
 }

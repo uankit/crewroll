@@ -15,6 +15,7 @@ type State = {
   ready: boolean;
   busy: boolean;
   error: string | null;
+  inputRequired: boolean;
 };
 
 export function useProfileCompletion({
@@ -89,19 +90,23 @@ export function useProfileCompletion({
           ready: true,
           busy: false,
           error: null,
+          inputRequired: false,
         });
     })()
       .catch(() => {
         if (current())
-          setState({
+          setState((previous) => ({
             accountId,
             scope,
             name: canonicalName,
             ready: false,
             busy: false,
-            error:
-              "Your name couldn’t sync. Check your connection and try again.",
-          });
+            error: "Your name couldn’t sync. Please try again.",
+            inputRequired:
+              previous?.accountId === accountId &&
+              previous.scope === scope &&
+              previous.inputRequired === true,
+          }));
       })
       .finally(() => {
         if (working.current === operation) working.current = null;
@@ -125,6 +130,7 @@ export function useProfileCompletion({
         ready: false,
         busy: false,
         error: "Enter a name using 1–80 characters.",
+        inputRequired: true,
       });
       return;
     }
@@ -132,7 +138,15 @@ export function useProfileCompletion({
     submitted.current = { epoch, name };
     const operation = {};
     working.current = operation;
-    setState({ accountId, scope, name, ready: false, busy: true, error: null });
+    setState({
+      accountId,
+      scope,
+      name,
+      ready: false,
+      busy: true,
+      error: null,
+      inputRequired: true,
+    });
     try {
       if (name !== canonicalName)
         await withDeadline(
@@ -159,6 +173,7 @@ export function useProfileCompletion({
           ready: true,
           busy: false,
           error: null,
+          inputRequired: false,
         });
     } catch {
       if (epoch === generation.current)
@@ -168,8 +183,8 @@ export function useProfileCompletion({
           name,
           ready: false,
           busy: false,
-          error:
-            "Your name couldn’t save. Check your connection and try again.",
+          error: "Your name couldn’t save. Please try again.",
+          inputRequired: true,
         });
     } finally {
       if (working.current === operation) working.current = null;
@@ -187,6 +202,10 @@ export function useProfileCompletion({
       (accountId !== null &&
         canonicalName !== null &&
         (!visible || (visible.ready && visible.name !== canonicalName))),
+    requiresInput:
+      isLoaded &&
+      accountId !== null &&
+      (canonicalName === null || visible?.inputRequired === true),
     name: visible?.name ?? canonicalName ?? "",
     busy: visible?.busy ?? false,
     error: visible?.error ?? null,
@@ -199,6 +218,7 @@ export function useProfileCompletion({
         ready: false,
         busy: false,
         error: null,
+        inputRequired: true,
       });
     },
     save,

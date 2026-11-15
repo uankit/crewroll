@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { AccountApi } from "../infrastructure/api/crewRollApi";
 import { withDeadline } from "../application/shared/withDeadline";
 
@@ -15,39 +21,73 @@ export function useAccountTerms(
     checking: false,
     busy: false,
     error: null as string | null,
+    policyKnown: false,
   });
   const generation = useRef(0);
   const accepting = useRef(false);
+  const policyRead = useRef(0);
   const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
+  const knownPolicy = useRef<Readonly<{
+    accountId: string;
+    attempt: number;
+  }> | null>(null);
+  useLayoutEffect(() => {
     const current = ++generation.current;
+    ++policyRead.current;
     accepting.current = false;
-    if (!accountId || !profileReady) return;
+    knownPolicy.current = null;
+    return () => {
+      generation.current = current + 1;
+    };
+  }, [api, accountId]);
+  useEffect(() => {
+    if (!accountId) return;
+    // An existing account can check consent while its canonical name restores.
+    // A first-time profile may not exist on the backend yet; its successful
+    // sync changes profileReady and retries a previously unknown policy read.
+    if (
+      knownPolicy.current?.accountId === accountId &&
+      knownPolicy.current.attempt === attempt
+    )
+      return;
+    const current = generation.current;
+    const read = ++policyRead.current;
+    let cancelled = false;
+    const isCurrent = () =>
+      !cancelled &&
+      generation.current === current &&
+      policyRead.current === read;
     void withDeadline(() => api.getAccountPolicy(), POLICY_DEADLINE_MS).then(
       (policy) => {
-        if (generation.current === current)
+        if (isCurrent()) {
+          knownPolicy.current = { accountId, attempt };
           setState({
             accountId,
             accepted: policy.accepted,
             checking: false,
             busy: false,
             error: null,
+            policyKnown: true,
           });
+        }
       },
       () => {
-        if (generation.current === current)
-          setState({
+        if (isCurrent())
+          setState((previous) => ({
             accountId,
-            accepted: false,
+            accepted: previous.accountId === accountId && previous.accepted,
             checking: false,
             busy: false,
-            error:
-              "Couldn’t load your account. Check your connection and try again.",
-          });
+            policyKnown:
+              previous.accountId === accountId && previous.policyKnown,
+            error: profileReady
+              ? "Couldn’t load your account terms. Please try again."
+              : null,
+          }));
       },
     );
     return () => {
-      generation.current = current + 1;
+      cancelled = true;
     };
   }, [api, accountId, profileReady, attempt]);
   const accept = useCallback(async () => {
@@ -55,26 +95,31 @@ export function useAccountTerms(
       !accountId ||
       accepting.current ||
       state.accountId !== accountId ||
+      !state.policyKnown ||
       state.checking ||
       state.accepted
     )
       return;
     const current = generation.current;
     accepting.current = true;
+    ++policyRead.current;
     setState((value) => ({ ...value, busy: true, error: null }));
     try {
       const result = await withDeadline(
         () => api.acceptAccountTerms(),
         POLICY_DEADLINE_MS,
       );
-      if (generation.current === current)
+      if (generation.current === current) {
+        knownPolicy.current = { accountId, attempt };
         setState({
           accountId,
           accepted: result.accepted,
           checking: false,
           busy: false,
           error: null,
+          policyKnown: true,
         });
+      }
     } catch {
       if (generation.current === current)
         setState((value) => ({
@@ -85,20 +130,36 @@ export function useAccountTerms(
     } finally {
       if (generation.current === current) accepting.current = false;
     }
-  }, [api, accountId, state.accountId, state.checking, state.accepted]);
+  }, [
+    api,
+    accountId,
+    attempt,
+    state.accountId,
+    state.checking,
+    state.accepted,
+    state.policyKnown,
+  ]);
   return {
-    ...state,
+    accountId: state.accountId,
+    accepted: state.accepted,
+    busy: state.busy,
+    error: state.error,
     checking: state.accountId !== accountId || state.checking,
-    ready: profileReady && state.accountId === accountId && state.accepted,
+    ready: state.accountId === accountId && state.policyKnown && state.accepted,
+    requiresInput:
+      state.accountId === accountId && state.policyKnown && !state.accepted,
     accept,
     retry: () => {
-      setState({
+      if (accepting.current) return;
+      ++policyRead.current;
+      setState((previous) => ({
         accountId,
-        accepted: false,
+        accepted: previous.accountId === accountId && previous.accepted,
+        policyKnown: previous.accountId === accountId && previous.policyKnown,
         checking: true,
         busy: false,
         error: null,
-      });
+      }));
       setAttempt((value) => value + 1);
     },
   };

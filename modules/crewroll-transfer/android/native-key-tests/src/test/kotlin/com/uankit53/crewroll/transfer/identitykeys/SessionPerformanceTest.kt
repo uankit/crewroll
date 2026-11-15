@@ -230,7 +230,7 @@ class SessionPerformanceTest {
     assertEquals(5.toByte(), key[0])
     key.fill(0)
     disk.loaded.forEach { database ->
-      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.key.all { byte -> byte == 0.toByte() } } })
+      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.secret.isErased } })
     }
     val before = disk.reads
     assertThrows(IllegalStateException::class.java) {
@@ -239,7 +239,7 @@ class SessionPerformanceTest {
     assertEquals(5.toByte(), store.loadTrip(scope, trip)!!.key[0])
     assertEquals(before + 2, disk.reads, "a completed or failed scope must never become a long-lived key cache")
     disk.loaded.forEach { database ->
-      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.key.all { byte -> byte == 0.toByte() } } })
+      assertTrue(database.scopes.values.all { state -> state.trips.values.all { it.secret.isErased } })
     }
   }
 }

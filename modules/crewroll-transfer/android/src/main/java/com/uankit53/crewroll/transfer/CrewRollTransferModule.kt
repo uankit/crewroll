@@ -33,14 +33,12 @@ class CrewRollTransferModule : Module() {
       commands.submit("startup") {
         CrewRollPushEvents.listen(pushHint)
         runtime().listen(invalidation)
-        runLifecycleCleanup()
         runtime().foreground(foreground)
       }
     }
     OnActivityEntersForeground {
       foreground = true
       commands.submit("foregroundCleanup") {
-        runLifecycleCleanup()
         runtime().foreground(foreground)
       }
     }
@@ -62,15 +60,18 @@ class CrewRollTransferModule : Module() {
       commands.submit("prepareDeviceSession") {
         transferCommands.runIfCurrent(epoch) {
           NativeCommandDecoder.require(command, NativeCommandKind.PREPARE_DEVICE_SESSION)
-          val prepared = mediaSession.changeAndPrime({
+          val prepared = mediaSession.prepareDevice {
             lifecycle().prepareDeviceSession(string(command, "accountId"), string(command, "apiBaseUrl"))
-          }, { it.context })
+          }
           mapOf("protocolVersion" to 1, "identity" to identityMap(prepared.identity),
             "restoredSession" to prepared.restoredDeviceId?.let { mapOf("protocolVersion" to 1, "deviceId" to it) },
             "activeTripId" to prepared.activeTripId)
         }
       }.whenComplete { value, error ->
-        if (error == null) promise.resolve(value) else reject(promise, error)
+        if (error == null) {
+          promise.resolve(value)
+          runtimeValue?.requestRetentionMaintenance()
+        } else reject(promise, error)
       }
     }
 
@@ -91,6 +92,21 @@ class CrewRollTransferModule : Module() {
         )
       }
     }
+    AsyncFunction("getActiveTripSelection") { command: Map<String, Any?>, promise: Promise ->
+      val epoch = transferCommands.current()
+      commands.submit("getActiveTripSelection") {
+        transferCommands.runIfCurrent(epoch) {
+          NativeCommandDecoder.require(command, NativeCommandKind.GET_ACTIVE_TRIP_SELECTION)
+          mapOf("protocolVersion" to 1, "activeTripId" to lifecycle().getActiveTripSelection(
+            string(command, "accountId"), string(command, "installationId")))
+        }
+      }.whenComplete { value, error ->
+        if (error != null) reject(promise, error)
+        else try { transferCommands.runIfCurrent(epoch) { promise.resolve(value) } }
+        catch (stale: Throwable) { reject(promise, stale) }
+      }
+    }
+
     AsyncFunction("restoreDeviceSession") { command: Map<String, Any?>, promise: Promise ->
       bridge("restoreDeviceSession", promise, changesSelection = true) {
         NativeCommandDecoder.require(command, NativeCommandKind.RESTORE_DEVICE_SESSION)
@@ -260,13 +276,14 @@ class CrewRollTransferModule : Module() {
       }
     }
     AsyncFunction("setTransferPolicy") { command: Map<String, Any?>, promise: Promise ->
-      future("setTransferPolicy", promise) { epoch ->
+      future("setTransferPolicy", promise, afterSuccess = { runtimeValue?.requestRetentionMaintenance() }) { epoch ->
         NativeCommandDecoder.requireProtocol(command)
         if (command.keys != setOf("protocolVersion", "paused", "cellularAllowed") || command["paused"] !is Boolean || command["cellularAllowed"] !is Boolean) {
           throw NativeKeyException.invalidCommand()
         }
-        runtime().policy(!(command["paused"] as Boolean), command["cellularAllowed"] as Boolean)
-        engine().policy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean) { transferCommands.matches(epoch) }.thenApply { null }
+        runtime().applyTransferPolicy(command["paused"] as Boolean, command["cellularAllowed"] as Boolean) {
+          transferCommands.matches(epoch)
+        }.thenApply { null }
       }
     }
     AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
@@ -302,7 +319,7 @@ class CrewRollTransferModule : Module() {
     if (command.keys != keys) throw NativeKeyException.invalidCommand()
     NativeCommandDecoder.requireProtocol(command)
   }
-  private fun future(name: String, promise: Promise, changesSession: Boolean = true, clearLeaseOnCompletion: Boolean = true, operation: (Long) -> CompletableFuture<*>) {
+  private fun future(name: String, promise: Promise, changesSession: Boolean = true, clearLeaseOnCompletion: Boolean = true, afterSuccess: (() -> Unit)? = null, operation: (Long) -> CompletableFuture<*>) {
     val started = System.nanoTime()
     val epoch = if (changesSession) transferCommands.advance() else transferCommands.current()
     commands.submit("dispatch_$name") {
@@ -320,16 +337,12 @@ class CrewRollTransferModule : Module() {
         }
         val elapsed = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
         Log.i("CrewRollSession", "operation=$name state=${if (completionError == null) "completed" else "failed"} durationMs=$elapsed")
-        if (completionError == null) promise.resolve(value) else reject(promise, completionError)
+        if (completionError == null) { promise.resolve(value); afterSuccess?.invoke() }
+        else reject(promise, completionError)
       }
     }
   }
 
-  private fun runLifecycleCleanup() {
-    // Errors are recorded by the queue and surfaced by the next session operation.
-    lifecycle().runScheduledCleanup()
-    engine().reconcileRetention().join()
-  }
 
   private fun bridge(name: String, promise: Promise, after: () -> Unit = {}, changesSelection: Boolean = false, operation: () -> Any?) {
     val epoch = if (changesSelection) transferCommands.advance() else transferCommands.current()

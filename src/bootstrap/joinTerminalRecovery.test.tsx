@@ -498,7 +498,10 @@ it("replays an accepted original command instead of applying the fresh-command r
       membershipId: oldMember,
     });
     expect(f.hydrate).toHaveBeenCalledWith(tripId);
-    expect(f.listTrips).not.toHaveBeenCalled();
+    expect(f.listTrips).toHaveBeenCalledTimes(1);
+    expect(f.listTrips.mock.invocationCallOrder[0]).toBeLessThan(
+      f.hydrate.mock.invocationCallOrder[0]!,
+    );
     expect(
       screen.queryByText(
         "You can’t rejoin this trip. You can join a different trip.",

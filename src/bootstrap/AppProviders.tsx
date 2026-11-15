@@ -99,6 +99,17 @@ function createProductionComposition(
   });
   let provisionGeneration = -1;
   let provisionCurrentDevice: ReturnType<typeof createProvisionCurrentDevice>;
+  function currentProvisioner() {
+    if (provisionGeneration !== nativeSessions.generation) {
+      provisionGeneration = nativeSessions.generation;
+      provisionCurrentDevice = createProvisionCurrentDevice({
+        native: nativeSessions.capture(),
+        random,
+        registration: mobileDependencies.deviceRegistration,
+      });
+    }
+    return provisionCurrentDevice;
+  }
 
   const runtime: AppSessionRuntime = Object.freeze({
     invalidatePendingSetup() {
@@ -120,19 +131,20 @@ function createProductionComposition(
       }
     },
     provisionCurrentDevice(input) {
-      if (provisionGeneration !== nativeSessions.generation) {
-        provisionGeneration = nativeSessions.generation;
-        provisionCurrentDevice = createProvisionCurrentDevice({
-          native: nativeSessions.capture(),
-          random,
-          registration: mobileDependencies.deviceRegistration,
-        });
-      }
-      return provisionCurrentDevice(input);
+      return currentProvisioner()(input);
+    },
+    restoreCurrentDevice(input) {
+      return currentProvisioner().restore(input);
     },
     refreshDeviceSession,
-    async getNativeSnapshot() {
-      const snapshot = await crewRollTransfer.getSnapshot();
+    async getNativeSnapshot(input) {
+      const native = nativeSessions.capture();
+      const selection = native.getActiveTripSelection;
+      if (selection !== undefined) {
+        if (!input) throw new Error("Native selection scope unavailable");
+        return selection({ protocolVersion: 1, ...input });
+      }
+      const snapshot = await native.getSnapshot();
       return Object.freeze({ activeTripId: snapshot.activeTripId });
     },
     async loadRecovery(scope: TripRecoveryScope) {
@@ -291,11 +303,19 @@ function createProductionComposition(
             body,
           ),
         async retireTrip(tripId: string) {
-          const snapshot = await native.getSnapshot();
-          // A projection fetched before departure must not reactivate this trip
-          // after teardown. The next scoped session captures a fresh fence.
+          // Retire old continuations before reading the selected metadata. A
+          // missing trip key must not prevent clearing an obsolete selection.
           nativeSessions.invalidate();
           const retirementNative = nativeSessions.capture();
+          const selection = retirementNative.getActiveTripSelection;
+          const snapshot =
+            selection === undefined
+              ? await retirementNative.getSnapshot()
+              : await selection({
+                  protocolVersion: 1,
+                  accountId: scope.clerkSubject,
+                  installationId: device.identity.installationId,
+                });
           if (snapshot.activeTripId === tripId)
             await retirementNative.deactivateTrip({
               protocolVersion: 1,
@@ -396,6 +416,11 @@ function ProductionSessionBridge({
     profileReady,
   );
 
+  const retryAccount = useCallback(() => {
+    if (!profileReady) profile.retry();
+    if (!terms.ready) terms.retry();
+  }, [profileReady, profile, terms]);
+
   const authSnapshot: AppSessionAuthSnapshot = !auth.isLoaded
     ? { isLoaded: false, isSignedIn: undefined }
     : auth.isSignedIn
@@ -442,6 +467,8 @@ function ProductionSessionBridge({
           auth={authSnapshot}
           fontsReady={fontsReady}
           profileReady={profileReady && terms.ready}
+          accountSetupFailed={profile.error !== null || terms.error !== null}
+          onRetryAccount={retryAccount}
           onAuthInvalid={onAuthInvalid}
           provisionInput={{
             apiBaseUrl: env.apiUrl,
@@ -455,8 +482,6 @@ function ProductionSessionBridge({
             terms={terms}
             accountId={fontsReady && auth.isSignedIn ? auth.userId : null}
             profile={profile}
-            scope={env.apiUrl}
-            permission={composition.photoPermission}
           >
             <PushWakeProvider
               api={composition.pushApi}

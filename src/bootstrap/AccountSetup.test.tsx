@@ -1,41 +1,18 @@
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render } from "@testing-library/react-native";
 import { useEffect } from "react";
 import { View } from "react-native";
 import { CrewRollThemeProvider } from "../design-system";
-import type { PhotoLibraryPermissionPort } from "../infrastructure/media/expoPhotoLibraryPermission";
 import { AccountSetupProvider, useAccountSetup } from "./AccountSetup";
 
-jest.mock("../infrastructure/media/photoAccessSetupCache", () => ({
-  photoAccessSetupCache: { read: async () => false, write: async () => {} },
-}));
-
-it("keeps navigation mounted while moving from profile to photo access to home", async () => {
-  const mounted = jest.fn();
-  const unmounted = jest.fn();
-  function Navigation() {
-    useEffect(() => {
-      mounted();
-      return unmounted;
-    }, []);
-    const setup = useAccountSetup();
-    return setup.required ? setup.screen : <View testID="home" />;
-  }
-  const permission: PhotoLibraryPermissionPort = {
-    read: jest.fn(async () => ({
-      kind: "REQUESTABLE" as const,
-      fullPhotoLibraryAccess: false as const,
-      canAskAgain: true as const,
-    })),
-    request: jest.fn(async () => ({
-      kind: "FULL" as const,
-      fullPhotoLibraryAccess: true as const,
-      canAskAgain: true,
-    })),
-    openSettings: jest.fn(async () => {}),
-  };
-  const profile = {
+function profile(
+  overrides: Partial<
+    Parameters<typeof AccountSetupProvider>[0]["profile"]
+  > = {},
+) {
+  return {
     accountId: "user-a",
-    ready: false,
+    ready: true,
+    requiresInput: false,
     checking: false,
     name: "Riya",
     busy: false,
@@ -43,36 +20,130 @@ it("keeps navigation mounted while moving from profile to photo access to home",
     save: jest.fn(async () => {}),
     setName: jest.fn(),
     retry: jest.fn(),
+    ...overrides,
   };
-  const contents = (ready: boolean, busy = false) => (
+}
+function terms(
+  overrides: Partial<
+    NonNullable<Parameters<typeof AccountSetupProvider>[0]["terms"]>
+  > = {},
+) {
+  return {
+    accountId: "user-a",
+    ready: true,
+    accepted: true,
+    requiresInput: false,
+    checking: false,
+    busy: false,
+    error: null,
+    accept: jest.fn(async () => {}),
+    retry: jest.fn(),
+    ...overrides,
+  };
+}
+
+const mounted = jest.fn();
+const unmounted = jest.fn();
+function Navigation() {
+  useEffect(() => {
+    mounted();
+    return unmounted;
+  }, []);
+  const setup = useAccountSetup();
+  return setup.required ? setup.screen : <View testID="home" />;
+}
+function contents(
+  p = profile(),
+  t = terms(),
+  accountId: string | null = "user-a",
+) {
+  return (
     <CrewRollThemeProvider reduceMotion>
       <AccountSetupProvider
-        accountId="user-a"
-        scope="https://api.example.test"
-        permission={permission}
-        profile={{ ...profile, ready, busy }}
+        accountId={accountId}
+        profile={p}
+        terms={t}
         onUseAnotherAccount={jest.fn()}
       >
         <Navigation />
       </AccountSetupProvider>
     </CrewRollThemeProvider>
   );
-  const screen = await render(contents(false));
+}
+
+beforeEach(() => jest.clearAllMocks());
+
+it("keeps navigation mounted through actual name and consent forms without a global photo gate", async () => {
+  const p = profile({ ready: false, requiresInput: true });
+  const t = terms({ ready: false, accepted: false, requiresInput: true });
+  const screen = await render(contents(p, t));
   screen.getByTestId("profile-screen");
-  expect(screen.queryByTestId("photo-access-screen")).toBeNull();
   await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
-  expect(profile.save).toHaveBeenCalledTimes(1);
-  await screen.rerender(contents(false, true));
-  screen.getByTestId("profile-screen");
-  await screen.rerender(contents(true));
-  await waitFor(() => screen.getByTestId("photo-access-screen"));
-  expect(permission.request).not.toHaveBeenCalled();
-  await fireEvent.press(
-    screen.getByRole("button", { name: "Allow photo access" }),
+  expect(p.save).toHaveBeenCalledTimes(1);
+  await screen.rerender(
+    contents({ ...p, ready: true, requiresInput: false }, t),
   );
-  await waitFor(() => screen.getByTestId("home"));
-  expect(permission.request).toHaveBeenCalledTimes(1);
-  expect(permission.openSettings).not.toHaveBeenCalled();
+  screen.getByText("Share with care.");
+  await fireEvent.press(
+    screen.getByRole("button", { name: "Agree & continue" }),
+  );
+  expect(t.accept).toHaveBeenCalledTimes(1);
+  await screen.rerender(contents(profile(), terms()));
+  screen.getByTestId("home");
+  expect(screen.queryByTestId("photo-access-screen")).toBeNull();
   expect(mounted).toHaveBeenCalledTimes(1);
   expect(unmounted).not.toHaveBeenCalled();
+});
+
+it.each(["checking", "failed"] as const)(
+  "leaves %s background account checks in the shell instead of inventing a missing-input form",
+  async (state) => {
+    const screen = await render(
+      contents(
+        profile({
+          ready: false,
+          checking: state === "checking",
+          error: state === "failed" ? "Couldn’t sync" : null,
+        }),
+        terms({
+          ready: false,
+          accepted: false,
+          checking: state === "checking",
+          error: state === "failed" ? "Couldn’t check" : null,
+        }),
+      ),
+    );
+    screen.getByTestId("home");
+    expect(screen.queryByTestId("profile-screen")).toBeNull();
+    expect(screen.queryByText("Share with care.")).toBeNull();
+    expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+  },
+);
+
+it("keeps an authoritative consent form visible while retrying its read and blocks another acceptance tap", async () => {
+  const t = terms({
+    ready: false,
+    accepted: false,
+    requiresInput: true,
+    checking: true,
+  });
+  const screen = await render(contents(profile(), t));
+  screen.getByText("Share with care.");
+  const accept = screen.getByRole("button", { name: "Agree & continue" });
+  expect(accept).toBeDisabled();
+  await fireEvent.press(accept);
+  expect(t.accept).not.toHaveBeenCalled();
+});
+
+it("never presents a previous account’s form as the current account’s input requirement", async () => {
+  const screen = await render(
+    contents(
+      profile({ requiresInput: true, ready: false }),
+      terms({ requiresInput: true, ready: false, accepted: false }),
+      "user-b",
+    ),
+  );
+  screen.getByTestId("home");
+  expect(screen.queryByTestId("profile-screen")).toBeNull();
+  expect(screen.queryByText("Share with care.")).toBeNull();
 });

@@ -32,6 +32,23 @@ class NativeMediaSession(
     )
   }
 
+  /** A credential restore does not authorize a trip. Suppress fallback to the
+   * previous persisted selection until authenticated activation installs one. */
+  @Synchronized fun <T> prepareDevice(operation: () -> T): T {
+    if (closed) throw NativeKeyException.invalidState()
+    clear()
+    return try { operation() } finally { clear(); loaded = true }
+  }
+
+  @Synchronized fun hasPreparedContext(): Boolean {
+    if (closed || !loaded) return false
+    val value = context ?: return false
+    if (value.session.expiresAt <= clock() || NativeTripRetention.deadline(value.metadata) <= clock()) {
+      clear(); return false
+    }
+    return true
+  }
+
   @Synchronized fun <T> change(operation: () -> T): T {
     if (closed) throw NativeKeyException.invalidState()
     clear()

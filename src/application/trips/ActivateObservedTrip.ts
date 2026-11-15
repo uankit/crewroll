@@ -3,6 +3,10 @@ import type { NativeDeviceIdentity } from "@crewroll/contracts/native/protocol";
 
 import type { TripView } from "../../domain/trips/model";
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
+import {
+  nativeLocalKeyFailure,
+  type NativeLocalKeyFailure,
+} from "../problems/nativeLocalKeyFailure";
 import { isClosedTripResponse } from "./ApproveMember";
 import {
   ImportedTripActivationFailed,
@@ -22,8 +26,15 @@ export class TripActivationFailed extends CrewRollApiProblem {
   constructor(
     code: ProblemCode,
     readonly trip: TripView,
+    readonly localKeyFailure?: NativeLocalKeyFailure,
   ) {
     super(code);
+    Object.defineProperty(this, "localKeyFailure", {
+      configurable: false,
+      enumerable: false,
+      value: localKeyFailure,
+      writable: false,
+    });
     Object.defineProperty(this, "name", {
       configurable: true,
       enumerable: false,
@@ -150,13 +161,21 @@ export function createActivateObservedTrip(
     } catch (error) {
       if (error instanceof ImportedTripActivationFailed)
         throw new TripActivationFailed(internalProblem().code, view);
-      throw new TripActivationFailed(envelopeProblem().code, view);
+      throw new TripActivationFailed(
+        envelopeProblem().code,
+        view,
+        nativeLocalKeyFailure(error),
+      );
     }
 
     try {
       await native.activateTrip(activation);
-    } catch {
-      throw new TripActivationFailed(internalProblem().code, view);
+    } catch (error) {
+      throw new TripActivationFailed(
+        internalProblem().code,
+        view,
+        nativeLocalKeyFailure(error),
+      );
     }
 
     return view;

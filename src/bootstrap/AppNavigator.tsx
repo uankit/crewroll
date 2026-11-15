@@ -8,7 +8,7 @@ import { useAccountSetup } from "./AccountSetup";
 import { isSessionTeardown } from "./sessionRouting";
 
 export function AppNavigator() {
-  const { snapshot } = useAppSession();
+  const { snapshot, capabilities } = useAppSession();
   const setup = useAccountSetup();
   const theme = useCrewRollTheme();
   const phase = snapshot.phase;
@@ -33,9 +33,10 @@ export function AppNavigator() {
       <Stack.Protected
         guard={
           !setupRequired &&
-          (phase === "PROVISIONING_DEVICE" ||
-            phase === "SIGNING_OUT" ||
-            phase === "RECOVERABLE_FAILURE")
+          (isSessionTeardown(snapshot) ||
+            (!capabilities.canUseAuthenticatedShell &&
+              (phase === "PROVISIONING_DEVICE" ||
+                phase === "RECOVERABLE_FAILURE")))
         }
       >
         <Stack.Screen
@@ -43,7 +44,13 @@ export function AppNavigator() {
           options={{ animation: "none", gestureEnabled: false }}
         />
       </Stack.Protected>
-      <Stack.Protected guard={!setupRequired && phase.startsWith("READY_")}>
+      <Stack.Protected
+        guard={
+          !setupRequired &&
+          !isSessionTeardown(snapshot) &&
+          capabilities.canUseAuthenticatedShell
+        }
+      >
         <Stack.Screen name="(app)" options={{ gestureEnabled: false }} />
       </Stack.Protected>
     </Stack>

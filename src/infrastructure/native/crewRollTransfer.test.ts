@@ -117,6 +117,7 @@ describe("CrewRoll native transfer boundary", () => {
       "discardProvisionalTripKey",
       "ensureDeviceIdentity",
       "eraseAccount",
+      "getActiveTripSelection",
       "getSnapshot",
       "importAndActivateTrip",
       "importTripKey",
@@ -1067,5 +1068,78 @@ describe("optional combined native startup boundary", () => {
         unchanged.importAndActivateTrip!(combinedCommand),
       ).rejects.toBe(error);
     }
+  });
+});
+
+describe("metadata-only selected trip capability", () => {
+  const command = {
+    protocolVersion: 1,
+    accountId,
+    installationId: identity.installationId,
+  } as const;
+
+  it("discovers lazily and permits an older binary only when the method is absent", () => {
+    const load = jest.fn(() => nativeModule().module);
+    const port = createCrewRollTransferPort(load);
+    expect(load).not.toHaveBeenCalled();
+    expect(port.getActiveTripSelection).toBeUndefined();
+    expect(load).toHaveBeenCalledTimes(1);
+    const malformed = createCrewRollTransferPort(
+      () => nativeModule({ getActiveTripSelection: null }).module,
+    );
+    expect(() => malformed.getActiveTripSelection).toThrow(
+      CrewRollTransferProtocolError,
+    );
+  });
+
+  it("validates closed account/installation commands and metadata results without reading the engine", async () => {
+    const operation = jest.fn(async function (this: unknown, value: unknown) {
+      expect(this).toBe(native.module);
+      expect(value).toEqual(command);
+      return { protocolVersion: 1, activeTripId: tripId };
+    });
+    const getSnapshot = jest.fn();
+    const native = nativeModule({
+      getActiveTripSelection: operation,
+      getSnapshot,
+    });
+    const port = createCrewRollTransferPort(() => native.module);
+    await expect(port.getActiveTripSelection!(command)).resolves.toEqual({
+      protocolVersion: 1,
+      activeTripId: tripId,
+    });
+    await expect(
+      port.getActiveTripSelection!({ ...command, accountId: "" }),
+    ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    await expect(
+      port.getActiveTripSelection!({
+        ...command,
+        secret: "forbidden",
+      } as never),
+    ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    { protocolVersion: 1, activeTripId: "invalid" },
+    {
+      protocolVersion: 1,
+      activeTripId: null,
+      backgroundBearer: BACKGROUND_BEARER,
+    },
+  ])("fails closed on a malformed present result (%j)", async (result) => {
+    const getSnapshot = jest.fn();
+    const native = nativeModule({
+      getActiveTripSelection: async () => result,
+      getSnapshot,
+    });
+    await expect(
+      createCrewRollTransferPort(() => native.module).getActiveTripSelection!(
+        command,
+      ),
+    ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    expect(getSnapshot).not.toHaveBeenCalled();
   });
 });

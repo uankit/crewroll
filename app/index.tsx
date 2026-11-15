@@ -6,12 +6,14 @@ import { useAccountSetup } from "@/bootstrap/AccountSetup";
 import { isSessionTeardown } from "@/bootstrap/sessionRouting";
 
 export default function LaunchRoute() {
-  const { snapshot } = useAppSession();
+  const { snapshot, capabilities } = useAppSession();
   const router = useRouter();
   const setup = useAccountSetup();
 
   if (setup.required && !isSessionTeardown(snapshot))
     return <Redirect href="/setup" withAnchor />;
+  if (capabilities.canUseAuthenticatedShell && !isSessionTeardown(snapshot))
+    return <Redirect href="/(app)" withAnchor />;
 
   switch (snapshot.phase) {
     case "LOADING_FONTS_OR_CLERK":
@@ -28,6 +30,6 @@ export default function LaunchRoute() {
     case "READY_PENDING_APPROVAL":
     case "READY_LOBBY":
     case "READY_ACTIVE":
-      return <Redirect href="/(app)" withAnchor />;
+      return <SessionLoadingScreen />;
   }
 }
