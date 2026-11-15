@@ -462,13 +462,22 @@ class NativePhotoTransferEngineTest {
 
     @Test fun `retention timer preserves the delivery window and never removes a saved system photo`() {
         Fixture().use { f ->
-            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, Instant.now().plusMillis(300)))
             val engine = f.engine()
+            // Establish the verified saved receipt and drain its durable write
+            // before testing expiry; delivery speed is not a 300ms contract.
+            f.start(engine)
+            assertEquals(1, f.receipts)
+            assertArrayEquals(f.source, f.saved)
+            val deadline = Instant.now().plusMillis(300)
+            val purgedAt = java.util.concurrent.atomic.AtomicReference<Instant>()
+            f.purgeHook = { purgedAt.set(Instant.now()) }
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, f.trip, deadline))
             engine.activate().get(5, TimeUnit.SECONDS)
             assertTrue(f.purgedTrips.isEmpty())
-            f.await { f.receipts == 1 }
             assertArrayEquals(f.source, f.saved)
             f.await { f.purgedTrips.size == 1 }
+            assertFalse(requireNotNull(purgedAt.get()).isBefore(deadline))
+            assertEquals(1, f.receipts)
             assertArrayEquals(f.source, f.saved)
             assertTrue(NativeTransferJournal(File(f.root.resolve("journals"), f.context.scope.accountHash + "." + f.context.scope.installationId)).records().isEmpty())
         }
