@@ -10,7 +10,7 @@ import {
 import { ProvisioningScreen, type ProvisioningScreenProps } from "./index";
 
 const safeFailure =
-  "CrewRoll could not connect this phone. Check your connection and try again.";
+  "Your saved session couldn’t be restored on this phone. Try again.";
 
 function renderScreen(
   props: ProvisioningScreenProps,
@@ -24,6 +24,31 @@ function renderScreen(
 }
 
 describe("ProvisioningScreen", () => {
+  it.each(["working", "failed"] as const)(
+    "offers safe teardown during %s restoration when no account menu is available",
+    async (status) => {
+      const onSignOut = jest.fn();
+      const view = await renderScreen(
+        status === "working"
+          ? { status, onSignOut }
+          : { status, onSignOut, onRetry: jest.fn() },
+      );
+      await fireEvent.press(view.getByRole("button", { name: "Sign out" }));
+      expect(onSignOut).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps a failed teardown on retry rather than offering a second sign-out path", async () => {
+    const onSignOut = jest.fn();
+    const view = await renderScreen({
+      status: "failed",
+      purpose: "sign-out",
+      onSignOut,
+      onRetry: jest.fn(),
+    });
+    expect(view.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(onSignOut).not.toHaveBeenCalled();
+  });
   it("names sign-out progress and retries teardown without suggesting phone registration", async () => {
     const onRetry = jest.fn();
     const screen = await renderScreen({
@@ -48,7 +73,9 @@ describe("ProvisioningScreen", () => {
   it("presents scalable, accessible progress without a retry action", async () => {
     const screen = await renderScreen({ status: "working" });
 
-    const progress = screen.getByRole("summary", { name: "Getting ready" });
+    const progress = screen.getByRole("summary", {
+      name: "Restoring this phone",
+    });
     expect(progress.props.accessibilityState).toEqual({ busy: true });
     expect(screen.queryByRole("button")).toBeNull();
   });

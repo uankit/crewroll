@@ -32,6 +32,7 @@ class NativePhotoTransferEngine(
     private val expiredTrips: () -> List<NativeExpiredTrip> = { emptyList() },
     private val purgeTripKey: (NativeExpiredTrip, () -> Unit) -> Boolean = { _, cleanup -> cleanup(); true },
     private val nextRetentionDeadline: () -> Instant? = { null },
+    private val albums: NativeTripAlbumRegistry? = null,
 ) {
     init { require(downloadLimit in 1..2) }
     private val executor = Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "CrewRollPhotos").apply { isDaemon = true } }
@@ -60,6 +61,7 @@ class NativePhotoTransferEngine(
     @Volatile private var cellular = true
     private var timer: ScheduledFuture<*>? = null
     private var previewTimer: ScheduledFuture<*>? = null
+    private var organizationTimer: ScheduledFuture<*>? = null
     private var retentionTimer: ScheduledFuture<*>? = null
     private var retentionPending: CompletableFuture<Unit>? = null
     @Volatile private var closed = false
@@ -117,6 +119,7 @@ class NativePhotoTransferEngine(
     }
     @Synchronized private fun changePolicy(pause: Boolean, cellularAllowed: Boolean, ifCurrent: () -> Boolean = { true }): PolicyChange {
         val epoch = generation.incrementAndGet()
+        organizationTimer?.cancel(false); organizationTimer = null
         paused = true; network?.cancel(); previewNetwork?.cancel(); activeWork.values.forEach { it.transport.cancel() }
         val finished = serial {
             if (generation.get() == epoch && ifCurrent()) {
@@ -209,6 +212,7 @@ class NativePhotoTransferEngine(
                                 ledger.purgeTrip(trip.tripId)
                                 cache.purgeTrip(trip.tripId)
                             }
+                            albums?.purge(trip.scope, trip.tripId)
                         }
                         if (!purged) continue
                         if (scope == name && progressScope?.endsWith("." + trip.tripId) == true) {
@@ -259,6 +263,7 @@ class NativePhotoTransferEngine(
                         globalBlocker = null; previewBlocker = null
                     }
                     root.listFiles()?.filter { it.name.startsWith(accountHash + ".") }?.forEach { check(it.deleteRecursively()) }
+                    albums?.eraseAccount(accountHash)
                     invalidated(0)
                 }
             }
@@ -284,6 +289,8 @@ class NativePhotoTransferEngine(
         val context = contextProvider() ?: return@serial
         try {
             val ledger = ledger(context)
+            albums?.retry()
+            ledger.retryPhotoOrganization(context.metadata.tripId)
             ledger.records().filter { it.getString("tripId") == context.metadata.tripId && !it.getBoolean("complete") && !activeWork.containsKey(it.getString("workId")) }
                 .forEach { ledger.put(it.put("blocker", JSONObject.NULL).put("nextAttemptAt", JSONObject.NULL).put("retryAttempts", 0)) }
             previewExecutor.submit {
@@ -328,11 +335,60 @@ class NativePhotoTransferEngine(
         }
         return journal!!
     }
-    private fun current(context: NativeMediaContext, epoch: Long) {
-        if (paused || epoch != generation.get()) throw CancellationException()
+    private fun current(context: NativeMediaContext, epoch: Long, allowPaused: Boolean = false, ifCurrent: () -> Boolean = { true }) {
+        if (!ifCurrent() || (!allowPaused && paused) || epoch != generation.get()) throw CancellationException()
         val actual = contextProvider() ?: throw CancellationException()
-        try { if (actual.scope != context.scope || actual.metadata.tripId != context.metadata.tripId || actual.session.deviceId != context.session.deviceId) throw CancellationException() }
+        try { if (!ifCurrent() || actual.scope != context.scope || actual.metadata.tripId != context.metadata.tripId || actual.session.deviceId != context.session.deviceId) throw CancellationException() }
         finally { actual.erase() }
+    }
+    /** A local organization retry never reactivates sharing or resets transport
+     * backoff. Further pending photos are handled in small local-only slices. */
+    fun retryPhotoOrganization(tripId: String, ifCurrent: () -> Boolean = { true }) = serial {
+        if (!ifCurrent()) throw CancellationException()
+        NativeTripAlbumPaths.requireTrip(tripId)
+        val epoch = generation.get()
+        val c = contextProvider() ?: throw NativeKeyException.invalidState()
+        try {
+            if (c.metadata.tripId != tripId) throw NativeKeyException.invalidCommand()
+            current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+            val ledger = ledger(c)
+            current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+            albums?.retry()
+            current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+            ledger.retryPhotoOrganization(tripId)
+            repairPhotoOrganization(c, epoch, ledger, allowPaused = true, ifCurrent = ifCurrent)
+            schedulePhotoOrganization(c, epoch, ledger, ifCurrent)
+            current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+            invalidated(ledger.revision())
+        } finally { c.erase() }
+    }
+    private fun schedulePhotoOrganization(c: NativeMediaContext, epoch: Long, ledger: NativeTransferJournal, ifCurrent: () -> Boolean) {
+        current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+        val destination = albums?.peek(c.scope, c.metadata.tripId)?.relativePath ?: return
+        val destinationId = photoOrganizationDestinationId(destination)
+        val more = ledger.records().any { it.getString("tripId") == c.metadata.tripId && !it.isNull("deliveryId") && it.optBoolean("complete") &&
+            it.optionalString("photoOrganization") !in setOf("FAILED", "USER_MANAGED") &&
+            (it.optionalString("photoOrganization") != "READY" || it.optionalString("organizationDestination") != destinationId) }
+        if (!more) return
+        val tripId = c.metadata.tripId
+        val accountScope = c.scope
+        val deviceId = c.session.deviceId
+        current(c, epoch, allowPaused = true, ifCurrent = ifCurrent)
+        organizationTimer?.cancel(false)
+        organizationTimer = executor.schedule({
+            if (!ifCurrent()) return@schedule
+            val actual = contextProvider()
+            if (actual != null) try {
+                if (actual.scope != accountScope || actual.metadata.tripId != tripId || actual.session.deviceId != deviceId) return@schedule
+                current(actual, epoch, allowPaused = true, ifCurrent = ifCurrent)
+                val currentLedger = ledger(actual)
+                repairPhotoOrganization(actual, epoch, currentLedger, allowPaused = true, ifCurrent = ifCurrent)
+                schedulePhotoOrganization(actual, epoch, currentLedger, ifCurrent)
+                current(actual, epoch, allowPaused = true, ifCurrent = ifCurrent)
+                invalidated(currentLedger.revision())
+            } catch (_: CancellationException) { /* A new account/policy owns subsequent work. */ }
+            finally { actual.erase() }
+        }, 1, TimeUnit.SECONDS)
     }
     private fun newWork(id: String, assetId: String, tripId: String, captured: String) = JSONObject()
         .put("workId", id).put("assetId", assetId).put("tripId", tripId).put("capturedAt", captured)
@@ -347,7 +403,9 @@ class NativePhotoTransferEngine(
             recoverCredentialRotation()
             val c = contextProvider() ?: return; context = c
             current(c, epoch)
-            val ledger = ledger(c); val n = networkFactory(cellular); transport = n; network = n
+            val ledger = ledger(c)
+            repairPhotoOrganization(c, epoch, ledger)
+            val n = networkFactory(cellular); transport = n; network = n
             val policy = NativeCapturePolicy(n.json("/v1/trips/${c.metadata.tripId}/transfer-state", "GET", null, c, uuid()), c.metadata.tripId)
             current(c, epoch)
             if (policy.left) { globalBlocker = null; return }
@@ -496,8 +554,10 @@ class NativePhotoTransferEngine(
         val assetId = work.getString("assetId"); val deliveryId = work.getString("deliveryId")
         // Reinstall can clear MediaStore ownership. Recognize the stable filename,
         // then verify the bytes against the authenticated manifest before any receipt.
-        var saved = photos.findSaved(assetId)
-        if (saved == null || work.isNull("downloadBody")) {
+        var saved = work.optionalString("savedLocalId")
+        val published = try { saved != null && photos.isPublished(saved) }
+            catch (error: PhotoLibraryException) { if (error.blocker == "SOURCE_MISSING") false else throw error }
+        if (work.isNull("downloadBody") || !published) {
             val grant = n.json("/v1/deliveries/$deliveryId/download-session", "POST", JSONObject().put("variants", JSONArray(listOf("ORIGINAL"))), c, work.getString("workId"))
             current(c, epoch); work.put("downloadBody", grant); ledger.put(work)
         }
@@ -507,25 +567,88 @@ class NativePhotoTransferEngine(
             val objects = grant.getJSONArray("objects"); require(objects.length() == 1)
             val obj = objects.getJSONObject(0)
             require(obj.getString("variant") == "ORIGINAL" && obj.getString("ciphertextBytes") == manifest.original.ciphertextBytes.toString() && obj.getString("checksumSha256") == b64(manifest.original.ciphertextSha256))
+            saved = findVerifiedSavedOriginal(photos, assetId, saved, manifest.original.plaintextBytes.toLong(), manifest.original.plaintextSha256)
+            val reusedVerifiedOriginal = saved != null
             if (saved == null) {
                 val stage = File(ledger.directory, "stage-${uuid()}"); check(stage.mkdir())
                 try {
                     val ciphertext = File(stage, "original.ciphertext"); val plaintext = File(stage, "original.plaintext")
                     n.download(obj.getString("url"), ciphertext, manifest.original.ciphertextBytes.toLong()); current(c, epoch)
                     crypto.decrypt(ciphertext, plaintext, manifest.original, manifest.contentRoot, c.metadata.tripId, assetId); current(c, epoch)
-                    saved = photos.save(plaintext, assetId, manifest.capturedAtMilliseconds?.let { Instant.ofEpochMilli(it.toLong()) }, manifest.original.mime) {
+                    val destination = albums?.resolve(c.scope, c.metadata)?.relativePath ?: NativeTripAlbumPaths.LEGACY
+                    saved = photos.save(plaintext, assetId, manifest.capturedAtMilliseconds?.let { Instant.ofEpochMilli(it.toLong()) }, manifest.original.mime, destination) {
                         current(c, epoch); work.put("savedLocalId", it); ledger.put(work)
                     }
                     current(c, epoch); work.put("savedLocalId", saved); ledger.put(work)
                 } finally { stage.deleteRecursively() }
             }
-            photos.verify(requireNotNull(saved), manifest.original.plaintextBytes.toLong(), manifest.original.plaintextSha256); current(c, epoch)
+            if (!reusedVerifiedOriginal) photos.verify(requireNotNull(saved), manifest.original.plaintextBytes.toLong(), manifest.original.plaintextSha256)
+            current(c, epoch)
             // A verified MediaStore match can outlive a lost app journal. Keep
             // its local reference before acknowledging so gallery recovery works.
             if (work.optionalString("savedLocalId") != saved) { work.put("savedLocalId", saved); ledger.put(work) }
             n.json("/v1/deliveries/$deliveryId/saved-receipt", "POST", JSONObject().put("assetId", assetId).put("savedAt", Instant.now().toString()).put("engineRevision", ledger.revision()), c, work.getString("workId"))
-            current(c, epoch); work.put("complete", true); ledger.put(work)
+            current(c, epoch); work.put("complete", true)
+            if (albums != null) work.put("photoOrganization", organizationCheckpoint(c, requireNotNull(saved), work))
+            ledger.put(work)
         } finally { manifest.erase() }
+    }
+    /** This checkpoint inspects only MediaStore destination metadata. The
+     * original was authenticated immediately above, before its saved receipt. */
+    private fun organizationCheckpoint(c: NativeMediaContext, localId: String, work: JSONObject): String = try {
+        val destination = albums?.resolve(c.scope, c.metadata)
+        if (destination?.relativePath != null) work.put("organizationDestination", photoOrganizationDestinationId(destination.relativePath))
+        if (destination?.failed == true) "FAILED"
+        else if (destination?.relativePath == null) "PENDING"
+        else when (photos.inspectOrganization(localId, destination.relativePath)) {
+            NativePhotoOrganizationAction.ALREADY_ORGANIZED -> "READY"
+            NativePhotoOrganizationAction.USER_MANAGED -> "USER_MANAGED"
+            NativePhotoOrganizationAction.MOVE -> "PENDING"
+            NativePhotoOrganizationAction.OWNERSHIP_UNAVAILABLE -> "FAILED"
+        }
+    } catch (_: Exception) { "FAILED" }
+    /** Independent, bounded local maintenance. It never uploads, downloads,
+     * acknowledges, copies an original, or changes completion/transport errors. */
+    private fun repairPhotoOrganization(c: NativeMediaContext, epoch: Long, ledger: NativeTransferJournal, allowPaused: Boolean = false, ifCurrent: () -> Boolean = { true }) {
+        current(c, epoch, allowPaused, ifCurrent)
+        val destination = albums?.resolve(c.scope, c.metadata) ?: return
+        current(c, epoch, allowPaused, ifCurrent)
+        val path = destination.relativePath ?: return
+        val destinationId = photoOrganizationDestinationId(path)
+        val pending = ledger.records().filter { it.getString("tripId") == c.metadata.tripId && !it.isNull("deliveryId") && it.optBoolean("complete") &&
+            it.optionalString("photoOrganization") != "USER_MANAGED" &&
+            (it.optionalString("photoOrganization") != "READY" || it.optionalString("organizationDestination") != destinationId) &&
+            it.optionalString("organizationRetryAt")?.let(Instant::parse)?.isAfter(Instant.now()) != true }.take(2)
+        for (work in pending) {
+            current(c, epoch, allowPaused, ifCurrent)
+            try {
+                // The saved URI's completion checkpoint already authenticated
+                // this capture. Correct destination/user choice needs no image
+                // reads; only a real move requires another full verification.
+                val known = work.optionalString("savedLocalId")
+                val action = known?.let { photos.inspectOrganization(it, path) }
+                current(c, epoch, allowPaused, ifCurrent)
+                if (action == NativePhotoOrganizationAction.ALREADY_ORGANIZED || action == NativePhotoOrganizationAction.USER_MANAGED) {
+                    ledger.put(work.put("photoOrganization", if (action == NativePhotoOrganizationAction.USER_MANAGED) "USER_MANAGED" else "READY").put("organizationDestination", destinationId).put("organizationRetryAt", JSONObject.NULL))
+                    continue
+                }
+                if (action == NativePhotoOrganizationAction.OWNERSHIP_UNAVAILABLE) throw SecurityException("Photo organization requires app ownership")
+                val body = work.getJSONObject("downloadBody")
+                val manifest = crypto.openManifest(Base64.getDecoder().decode(body.getString("encryptedManifest")), c.tripKey, c.metadata.tripId, work.getString("assetId"))
+                try {
+                    val local = findVerifiedSavedOriginal(photos, work.getString("assetId"), work.optionalString("savedLocalId"), manifest.original.plaintextBytes.toLong(), manifest.original.plaintextSha256)
+                        ?: throw PhotoLibraryException("SOURCE_MISSING")
+                    current(c, epoch, allowPaused, ifCurrent)
+                    val result = photos.organizeSaved(local, path)
+                    current(c, epoch, allowPaused, ifCurrent)
+                    ledger.put(work.put("savedLocalId", local).put("photoOrganization", if (result == PhotoOrganizationResult.USER_MANAGED) "USER_MANAGED" else "READY").put("organizationDestination", destinationId).put("organizationRetryAt", JSONObject.NULL))
+                } finally { manifest.erase() }
+            } catch (error: Throwable) {
+                current(c, epoch, allowPaused, ifCurrent)
+                if (error is CancellationException) throw error
+                ledger.put(work.put("photoOrganization", "FAILED").put("organizationRetryAt", Instant.now().plusSeconds(30).toString()))
+            }
+        }
     }
     fun wakePreviews(): CompletableFuture<Unit> {
         if (!previewQueued.compareAndSet(false, true)) return CompletableFuture.completedFuture(Unit)
@@ -738,8 +861,21 @@ class NativePhotoTransferEngine(
             projectionFence(c, epoch)
             mapOf("protocolVersion" to 1, "revision" to revision, "activeTripId" to c?.metadata?.tripId, "paused" to paused, "cellularAllowed" to cellular,
                 "counts" to mapOf("discovered" to rows.size, "previewReady" to rows.count { it["previewUri"] != null }, "originalsSaved" to rows.count { it["originalStage"] == "SAVED" }, "blocked" to rows.count { it["blocker"] != null }), "blockers" to blockers,
-                "sync" to syncState(c, blockers))
+                "sync" to syncState(c, blockers)) + if (albums != null) mapOf("photoOrganization" to photoOrganization(c)) else emptyMap()
         } finally { c?.erase() }
+    }
+    private fun photoOrganization(c: NativeMediaContext?): Map<String, Any> {
+        val destination = c?.let { albums?.peek(it.scope, it.metadata.tripId) }
+        val rows = if (c == null) emptyList() else journal?.records()?.filter {
+            it.getString("tripId") == c.metadata.tripId && !it.isNull("deliveryId") && it.optBoolean("complete")
+        } ?: emptyList()
+        val failed = rows.count { it.optionalString("photoOrganization") == "FAILED" }
+        val destinationId = destination?.relativePath?.let(::photoOrganizationDestinationId)
+        // Durable per-capture intent survives metadata I/O failure plus process
+        // death. Missing old flags are conservative pending, never false READY.
+        val pending = rows.count { it.optionalString("photoOrganization") !in setOf("READY", "USER_MANAGED", "FAILED") ||
+            (it.optionalString("photoOrganization") == "READY" && destinationId != null && it.optionalString("organizationDestination") != destinationId) }
+        return mapOf("state" to if (destination?.failed == true || failed > 0) "FAILED" else if (pending > 0) "PENDING" else "READY", "pendingCount" to pending, "failedCount" to failed)
     }
     private fun syncState(c: NativeMediaContext?, blockers: List<String>): Map<String, Any?> {
         val pending = journal?.records()?.filter { it.getString("tripId") == c?.metadata?.tripId && !it.getBoolean("complete") && !it.optBoolean("ignored") } ?: emptyList()

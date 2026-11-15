@@ -32,12 +32,12 @@ class AndroidScopedDatabaseCodecTest {
         "https://api.crewroll.app",
       ),
     )
-    state.trips[tripId] = TripKeyRecord(
+    state.trips[tripId] = AndroidStoredTrip.from(TripKeyRecord(
       ByteArray(32) { 0x44 },
       KeyState.PROVISIONAL,
       Instant.ofEpochMilli(10),
       Instant.ofEpochMilli(86_400_010),
-    )
+    ))
     state.tombstones += "018f0d98-76fa-7d1a-b4b4-1f742c2e3140"
     state.activeMetadata = ActiveTripMetadata(
       tripId,
@@ -49,7 +49,7 @@ class AndroidScopedDatabaseCodecTest {
     )
     state.frozenMetadata[tripId] = state.activeMetadata!!
     val database = AndroidScopedDatabase(
-      mutableMapOf(accountHash to identity),
+      mutableMapOf(accountHash to AndroidStoredIdentity.from(identity)),
       mutableMapOf("b".repeat(64) to "pending_install_123"),
       mutableMapOf(androidScopeKey(scope) to state),
       scope,
@@ -59,10 +59,10 @@ class AndroidScopedDatabaseCodecTest {
     val encoded = AndroidScopedDatabaseCodec.encode(database, cipher)
     assertFalse(String(encoded, Charsets.ISO_8859_1).contains("user_A-1"))
     assertFalse(encoded.containsSubsequence(identity.e2eePrivateKey))
-    assertFalse(encoded.containsSubsequence(state.session!!.backgroundBearer))
-    assertFalse(encoded.containsSubsequence(state.trips[tripId]!!.key))
+    assertFalse(encoded.containsSubsequence(state.session!!.materialize().backgroundBearer))
+    assertFalse(encoded.containsSubsequence(state.trips[tripId]!!.materialize().key))
     val decoded = AndroidScopedDatabaseCodec.decode(encoded, cipher)
-    val decodedIdentity = decoded.identities[accountHash]!!
+    val decodedIdentity = decoded.identities[accountHash]!!.materialize()
     assertEquals(installationId, decodedIdentity.installationId)
     assertArrayEquals(identity.authenticationPublicKey, decodedIdentity.authenticationPublicKey)
     assertArrayEquals(identity.e2eePublicKey, decodedIdentity.e2eePublicKey)
@@ -71,8 +71,8 @@ class AndroidScopedDatabaseCodecTest {
     assertEquals(scope, decoded.selectedScope)
     val decodedState = decoded.scopes[androidScopeKey(scope)]!!
     assertEquals(state.session?.deviceId, decodedState.session?.deviceId)
-    assertArrayEquals(state.session?.backgroundBearer, decodedState.session?.backgroundBearer)
-    assertEquals(state.trips[tripId], decodedState.trips[tripId])
+    assertArrayEquals(state.session?.materialize()?.backgroundBearer, decodedState.session?.materialize()?.backgroundBearer)
+    assertEquals(state.trips[tripId]?.materialize(), decodedState.trips[tripId]?.materialize())
     assertEquals(state.tombstones, decodedState.tombstones)
     assertEquals(state.activeMetadata, decodedState.activeMetadata)
     assertEquals(state.frozenMetadata, decodedState.frozenMetadata)
@@ -87,7 +87,7 @@ class AndroidScopedDatabaseCodecTest {
 
     val legacy = legacyIdentityDatabase(accountHash, identity)
     val migrated = AndroidScopedDatabaseCodec.decode(legacy, cipher)
-    assertArrayEquals(identity.e2eePrivateKey, migrated.identities[accountHash]?.e2eePrivateKey)
+    assertArrayEquals(identity.e2eePrivateKey, migrated.identities[accountHash]?.materialize()?.e2eePrivateKey)
     val migratedEncoding = AndroidScopedDatabaseCodec.encode(migrated, cipher)
     assertFalse(migratedEncoding.containsSubsequence(identity.e2eePrivateKey))
   }
@@ -114,14 +114,14 @@ class AndroidScopedDatabaseCodecTest {
     }
     val decoded = AndroidScopedDatabaseCodec.decode(v2, cipher)
     val state = decoded.scopes[androidScopeKey(scope)]!!
-    assertArrayEquals(key, state.trips[trip]!!.key)
+    assertArrayEquals(key, state.trips[trip]!!.materialize().key)
     assertTrue(state.tripEndsAt.isEmpty())
     assertTrue(state.legacyReconciliationDeadlines.isEmpty())
     state.tripEndsAt[trip] = "2030-01-02T00:00:00.123456789Z"
     state.legacyReconciliationDeadlines[trip] = Instant.parse("2030-01-08T00:00:00.123456789Z")
     val reopened = AndroidScopedDatabaseCodec.decode(AndroidScopedDatabaseCodec.encode(decoded, cipher), cipher)
     val after = reopened.scopes[androidScopeKey(scope)]!!
-    assertArrayEquals(key, after.trips[trip]!!.key)
+    assertArrayEquals(key, after.trips[trip]!!.materialize().key)
     assertEquals(state.tripEndsAt, after.tripEndsAt)
     assertEquals(state.legacyReconciliationDeadlines, after.legacyReconciliationDeadlines)
   }
@@ -182,6 +182,7 @@ class AndroidScopedDatabaseCodecTest {
       ),
     )
 
+    val priorStored = state.session!!.bearer
     state.secureReplaceSession(
       DeviceSessionRecord(
         "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
@@ -191,9 +192,10 @@ class AndroidScopedDatabaseCodecTest {
       ),
     )
 
-    assertTrue(priorBearer.all { it == 0.toByte() })
-    assertNotSame(replacementBearer, state.session!!.backgroundBearer)
-    assertArrayEquals(replacementBearer, state.session!!.backgroundBearer)
+    assertTrue(priorStored.isErased)
+    assertArrayEquals("crb_prior_write_only".toByteArray(), priorBearer)
+    assertNotSame(replacementBearer, state.session!!.materialize().backgroundBearer)
+    assertArrayEquals(replacementBearer, state.session!!.materialize().backgroundBearer)
   }
 }
 

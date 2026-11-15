@@ -221,5 +221,6 @@ object AndroidNativeKeyInfrastructure {
     AndroidP256IdentityProvider(),
     AndroidAccountNamespaceHasher(),
     ExecutorNativeKeyCleanupScheduler(),
+    deferMaintenance = true,
   )
 }

@@ -13,6 +13,7 @@ export function createPreparedTripNative(
     const key = JSON.stringify(command);
     const result = tail.then(async () => {
       if (confirmed.get(name) === key) return;
+      confirmed.delete("album");
       confirmed.delete(name);
       await operation();
       confirmed.set(name, key);
@@ -22,6 +23,36 @@ export function createPreparedTripNative(
     return result;
   };
   return Object.freeze({
+    get importAndActivateTripWithAlbum() {
+      const operation = native.importAndActivateTripWithAlbum;
+      if (operation === undefined) return undefined;
+      return (
+        command: Parameters<
+          NonNullable<ActiveTripNativePort["importAndActivateTripWithAlbum"]>
+        >[0],
+      ) => {
+        const imported = JSON.stringify(command.envelope);
+        const activated = JSON.stringify(command.activation);
+        const album = JSON.stringify(command.album);
+        const result = tail.then(async () => {
+          if (
+            confirmed.get("import") === imported &&
+            confirmed.get("activate") === activated &&
+            confirmed.get("album") === album
+          )
+            return;
+          confirmed.delete("album");
+          confirmed.delete("import");
+          confirmed.delete("activate");
+          await operation.call(native, command);
+          confirmed.set("import", imported);
+          confirmed.set("activate", activated);
+          confirmed.set("album", album);
+        });
+        tail = result.catch(() => undefined);
+        return result;
+      };
+    },
     get importAndActivateTrip() {
       const operation = native.importAndActivateTrip;
       if (operation === undefined) return undefined;
@@ -38,6 +69,7 @@ export function createPreparedTripNative(
             confirmed.get("activate") === activated
           )
             return;
+          confirmed.delete("album");
           confirmed.delete("import");
           confirmed.delete("activate");
           await operation.call(native, command);

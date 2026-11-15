@@ -85,33 +85,42 @@ public actor ApplePhotoTransferEngine {
     private var previewNextCheck = Date.distantPast
     private var originalIdle = 0
     private var previewIdle = 0
-    private var visible = true
+    private var foregroundSnapshot: NativeForegroundSnapshot?
+    var isForeground: Bool { foregroundSnapshot?.isForeground ?? true }
     private var globalBlocker: String?
     private var credentialRecovery: (deviceID: String, ifCurrent: () -> Bool)?
     private var poll: Task<Void, Never>?
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    private let albums: NativeTripPhotoOrganizer?
+    private let albumFence = NativeTransferCommandFence()
+    private var albumRunning = false
+    private var albumNextCheck = Date.distantPast
+    private var albumSelection: (scope: NativeKeyScope, tripID: String, commandRevision: Int, policyRevision: Int)?
 
     public init(root: URL, contextProvider: @escaping () throws -> NativeMediaContext?, invalidated: @escaping (Int) -> Void,
                 expiredTrips: @escaping () throws -> [NativeExpiredTrip] = { [] },
                 nextRetentionDeadline: @escaping () throws -> Date? = { nil },
-                purgeExpiredKey: @escaping (NativeExpiredTrip, () throws -> Void) throws -> Bool = { _, cleanup in try cleanup(); return true }) {
+                purgeExpiredKey: @escaping (NativeExpiredTrip, () throws -> Void) throws -> Bool = { _, cleanup in try cleanup(); return true },
+                albumRegistry: NativeTripAlbumRegistry? = nil) {
         self.root = root; self.contextProvider = contextProvider; self.invalidated = invalidated
         self.expiredTrips = expiredTrips; self.purgeExpiredKey = purgeExpiredKey
         self.nextRetentionDeadline = nextRetentionDeadline
         self.retentionRetryDelay = 30
         self.library = ApplePhotoLibrary(); self.transportFactory = { NativePhotoTransport(cellularAllowed: $0) }
+        self.albums = albumRegistry.map { NativeTripPhotoOrganizer(registry: $0, library: AppleTripAlbumLibrary()) }
     }
     init(root: URL, contextProvider: @escaping () throws -> NativeMediaContext?, invalidated: @escaping (Int) -> Void,
          library: NativePhotoLibraryPort, transportFactory: @escaping (Bool) -> NativePhotoTransportPort,
          expiredTrips: @escaping () throws -> [NativeExpiredTrip] = { [] },
          nextRetentionDeadline: @escaping () throws -> Date? = { nil },
          purgeExpiredKey: @escaping (NativeExpiredTrip, () throws -> Void) throws -> Bool = { _, cleanup in try cleanup(); return true },
-         retentionRetryDelay: TimeInterval = 30) {
+         retentionRetryDelay: TimeInterval = 30, albumOrganizer: NativeTripPhotoOrganizer? = nil) {
         self.root = root; self.contextProvider = contextProvider; self.invalidated = invalidated
         self.expiredTrips = expiredTrips; self.purgeExpiredKey = purgeExpiredKey
         self.nextRetentionDeadline = nextRetentionDeadline
         self.retentionRetryDelay = retentionRetryDelay
         self.library = library; self.transportFactory = transportFactory
+        self.albums = albumOrganizer
     }
     public func activate(ifCurrent: () -> Bool = { true }) async {
         guard ifCurrent() else { return }
@@ -141,6 +150,7 @@ public actor ApplePhotoTransferEngine {
             }
         }
         originalNextCheck = .distantPast; previewNextCheck = .distantPast
+        albumNextCheck = .distantPast
         Task { await self.wakePreviews() }
         Task { await self.wake() }
     }
@@ -152,6 +162,8 @@ public actor ApplePhotoTransferEngine {
     }
     private func changePolicy(paused: Bool, cellularAllowed: Bool, ifCurrent: () -> Bool = { true }) async {
         guard ifCurrent() else { return }
+        _ = albumFence.advance()
+        albumSelection = nil
         generation += 1
         let policyGeneration = generation
         self.paused = paused; self.cellularAllowed = cellularAllowed
@@ -161,7 +173,7 @@ public actor ApplePhotoTransferEngine {
         if paused { poll?.cancel(); poll = nil; originalPoll?.cancel(); originalPoll = nil; library.onChange = nil }
         // Photos can already be committing a verified save. Do not tell the
         // sign-out boundary we are stopped until that operation has settled.
-        if running || previewRunning || !activeOriginals.isEmpty { await withCheckedContinuation { idleWaiters.append($0) } }
+        if running || previewRunning || !activeOriginals.isEmpty || albumRunning { await withCheckedContinuation { idleWaiters.append($0) } }
         if paused && generation == policyGeneration { try? previews?.clearRenders() }
         if !paused && generation == policyGeneration && ifCurrent() { await start(ifCurrent: ifCurrent) }
     }
@@ -174,6 +186,7 @@ public actor ApplePhotoTransferEngine {
         guard ifCurrent() else { throw CancellationError() }
         try protectedMutation {
             guard ifCurrent() else { throw CancellationError() }
+            albums?.registry.erase(accountHash: accountHash)
             if journalScope?.accountHash == accountHash {
                 journal = nil; journalScope = nil; previews = nil; progressScope = nil
                 globalBlocker = nil; previewBlocker = nil
@@ -228,9 +241,10 @@ public actor ApplePhotoTransferEngine {
         credentialRecovery = nil
     }
 
-    public func foreground(_ value: Bool) async {
-        visible = value
-        if value {
+    public func foreground(_ snapshot: NativeForegroundSnapshot) async {
+        if let current = foregroundSnapshot, snapshot.revision <= current.revision { return }
+        foregroundSnapshot = snapshot
+        if snapshot.isForeground {
             retentionNextCheck = .distantPast
             originalNextCheck = .distantPast; previewNextCheck = .distantPast
             Task { await self.wakePreviews() }; Task { await self.wake() }
@@ -262,6 +276,28 @@ public actor ApplePhotoTransferEngine {
         Task { await self.wakePreviews() }; Task { await self.wake() }
     }
 
+    /// Retry only organization. The admission hint was captured while current
+    /// native context was already validated; this reads no key or photo bytes.
+    public func retryPhotoOrganization(tripID: String, ifCurrent: @escaping () -> Bool = { true }) throws {
+        try NativeCommandDecoder.requireTripID(tripID)
+        let selection = NativeTransferCommandFence.shared
+        guard ifCurrent(), !paused, let albums, let admitted = albumSelection,
+              admitted.tripID == tripID, journalScope == admitted.scope, let journal,
+              selection.matches(admitted.commandRevision), albumFence.matches(admitted.policyRevision) else { throw NativeKeyError.invalidState }
+        if albumRunning { return }
+        try selection.withCurrent(admitted.commandRevision) {
+            try albumFence.withCurrent(admitted.policyRevision) {
+                guard ifCurrent() else { throw CancellationError() }
+                let ids = journal.snapshot().works.filter { $0.tripID == tripID && $0.complete && $0.ignored != true }
+                    .compactMap { $0.savedLocalID ?? $0.sourceLocalID }
+                try albums.registry.enqueue(scope: admitted.scope, tripID: tripID, localIDs: ids)
+            }
+        }
+        beginAlbumOrganization(scope: admitted.scope, tripID: tripID,
+            commandRevision: admitted.commandRevision, policyRevision: admitted.policyRevision)
+        guard ifCurrent() else { throw CancellationError() }
+    }
+
     public func wake() async {
         do { try await reconcileRetention() } catch { globalBlocker = blocker(error); return }
         guard !retentionRunning else { return }
@@ -278,6 +314,7 @@ public actor ApplePhotoTransferEngine {
             guard var context = try contextProvider() else { return }
             defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
             let ledger = try currentJournal(context)
+            scheduleAlbumOrganization(context, epoch: epoch, ledger: ledger)
             let network = transportFactory(cellularAllowed)
             transport = network
             defer { network.cancel(); transport = nil }
@@ -327,7 +364,7 @@ public actor ApplePhotoTransferEngine {
                 Task { await self.runOriginal(record, context: copy, epoch: epoch, ledger: ledger, network: worker) }
             }
             originalIdle = activeOriginals.isEmpty ? min(5, originalIdle + 1) : 0
-            originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (visible ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
+            originalNextCheck = Date().addingTimeInterval(activeOriginals.isEmpty ? (isForeground ? min(15, pow(2, Double(originalIdle))) : 30) : 1)
             if page.hasMore { originalNextCheck = min(originalNextCheck, Date().addingTimeInterval(1)) }
             if let retry = pending.compactMap(\.nextAttemptAt).filter({ $0 > Date() }).min() { originalNextCheck = min(originalNextCheck, retry) }
         } catch {
@@ -356,6 +393,8 @@ public actor ApplePhotoTransferEngine {
             try assertCurrent(context, epoch)
             if record.deliveryID != nil { try await receive(record, context: context, epoch: epoch, ledger: ledger, network: network) }
             else { try await publish(record, context: context, epoch: epoch, ledger: ledger, network: network) }
+            albumNextCheck = .distantPast
+            scheduleAlbumOrganization(context, epoch: epoch, ledger: ledger)
             lastProgressAt = Date(); retryAt = nil
             if record.sourceLocalID != nil { previewNextCheck = .distantPast; Task { await self.wakePreviews() } }
         } catch {
@@ -464,6 +503,7 @@ public actor ApplePhotoTransferEngine {
         defer { manifest.eraseSecrets() }
         try await library.verifySaved(localID: localID, expectedBytes: manifest.original.plaintextBytes, expectedSHA256: manifest.original.plaintextSHA256)
         try assertCurrent(context, epoch)
+        queueVerifiedAlbumAsset(localID, context: context, epoch: epoch, ledger: ledger)
         _ = try await network.json(path: "/v1/assets/\(record.assetID)/commit", method: "POST", body: json([
             "uploadSessionId": grant.uploadSessionId,
             "objects": ["PREVIEW", "ORIGINAL"].map { ["variant": $0, "etag": record.etags[$0]!] },
@@ -525,6 +565,7 @@ public actor ApplePhotoTransferEngine {
         guard let localID = record.savedLocalID else { throw PhotoLibraryFailure.missing }
         try await library.verifySaved(localID: localID, expectedBytes: manifest.original.plaintextBytes, expectedSHA256: manifest.original.plaintextSHA256)
         try assertCurrent(context, epoch)
+        queueVerifiedAlbumAsset(localID, context: context, epoch: epoch, ledger: ledger)
         _ = try await network.json(path: "/v1/deliveries/\(deliveryID)/saved-receipt", method: "POST", body: json([
             "assetId": record.assetID, "savedAt": iso(Date()), "engineRevision": ledger.snapshot().revision,
         ]), context: context, commandID: record.workID)
@@ -541,7 +582,9 @@ public actor ApplePhotoTransferEngine {
         defer { context.tripKey.resetBytes(in: 0..<context.tripKey.count); context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count) }
         let state = try currentJournal(context).snapshot()
         let cached = previews?.snapshot(tripID: context.metadata.tripID)
-        return projection(context.metadata.tripID, items: projectedAssets(tripID: context.metadata.tripID, membershipID: context.metadata.membershipID, works: state.works, cached: cached?.records ?? []), revision: state.revision + (cached?.revision ?? 0))
+        var result = projection(context.metadata.tripID, items: projectedAssets(tripID: context.metadata.tripID, membershipID: context.metadata.membershipID, works: state.works, cached: cached?.records ?? []), revision: state.revision + (cached?.revision ?? 0))
+        if let organization = albums?.registry.snapshot(scope: context.scope, tripID: context.metadata.tripID) { result["photoOrganization"] = organization }
+        return result
     }
     public func listAssets(limit: Int, cursor: String?, query: NativeGalleryQuery? = nil) throws -> [String: Any] {
         let current = try snapshot()
@@ -606,9 +649,59 @@ public actor ApplePhotoTransferEngine {
         return value
     }
     private func finishWaiters() {
-        guard !running && !previewRunning && activeOriginals.isEmpty else { return }
+        guard !running && !previewRunning && activeOriginals.isEmpty && !albumRunning else { return }
         let waiters = idleWaiters; idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
+    }
+
+    private func queueVerifiedAlbumAsset(_ id: String, context: NativeMediaContext, epoch: Int, ledger: NativeTransferJournal) {
+        guard let albums, albums.registry.snapshot(scope: context.scope, tripID: context.metadata.tripID) != nil else { return }
+        let selection = NativeTransferCommandFence.shared, selectedEpoch = NativeTransferCommandFence.shared.current()
+        let localEpoch = albumFence.current()
+        do {
+            try selection.withCurrent(selectedEpoch) {
+                try assertCurrent(context, epoch)
+                albumSelection = (context.scope, context.metadata.tripID, selectedEpoch, localEpoch)
+                try albums.registry.enqueue(scope: context.scope, tripID: context.metadata.tripID, localIDs: [id])
+            }
+        } catch { albums.registry.failed(scope: context.scope, tripID: context.metadata.tripID) }
+        albumNextCheck = .distantPast
+        scheduleAlbumOrganization(context, epoch: epoch, ledger: ledger)
+    }
+
+    private func scheduleAlbumOrganization(_ context: NativeMediaContext, epoch: Int, ledger: NativeTransferJournal) {
+        guard let albums, !paused, !albumRunning, Date() >= albumNextCheck,
+              albums.registry.snapshot(scope: context.scope, tripID: context.metadata.tripID) != nil else { return }
+        let selection = NativeTransferCommandFence.shared
+        let selectedEpoch = selection.current(), localEpoch = albumFence.current()
+        do {
+            try selection.withCurrent(selectedEpoch) {
+                try assertCurrent(context, epoch)
+                albumSelection = (context.scope, context.metadata.tripID, selectedEpoch, localEpoch)
+                let ids = ledger.snapshot().works.filter { $0.tripID == context.metadata.tripID && $0.complete && $0.ignored != true }
+                    .compactMap { $0.savedLocalID ?? $0.sourceLocalID }
+                try albums.registry.enqueue(scope: context.scope, tripID: context.metadata.tripID, localIDs: ids)
+            }
+        } catch { albums.registry.failed(scope: context.scope, tripID: context.metadata.tripID); return }
+        beginAlbumOrganization(scope: context.scope, tripID: context.metadata.tripID,
+            commandRevision: selectedEpoch, policyRevision: localEpoch)
+    }
+
+    private func beginAlbumOrganization(scope: NativeKeyScope, tripID trip: String, commandRevision selectedEpoch: Int, policyRevision localEpoch: Int) {
+        guard let albums, !paused, !albumRunning else { return }
+        let selection = NativeTransferCommandFence.shared, fence = albumFence
+        albumRunning = true; albumNextCheck = Date().addingTimeInterval(10)
+        Task {
+            await albums.reconcile(scope: scope, tripID: trip,
+                ifCurrent: { selection.matches(selectedEpoch) && fence.matches(localEpoch) },
+                protectedMutation: { work in try selection.withCurrent(selectedEpoch) { try fence.withCurrent(localEpoch, work) } })
+            if albums.registry.snapshot(scope: scope, tripID: trip)?["state"] as? String == "PENDING" {
+                albumNextCheck = min(albumNextCheck, Date().addingTimeInterval(1))
+            }
+            albumRunning = false
+            invalidated(journal?.snapshot().revision ?? 0)
+            finishWaiters()
+        }
     }
 
     public func wakePreviews() async {
@@ -629,7 +722,7 @@ public actor ApplePhotoTransferEngine {
                 let worked = revision != initialRevision
                 if worked { lastProgressAt = Date(); invalidated(revision) }
                 previewIdle = worked ? 0 : min(5, previewIdle + 1)
-                previewNextCheck = Date().addingTimeInterval(worked ? 1 : (visible ? min(15, pow(2, Double(previewIdle))) : 30))
+                previewNextCheck = Date().addingTimeInterval(worked ? 1 : (isForeground ? min(15, pow(2, Double(previewIdle))) : 30))
             }
             try cache.purgeExpired(now: Date())
             let network = transportFactory(cellularAllowed)
@@ -793,6 +886,7 @@ public actor ApplePhotoTransferEngine {
                 // transaction lock across file cleanup and key deletion. A
                 // concurrent authenticated legacy backfill skips both.
                 _ = try purgeExpiredKey(trip) {
+                    try albums?.registry.purge(scope: trip.scope, tripID: trip.tripID)
                     if FileManager.default.fileExists(atPath: directory.path) {
                         let ledger = journalScope == trip.scope ? journal : nil
                         try (ledger ?? NativeTransferJournal(directory: directory)).purgeTrip(trip.tripID)

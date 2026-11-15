@@ -476,3 +476,108 @@ describe("combined device preparation", () => {
     expect(native.installDeviceSession).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("restore-only startup boundary", () => {
+  it("restores a validated session without command generation, registration or installation", async () => {
+    const { native, random, registration } = harness();
+    const prepareDeviceSession = jest.fn(async () => ({
+      protocolVersion: 1 as const,
+      identity,
+      restoredSession: { protocolVersion: 1 as const, deviceId },
+      activeTripId: null,
+    }));
+    const provision = createProvisionCurrentDevice({
+      native: { ...native, prepareDeviceSession },
+      random,
+      registration,
+    });
+    await expect(provision.restore(input)).resolves.toEqual({
+      deviceId,
+      identity,
+      activeTripId: null,
+    });
+    expect(prepareDeviceSession).toHaveBeenCalledTimes(1);
+    expect(native.ensureDeviceIdentity).not.toHaveBeenCalled();
+    expect(native.installDeviceSession).not.toHaveBeenCalled();
+    expect(random.getBytes).not.toHaveBeenCalled();
+    expect(registration.registerDevice).not.toHaveBeenCalled();
+  });
+
+  it("waits after a miss and consumes the preparation once when account setup permits registration", async () => {
+    const { native, random, registration } = harness();
+    const prepareDeviceSession = jest.fn(async () => ({
+      protocolVersion: 1 as const,
+      identity,
+      restoredSession: null,
+      activeTripId: null,
+    }));
+    const provision = createProvisionCurrentDevice({
+      native: { ...native, prepareDeviceSession },
+      random,
+      registration,
+    });
+    await expect(provision.restore(input)).resolves.toBeNull();
+    expect(registration.registerDevice).not.toHaveBeenCalled();
+    expect(random.getBytes).not.toHaveBeenCalled();
+    await expect(provision(input)).resolves.toEqual({ deviceId, identity });
+    expect(prepareDeviceSession).toHaveBeenCalledTimes(1);
+    expect(registration.registerDevice).toHaveBeenCalledTimes(1);
+    expect(native.installDeviceSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates identity on an install retry while retaining the accepted registration response", async () => {
+    jest
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-09-28T11:00:00.000Z"));
+    try {
+      const { native, random, registration } = harness();
+      native.installDeviceSession.mockRejectedValueOnce(new Error("locked"));
+      const prepareDeviceSession = jest.fn(async () => ({
+        protocolVersion: 1 as const,
+        identity,
+        restoredSession: null,
+        activeTripId: null,
+      }));
+      const provision = createProvisionCurrentDevice({
+        native: { ...native, prepareDeviceSession },
+        random,
+        registration,
+      });
+      await provision.restore(input);
+      await expect(provision(input)).rejects.toThrow("locked");
+      await expect(provision(input)).resolves.toEqual({ deviceId, identity });
+      expect(prepareDeviceSession).toHaveBeenCalledTimes(2);
+      expect(registration.registerDevice).toHaveBeenCalledTimes(1);
+      expect(native.installDeviceSession.mock.calls[1]).toEqual(
+        native.installDeviceSession.mock.calls[0],
+      );
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
+
+  it("shares concurrent restore operations and preserves the legacy restore-only path", async () => {
+    const { native, random, registration } = harness();
+    let finish!: (value: { protocolVersion: 1; deviceId: string }) => void;
+    const restoreDeviceSession = jest.fn(
+      () =>
+        new Promise<{ protocolVersion: 1; deviceId: string }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const provision = createProvisionCurrentDevice({
+      native: { ...native, restoreDeviceSession },
+      random,
+      registration,
+    });
+    const first = provision.restore(input);
+    const second = provision.restore(input);
+    await Promise.resolve();
+    finish({ protocolVersion: 1, deviceId });
+    await expect(first).resolves.toEqual({ deviceId, identity });
+    await expect(second).resolves.toEqual({ deviceId, identity });
+    expect(native.ensureDeviceIdentity).toHaveBeenCalledTimes(1);
+    expect(restoreDeviceSession).toHaveBeenCalledTimes(1);
+    expect(registration.registerDevice).not.toHaveBeenCalled();
+  });
+});

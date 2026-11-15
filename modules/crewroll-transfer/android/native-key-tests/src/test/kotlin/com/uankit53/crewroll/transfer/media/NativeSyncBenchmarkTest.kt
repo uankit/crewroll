@@ -73,7 +73,7 @@ class NativeSyncBenchmarkTest {
                 destination.writeBytes(byteArrayOf(1, 2, 3)); return PhotoMetadata("image/jpeg", 3u, 1u)
             }
             override fun findSaved(assetId: String): String? = assetId.takeIf { saved.containsKey(it) }
-            override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, allocated: (String) -> Unit): String {
+            override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, relativePath: String, allocated: (String) -> Unit): String {
                 allocated(assetId); assertNull(saved.putIfAbsent(assetId, source.readBytes())); saves.incrementAndGet(); return assetId
             }
             override fun verify(localId: String, bytes: Long, checksum: ByteArray) {

@@ -1,5 +1,5 @@
 import { reloadAppAsync } from "expo";
-import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { act, render, screen } from "@testing-library/react-native";
 import { Platform } from "react-native";
 
 import { SessionLoadingScreen } from "./SessionLoadingScreen";
@@ -12,7 +12,6 @@ jest.mock("expo", () => ({
 describe("SessionLoadingScreen", () => {
   beforeEach(() => {
     jest.useFakeTimers();
-    jest.replaceProperty(Platform, "OS", "android");
     jest.mocked(reloadAppAsync).mockReset();
   });
   afterEach(() => {
@@ -20,66 +19,47 @@ describe("SessionLoadingScreen", () => {
     jest.restoreAllMocks();
   });
 
-  it("offers a data-preserving retry after slow/offline startup without restarting automatically", async () => {
-    const view = await render(<SessionLoadingScreen />);
-    expect(
-      screen.queryByRole("button", { name: "Retry connection" }),
-    ).toBeNull();
-    await act(async () => {
-      await jest.advanceTimersByTimeAsync(15_000);
-    });
-    expect(
-      screen.getByLabelText(/^Waiting for a connection:/),
-    ).toBeOnTheScreen();
-    expect(reloadAppAsync).not.toHaveBeenCalled();
-    jest
-      .mocked(reloadAppAsync)
-      .mockImplementation(() => new Promise(() => undefined));
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Retry connection" }),
-    );
-    expect(reloadAppAsync).toHaveBeenCalledWith("crewroll-session-retry");
-    await act(() => jest.advanceTimersByTimeAsync(5_000));
-    expect(
-      screen.getByText("Close and reopen CrewRoll after reconnecting."),
-    ).toBeOnTheScreen();
-    expect(
-      screen.getByRole("button", { name: "Retry connection" }),
-    ).toBeEnabled();
-    await view.unmount();
-  });
-
-  it("shows a safe recovery instruction if the native reload fails", async () => {
-    jest
-      .mocked(reloadAppAsync)
-      .mockRejectedValue(new Error("private native detail"));
+  it("names account restoration from the first rendered screen", async () => {
     await render(<SessionLoadingScreen />);
-    await act(async () => {
-      await jest.advanceTimersByTimeAsync(15_000);
-    });
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Retry connection" }),
-    );
-    expect(
-      screen.getByText("Close and reopen CrewRoll after reconnecting."),
-    ).toBeOnTheScreen();
-    expect(screen.queryByText("private native detail")).toBeNull();
-  });
-
-  it("does not call the affected iOS native reload and explains manual recovery", async () => {
-    jest.replaceProperty(Platform, "OS", "ios");
-    await render(<SessionLoadingScreen />);
-    await act(async () => {
-      await jest.advanceTimersByTimeAsync(15_000);
-    });
     expect(
       screen.getByLabelText(
-        /Reconnect to the internet, then close and reopen CrewRoll/,
+        "Opening CrewRoll: Restoring your saved account session.",
       ),
     ).toBeOnTheScreen();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByLabelText(/connection/i)).toBeNull();
+  });
+
+  it.each(["android", "ios"] as const)(
+    "keeps a slow %s account check truthful without guessing connectivity or reloading",
+    async (platform) => {
+      jest.replaceProperty(Platform, "OS", platform);
+      await render(<SessionLoadingScreen />);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(15_000);
+      });
+      expect(
+        screen.getByLabelText(/^Still opening CrewRoll:/),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByLabelText(
+          "Still opening CrewRoll: This is taking longer than expected. You can close and reopen CrewRoll; your saved trip data stays on this phone.",
+        ),
+      ).toBeOnTheScreen();
+      expect(screen.queryByRole("button", { name: /connection/i })).toBeNull();
+      expect(screen.queryByLabelText(/connect to the internet/i)).toBeNull();
+      expect(reloadAppAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows the actual account operation to name its initial work", async () => {
+    await render(
+      <SessionLoadingScreen message="Checking your saved account details." />,
+    );
     expect(
-      screen.queryByRole("button", { name: "Retry connection" }),
-    ).toBeNull();
-    expect(reloadAppAsync).not.toHaveBeenCalled();
+      screen.getByLabelText(
+        "Opening CrewRoll: Checking your saved account details.",
+      ),
+    ).toBeOnTheScreen();
   });
 });

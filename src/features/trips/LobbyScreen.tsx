@@ -72,6 +72,9 @@ export type LobbyScreenProps = Readonly<{
   scrollRestoration?: ScrollRestoration;
   onRequestPhotoAccess?: () => void;
   onOpenPhotoSettings?: () => void;
+  canManageTrip?: boolean;
+  sharingReady?: boolean;
+  statusContent?: ReactNode;
 }>;
 
 function startBlockerCopy(blocker: StartBlocker): string {
@@ -114,6 +117,9 @@ export function LobbyScreen({
   onOpenInfo,
   onBack,
   scrollRestoration,
+  canManageTrip = true,
+  sharingReady = true,
+  statusContent,
 }: LobbyScreenProps) {
   const theme = useCrewRollTheme();
   const [photoSetupOpen, setPhotoSetupOpen] = useState(false);
@@ -142,6 +148,7 @@ export function LobbyScreen({
     !checking &&
     photoPermission.kind !== "FULL";
   const showingPhotoSetup =
+    canManageTrip &&
     photoSetupOpen &&
     current?.status === "ACTIVE" &&
     photoPermission.kind !== "FULL";
@@ -156,8 +163,8 @@ export function LobbyScreen({
     );
     return () => subscription.remove();
   }, [showingPhotoSetup]);
-  // Initial setup belongs to account onboarding. A skipped/revoked grant must
-  // not replace the trip; let the user explicitly reopen the same explainer.
+  // Photo setup belongs to the sharing intent. A missing/revoked grant must not
+  // replace the trip; let the user explicitly open the same explainer here.
   if (showingPhotoSetup)
     return (
       <PhotoAccessScreen
@@ -185,19 +192,21 @@ export function LobbyScreen({
   const permissionSyncPending =
     full && current?.fullPhotoLibraryAccess === false;
   const alone = joined.length === 1 && pending.length === 0;
-  const startExplanation = photoReadinessFailed
-    ? "Photo setup couldn’t sync. We’ll keep trying."
-    : checking
-      ? "Checking photo access on this phone…"
-      : needsPermission
-        ? "Allow full photo access before starting."
-        : blocker === "MEMBER_NEEDS_FULL_ACCESS" && permissionSyncPending
-          ? "Finishing photo setup on this phone…"
-          : blocker
-            ? startBlockerCopy(blocker)
-            : !onStart
-              ? "Connecting to your trip…"
-              : "Start whenever you’re ready. Others can join later.";
+  const startExplanation = !canManageTrip
+    ? "Getting your trip ready…"
+    : photoReadinessFailed
+      ? "Photo setup couldn’t sync. We’ll keep trying."
+      : checking
+        ? "Checking photo access on this phone…"
+        : needsPermission
+          ? "Allow full photo access before starting."
+          : blocker === "MEMBER_NEEDS_FULL_ACCESS" && permissionSyncPending
+            ? "Finishing photo setup on this phone…"
+            : blocker
+              ? startBlockerCopy(blocker)
+              : !onStart
+                ? "Getting your trip ready…"
+                : "Start whenever you’re ready. Others can join later.";
   const title = lobby ? "Who’s coming along?" : trip.name;
   const description = lobby
     ? owner
@@ -231,13 +240,22 @@ export function LobbyScreen({
                 style={[
                   styles.badge,
                   {
-                    backgroundColor: theme.successSurface,
+                    backgroundColor: sharingReady
+                      ? theme.successSurface
+                      : theme.surfaceMuted,
                   },
                 ]}
               >
-                <AppText variant="eyebrow" style={{ color: theme.success }}>
+                <AppText
+                  variant="eyebrow"
+                  style={{
+                    color: sharingReady ? theme.success : theme.textSecondary,
+                  }}
+                >
                   {trip.status === "ACTIVE"
-                    ? "Live"
+                    ? sharingReady
+                      ? "Live"
+                      : "Trip active"
                     : trip.status === "ENDING"
                       ? "Finishing"
                       : "Trip ended"}
@@ -330,12 +348,14 @@ export function LobbyScreen({
               {needsPermission ? (
                 <Button
                   label="Set up photo access"
+                  disabled={!canManageTrip}
                   onPress={() => setPhotoSetupOpen(true)}
                 />
               ) : owner ? (
                 <>
                   <Button
                     label="Invite crew"
+                    disabled={!canManageTrip}
                     onPress={() => setInviteOpen(true)}
                   />
                   <Button
@@ -344,6 +364,7 @@ export function LobbyScreen({
                     loading={starting}
                     disabled={
                       blocker !== null ||
+                      !canManageTrip ||
                       !full ||
                       !onStart ||
                       photoReadinessFailed
@@ -362,6 +383,7 @@ export function LobbyScreen({
                 <Button
                   label="Retry photo setup"
                   variant="text"
+                  disabled={!canManageTrip}
                   onPress={onRetryPhotoReadiness}
                 />
               ) : null}
@@ -388,11 +410,13 @@ export function LobbyScreen({
           ) : needsPermission ? (
             <Button
               label="Set up photo access"
+              disabled={!canManageTrip}
               onPress={() => setPhotoSetupOpen(true)}
             />
           ) : undefined
         }
       >
+        {statusContent}
         {lobby ? (
           <Stack gap="lg" testID="lobby-crew">
             {!alone ? (
@@ -462,17 +486,19 @@ export function LobbyScreen({
                     >
                       {member.status === "PENDING_KEY"
                         ? "Waiting for approval"
-                        : member.isCurrentMember && checking
-                          ? "Checking photos…"
-                          : member.isCurrentMember && !full
-                            ? "Photo access needed"
-                            : !member.fullPhotoLibraryAccess
-                              ? member.isCurrentMember && full
-                                ? "Finishing setup…"
-                                : "Setting up photos"
-                              : member.deviceState === "MISSING"
-                                ? "Connecting…"
-                                : "Ready"}
+                        : member.isCurrentMember && !canManageTrip
+                          ? "Preparing…"
+                          : member.isCurrentMember && checking
+                            ? "Checking photos…"
+                            : member.isCurrentMember && !full
+                              ? "Photo access needed"
+                              : !member.fullPhotoLibraryAccess
+                                ? member.isCurrentMember && full
+                                  ? "Finishing setup…"
+                                  : "Setting up photos"
+                                : member.deviceState === "MISSING"
+                                  ? "Connecting…"
+                                  : "Ready"}
                     </AppText>
                   </View>
                 ),
@@ -533,6 +559,7 @@ export function LobbyScreen({
             <Button
               label="Try again"
               loading={activation.retrying ?? false}
+              disabled={!canManageTrip}
               onPress={activation.onRetry}
             />
           </Stack>
@@ -583,7 +610,7 @@ export function LobbyScreen({
                 label={inviteStatus === "failed" ? "Try again" : "Getting code"}
                 loading={inviteStatus === "loading"}
                 onPress={onRetryInvite ?? (() => {})}
-                disabled={!onRetryInvite}
+                disabled={!onRetryInvite || !canManageTrip}
               />
             </Stack>
           )}

@@ -122,6 +122,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
   const keyMethodNames = [
     "prepareDeviceSession",
     "ensureDeviceIdentity",
+    "getActiveTripSelection",
     "restoreDeviceSession",
     "installDeviceSession",
     "refreshDeviceSession",
@@ -132,12 +133,14 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     "wrapTripKey",
     "importTripKey",
     "importAndActivateTrip",
+    "importAndActivateTripWithAlbum",
     "activateTrip",
     "deactivateTrip",
   ];
   const pendingEngineMethodNames = [
     "setTransferPolicy",
     "reconcileNow",
+    "retryPhotoOrganization",
     "retry",
   ];
   const mutationNames = [...keyMethodNames, ...pendingEngineMethodNames];
@@ -148,9 +151,16 @@ test("native bridges keep the closed protocol and wire only implemented transfer
     ["Android", kotlin],
   ]) {
     const registrations = [...source.matchAll(/AsyncFunction\("([^"]+)"\)/g)];
+    const registeredNames = registrations.map((match) => match[1]);
+    assert.equal(
+      new Set(registeredNames).size,
+      registeredNames.length,
+      `${platform} must not register a command twice`,
+    );
     assert.deepEqual(
-      registrations.map((match) => match[1]),
-      allMethodNames,
+      [...registeredNames].sort(),
+      [...allMethodNames].sort(),
+      `${platform} must expose exactly the closed protocol commands`,
     );
     const events = [...source.matchAll(/\bEvents\s*\(([^)]*)\)/g)];
     assert.equal(
@@ -180,21 +190,42 @@ test("native bridges keep the closed protocol and wire only implemented transfer
         registrations[index + 1]?.index ?? source.length,
       );
       if (platform === "iOS") {
-        const decoder = [
-          "clearDeviceSession",
-          "eraseAccount",
-          ...pendingEngineMethodNames,
-          "listAssets",
-        ].includes(method)
-          ? /Self\.require\(\s*command,\s*keys:/
-          : new RegExp(
-              `NativeCommandDecoder\\.require\\(\\s*command,\\s*for:\\s*\\.${method}\\s*\\)`,
-            );
+        const decoder =
+          method === "importAndActivateTripWithAlbum"
+            ? /NativeTripAlbumCommand\.decode\(command\)/
+            : [
+                  "clearDeviceSession",
+                  "eraseAccount",
+                  ...pendingEngineMethodNames,
+                  "listAssets",
+                ].includes(method)
+              ? /Self\.require\(\s*command,\s*keys:/
+              : new RegExp(
+                  `NativeCommandDecoder\\.require\\(\\s*command,\\s*for:\\s*\\.${method}\\s*\\)`,
+                );
         assert.match(
           body,
           decoder,
           `${platform} ${method} must validate its closed command`,
         );
+        if (method === "importAndActivateTripWithAlbum") {
+          const albumDecoder = readFileSync(
+            path.join(
+              moduleRoot,
+              "ios/IdentityKeys/Sources/CrewRollNativeKeys/NativeTripAlbums.swift",
+            ),
+            "utf8",
+          );
+          assert.match(
+            albumDecoder,
+            /Set\(command\.keys\) == \["protocolVersion", "envelope", "activation", "album"\]/,
+          );
+          assert.match(albumDecoder, /Set\(album\.keys\) == \["tripName"\]/);
+          assert.match(
+            albumDecoder,
+            /NativeCommandDecoder\.require\(core, for: \.importAndActivateTrip\)/,
+          );
+        }
       } else if (method === "setTransferPolicy") {
         assert.match(body, /NativeCommandDecoder\.requireProtocol\(command\)/);
         assert.match(
@@ -206,6 +237,7 @@ test("native bridges keep the closed protocol and wire only implemented transfer
           "clearDeviceSession",
           "eraseAccount",
           "reconcileNow",
+          "retryPhotoOrganization",
           "retry",
           "listAssets",
         ].includes(method)
@@ -227,25 +259,42 @@ test("native bridges keep the closed protocol and wire only implemented transfer
       1,
     );
     for (const method of keyMethodNames) {
-      assert.match(source, new RegExp(`lifecycle(?:\\(\\))?\\.${method}`));
+      const lifecycleMethod =
+        method === "importAndActivateTripWithAlbum"
+          ? "importAndActivateTrip"
+          : method;
+      assert.match(
+        source,
+        new RegExp(`lifecycle(?:\\(\\))?\\.${lifecycleMethod}`),
+      );
     }
   }
   assert.doesNotMatch(swift, /pendingScopeException|inactiveSnapshot/);
   assert.match(swift, /ApplePhotoTransferEngine/);
-  for (const method of ["setPolicy", "wake", "retry", "snapshot", "listAssets"])
+  for (const method of [
+    "setPolicy",
+    "reconcileNow",
+    "retry",
+    "snapshot",
+    "listAssets",
+  ])
     assert.match(swift, new RegExp(`await engine\\.${method}`));
   assert.doesNotMatch(
     kotlin,
     /pendingScopeException|inactiveSnapshot|TRANSFER_SCOPE_PENDING/,
   );
   assert.match(kotlin, /NativePhotoTransferEngine/);
-  for (const method of [
-    "policy",
-    "requestReconcile",
-    "retry",
-    "snapshot",
-    "assets",
-  ])
+  assert.match(kotlin, /runtime\(\)\.applyTransferPolicy\(/);
+  const androidRuntime = readFileSync(
+    path.join(
+      moduleRoot,
+      "android/src/main/java/com/uankit53/crewroll/transfer/CrewRollNativeRuntime.kt",
+    ),
+    "utf8",
+  );
+  assert.match(androidRuntime, /fun applyTransferPolicy\(/);
+  assert.match(androidRuntime, /\.policy\(/);
+  for (const method of ["requestReconcile", "retry", "snapshot", "assets"])
     assert.match(kotlin, new RegExp(`engine\\(\\)\\.${method}`));
   assert.match(swift, /"protocolVersion": 1/);
   assert.match(kotlin, /"protocolVersion" to 1/);

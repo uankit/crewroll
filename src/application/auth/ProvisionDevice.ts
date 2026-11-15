@@ -82,6 +82,12 @@ type PendingAttempt = {
   response?: DeviceResponse;
 };
 
+type RestorePreparation = Readonly<{
+  identity: NativeDeviceIdentity;
+  prepared?: PreparedDeviceSession;
+  restored: RestoredDeviceSession;
+}>;
+
 function invalidRequest(): CrewRollApiProblem {
   return new CrewRollApiProblem("INVALID_REQUEST");
 }
@@ -158,6 +164,65 @@ export function createProvisionCurrentDevice({
 }: ProvisionCurrentDeviceDependencies) {
   let pendingAttempt: PendingAttempt | undefined;
   const inFlight = new Map<string, Promise<ProvisionedDevice>>();
+  const restoring = new Map<string, Promise<ProvisionedDevice | null>>();
+  // A restore miss may wait for account/profile consent before registration.
+  // Reuse just this completed preparation once; later registration/install
+  // retries still revalidate native identity through the original path.
+  let preparedMiss:
+    Readonly<{ key: string; value: RestorePreparation }> | undefined;
+
+  async function restoreOnly(
+    context: DeviceRegistrationContext,
+  ): Promise<ProvisionedDevice | null> {
+    const key = JSON.stringify(context);
+    const prepare = native.prepareDeviceSession;
+    const prepared =
+      prepare === undefined
+        ? undefined
+        : await prepare.call(native, {
+            protocolVersion: 1,
+            accountId: context.accountId,
+            apiBaseUrl: context.apiBaseUrl,
+          });
+    if (prepare !== undefined && prepared === undefined)
+      throw new CrewRollApiProblem("INTERNAL_ERROR");
+    const identity =
+      prepared?.identity ??
+      (await native.ensureDeviceIdentity({
+        protocolVersion: 1,
+        accountId: context.accountId,
+      }));
+    const restored =
+      prepared === undefined
+        ? ((await native.restoreDeviceSession?.({
+            protocolVersion: 1,
+            accountId: context.accountId,
+            installationId: identity.installationId,
+            apiBaseUrl: context.apiBaseUrl,
+          })) ?? null)
+        : prepared.restoredSession;
+    if (restored !== null) {
+      preparedMiss = undefined;
+      if (pendingAttempt && sameContext(pendingAttempt.context, context))
+        pendingAttempt = undefined;
+      return {
+        deviceId: restored.deviceId,
+        identity,
+        ...(prepared === undefined
+          ? {}
+          : { activeTripId: prepared.activeTripId }),
+      };
+    }
+    preparedMiss = {
+      key,
+      value: {
+        identity,
+        ...(prepared === undefined ? {} : { prepared }),
+        restored: null,
+      },
+    };
+    return null;
+  }
 
   async function provision(
     context: DeviceRegistrationContext,
@@ -172,15 +237,33 @@ export function createProvisionCurrentDevice({
       pendingAttempt = attempt;
     }
 
-    const prepare = native.prepareDeviceSession;
+    const preparationKey = JSON.stringify(context);
+    const priorPreparation =
+      preparedMiss?.key === preparationKey ? preparedMiss.value : undefined;
+    preparedMiss = undefined;
+    const prepare = priorPreparation ? undefined : native.prepareDeviceSession;
     const prepared =
-      prepare === undefined
+      priorPreparation?.prepared ??
+      (prepare === undefined
         ? undefined
         : await prepare.call(native, {
             protocolVersion: 1,
             accountId: context.accountId,
             apiBaseUrl: context.apiBaseUrl,
-          });
+          }));
+    if (priorPreparation) {
+      if (
+        attempt.identity !== undefined &&
+        JSON.stringify(
+          createDeviceRegistrationBody(attempt.identity, context),
+        ) !==
+          JSON.stringify(
+            createDeviceRegistrationBody(priorPreparation.identity, context),
+          )
+      )
+        throw new CrewRollApiProblem("INTERNAL_ERROR");
+      attempt.identity = priorPreparation.identity;
+    }
     if (prepare !== undefined) {
       if (prepared === undefined)
         throw new CrewRollApiProblem("INTERNAL_ERROR");
@@ -204,8 +287,9 @@ export function createProvisionCurrentDevice({
 
     const identity = attempt.identity;
     if (identity === undefined) throw new CrewRollApiProblem("INTERNAL_ERROR");
-    const restored =
-      prepared === undefined
+    const restored = priorPreparation
+      ? priorPreparation.restored
+      : prepared === undefined
         ? await native.restoreDeviceSession?.({
             protocolVersion: 1,
             accountId: context.accountId,
@@ -258,7 +342,7 @@ export function createProvisionCurrentDevice({
     return { deviceId: response.deviceId, identity };
   }
 
-  return async function provisionCurrentDevice(
+  const provisionCurrentDevice = async function (
     input: ProvisionCurrentDeviceInput,
   ): Promise<ProvisionedDevice> {
     const context = parseDeviceRegistrationContext(input);
@@ -273,4 +357,20 @@ export function createProvisionCurrentDevice({
       if (inFlight.get(key) === operation) inFlight.delete(key);
     }
   };
+
+  return Object.assign(provisionCurrentDevice, {
+    async restore(input: ProvisionCurrentDeviceInput) {
+      const context = parseDeviceRegistrationContext(input);
+      const key = JSON.stringify(context);
+      const pending = restoring.get(key);
+      if (pending) return pending;
+      const operation = restoreOnly(context);
+      restoring.set(key, operation);
+      try {
+        return await operation;
+      } finally {
+        if (restoring.get(key) === operation) restoring.delete(key);
+      }
+    },
+  });
 }

@@ -49,6 +49,21 @@ jest.mock("../design-system", () => ({
 function snapshot(phase: AppSessionPhase) {
   return { phase };
 }
+function session(
+  snapshot: Readonly<{ phase: AppSessionPhase; publicErrorCode?: string }>,
+  shell = false,
+) {
+  return {
+    snapshot,
+    startup: { stage: "account", status: "working", error: null },
+    capabilities: {
+      canUseAuthenticatedShell: shell,
+      canReadLibrary: false,
+      canMutateTrip: false,
+      canSharePhotos: false,
+    },
+  };
+}
 
 describe("AppNavigator", () => {
   beforeEach(() => {
@@ -67,7 +82,9 @@ describe("AppNavigator", () => {
     ["READY_LOBBY", "(app)"],
     ["READY_ACTIVE", "(app)"],
   ] as const)("opens only the %s protected branch", async (phase, allowed) => {
-    mockUseAppSession.mockReturnValue({ snapshot: snapshot(phase) });
+    mockUseAppSession.mockReturnValue(
+      session(snapshot(phase), allowed === "(app)"),
+    );
     await render(<AppNavigator />);
 
     expect(screen.getByText("screen:index")).toBeOnTheScreen();
@@ -81,9 +98,9 @@ describe("AppNavigator", () => {
   });
 
   it("keeps all protected branches closed while fonts or Clerk load", async () => {
-    mockUseAppSession.mockReturnValue({
-      snapshot: snapshot("LOADING_FONTS_OR_CLERK"),
-    });
+    mockUseAppSession.mockReturnValue(
+      session(snapshot("LOADING_FONTS_OR_CLERK")),
+    );
     await render(<AppNavigator />);
 
     expect(screen.getByText("screen:index")).toBeOnTheScreen();
@@ -96,7 +113,7 @@ describe("AppNavigator", () => {
 
   it("gates both trip paths behind account setup while keeping the root navigator", async () => {
     mockSetupRequired = true;
-    mockUseAppSession.mockReturnValue({ snapshot: snapshot("READY_NO_TRIP") });
+    mockUseAppSession.mockReturnValue(session(snapshot("READY_NO_TRIP"), true));
     await render(<AppNavigator />);
     expect(screen.getByText("screen:setup")).toBeOnTheScreen();
     expect(screen.queryByText("screen:(app)")).toBeNull();
@@ -109,15 +126,32 @@ describe("AppNavigator", () => {
       phase: "RECOVERABLE_FAILURE",
       publicErrorCode: "SESSION_TEARDOWN_FAILED",
     },
-  ])(
+  ] as const)(
     "keeps teardown visible when account setup also needs attention",
     async (snapshot) => {
       mockSetupRequired = true;
-      mockUseAppSession.mockReturnValue({ snapshot });
+      mockUseAppSession.mockReturnValue(session(snapshot));
       await render(<AppNavigator />);
       expect(screen.getByText("screen:provision")).toBeOnTheScreen();
       expect(screen.queryByText("screen:setup")).toBeNull();
       expect(screen.queryByText("screen:(app)")).toBeNull();
     },
   );
+
+  it.each(["PROVISIONING_DEVICE", "RECOVERABLE_FAILURE"] as const)(
+    "keeps the authenticated app shell mounted during %s without granting mutation readiness",
+    async (phase) => {
+      mockUseAppSession.mockReturnValue(session(snapshot(phase), true));
+      await render(<AppNavigator />);
+      expect(screen.getByText("screen:(app)")).toBeOnTheScreen();
+      expect(screen.queryByText("screen:provision")).toBeNull();
+    },
+  );
+
+  it("does not treat a READY_ phase name as shell authority", async () => {
+    mockUseAppSession.mockReturnValue(session(snapshot("READY_ACTIVE"), false));
+    await render(<AppNavigator />);
+    expect(screen.getByText("screen:index")).toBeOnTheScreen();
+    expect(screen.queryByText("screen:(app)")).toBeNull();
+  });
 });

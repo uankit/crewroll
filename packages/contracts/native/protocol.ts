@@ -8,6 +8,7 @@ import {
   OpaqueCursorSchema,
   P256PublicKeySchema,
   ProtocolVersionSchema,
+  TripNameSchema,
   UriSchema,
   X25519PublicKeySchema,
 } from "../openapi/common.js";
@@ -101,6 +102,21 @@ export const PreparedDeviceSessionSchema = ClosedObject({
 });
 export type PreparedDeviceSession = Static<typeof PreparedDeviceSessionSchema>;
 
+/** Public selection metadata only; this never restores credentials or trip keys. */
+export const GetActiveTripSelectionCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  accountId: NativeAccountIdSchema,
+  installationId: NativeDeviceIdentitySchema.properties.installationId,
+});
+export type GetActiveTripSelectionCommand = Static<
+  typeof GetActiveTripSelectionCommandSchema
+>;
+export const ActiveTripSelectionSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  activeTripId: Type.Union([TripIdSchema, Type.Null()]),
+});
+export type ActiveTripSelection = Static<typeof ActiveTripSelectionSchema>;
+
 export const CreateTripKeyCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
@@ -180,6 +196,26 @@ export type ImportAndActivateTripCommand = Static<
   typeof ImportAndActivateTripCommandSchema
 >;
 
+/** Album presentation is separate from encrypted key and activation metadata. */
+export const ImportAndActivateTripWithAlbumCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  envelope: ImportTripKeyCommandSchema,
+  activation: ActivateTripCommandSchema,
+  album: ClosedObject({ tripName: TripNameSchema }),
+});
+export type ImportAndActivateTripWithAlbumCommand = Static<
+  typeof ImportAndActivateTripWithAlbumCommandSchema
+>;
+
+/** Retries local album organization only; never resets original transfer work. */
+export const RetryPhotoOrganizationCommandSchema = ClosedObject({
+  protocolVersion: ProtocolVersionSchema,
+  tripId: TripIdSchema,
+});
+export type RetryPhotoOrganizationCommand = Static<
+  typeof RetryPhotoOrganizationCommandSchema
+>;
+
 export const DeactivateTripCommandSchema = ClosedObject({
   protocolVersion: ProtocolVersionSchema,
   tripId: TripIdSchema,
@@ -238,6 +274,17 @@ export const EngineCountsSchema = ClosedObject({
 });
 
 export const DurableEngineSnapshotSchema = ClosedObject({
+  photoOrganization: Type.Optional(
+    ClosedObject({
+      state: Type.Union([
+        Type.Literal("PENDING"),
+        Type.Literal("READY"),
+        Type.Literal("FAILED"),
+      ]),
+      pendingCount: Type.Integer({ minimum: 0 }),
+      failedCount: Type.Integer({ minimum: 0 }),
+    }),
+  ),
   protocolVersion: ProtocolVersionSchema,
   revision: Type.Integer({ minimum: 0 }),
   activeTripId: Type.Union([TripIdSchema, Type.Null()]),

@@ -19,6 +19,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileNotFoundException
 import java.security.MessageDigest
 import java.time.Instant
 
@@ -27,7 +28,6 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     private val resolver = context.contentResolver
     private val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     private var observer: ContentObserver? = null
-    private val savedPath = "Pictures/CrewRoll/"
     private val systemCameras: Set<String> by lazy {
         @Suppress("DEPRECATION")
         val cameras = listOf(MediaStore.ACTION_IMAGE_CAPTURE, MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
@@ -127,13 +127,28 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     override fun findSaved(assetId: String): String? {
         permission()
         require(assetId.matches(Regex("[0-9a-f-]{36}")))
-        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? AND ${MediaStore.Images.Media.RELATIVE_PATH} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 0", arrayOf("crewroll-$assetId.%", savedPath), null)?.use { cursor ->
+        // The capture ID remains stable if the user moves the image or app
+        // ownership is reset by reinstall. The engine authenticates its bytes
+        // before reuse; this read never moves or changes a matched photo.
+        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? AND ${MediaStore.Images.Media.IS_PENDING} = 0", arrayOf("crewroll-$assetId.%"), null)?.use { cursor ->
             if (cursor.moveToFirst()) return ContentUris.withAppendedId(collection, cursor.getLong(0)).toString()
         }
         return null
     }
-    override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, allocated: (String) -> Unit): String {
+    override fun isPublished(localId: String): Boolean {
         permission()
+        resolver.query(Uri.parse(localId), arrayOf(MediaStore.Images.Media.IS_PENDING, MediaStore.Images.Media.OWNER_PACKAGE_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) {
+                if (it.getInt(0) == 0) return true
+                if (it.getString(1) == context.packageName) return false
+                throw PhotoLibraryException("PHOTO_PERMISSION")
+            }
+        }
+        throw PhotoLibraryException("SOURCE_MISSING")
+    }
+    override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, relativePath: String, allocated: (String) -> Unit): String {
+        permission()
+        require(NativeTripAlbumPaths.isDestination(relativePath))
         findSaved(assetId)?.let { allocated(it); return it }
         require(assetId.matches(Regex("[0-9a-f-]{36}")))
         val extension = when (mime) { "image/jpeg" -> "jpg"; "image/heic" -> "heic"; "image/heif" -> "heif"; "image/png" -> "png"; "image/webp" -> "webp"; else -> throw PhotoLibraryException("INTEGRITY_FAILURE") }
@@ -141,13 +156,25 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
         // Recover the precise app-owned pending row after a process death before
         // journal publication. Never touch another application's photos.
         var pending: Uri? = null
-        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} = ? AND ${MediaStore.Images.Media.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 1", arrayOf(name, savedPath, context.packageName), null)?.use { if (it.moveToFirst()) pending = ContentUris.withAppendedId(collection, it.getLong(0)) }
+        resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 1", arrayOf(name, "${NativeTripAlbumPaths.LEGACY}%", context.packageName), null)?.use { if (it.moveToFirst()) pending = ContentUris.withAppendedId(collection, it.getLong(0)) }
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, name); put(MediaStore.Images.Media.MIME_TYPE, mime)
-            put(MediaStore.Images.Media.RELATIVE_PATH, savedPath); put(MediaStore.Images.Media.IS_PENDING, 1)
+            put(MediaStore.Images.Media.RELATIVE_PATH, relativePath); put(MediaStore.Images.Media.IS_PENDING, 1)
             if (capturedAt != null) put(MediaStore.Images.Media.DATE_TAKEN, capturedAt.toEpochMilli())
         }
-        val uri = pending ?: resolver.insert(collection, values) ?: throw PhotoLibraryException("STORAGE_FULL")
+        val uri = pending ?: try {
+            resolver.insert(collection, values) ?: throw PhotoLibraryException("STORAGE_FULL")
+        } catch (error: Exception) {
+            if (relativePath == NativeTripAlbumPaths.LEGACY || error is SecurityException) throw error
+            // A folder/provider failure must not withhold an otherwise writable
+            // original. Check for an uncertain committed pending row before a
+            // fallback insert; organization repairs the same URI separately.
+            var recovered: Uri? = null
+            resolver.query(collection, arrayOf(MediaStore.Images.Media._ID), "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Images.Media.IS_PENDING} = 1", arrayOf(name, "${NativeTripAlbumPaths.LEGACY}%", context.packageName), null)?.use {
+                if (it.moveToFirst()) recovered = ContentUris.withAppendedId(collection, it.getLong(0))
+            }
+            recovered ?: resolver.insert(collection, ContentValues(values).apply { put(MediaStore.Images.Media.RELATIVE_PATH, NativeTripAlbumPaths.LEGACY) }) ?: throw error
+        }
         allocated(uri.toString())
         resolver.openOutputStream(uri, "wt")?.use { output -> source.inputStream().use { it.copyTo(output, 65_536) } } ?: throw PhotoLibraryException("STORAGE_FULL")
         // Verify pending bytes before publishing, then the engine verifies again
@@ -160,11 +187,34 @@ class AndroidPhotoLibrary(private val context: Context) : NativePhotoLibraryPort
     override fun verify(localId: String, bytes: Long, checksum: ByteArray) {
         permission()
         val digest = MessageDigest.getInstance("SHA-256"); var count = 0L
-        resolver.openInputStream(MediaStore.setRequireOriginal(Uri.parse(localId)))?.use { input ->
+        try { resolver.openInputStream(MediaStore.setRequireOriginal(Uri.parse(localId)))?.use { input ->
             val buffer = ByteArray(65_536)
             try { while (true) { val n = input.read(buffer); if (n < 0) break; count += n; if (count > bytes) throw PhotoLibraryException("INTEGRITY_FAILURE"); digest.update(buffer, 0, n) } }
             finally { buffer.fill(0) }
-        } ?: throw PhotoLibraryException("SOURCE_MISSING")
+        } ?: throw PhotoLibraryException("SOURCE_MISSING") }
+        catch (_: FileNotFoundException) { throw PhotoLibraryException("SOURCE_MISSING") }
         if (count != bytes || !MessageDigest.isEqual(digest.digest(), checksum)) throw PhotoLibraryException("INTEGRITY_FAILURE")
+    }
+    override fun inspectOrganization(localId: String, relativePath: String): NativePhotoOrganizationAction {
+        permission()
+        require(NativeTripAlbumPaths.isDestination(relativePath) && relativePath != NativeTripAlbumPaths.LEGACY)
+        val uri = Uri.parse(localId)
+        var actualPath: String? = null
+        var owner: String? = null
+        resolver.query(uri, arrayOf(MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.OWNER_PACKAGE_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) { actualPath = it.getString(0); owner = it.getString(1) }
+        }
+        val existing = actualPath ?: throw PhotoLibraryException("SOURCE_MISSING")
+        return photoOrganizationAction(existing, relativePath, owner, context.packageName)
+    }
+    override fun organizeSaved(localId: String, relativePath: String): PhotoOrganizationResult {
+        when (inspectOrganization(localId, relativePath)) {
+            NativePhotoOrganizationAction.ALREADY_ORGANIZED -> return PhotoOrganizationResult.ORGANIZED
+            NativePhotoOrganizationAction.USER_MANAGED -> return PhotoOrganizationResult.USER_MANAGED
+            NativePhotoOrganizationAction.OWNERSHIP_UNAVAILABLE -> throw SecurityException("Photo organization requires app ownership")
+            NativePhotoOrganizationAction.MOVE -> Unit
+        }
+        check(resolver.update(Uri.parse(localId), ContentValues().apply { put(MediaStore.Images.Media.RELATIVE_PATH, relativePath) }, null, null) == 1)
+        return PhotoOrganizationResult.ORGANIZED
     }
 }

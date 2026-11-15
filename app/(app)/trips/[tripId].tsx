@@ -4,6 +4,7 @@ import {
 } from "@/bootstrap/photoReadinessReconciler";
 import { TripNotificationsSheet } from "@/bootstrap/TripNotificationsSheet";
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
+import { StartupStatus } from "@/bootstrap/StartupStatus";
 import { useTripContinuity } from "@/bootstrap/useTripContinuity";
 import {
   Redirect,
@@ -81,7 +82,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   const inviteOpen =
     projection.trip?.status === "LOBBY" || projection.trip?.status === "ACTIVE";
   useEffect(() => {
-    if (!owner || !inviteOpen || !actions) return;
+    if (
+      !owner ||
+      !inviteOpen ||
+      !actions ||
+      !session.capabilities.canMutateTrip
+    )
+      return;
     let cancelled = false;
     void Promise.resolve()
       .then(() => {
@@ -101,15 +108,23 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     return () => {
       cancelled = true;
     };
-  }, [actions, owner, inviteOpen, tripId, inviteAttempt]);
+  }, [
+    actions,
+    owner,
+    inviteOpen,
+    tripId,
+    inviteAttempt,
+    session.capabilities.canMutateTrip,
+  ]);
 
   const [retryingActivation, setRetryingActivation] = useState(false);
   const readiness = usePhotoReadinessRecovery(
     actions,
     tripId,
     focused,
-    (session.snapshot.phase === "READY_LOBBY" ||
-      session.snapshot.phase === "READY_ACTIVE") &&
+    session.capabilities.canMutateTrip &&
+      (session.snapshot.phase === "READY_LOBBY" ||
+        session.snapshot.phase === "READY_ACTIVE") &&
       canPublishPhotoReadiness(projection.trip),
   );
   const [memberBusy, setMemberBusy] = useState<{
@@ -122,7 +137,12 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   } | null>(null);
   const resolvingMember = useRef(false);
   async function resolveMember(id: string, approve: boolean) {
-    if (!actions || resolvingMember.current) return;
+    if (
+      !actions ||
+      !session.capabilities.canMutateTrip ||
+      resolvingMember.current
+    )
+      return;
     resolvingMember.current = true;
     setMemberBusy({ id, action: approve ? "approve" : "decline" });
     setMemberError(null);
@@ -176,7 +196,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
       activation = {
         kind: "failed",
         onRetry: async () => {
-          if (actions === null) return;
+          if (actions === null || !session.capabilities.canMutateTrip) return;
           setRetryingActivation(true);
           try {
             await actions.retryActivation(trip.id);
@@ -187,8 +207,14 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           }
         },
       };
-    } else {
+    } else if (
+      session.capabilities.canMutateTrip &&
+      session.snapshot.phase === "READY_ACTIVE" &&
+      session.snapshot.tripId === trip.id
+    ) {
       activation = { kind: "ready" };
+    } else {
+      activation = { kind: "working" };
     }
   }
 
@@ -203,6 +229,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
           onChange: galleryCache.saveScrollY,
         }}
         onBack={() => router.dismissTo("/(app)")}
+        canManageTrip={session.capabilities.canMutateTrip}
+        sharingReady={session.capabilities.canSharePhotos}
+        statusContent={
+          session.startup.status === "ready" ? undefined : (
+            <StartupStatus startup={session.startup} onRetry={session.retry} />
+          )
+        }
         actionError={actionError}
         inviteStatus={inviteStatus}
         onRetryInvite={() => setInviteAttempt((attempt) => attempt + 1)}
@@ -211,7 +244,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         onOpenFilters={() => setFiltersOpen(true)}
         onOpenInfo={() => setInfoOpen(true)}
         onOpenNotifications={() => setNotificationsOpen(true)}
-        {...(actions
+        {...(actions && session.capabilities.canMutateTrip
           ? {
               memberRequests: {
                 busy: memberBusy,
@@ -225,7 +258,8 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         onRetryPhotoReadiness={readiness.retry}
         deviceRequestCount={continuity.data?.approvalRequests.length ?? 0}
         transferContent={
-          activation?.kind === "ready" || trip.status === "ENDING" ? (
+          session.capabilities.canReadLibrary &&
+          (activation?.kind === "ready" || trip.status === "ENDING") ? (
             <ActiveTripTransfers
               {...(trip.members.find((m) => m.isCurrentMember)?.membershipId
                 ? {
@@ -256,20 +290,19 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
               },
             })}
         onStart={async () => {
-          if (actions === null) return;
+          if (actions === null || !session.capabilities.canMutateTrip) return;
           setActionError(null);
           setStarting(true);
           try {
             await actions.start(trip.id);
           } catch {
-            setActionError(
-              "The trip could not be started yet. Check your connection and try again.",
-            );
+            setActionError("The trip could not be started yet. Try again.");
           } finally {
             setStarting(false);
           }
         }}
         onOpenPhotoSettings={() => {
+          if (!session.capabilities.canMutateTrip) return;
           setActionError(null);
           void actions?.openPhotoSettings().catch(() => {
             setActionError(
@@ -322,12 +355,13 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
 
 export default function TripRoute() {
   const params = useLocalSearchParams<{ tripId?: string | string[] }>();
-  const { snapshot } = useAppSession();
+  const { snapshot, capabilities } = useAppSession();
   const routeTripId = typeof params.tripId === "string" ? params.tripId : null;
 
   if (
     routeTripId === null ||
     !TRIP_ID_PATTERN.test(routeTripId) ||
+    !capabilities.canReadLibrary ||
     (snapshot.phase !== "READY_LOBBY" && snapshot.phase !== "READY_ACTIVE") ||
     snapshot.tripId !== routeTripId
   ) {

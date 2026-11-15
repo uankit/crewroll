@@ -34,6 +34,13 @@ export function createNativeSessionFence(native: CrewRollTransferPort) {
       const prepared = createPreparedTripNative({
         importTripKey: guard(native.importTripKey.bind(native)),
         activateTrip: guard(native.activateTrip.bind(native)),
+        get importAndActivateTripWithAlbum() {
+          check();
+          const operation = native.importAndActivateTripWithAlbum;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
         get importAndActivateTrip() {
           check();
           const operation = native.importAndActivateTrip;
@@ -43,12 +50,31 @@ export function createNativeSessionFence(native: CrewRollTransferPort) {
         },
       });
       return Object.freeze({
+        get retryPhotoOrganization() {
+          check();
+          const operation = native.retryPhotoOrganization;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
+        get getActiveTripSelection() {
+          check();
+          const operation = native.getActiveTripSelection;
+          return operation === undefined
+            ? undefined
+            : guard(operation.bind(native));
+        },
         get prepareDeviceSession() {
           check();
           const operation = native.prepareDeviceSession;
           return operation === undefined
             ? undefined
             : guard(operation.bind(native));
+        },
+        get importAndActivateTripWithAlbum() {
+          check();
+          const operation = prepared.importAndActivateTripWithAlbum;
+          return operation === undefined ? undefined : guard(operation);
         },
         get importAndActivateTrip() {
           check();

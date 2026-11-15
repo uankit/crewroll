@@ -13,8 +13,13 @@ const mockSignOut = jest.fn();
 const mockRefetch = jest.fn();
 let mockPhones: { requestId: string; displayName: string; platform: string }[] =
   [];
+let mockCanMutateTrip = true;
 jest.mock("./AppSessionProvider", () => ({
-  useAppSession: () => ({ actions: mockActions, signOut: mockSignOut }),
+  useAppSession: () => ({
+    actions: mockActions,
+    signOut: mockSignOut,
+    capabilities: { canMutateTrip: mockCanMutateTrip },
+  }),
 }));
 jest.mock("./useTripContinuity", () => ({
   useTripContinuity: () => ({
@@ -64,7 +69,33 @@ beforeEach(() => {
   mockActions.reject.mockReset();
   mockActions.resolveDeviceRecovery.mockReset();
   mockPhones = [];
+  mockCanMutateTrip = true;
   mockRefetch.mockResolvedValue({});
+});
+
+test("retains visible requests but blocks all decisions while trip authority is recovering", async () => {
+  mockCanMutateTrip = false;
+  mockPhones = [{ requestId: "phone", displayName: "Ankit", platform: "ios" }];
+  const view = await render(
+    <TripNotificationsSheet
+      trip={trip}
+      onDismiss={jest.fn()}
+      onChanged={jest.fn()}
+    />,
+  );
+  for (const name of [
+    "Approve Harsh",
+    "Decline Harsh",
+    "Approve Ankit",
+    "Decline Ankit",
+  ]) {
+    const button = view.getByRole("button", { name });
+    expect(button).toBeDisabled();
+    await fireEvent.press(button);
+  }
+  expect(mockActions.approve).not.toHaveBeenCalled();
+  expect(mockActions.reject).not.toHaveBeenCalled();
+  expect(mockActions.resolveDeviceRecovery).not.toHaveBeenCalled();
 });
 
 test("shows compact named requests without the helper line and declines through the server action", async () => {

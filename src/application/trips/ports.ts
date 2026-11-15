@@ -16,6 +16,7 @@ import type {
   DiscardProvisionalTripKeyCommand,
   ImportTripKeyCommand,
   ImportAndActivateTripCommand,
+  ImportAndActivateTripWithAlbumCommand,
   WrapTripKeyCommand,
   WrapTripKeyResult,
 } from "@crewroll/contracts/native/protocol";
@@ -157,6 +158,9 @@ export interface HydrateTripNativePort {
 
 export interface ActiveTripNativePort extends HydrateTripNativePort {
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTripWithAlbum?:
+    | ((command: ImportAndActivateTripWithAlbumCommand) => Promise<void>)
+    | undefined;
   importAndActivateTrip?:
     ((command: ImportAndActivateTripCommand) => Promise<void>) | undefined;
 }

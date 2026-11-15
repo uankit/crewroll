@@ -4,6 +4,76 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class AppleKeyCleanupTests: XCTestCase {
+    func testSelectionHintRequiresMatchingActiveRecordAfterReopen() throws {
+        try withStore { _, service, scope in
+            let trip = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130"
+            let metadata = ActiveTripMetadata(tripID: trip,
+                membershipID: "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
+                startsAt: "2030-01-01T00:00:00Z", endsAt: "2030-01-02T00:00:00Z",
+                releaseAt: nil, keyEpoch: 1)
+            let encodedMetadata = try JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata))
+            let encodedScope: [String: String] = ["accountHash": scope.accountHash,
+                "installationID": scope.installationID]
+            let states: [String?] = ["active", "installed", "retained", "provisional", nil]
+            for state in states {
+                var trips: [String: Any] = [:]
+                if let state {
+                    trips[trip] = ["key": Data(repeating: 9, count: 32).base64EncodedString(),
+                        "state": state]
+                }
+                let scoped: [String: Any] = ["scope": encodedScope, "trips": trips,
+                    "activeMetadata": encodedMetadata]
+                let data = try JSONSerialization.data(withJSONObject: ["selectedScope": encodedScope,
+                    "scopes": [scope.accountHash + "." + scope.installationID: scoped]])
+                let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword,
+                    kSecAttrService: service, kSecAttrAccount: "scoped-database.v2"]
+                SecItemDelete(query as CFDictionary)
+                var attributes = query
+                attributes[kSecValueData] = data
+                attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                XCTAssertEqual(SecItemAdd(attributes as CFDictionary, nil), errSecSuccess)
+                let reopened = AppleAccountScopedKeyStore(service: service)
+                let selection = try reopened.activeSelection()
+                if state == "active" {
+                    XCTAssertEqual(selection, NativeSelectedTrip(scope: scope, metadata: metadata))
+                } else {
+                    XCTAssertNil(selection, "metadata alone cannot select a non-active or missing trip")
+                }
+            }
+        }
+    }
+
+    func testSelectedProvisionalExpiryIsDurableAndDoesNotCollectOtherRecords() throws {
+        let service = "crewroll.tests.selected-expiry." + UUID().uuidString
+        defer { SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary) }
+        let store = AppleAccountScopedKeyStore(service: service)
+        let scope = NativeKeyScope(accountHash: String(repeating: "a", count: 64), installationID: "test_installation")
+        let expired = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130"
+        let unrelated = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140"
+        let expiry = Date(timeIntervalSince1970: 100)
+        for trip in [expired, unrelated] {
+            _ = try store.createTrip(scope: scope, tripID: trip) {
+                TripKeyRecord(key: Data(repeating: 7, count: 32), state: .provisional,
+                    createdAt: Date(timeIntervalSince1970: 0), provisionalExpiresAt: expiry)
+            }
+        }
+        XCTAssertFalse(try store.discardExpiredProvisional(scope: scope, tripID: expired,
+            now: expiry.addingTimeInterval(-1)))
+        XCTAssertTrue(try store.discardExpiredProvisional(scope: scope, tripID: expired, now: expiry))
+        let reopened = AppleAccountScopedKeyStore(service: service)
+        XCTAssertNil(try reopened.loadTrip(scope: scope, tripID: expired))
+        XCTAssertNotNil(try reopened.loadTrip(scope: scope, tripID: unrelated))
+        XCTAssertEqual(try reopened.createTrip(scope: scope, tripID: expired) {
+            XCTFail("the selected deletion must persist its tombstone")
+            throw NativeKeyError.invalidState
+        }, .tombstoned)
+        // Preserve authenticated recovery of an undated quarantine tombstone.
+        _ = try reopened.importTrip(scope: scope, tripID: expired, key: Data(repeating: 9, count: 32),
+            endsAt: "2026-09-03T00:00:00Z", now: expiry, constantTimeEquals: { $0 == $1 })
+        XCTAssertEqual(try reopened.loadTrip(scope: scope, tripID: expired)?.state, .installed)
+        XCTAssertNotNil(try reopened.loadTrip(scope: scope, tripID: unrelated))
+    }
+
     func testHardExpiryPersistsAfterReopenAndPreservesOtherTrips() throws {
         let service = "crewroll.tests.retention." + UUID().uuidString
         defer { SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary) }

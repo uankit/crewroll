@@ -29,6 +29,7 @@ import {
 
 import { createObservedRead } from "./observedRead";
 import { syncProgress } from "./syncProgress";
+import { TripPhotoOrganizationStatus } from "./TripPhotoOrganizationStatus";
 import {
   createTripGalleryCache,
   type TripGalleryCache,
@@ -91,6 +92,7 @@ export function ActiveTripTransfers({
   const syncAttempt = useRef(0);
   const mounted = useRef(true);
   const [syncError, setSyncError] = useState(false);
+  const [organizationRetryError, setOrganizationRetryError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [now, setNow] = useState(Date.now);
   const query = useMemo(() => galleryQuery(filters), [filters]);
@@ -220,20 +222,22 @@ export function ActiveTripTransfers({
   }, [tripId, cache, focused, refreshKey, cursor, query, setCursor]);
 
   const reconcile = useCallback(
-    async (workId?: string) => {
+    async (workId?: string, intent: "SYNC" | "ALBUM" = "SYNC") => {
       if (syncing.current) return;
       syncing.current = true;
       const attempt = ++syncAttempt.current;
       let expired = false;
       setBusy(true);
-      setSyncError(false);
+      if (intent === "ALBUM") setOrganizationRetryError(false);
+      else setSyncError(false);
       const token = cache.token();
       const deadline = setTimeout(() => {
         expired = true;
         if (mounted.current && syncAttempt.current === attempt) {
           syncing.current = false;
           setBusy(false);
-          setSyncError(true);
+          if (intent === "ALBUM") setOrganizationRetryError(true);
+          else setSyncError(true);
         }
       }, 10_000);
       try {
@@ -245,7 +249,14 @@ export function ActiveTripTransfers({
           current.activeTripId !== tripId
         )
           return;
-        if (workId)
+        if (intent === "ALBUM") {
+          const retryOrganization = crewRollTransfer.retryPhotoOrganization;
+          if (!retryOrganization) throw new Error("Album retry unavailable");
+          await retryOrganization.call(crewRollTransfer, {
+            protocolVersion: 1,
+            tripId,
+          });
+        } else if (workId)
           await crewRollTransfer.retry({ protocolVersion: 1, workId });
         else {
           // Native owns the whole account/trip journal, including off-page work.
@@ -253,8 +264,10 @@ export function ActiveTripTransfers({
           await crewRollTransfer.reconcileNow({ protocolVersion: 1 });
         }
       } catch {
-        if (mounted.current && syncAttempt.current === attempt)
-          setSyncError(true);
+        if (mounted.current && syncAttempt.current === attempt) {
+          if (intent === "ALBUM") setOrganizationRetryError(true);
+          else setSyncError(true);
+        }
       } finally {
         clearTimeout(deadline);
         if (syncAttempt.current === attempt) syncing.current = false;
@@ -349,6 +362,13 @@ export function ActiveTripTransfers({
             onPress={() => void reconcile()}
           />
         </View>
+        <TripPhotoOrganizationStatus
+          organization={snapshot.photoOrganization}
+          busy={busy}
+          retryFailed={organizationRetryError}
+          paused={snapshot.paused}
+          onRetry={() => void reconcile(undefined, "ALBUM")}
+        />
         {syncError || failure ? (
           <AppText variant="caption" tone="secondary" accessibilityRole="alert">
             {failure ?? "Couldn’t start sync yet. Try again."}

@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import type { TripTransferState } from "@crewroll/contracts";
 import { CrewRollThemeProvider } from "../design-system";
 import { TripLifecycleControls } from "./TripLifecycleControls";
@@ -9,8 +9,17 @@ const mockActions = {
   getTripLifecycle: mockGet,
   changeTripLifecycle: mockChange,
 };
+let mockCapabilities = {
+  canUseAuthenticatedShell: true,
+  canReadLibrary: true,
+  canMutateTrip: true,
+  canSharePhotos: true,
+};
 jest.mock("./AppSessionProvider", () => ({
-  useAppSession: () => ({ actions: mockActions }),
+  useAppSession: () => ({
+    actions: mockActions,
+    capabilities: mockCapabilities,
+  }),
 }));
 const initial: TripTransferState = {
   tripId: "trip",
@@ -32,7 +41,94 @@ const setup = (owner = false) =>
   );
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCapabilities = {
+    canUseAuthenticatedShell: true,
+    canReadLibrary: true,
+    canMutateTrip: true,
+    canSharePhotos: true,
+  };
   mockGet.mockResolvedValue(initial);
+});
+
+it("keeps lifecycle mutations disabled while startup is still reconciling authority", async () => {
+  mockCapabilities.canMutateTrip = false;
+  mockCapabilities.canSharePhotos = false;
+  const view = await setup();
+  const pause = await view.findByRole("button", { name: "Pause my sharing" });
+  expect(pause).toBeDisabled();
+  expect(view.getByRole("button", { name: "Leave trip" })).toBeDisabled();
+  await fireEvent.press(pause);
+  await fireEvent.press(view.getByRole("button", { name: "Leave trip" }));
+  expect(mockChange).not.toHaveBeenCalled();
+  expect(view.queryByTestId("trip-exit-confirmation")).toBeNull();
+});
+
+it("allows stopping sharing without a current full-photo grant but cannot resume it", async () => {
+  mockCapabilities.canSharePhotos = false;
+  mockChange.mockResolvedValue({ ...initial, sharingPaused: true, version: 4 });
+  const view = await setup();
+  const pause = await view.findByRole("button", { name: "Pause my sharing" });
+  expect(pause).toBeEnabled();
+  await fireEvent.press(pause);
+  const resume = view.getByRole("button", { name: "Resume my sharing" });
+  expect(resume).toBeDisabled();
+  await fireEvent.press(resume);
+  expect(mockChange).toHaveBeenCalledTimes(1);
+  expect(view.getByRole("button", { name: "Leave trip" })).toBeEnabled();
+});
+
+it("does not query protected lifecycle data before device readiness", async () => {
+  mockCapabilities.canReadLibrary = false;
+  mockCapabilities.canMutateTrip = false;
+  mockCapabilities.canSharePhotos = false;
+  const view = await setup();
+  expect(mockGet).not.toHaveBeenCalled();
+  expect(view.getByRole("button", { name: "Leave trip" })).toBeDisabled();
+});
+
+it("ignores a previous trip’s late lifecycle mutation after switching the visible trip", async () => {
+  let finish!: (state: TripTransferState) => void;
+  mockChange.mockReturnValueOnce(
+    new Promise<TripTransferState>((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const onChanged = jest.fn();
+  const view = await render(
+    <CrewRollThemeProvider>
+      <TripLifecycleControls
+        tripId="trip"
+        owner={false}
+        onChanged={onChanged}
+      />
+    </CrewRollThemeProvider>,
+  );
+  await fireEvent.press(
+    await view.findByRole("button", { name: "Pause my sharing" }),
+  );
+  mockGet.mockResolvedValue({
+    ...initial,
+    tripId: "next-trip",
+    sharingPaused: true,
+  });
+  await view.rerender(
+    <CrewRollThemeProvider>
+      <TripLifecycleControls
+        tripId="next-trip"
+        owner={false}
+        onChanged={onChanged}
+      />
+    </CrewRollThemeProvider>,
+  );
+  await view.findByRole("button", { name: "Resume my sharing" });
+  await act(() => finish({ ...initial, sharingPaused: false, version: 4 }));
+  await waitFor(() =>
+    expect(
+      view.getByRole("button", { name: "Resume my sharing" }),
+    ).toBeEnabled(),
+  );
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(view.queryByRole("button", { name: "Pause my sharing" })).toBeNull();
 });
 it("pauses personally without issuing a trip-wide end", async () => {
   mockChange.mockResolvedValue({ ...initial, sharingPaused: true, version: 4 });

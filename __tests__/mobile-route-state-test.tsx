@@ -13,6 +13,13 @@ import * as Clipboard from "expo-clipboard";
 import { View } from "react-native";
 
 import type { AppSessionSnapshot } from "../src/bootstrap/AppSessionProvider";
+import {
+  startupFailed,
+  startupReady,
+  startupWorking,
+  type AppSessionCapabilities,
+  type AppStartupState,
+} from "../src/bootstrap/startupState";
 import type { TripInvitePreview, TripView } from "../src/domain/trips/model";
 
 jest.mock("@clerk/expo", () => ({
@@ -23,7 +30,7 @@ jest.mock("expo-clipboard", () => ({
 }));
 jest.mock("../src/bootstrap/useTripContinuity", () => ({
   useTripContinuity: () => ({
-    data: { approvalRequests: [] },
+    data: { approvalRequests: [], status: "LOBBY", onThisDevice: false },
     refetch: jest.fn(),
   }),
 }));
@@ -141,12 +148,25 @@ const mockActions = {
   openPhotoSettings: jest.fn(async () => undefined),
   publishPhotoReadiness: jest.fn(async () => ownerTrip()),
   retryActivation: jest.fn(),
+  requestDeviceRecovery: jest.fn(async () => undefined),
   start: jest.fn(),
 };
 const mockRetry = jest.fn();
 const mockSignOut = jest.fn(async () => setPhase("SIGNED_OUT"));
 const mockCopyOwnerInvite = jest.fn(async () => undefined);
 const mockRefresh = jest.fn(async () => undefined);
+const mockReadyCapabilities: AppSessionCapabilities = Object.freeze({
+  canUseAuthenticatedShell: true,
+  canReadLibrary: true,
+  canMutateTrip: true,
+  canSharePhotos: false,
+});
+const mockClosedCapabilities: AppSessionCapabilities = Object.freeze({
+  canUseAuthenticatedShell: false,
+  canReadLibrary: false,
+  canMutateTrip: false,
+  canSharePhotos: false,
+});
 
 let mockProjection = {
   failed: false,
@@ -169,9 +189,12 @@ let mockCurrentSession = {
   signOut: mockSignOut,
   copyOwnerInvite: mockCopyOwnerInvite,
   snapshot: { phase: "READY_NO_TRIP", deviceId } as AppSessionSnapshot,
+  startup: startupReady as AppStartupState,
+  capabilities: mockReadyCapabilities,
 };
 let mockRevision = 0;
 let mockSetupRequired = false;
+let mockLibraryOnThisDevice = true;
 const mockListeners = new Set<() => void>();
 
 function mockPublish(): void {
@@ -234,7 +257,7 @@ jest.mock("../src/bootstrap/useTripLibrary", () => ({
                   : "JOINED",
                 role: "OWNER",
                 sharingPaused: false,
-                onThisDevice: true,
+                onThisDevice: mockLibraryOnThisDevice,
                 memberCount: trip.members.length,
                 savedPhotoCount: 0,
                 startsAt: trip.startsAt,
@@ -302,7 +325,41 @@ function setPhase(phase: AppSessionSnapshot["phase"]): void {
   } else {
     snapshot = { phase };
   }
-  mockCurrentSession = { ...mockCurrentSession, snapshot };
+  let startup: AppStartupState = startupReady;
+  let capabilities: AppSessionCapabilities = mockReadyCapabilities;
+  switch (phase) {
+    case "SIGNED_OUT":
+    case "SIGNING_OUT":
+    case "LOADING_FONTS_OR_CLERK":
+      startup = startupWorking("account");
+      capabilities = mockClosedCapabilities;
+      break;
+    case "PROVISIONING_DEVICE":
+      startup = startupWorking("device");
+      capabilities = mockClosedCapabilities;
+      break;
+    case "RECOVERABLE_FAILURE":
+      startup = startupFailed("recovery", "TRIP_RECOVERY_FAILED", "trips");
+      capabilities = mockClosedCapabilities;
+      break;
+    case "READY_UNKNOWN_CREATE":
+    case "READY_UNKNOWN_JOIN":
+      capabilities = { ...mockReadyCapabilities, canMutateTrip: false };
+      break;
+    case "READY_ACTIVE":
+      capabilities = { ...mockReadyCapabilities, canSharePhotos: true };
+      break;
+    case "READY_NO_TRIP":
+    case "READY_PENDING_APPROVAL":
+    case "READY_LOBBY":
+      break;
+  }
+  mockCurrentSession = {
+    ...mockCurrentSession,
+    snapshot,
+    startup,
+    capabilities,
+  };
   mockPublish();
 }
 
@@ -323,6 +380,7 @@ describe("Expo Router mobile journey", () => {
     jest.clearAllMocks();
     mockFontsLoaded = true;
     mockSetupRequired = false;
+    mockLibraryOnThisDevice = true;
     mockProjection = {
       failed: false,
       loading: false,
@@ -344,7 +402,240 @@ describe("Expo Router mobile journey", () => {
       signOut: mockSignOut,
       copyOwnerInvite: mockCopyOwnerInvite,
       snapshot: { phase: "READY_NO_TRIP", deviceId },
+      startup: startupReady,
+      capabilities: mockReadyCapabilities,
     };
+  });
+
+  // The first render imports/transforms the complete Router tree on a cold CI
+  // worker. This budget covers test setup; phone launch timing is measured on
+  // release builds separately. Keep every readiness/button assertion below.
+  it("opens a useful authenticated shell while the phone is restoring and keeps mutation controls disabled", async () => {
+    setPhase("PROVISIONING_DEVICE");
+    mockCurrentSession = {
+      ...mockCurrentSession,
+      capabilities: {
+        ...mockClosedCapabilities,
+        canUseAuthenticatedShell: true,
+      },
+      startup: startupWorking("device"),
+    };
+    const router = await renderActualRouter("/");
+    screen.getByTestId("trip-library-screen");
+    screen.getByLabelText(/^Restoring this phone:/);
+    const create = screen.getByRole("button", { name: "Start a new trip" });
+    const join = screen.getByRole("button", { name: "Enter invite code" });
+    expect(create).toBeDisabled();
+    expect(join).toBeDisabled();
+    await fireEvent.press(create);
+    await fireEvent.press(join);
+    expect(router.getPathname()).toBe("/");
+    expect(mockActions.create).not.toHaveBeenCalled();
+    expect(mockActions.join).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
+    screen.getByTestId("account-sheet");
+    screen.getByRole("button", { name: "Sign out" });
+  }, 15_000);
+
+  it("shows authorized trip metadata before sharing preparation finishes without declaring the phone live", async () => {
+    setPhase("PROVISIONING_DEVICE");
+    mockProjection = {
+      ...mockProjection,
+      trip: ownerTrip({ status: "ACTIVE", startsAt: "2030-01-01T00:00:00Z" }),
+    };
+    mockCurrentSession = {
+      ...mockCurrentSession,
+      startup: startupWorking("transfer"),
+      capabilities: {
+        ...mockReadyCapabilities,
+        canMutateTrip: false,
+        canSharePhotos: false,
+      },
+    };
+    await renderActualRouter("/");
+    screen.getByText("Kyoto");
+    screen.getByLabelText(/^Preparing photo sharing:/);
+    expect(screen.getByRole("button", { name: "Open Kyoto" })).toBeDisabled();
+    expect(screen.queryByText("Live")).toBeNull();
+    expect(mockActions.publishPhotoReadiness).not.toHaveBeenCalled();
+  });
+
+  it("keeps a trip refresh failure inside Home with account access and a targeted retry", async () => {
+    setPhase("RECOVERABLE_FAILURE");
+    mockProjection = { ...mockProjection, trip: ownerTrip() };
+    mockCurrentSession = {
+      ...mockCurrentSession,
+      startup: startupFailed("trips", "TRIP_LIST_FAILED", "trips"),
+      capabilities: {
+        ...mockReadyCapabilities,
+        canMutateTrip: false,
+      },
+    };
+    const router = await renderActualRouter("/");
+    screen.getByTestId("trip-library-screen");
+    screen.getByText("Kyoto");
+    screen.getByRole("alert", {
+      name: "Your trips couldn’t refresh. Try again.",
+    });
+    expect(screen.queryByText(/could not connect this phone/i)).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(router.getPathname()).toBe("/");
+    await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByRole("button", { name: "Get started" });
+    expect(screen.queryByText("Kyoto")).toBeNull();
+  });
+
+  it("keeps one recovery action for an uncertain trip request and marks it busy only during real recovery", async () => {
+    setPhase("READY_UNKNOWN_JOIN");
+    mockCurrentSession = {
+      ...mockCurrentSession,
+      startup: startupFailed("recovery", "TRIP_RECOVERY_FAILED", "trips"),
+    };
+    await renderActualRouter("/");
+    screen.getByRole("alert", {
+      name: "Saved trip state couldn’t be restored. Try again to continue safely.",
+    });
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    const check = screen.getByRole("button", { name: "Check request" });
+    expect(check).toBeEnabled();
+    await fireEvent.press(check);
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupWorking("recovery"),
+      };
+      mockPublish();
+    });
+    expect(
+      screen.getByRole("button", { name: "Check request" }),
+    ).toBeDisabled();
+    screen.getByLabelText(/^Checking saved trip state:/);
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Check request" }),
+    );
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["PROVISIONING_DEVICE", "RECOVERABLE_FAILURE"] as const)(
+    "routes sign-out from %s through session teardown while the shell is unavailable",
+    async (phase) => {
+      setPhase(phase);
+      await renderActualRouter("/");
+      await fireEvent.press(screen.getByRole("button", { name: "Sign out" }));
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+      await screen.findByRole("button", { name: "Get started" });
+    },
+  );
+
+  it.each(["/trips/create", "/trips/join", `/trips/${tripId}`])(
+    "keeps direct entry %s on the truthful shell until its capabilities are ready",
+    async (path) => {
+      setPhase("PROVISIONING_DEVICE");
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupWorking("recovery"),
+        capabilities: {
+          ...mockReadyCapabilities,
+          canMutateTrip: false,
+        },
+      };
+      const router = await renderActualRouter(path);
+      await waitFor(() => expect(router.getPathname()).toBe("/"));
+      screen.getByTestId("trip-library-screen");
+      screen.getByLabelText(/^Checking saved trip state:/);
+      expect(mockActions.create).not.toHaveBeenCalled();
+      expect(mockActions.join).not.toHaveBeenCalled();
+      expect(mockActions.publishPhotoReadiness).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an already open matching trip in place while its startup authority recovers", async () => {
+    setPhase("READY_LOBBY");
+    mockProjection = { ...mockProjection, trip: ownerTrip() };
+    const router = await renderActualRouter(`/trips/${tripId}`);
+    screen.getByTestId("lobby-screen");
+    mockActions.ensureOwnerInvite.mockClear();
+    mockActions.publishPhotoReadiness.mockClear();
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupWorking("recovery"),
+        capabilities: { ...mockReadyCapabilities, canMutateTrip: false },
+      };
+      mockPublish();
+    });
+    expect(router.getPathname()).toBe(`/trips/${tripId}`);
+    screen.getByTestId("lobby-screen");
+    screen.getByLabelText(/^Checking saved trip state:/);
+    expect(screen.getByRole("button", { name: "Invite crew" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start trip" })).toBeDisabled();
+    expect(mockActions.ensureOwnerInvite).not.toHaveBeenCalled();
+    expect(mockActions.publishPhotoReadiness).not.toHaveBeenCalled();
+  });
+
+  it("hides a selected phone recovery request until startup mutation authority returns", async () => {
+    setPhase("READY_LOBBY");
+    mockLibraryOnThisDevice = false;
+    const router = await renderActualRouter("/");
+    await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
+    expect(
+      screen.getByRole("button", { name: "Request device approval" }),
+    ).toBeEnabled();
+
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupWorking("recovery"),
+        capabilities: { ...mockReadyCapabilities, canMutateTrip: false },
+      };
+      mockPublish();
+    });
+    expect(router.getPathname()).toBe("/");
+    screen.getByTestId("trip-library-screen");
+    screen.getByLabelText(/^Checking saved trip state:/);
+    expect(
+      screen.queryByRole("button", { name: "Request device approval" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Kyoto" })).toBeDisabled();
+    expect(mockActions.requestDeviceRecovery).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupFailed("recovery", "TRIP_RECOVERY_FAILED", "trips"),
+      };
+      mockPublish();
+    });
+    screen.getByRole("alert", {
+      name: "Saved trip state couldn’t be restored. Try again to continue safely.",
+    });
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+    expect(mockActions.requestDeviceRecovery).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        startup: startupReady,
+        capabilities: mockReadyCapabilities,
+      };
+      mockPublish();
+    });
+    // Selection survives the status screen; only confirmed authority exposes
+    // the actual recovery flow and its mutation again.
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Request device approval" }),
+    );
+    await waitFor(() =>
+      expect(mockActions.requestDeviceRecovery).toHaveBeenCalledWith(tripId),
+    );
+    expect(mockActions.requestDeviceRecovery).toHaveBeenCalledTimes(1);
+    expect(router.getPathname()).toBe("/");
   });
 
   it.each([

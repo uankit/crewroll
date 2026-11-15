@@ -38,7 +38,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     // No import/backfill can invalidate eligibility between file cleanup and
     // the final key deletion while this store transaction lock is held.
     beforeKeyRemoval()
-    state.trips.remove(trip.tripId)?.key?.fill(0)
+    state.trips.remove(trip.tripId)?.secret?.erase()
     state.tombstones.add(trip.tripId)
     if (state.activeMetadata?.tripId == trip.tripId) state.activeMetadata = null
     // Retain authoritative timing as a replay fence. Undated quarantine
@@ -51,19 +51,19 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     database.identities[accountHash]?.let { installations.add(it.installationId) }
     database.pendingIdentities[accountHash]?.let { installations.add(it) }
     installations.forEach { removeIdentity(NativeKeyScope(accountHash, it)) }
-    database.identities.remove(accountHash)?.e2eePrivateKey?.fill(0)
+    database.identities.remove(accountHash)?.privateKey?.erase()
     database.pendingIdentities.remove(accountHash)
     database.scopes.entries.removeAll { entry ->
       if (entry.value.scope.accountHash != accountHash) false else {
-        entry.value.session?.backgroundBearer?.fill(0)
-        entry.value.trips.values.forEach { it.key.fill(0) }
+        entry.value.session?.bearer?.erase()
+        entry.value.trips.values.forEach { it.secret.erase() }
         true
       }
     }
     if (database.selectedScope?.accountHash == accountHash) database.selectedScope = null
   }
   override fun loadIdentity(accountHash: String): DeviceIdentityMaterial? = read { database ->
-    database.identities[accountHash]?.deepCopy()
+    database.identities[accountHash]?.materialize()
   }
 
   override fun reservePendingIdentity(
@@ -97,7 +97,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     if (database.pendingIdentities[scope.accountHash] != scope.installationId ||
       value.installationId != scope.installationId || database.identities.containsKey(scope.accountHash)
     ) throw NativeKeyException.materialLost()
-    database.identities[scope.accountHash] = value.deepCopy()
+    database.identities[scope.accountHash] = AndroidStoredIdentity.from(value)
     database.scopes.putIfAbsent(androidScopeKey(scope), AndroidScopedState(scope))
     database.pendingIdentities.remove(scope.accountHash)
     Unit
@@ -113,7 +113,14 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
   override fun activeSession(): ScopedDeviceSession? = read { database ->
     val scope = database.selectedScope ?: return@read null
     val session = database.scopes[androidScopeKey(scope)]?.session ?: return@read null
-    ScopedDeviceSession(scope, session.deepCopy())
+    ScopedDeviceSession(scope, session.materialize())
+  }
+  override fun activeSelection(): NativeSelectedTrip? = read { database ->
+    val scope = database.selectedScope ?: return@read null
+    val state = database.scopes[androidScopeKey(scope)] ?: return@read null
+    val metadata = state.activeMetadata ?: return@read null
+    if (state.trips[metadata.tripId]?.state != KeyState.ACTIVE) return@read null
+    NativeSelectedTrip(scope, metadata)
   }
   override fun mediaContext(): NativeMediaContext? = read { database ->
     val scope = database.selectedScope ?: return@read null
@@ -123,7 +130,9 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     val trip = state.trips[metadata.tripId] ?: throw NativeKeyException.materialLost()
     if (trip.state != KeyState.ACTIVE || state.authoritativeDeadline(metadata.tripId) != NativeTripRetention.deadline(metadata))
       throw NativeKeyException.invalidState()
-    NativeMediaContext(scope, session.deepCopy(), metadata, trip.key.copyOf())
+    val credential = session.materialize()
+    try { NativeMediaContext(scope, credential, metadata, trip.secret.copyPlaintext()) }
+    catch (error: Throwable) { credential.backgroundBearer.fill(0); throw error }
   }
 
   override fun installSession(scope: NativeKeyScope, value: DeviceSessionRecord) = transaction { database ->
@@ -134,7 +143,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
             priorState.trips[activeId] = active.copy(state = KeyState.INSTALLED)
           }
         }
-        priorState.session?.backgroundBearer?.fill(0)
+        priorState.session?.bearer?.erase()
         priorState.session = null
         priorState.activeMetadata = null
       }
@@ -148,7 +157,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
   override fun clearSession(): Unit = transaction { database ->
     database.selectedScope?.let { scope ->
       database.scopes[androidScopeKey(scope)]?.let { state ->
-        state.session?.backgroundBearer?.fill(0)
+        state.session?.bearer?.erase()
         state.session = null
         state.activeMetadata?.tripId?.let { id ->
           state.trips[id]?.let { state.trips[id] = it.copy(state = KeyState.INSTALLED) }
@@ -166,17 +175,40 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
   ): TripCreateOutcome = transaction { database ->
     val state = database.scopes.getOrPut(androidScopeKey(scope)) { AndroidScopedState(scope) }
     if (state.tombstones.contains(tripId)) return@transaction TripCreateOutcome.TOMBSTONED
-    if (state.trips.containsKey(tripId)) return@transaction TripCreateOutcome.EXISTING
+    state.trips[tripId]?.let { existing ->
+      val verified = existing.secret.copyPlaintext()
+      try { if (verified.size != 32) throw NativeKeyException.materialLost() }
+      finally { verified.fill(0) }
+      return@transaction TripCreateOutcome.EXISTING
+    }
     val value = makeValue()
-    try { state.trips[tripId] = value.deepCopy() }
+    try { state.trips[tripId] = AndroidStoredTrip.from(value) }
     finally { value.key.fill(0) }
     TripCreateOutcome.CREATED
   }
 
   override fun loadTrip(scope: NativeKeyScope, tripId: String): TripKeyRecord? = read { database ->
-    database.scopes[androidScopeKey(scope)]?.trips?.get(tripId)?.deepCopy()
+    database.scopes[androidScopeKey(scope)]?.trips?.get(tripId)?.materialize()
   }
 
+  override fun tripMetadata(scope: NativeKeyScope, tripId: String): NativeTripKeyMetadata? = read { database ->
+    database.scopes[androidScopeKey(scope)]?.trips?.get(tripId)?.let {
+      NativeTripKeyMetadata(it.state, it.createdAt, it.provisionalExpiresAt)
+    }
+  }
+  override fun discardExpiredProvisional(scope: NativeKeyScope, tripId: String, now: Instant): Boolean {
+    var changed = false
+    return transaction(persistWhen = { changed }) { database ->
+      val state = database.scopes[androidScopeKey(scope)] ?: return@transaction false
+      val record = state.trips[tripId] ?: return@transaction false
+      if (record.state != KeyState.PROVISIONAL || record.provisionalExpiresAt?.let { it <= now } != true)
+        return@transaction false
+      state.trips.remove(tripId)?.secret?.erase()
+      state.tombstones.add(tripId)
+      changed = true
+      true
+    }
+  }
   override fun discardProvisional(
     scope: NativeKeyScope,
     tripId: String,
@@ -184,7 +216,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     val state = database.scopes[androidScopeKey(scope)] ?: return@transaction ProvisionalDiscardOutcome.ABSENT
     val record = state.trips[tripId] ?: return@transaction ProvisionalDiscardOutcome.ABSENT
     if (record.state != KeyState.PROVISIONAL) return@transaction ProvisionalDiscardOutcome.PROTECTED
-    state.trips.remove(tripId)?.key?.fill(0)
+    state.trips.remove(tripId)?.secret?.erase()
     state.tombstones.add(tripId)
     ProvisionalDiscardOutcome.DISCARDED
   }
@@ -214,7 +246,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
         val expiresAt = snapshot.provisionalExpiresAt ?: throw NativeKeyException.materialLost()
         val current = state.trips[tripId]
         if (!expiresAt.isAfter(now) && current?.state == KeyState.PROVISIONAL) {
-          state.trips.remove(tripId)?.key?.fill(0)
+          state.trips.remove(tripId)?.secret?.erase()
           state.tombstones.add(tripId)
           changed = true
         }
@@ -250,7 +282,9 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
       return@transaction TripImportOutcome.CONFLICT
     val existing = state.trips[tripId]
     if (existing != null) {
-      if (!MessageDigest.isEqual(existing.key, key)) return@transaction TripImportOutcome.CONFLICT
+      val previous = existing.secret.copyPlaintext()
+      try { if (!MessageDigest.isEqual(previous, key)) return@transaction TripImportOutcome.CONFLICT }
+      finally { previous.fill(0) }
       if (existing.state == KeyState.PROVISIONAL) {
         state.trips[tripId] = existing.copy(state = KeyState.INSTALLED)
         changed = true
@@ -260,7 +294,7 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
       if (state.tombstones.remove(tripId)) changed = true
       return@transaction TripImportOutcome.EXISTING
     }
-    state.trips[tripId] = TripKeyRecord(key.copyOf(), KeyState.INSTALLED)
+    state.trips[tripId] = AndroidStoredTrip.from(TripKeyRecord(key, KeyState.INSTALLED))
     state.tripEndsAt[tripId] = endsAt
     state.legacyReconciliationDeadlines.remove(tripId)
     state.tombstones.remove(tripId)
@@ -282,6 +316,12 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     state.frozenMetadata[metadata.tripId]?.takeIf { it != metadata }?.let {
       throw NativeKeyException.invalidState()
     }
+    // Selection is a key-using operation. Lazy metadata parsing may succeed
+    // while this particular sealed key is damaged, so authenticate it before
+    // publishing ACTIVE or treating an identical activation as successful.
+    val verified = target.secret.copyPlaintext()
+    try { if (verified.size != 32) throw NativeKeyException.materialLost() }
+    finally { verified.fill(0) }
     if (target.state == KeyState.ACTIVE && state.activeMetadata == metadata &&
       state.frozenMetadata[metadata.tripId] == metadata) return@transaction
     state.activeMetadata?.tripId?.takeIf { it != metadata.tripId }?.let { priorId ->
@@ -362,12 +402,3 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
   }
 
 }
-
-private fun DeviceIdentityMaterial.deepCopy() = copy(
-  authenticationPublicKey = authenticationPublicKey.copyOf(),
-  e2eePublicKey = e2eePublicKey.copyOf(),
-  e2eePrivateKey = e2eePrivateKey.copyOf(),
-)
-
-private fun DeviceSessionRecord.deepCopy() = copy(backgroundBearer = backgroundBearer.copyOf())
-private fun TripKeyRecord.deepCopy() = copy(key = key.copyOf())

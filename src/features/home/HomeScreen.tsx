@@ -30,6 +30,8 @@ export type HomeScreenProps = Readonly<{
   inviteUnavailable?: boolean;
   rejoinUnavailable?: boolean;
   accountControl?: ReactNode;
+  statusContent?: ReactNode;
+  canCreateTrip?: boolean;
   onCreateTrip: () => void;
   onJoinTrip: () => void;
   state?: HomeScreenState;
@@ -90,6 +92,8 @@ export function HomeScreen({
   inviteUnavailable = false,
   rejoinUnavailable = false,
   accountControl,
+  statusContent,
+  canCreateTrip = true,
   onCreateTrip,
   onJoinTrip,
   state = { kind: "no-trip" },
@@ -105,15 +109,15 @@ export function HomeScreen({
           pending
             ? `Waiting for ${state.preview?.hostDisplayName ?? "your host"}.`
             : state.kind === "failed"
-              ? "Let’s reconnect."
-              : "Opening your trip."
+              ? "Your trips couldn’t load."
+              : "Checking your trip."
         }
         description={
           pending
             ? `We’ll bring you into ${state.preview?.name ?? "the trip"} as soon as ${state.preview?.hostDisplayName ?? "your host"} approves you.`
             : state.kind === "failed"
-              ? "Check your connection and try again."
-              : "Your trip will appear here in a moment."
+              ? "Try again to refresh your trips."
+              : "We’re checking your saved request before continuing."
         }
         footer={
           state.kind === "failed" ? (
@@ -140,11 +144,18 @@ export function HomeScreen({
           ) : undefined
         }
       >
+        {statusContent}
         <View
           style={[styles.automatic, { backgroundColor: colors.surfaceMuted }]}
         >
           <AppText variant="label" style={{ color: colors.success }}>
-            {pending ? "Checking automatically" : "Connecting to your trip"}
+            {pending
+              ? "Checking automatically"
+              : (state.kind === "unknown-create" ||
+                    state.kind === "unknown-join") &&
+                  state.recovering === false
+                ? "Check your trip request"
+                : "Checking your trip request"}
           </AppText>
         </View>
         {pending ? (
@@ -172,15 +183,21 @@ export function HomeScreen({
       }
       footer={
         <>
-          <Button label="Start a trip" onPress={onCreateTrip} />
+          <Button
+            label="Start a trip"
+            disabled={!canCreateTrip}
+            onPress={onCreateTrip}
+          />
           <Button
             label="Enter invite code"
             variant="text"
+            disabled={!canCreateTrip}
             onPress={onJoinTrip}
           />
         </>
       }
     >
+      {statusContent}
       <CrewConstellation />
     </FlowScreen>
   );

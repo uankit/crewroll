@@ -1,5 +1,6 @@
 import {
   FormatRegistry,
+  Kind,
   Type,
   type Static,
   type TObject,
@@ -15,6 +16,15 @@ const RFC_3339 =
 const BASE64_PATTERN =
   "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$";
 const OPAQUE = /^[A-Za-z0-9_-]+$/;
+
+export const TripNameSchema = Type.Unsafe<string>({
+  [Kind]: "TemplateLiteral",
+  type: "string",
+  minLength: 1,
+  maxLength: 80,
+  pattern:
+    "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$",
+});
 
 type FormatValidator = (value: string) => boolean;
 

@@ -1,4 +1,4 @@
-import { Kind, Type, type Static } from "@sinclair/typebox";
+import { Type, type Static } from "@sinclair/typebox";
 
 import {
   ClosedObject,
@@ -7,6 +7,7 @@ import {
   InviteCodeSchema,
   KeyEnvelopeSchema,
   LocalTimeSchema,
+  TripNameSchema,
   X25519PublicKeySchema,
 } from "./common.js";
 import { MembershipStatusSchema, TripStatusSchema } from "./enums.js";
@@ -30,14 +31,7 @@ export const ReleaseSchema = Type.Union([
   NightlyReleaseSchema,
 ]);
 
-export const TripNameSchema = Type.Unsafe<string>({
-  [Kind]: "TemplateLiteral",
-  type: "string",
-  minLength: 1,
-  maxLength: 80,
-  pattern:
-    "^(?:(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])|[^\\uD800-\\uDFFF]){1,80}$",
-});
+export { TripNameSchema } from "./common.js";
 
 export const CreateTripBodySchema = ClosedObject({
   tripId: TripIdSchema,

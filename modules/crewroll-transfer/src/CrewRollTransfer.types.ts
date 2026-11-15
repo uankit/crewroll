@@ -9,8 +9,11 @@ import type {
   DiscardProvisionalTripKeyCommand,
   DurableEngineSnapshot,
   EnsureDeviceIdentityCommand,
+  GetActiveTripSelectionCommand,
+  ActiveTripSelection,
   ImportTripKeyCommand,
   ImportAndActivateTripCommand,
+  ImportAndActivateTripWithAlbumCommand,
   InstallDeviceSessionCommand,
   ListAssetsQuery,
   NativeDeviceIdentity,
@@ -19,6 +22,7 @@ import type {
   ReconcileNowCommand,
   RefreshDeviceSessionCommand,
   RetryCommand,
+  RetryPhotoOrganizationCommand,
   RevisionInvalidation,
   RestoreDeviceSessionCommand,
   RestoredDeviceSession,
@@ -32,6 +36,9 @@ export type CrewRollTransferEventSubscription = Readonly<{
 }>;
 
 export interface CrewRollTransferNativeModule {
+  getActiveTripSelection?(
+    command: GetActiveTripSelectionCommand,
+  ): Promise<ActiveTripSelection>;
   prepareDeviceSession?(
     command: PrepareDeviceSessionCommand,
   ): Promise<PreparedDeviceSession>;
@@ -52,11 +59,17 @@ export interface CrewRollTransferNativeModule {
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTripWithAlbum?(
+    command: ImportAndActivateTripWithAlbumCommand,
+  ): Promise<void>;
   importAndActivateTrip?(command: ImportAndActivateTripCommand): Promise<void>;
   deactivateTrip(command: DeactivateTripCommand): Promise<void>;
   setTransferPolicy(command: SetTransferPolicyCommand): Promise<void>;
   reconcileNow(command: ReconcileNowCommand): Promise<void>;
   retry(command: RetryCommand): Promise<void>;
+  retryPhotoOrganization?(
+    command: RetryPhotoOrganizationCommand,
+  ): Promise<void>;
   getSnapshot(): Promise<DurableEngineSnapshot>;
   listAssets(query: ListAssetsQuery): Promise<AssetPage>;
   addListener(

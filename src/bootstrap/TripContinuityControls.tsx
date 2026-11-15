@@ -22,7 +22,7 @@ export function TripContinuityControls({
   );
   const open = trip.status === "ACTIVE" || trip.status === "LOBBY";
   async function perform(id: string, action: () => Promise<unknown>) {
-    if (working.current) return;
+    if (working.current || !session.capabilities.canMutateTrip) return;
     working.current = true;
     setBusy(id);
     setError(null);
@@ -32,9 +32,7 @@ export function TripContinuityControls({
       await continuity.refetch();
       onChanged();
     } catch {
-      setError(
-        "The change wasn’t confirmed. Check your connection and try again.",
-      );
+      setError("The change wasn’t confirmed. Try again.");
     } finally {
       working.current = false;
       setBusy(null);
@@ -52,6 +50,7 @@ export function TripContinuityControls({
           variant="text"
           label="Load invite code"
           loading={busy === "invite"}
+          disabled={!session.capabilities.canMutateTrip}
           onPress={() =>
             void perform("invite", async () => {
               const result = await session.actions?.ensureOwnerInvite(trip.id);

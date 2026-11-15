@@ -38,6 +38,9 @@ export function TripLibraryScreen({
   inviteUnavailable = false,
   rejoinUnavailable = false,
   onRetry,
+  statusContent,
+  canOpenTrip = allowOpen,
+  sharingReady = true,
 }: Readonly<{
   accountControl?: ReactNode;
   trips: readonly TripSummary[];
@@ -50,6 +53,9 @@ export function TripLibraryScreen({
   inviteUnavailable?: boolean;
   rejoinUnavailable?: boolean;
   onRetry: () => void;
+  statusContent?: ReactNode;
+  canOpenTrip?: (trip: TripSummary) => boolean;
+  sharingReady?: boolean;
 }>) {
   const theme = useCrewRollTheme();
   const { current, previous } = useMemo(
@@ -61,6 +67,8 @@ export function TripLibraryScreen({
   );
   const canStartTrip = !current && !refreshing && !error && canCreateTrip;
   const live =
+    sharingReady &&
+    current?.onThisDevice === true &&
     current?.status === "ACTIVE" &&
     current.participation === "JOINED" &&
     !current.sharingPaused;
@@ -69,6 +77,7 @@ export function TripLibraryScreen({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`View ${trip.name}`}
+        disabled={!canOpenTrip(trip)}
         onPress={() => onOpenTrip(trip)}
         style={[
           styles.tripRow,
@@ -89,7 +98,7 @@ export function TripLibraryScreen({
         <AppText tone="secondary">›</AppText>
       </Pressable>
     ),
-    [onOpenTrip, theme.border],
+    [canOpenTrip, onOpenTrip, theme.border],
   );
   return (
     <Screen
@@ -110,6 +119,7 @@ export function TripLibraryScreen({
             <AppText accessibilityRole="header" variant="title1">
               Your trips.
             </AppText>
+            {statusContent}
             {rejoinUnavailable ? (
               <AppText accessibilityRole="alert" tone="secondary">
                 {toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message}
@@ -137,6 +147,7 @@ export function TripLibraryScreen({
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Open ${current.name}`}
+                  disabled={!canOpenTrip(current)}
                   onPress={() => onOpenTrip(current)}
                   style={[
                     styles.tripRow,
@@ -176,7 +187,13 @@ export function TripLibraryScreen({
                     </AppText>
                     {!live ? (
                       <AppText variant="caption" tone="secondary">
-                        {tripSummaryStatus(current)}
+                        {!sharingReady &&
+                        current.onThisDevice &&
+                        current.status === "ACTIVE" &&
+                        current.participation === "JOINED" &&
+                        !current.sharingPaused
+                          ? "Sharing is not ready on this phone"
+                          : tripSummaryStatus(current)}
                       </AppText>
                     ) : null}
                   </View>
@@ -198,16 +215,20 @@ export function TripLibraryScreen({
           disabled={!canStartTrip}
           onPress={onCreateTrip}
         />
-        {canStartTrip ? (
+        {!current ? (
           <Button
             label="Enter invite code"
             variant="text"
+            disabled={!canStartTrip}
             onPress={onJoinTrip}
           />
         ) : null}
       </View>
     </Screen>
   );
+}
+function allowOpen() {
+  return true;
 }
 function tripKey(trip: TripSummary): string {
   return trip.id;

@@ -10,28 +10,48 @@ final class CrewRollAppleRuntime {
     static var transferEnabled: Bool { UserDefaults.standard.bool(forKey: "crewroll.background.enabled") }
     private static let instanceLock = NSLock()
     private static var instance: CrewRollAppleRuntime?
+    private static let foregroundState = NativeForegroundState()
+    static func setForeground(_ value: Bool) {
+        let snapshot = foregroundState.update(value)
+        guard let runtime = existing() else { return }
+        runtime.applyForeground(snapshot)
+        if value { runtime.requestRetentionMaintenance() }
+    }
+    static func existing() -> CrewRollAppleRuntime? {
+        instanceLock.lock(); defer { instanceLock.unlock() }
+        return instance
+    }
     static func get() throws -> CrewRollAppleRuntime {
         instanceLock.lock(); defer { instanceLock.unlock() }
         if let instance { return instance }
         let value = try CrewRollAppleRuntime(); instance = value; return value
     }
     let lifecycle: NativeKeyLifecycle
-    let engine: ApplePhotoTransferEngine
+    let albumRegistry: NativeTripAlbumRegistry
+    private let engineResource: NativeLazyResource<ApplePhotoTransferEngine>
+    private let retentionWork = NativeMaintenanceWorkQueue()
+    var engine: ApplePhotoTransferEngine { engineResource.get() }
+    var existingEngine: ApplePhotoTransferEngine? { engineResource.existing }
     private let lock = NSLock()
-    private var visible = false
     private var revision = 0
     private let pushGate = NativePushWakeGate()
     private let defaults = UserDefaults.standard
     static let taskID = "com.uankit53.airmesh.media-processing"
     var enabled: Bool { defaults.bool(forKey: "crewroll.background.enabled") }
     var cellular: Bool { defaults.object(forKey: "crewroll.background.cellular") as? Bool ?? true }
+    var foregroundSnapshot: NativeForegroundSnapshot { Self.foregroundState.snapshot }
+    var isForeground: Bool { foregroundSnapshot.isForeground }
     private init() throws {
         let lifecycle = try AppleNativeKeyInfrastructure.makeLifecycle()
         self.lifecycle = lifecycle
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        engine = ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { try lifecycle.mediaContext() }, invalidated: { revision in
-            NotificationCenter.default.post(name: .crewRollEngineInvalidated, object: nil, userInfo: ["revision": revision])
-        }, expiredTrips: { try lifecycle.expiredTrips() }, nextRetentionDeadline: { try lifecycle.nextTripRetentionDeadline() }, purgeExpiredKey: { trip, cleanup in try lifecycle.purgeExpiredTrip(trip, beforeKeyRemoval: cleanup) })
+        let albumRegistry = NativeTripAlbumRegistry(root: support.appendingPathComponent("CrewRollTransfers"))
+        self.albumRegistry = albumRegistry
+        engineResource = NativeLazyResource {
+            ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { try lifecycle.mediaContext() }, invalidated: { revision in
+                NotificationCenter.default.post(name: .crewRollEngineInvalidated, object: nil, userInfo: ["revision": revision])
+            }, expiredTrips: { try lifecycle.expiredTrips() }, nextRetentionDeadline: { try lifecycle.nextTripRetentionDeadline() }, purgeExpiredKey: { trip, cleanup in try lifecycle.purgeExpiredTrip(trip, beforeKeyRemoval: cleanup) }, albumRegistry: albumRegistry)
+        }
         // Replace the retired Wi-Fi-only preference, preserving sign-out and
         // the account-scoped journal. New activations also enable all networks.
         if defaults.integer(forKey: "crewroll.background.networkPolicyVersion") < 1 {
@@ -39,7 +59,26 @@ final class CrewRollAppleRuntime {
             defaults.set(1, forKey: "crewroll.background.networkPolicyVersion")
         }
     }
-    func foreground(_ value: Bool) { lock.lock(); visible = value; lock.unlock(); Task { await engine.foreground(value) }; if !value { schedule() } }
+    private func applyForeground(_ snapshot: NativeForegroundSnapshot) {
+        // Delivery can cross another OS transition or an activation task. The
+        // actor rejects older revisions instead of trusting Task execution order.
+        if let engine = existingEngine { Task { await engine.foreground(snapshot) } }
+        if !snapshot.isForeground { schedule() }
+    }
+    /// Called only after acknowledging interactive pause/restoration. A paused
+    /// engine may clean local expiry without starting discovery or networking.
+    func requestRetentionMaintenance() {
+        retentionWork.submit { [weak self] complete in
+            guard let self else { complete(); return }
+            do { try self.lifecycle.runScheduledCleanup() }
+            catch { complete(); return }
+            let engine = self.engine
+            Task {
+                defer { complete() }
+                try? await engine.reconcileRetention(force: true)
+            }
+        }
+    }
     func policy(enabled: Bool, cellular: Bool? = nil) {
         lock.lock(); revision += 1; lock.unlock()
         defaults.set(enabled, forKey: "crewroll.background.enabled")
@@ -72,6 +111,7 @@ final class CrewRollAppleRuntime {
                 context.tripKey.resetBytes(in: 0..<context.tripKey.count)
                 context.session.backgroundBearer.resetBytes(in: 0..<context.session.backgroundBearer.count)
                 let started = Date()
+                await engine.foreground(foregroundSnapshot)
                 await engine.activate(ifCurrent: { self.current(epoch) && !completion.isFinished && !Task.isCancelled })
                 try Task.checkCancellation()
                 guard !completion.isFinished, current(epoch) else { return }
@@ -99,11 +139,12 @@ final class CrewRollAppleRuntime {
     }
     func current(_ epoch: Int, backgroundOnly: Bool = false) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return enabled && epoch == revision && (!backgroundOnly || !visible)
+        return enabled && epoch == revision && (!backgroundOnly || !isForeground)
     }
     func resumeAfterTransfer() {
         lock.lock(); let epoch = revision; lock.unlock()
         Task {
+            await engine.foreground(foregroundSnapshot)
             await engine.activate(ifCurrent: { self.current(epoch) })
             if current(epoch) { await engine.wake() }
         }
@@ -127,6 +168,7 @@ final class CrewRollAppleRuntime {
                 }
                 guard accepted else { completion.finish(true); return }
                 let started = Date()
+                await engine.foreground(foregroundSnapshot)
                 await engine.activate(ifCurrent: { self.current(epoch) && !completion.isFinished && PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized && self.matches(hint) })
                 guard current(epoch), !completion.isFinished, PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized, matches(hint) else { completion.finish(true); return }
                 try await engine.reconcileNow()
@@ -179,12 +221,14 @@ public final class CrewRollBackgroundTasks: ExpoAppDelegateSubscriber {
         return true
     }
     public func applicationDidBecomeActive(_ application: UIApplication) {
-        CrewRollAppleRuntime.lifecycleWork.submit { try? CrewRollAppleRuntime.get().foreground(true) }
+        CrewRollAppleRuntime.lifecycleWork.submit {
+            CrewRollAppleRuntime.setForeground(true)
+        }
         if foregroundLease != .invalid { application.endBackgroundTask(foregroundLease); foregroundLease = .invalid }
     }
     public func applicationDidEnterBackground(_ application: UIApplication) {
+        CrewRollAppleRuntime.lifecycleWork.submit { CrewRollAppleRuntime.setForeground(false) }
         guard CrewRollAppleRuntime.transferEnabled else { return }
-        CrewRollAppleRuntime.lifecycleWork.submit { try? CrewRollAppleRuntime.get().foreground(false) }
         // Allow a foreground-started batch to checkpoint/stage its ciphertext.
         if foregroundLease == .invalid {
             foregroundLease = application.beginBackgroundTask(withName: "Finish trip photo sync") { [weak self] in

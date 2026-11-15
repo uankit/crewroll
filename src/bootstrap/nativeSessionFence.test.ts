@@ -114,7 +114,11 @@ describe("native session fence", () => {
   });
 });
 
-it.each(["prepareDeviceSession", "importAndActivateTrip"] as const)(
+it.each([
+  "prepareDeviceSession",
+  "importAndActivateTrip",
+  "importAndActivateTripWithAlbum",
+] as const)(
   "rejects late and queued %s completions across an account change",
   async (name) => {
     const { native, fence } = fixture();
@@ -155,9 +159,70 @@ it("keeps optional capability discovery lazy when creating/capturing the account
   const discover = jest.fn(() => undefined);
   Object.defineProperty(native, "prepareDeviceSession", { get: discover });
   Object.defineProperty(native, "importAndActivateTrip", { get: discover });
+  Object.defineProperty(native, "importAndActivateTripWithAlbum", {
+    get: discover,
+  });
   const fence = createNativeSessionFence(native);
   const captured = fence.capture();
   expect(discover).not.toHaveBeenCalled();
   expect(captured.prepareDeviceSession).toBeUndefined();
   expect(captured.importAndActivateTrip).toBeUndefined();
+  expect(captured.importAndActivateTripWithAlbum).toBeUndefined();
+});
+
+it("fences metadata-only selection before dispatch and after late account-change completion", async () => {
+  const { native, fence } = fixture();
+  let finish!: (value: { protocolVersion: 1; activeTripId: null }) => void;
+  const operation = jest.fn(
+    () =>
+      new Promise<{ protocolVersion: 1; activeTripId: null }>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  native.getActiveTripSelection = operation;
+  const old = fence.capture();
+  const selection = old.getActiveTripSelection!;
+  const command = {
+    protocolVersion: 1,
+    accountId: "user_one",
+    installationId: "install_one",
+  } as const;
+  const pending = selection(command);
+  const rejected = expect(pending).rejects.toThrow("Native session ended");
+  fence.invalidate();
+  finish({ protocolVersion: 1, activeTripId: null });
+  await rejected;
+  await expect(selection(command)).rejects.toThrow("Native session ended");
+  expect(operation).toHaveBeenCalledTimes(1);
+  expect(() => old.getActiveTripSelection).toThrow("Native session ended");
+  expect(native.getSnapshot).not.toHaveBeenCalled();
+});
+
+it("fences album-only retry before dispatch and after completion without resetting original work", async () => {
+  const { native, fence } = fixture();
+  expect(fence.capture().retryPhotoOrganization).toBeUndefined();
+  let finish!: () => void;
+  const operation = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  native.retryPhotoOrganization = operation;
+  const old = fence.capture();
+  const dispatch = old.retryPhotoOrganization!;
+  const command = {
+    protocolVersion: 1,
+    tripId: "0191a203-227b-7011-9213-141516171819",
+  } as const;
+  const pending = dispatch(command);
+  const rejected = expect(pending).rejects.toThrow("Native session ended");
+  fence.invalidate();
+  finish();
+  await rejected;
+  await expect(dispatch(command)).rejects.toThrow("Native session ended");
+  expect(() => old.retryPhotoOrganization).toThrow("Native session ended");
+  expect(operation).toHaveBeenCalledTimes(1);
+  expect(native.retry).not.toHaveBeenCalled();
+  expect(native.reconcileNow).not.toHaveBeenCalled();
 });

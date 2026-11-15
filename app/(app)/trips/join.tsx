@@ -25,7 +25,7 @@ function safeFailureKind(
 
 export default function JoinTripRoute() {
   const router = useRouter();
-  const { actions, retry, snapshot } = useAppSession();
+  const { actions, retry, snapshot, capabilities } = useAppSession();
   const [editingAttempt, setEditingAttempt] = useState(0);
   const [state, setState] = useState<JoinTripScreenState>({ kind: "editing" });
 
@@ -35,7 +35,7 @@ export default function JoinTripRoute() {
   }
 
   function requestJoin(inviteCode: string) {
-    if (actions === null) return;
+    if (actions === null || !capabilities.canMutateTrip) return;
     setState({ kind: "submitting" });
     void actions
       .join(inviteCode)
@@ -87,7 +87,9 @@ export default function JoinTripRoute() {
 
   if (
     state.kind === "editing" &&
-    (snapshot.phase !== "READY_NO_TRIP" || actions === null)
+    (snapshot.phase !== "READY_NO_TRIP" ||
+      actions === null ||
+      !capabilities.canMutateTrip)
   ) {
     return <Redirect href="/(app)" withAnchor />;
   }
@@ -96,7 +98,8 @@ export default function JoinTripRoute() {
     <JoinTripScreen
       key={editingAttempt}
       onLookup={async (code) => {
-        if (actions === null) throw new Error("Session unavailable");
+        if (actions === null || !capabilities.canMutateTrip)
+          throw new Error("Session unavailable");
         return actions.previewInvite(code);
       }}
       onCancel={() => router.dismissTo("/(app)")}
