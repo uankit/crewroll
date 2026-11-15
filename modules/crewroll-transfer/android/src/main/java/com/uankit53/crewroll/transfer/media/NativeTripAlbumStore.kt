@@ -101,7 +101,7 @@ class NativeTripAlbumStore(private val directory: File) {
         if (!target.isFile) throw IOException("Album metadata unavailable")
         require(target.length() in 1..4096)
         val record = JSONObject(target.readText(Charsets.UTF_8))
-        require(record.keySet() == setOf("protocolVersion", "tripId", "relativePath"))
+        require(record.keys().asSequence().toSet() == setOf("protocolVersion", "tripId", "relativePath"))
         require(record.get("protocolVersion") == 1 && record.getString("tripId") == tripId)
         val path = record.getString("relativePath")
         require(path.startsWith("${NativeTripAlbumPaths.LEGACY}$tripId/") && NativeTripAlbumPaths.isDestination(path))
