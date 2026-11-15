@@ -407,6 +407,9 @@ describe("Expo Router mobile journey", () => {
     };
   });
 
+  // The first render imports/transforms the complete Router tree on a cold CI
+  // worker. This budget covers test setup; phone launch timing is measured on
+  // release builds separately. Keep every readiness/button assertion below.
   it("opens a useful authenticated shell while the phone is restoring and keeps mutation controls disabled", async () => {
     setPhase("PROVISIONING_DEVICE");
     mockCurrentSession = {
@@ -432,7 +435,7 @@ describe("Expo Router mobile journey", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
     screen.getByTestId("account-sheet");
     screen.getByRole("button", { name: "Sign out" });
-  });
+  }, 15_000);
 
   it("shows authorized trip metadata before sharing preparation finishes without declaring the phone live", async () => {
     setPhase("PROVISIONING_DEVICE");
