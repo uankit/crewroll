@@ -38,9 +38,16 @@ internal class AccountScopedKeyStore(private val persistence: ScopedDatabasePers
     // No import/backfill can invalidate eligibility between file cleanup and
     // the final key deletion while this store transaction lock is held.
     beforeKeyRemoval()
+    // Keep only the dated replay fence after expiry, not the full activation
+    // record. Legacy stores may still derive that date from frozen metadata.
+    if (!state.tripEndsAt.containsKey(trip.tripId)) {
+      val metadata = state.frozenMetadata[trip.tripId] ?: state.activeMetadata?.takeIf { it.tripId == trip.tripId }
+      metadata?.let { state.tripEndsAt[trip.tripId] = it.endsAt }
+    }
     state.trips.remove(trip.tripId)?.secret?.erase()
     state.tombstones.add(trip.tripId)
     if (state.activeMetadata?.tripId == trip.tripId) state.activeMetadata = null
+    state.frozenMetadata.remove(trip.tripId)
     // Retain authoritative timing as a replay fence. Undated quarantine
     // tombstones can recover through an authenticated dated envelope.
     true

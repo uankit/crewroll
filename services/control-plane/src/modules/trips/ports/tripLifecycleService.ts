@@ -10,6 +10,7 @@ export interface LifecycleActor {
   clerkSubject?: string;
 }
 export interface TripLifecycleService {
+  /** Current operational trip only; departure removes it after work drains. */
   list(actor: LifecycleActor): Promise<TripListResponse>;
   read(actor: LifecycleActor, tripId: string): Promise<TripTransferState>;
   change(

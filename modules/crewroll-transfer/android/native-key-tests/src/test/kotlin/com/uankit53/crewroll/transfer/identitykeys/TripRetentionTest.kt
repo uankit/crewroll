@@ -35,11 +35,41 @@ class TripRetentionTest {
     assertNotNull(reopened.activeSession())
     assertNull(reopened.nextTripRetentionDeadline())
     assertEquals(deadline, reopened.tripRetentionDeadline(scope, trip))
+    val persisted = disk.load().scopes[androidScopeKey(scope)]!!
+    assertFalse(persisted.frozenMetadata.containsKey(trip))
+    assertNull(persisted.activeMetadata)
+    assertEquals(metadata.endsAt, persisted.tripEndsAt[trip])
+    assertTrue(persisted.tombstones.contains(trip))
     assertThrows(NativeKeyException::class.java) { reopened.importTrip(scope, trip, key, metadata.endsAt, deadline) }
     // A moved date or device clock rollback cannot defeat the durable tombstone.
     assertEquals(TripImportOutcome.CONFLICT, reopened.importTrip(scope, trip, key, "2031-01-02T00:00:00Z", before))
     assertEquals(TripImportOutcome.CONFLICT, reopened.importTrip(scope, trip, key, metadata.endsAt, before))
     assertEquals(TripCreateOutcome.TOMBSTONED, reopened.createTrip(scope, trip) { error("must not recreate") })
+  }
+
+  @Test fun `legacy expiry drops full activation metadata but preserves its exact dated replay fence`() {
+    val frozen = metadata.copy(releaseAt = "2030-01-01T23:00:00Z")
+    val disk = legacyDisk(frozen)
+    val future = metadata.copy(tripId = "018f0d98-76fa-7d1a-b4b4-1f742c2e3140", endsAt = "2030-01-03T00:00:00Z")
+    val store = AccountScopedKeyStore(disk)
+    store.importTrip(scope, future.tripId, key, future.endsAt, before)
+    store.activate(scope, future)
+    // Do not run the metadata backfill sweep: purge must safely handle the
+    // original legacy representation where only frozen metadata holds the date.
+    val candidate = store.expiredTrips(deadline).single()
+    assertEquals(trip, candidate.tripId)
+    assertTrue(store.purgeExpiredTrip(candidate, deadline))
+    val persisted = disk.load().scopes[androidScopeKey(scope)]!!
+    assertFalse(persisted.frozenMetadata.containsKey(trip))
+    assertEquals(frozen.endsAt, persisted.tripEndsAt[trip])
+    assertTrue(persisted.tombstones.contains(trip))
+    assertEquals(future, persisted.frozenMetadata[future.tripId])
+    assertEquals(future, persisted.activeMetadata)
+    val reopened = AccountScopedKeyStore(disk)
+    assertEquals(deadline, reopened.tripRetentionDeadline(scope, trip))
+    assertEquals(TripImportOutcome.CONFLICT, reopened.importTrip(scope, trip, key, frozen.endsAt, before))
+    assertEquals(TripImportOutcome.CONFLICT, reopened.importTrip(scope, trip, key, future.endsAt, before))
+    assertNotNull(reopened.loadTrip(scope, future.tripId))
   }
 
   @Test fun `import alone atomically freezes expiry without activation or sharing`() {

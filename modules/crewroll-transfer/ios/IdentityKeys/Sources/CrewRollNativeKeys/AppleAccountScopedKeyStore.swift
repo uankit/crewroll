@@ -492,11 +492,19 @@ public final class AppleAccountScopedKeyStore: NativeKeyStore {
             // Keep the store transaction lock while removing local transfer
             // files: import/backfill cannot invalidate this candidate midway.
             try beforeKeyRemoval()
+            // Preserve the exact dated replay fence before dropping the full
+            // activation record, including legacy stores without tripEndsAt.
+            if database.scopes[key]?.tripEndsAt[trip.tripID] == nil,
+               let metadata = database.scopes[key]?.frozenMetadata[trip.tripID] ??
+                    (database.scopes[key]?.activeMetadata?.tripID == trip.tripID ? database.scopes[key]?.activeMetadata : nil) {
+                database.scopes[key]!.tripEndsAt[trip.tripID] = metadata.endsAt
+            }
             database.scopes[key]!.secureRemoveTrip(trip.tripID)
             database.scopes[key]!.tombstones.insert(trip.tripID)
             if database.scopes[key]?.activeMetadata?.tripID == trip.tripID {
                 database.scopes[key]!.activeMetadata = nil
             }
+            database.scopes[key]!.frozenMetadata.removeValue(forKey: trip.tripID)
             // Authoritative timing stays as a replay fence. An undated legacy
             // quarantine tombstone can recover only through a dated valid import.
             return true

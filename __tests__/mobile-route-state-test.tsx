@@ -20,7 +20,11 @@ import {
   type AppSessionCapabilities,
   type AppStartupState,
 } from "../src/bootstrap/startupState";
-import type { TripInvitePreview, TripView } from "../src/domain/trips/model";
+import type {
+  TripInvitePreview,
+  TripSummary,
+  TripView,
+} from "../src/domain/trips/model";
 
 jest.mock("@clerk/expo", () => ({
   useUser: () => ({ user: { fullName: "Test Member", firstName: "Test" } }),
@@ -29,10 +33,17 @@ jest.mock("expo-clipboard", () => ({
   setStringAsync: jest.fn(async () => true),
 }));
 jest.mock("../src/bootstrap/useTripContinuity", () => ({
-  useTripContinuity: () => ({
-    data: { approvalRequests: [], status: "LOBBY", onThisDevice: false },
-    refetch: jest.fn(),
-  }),
+  useTripContinuity: () => {
+    mockUseAppSession();
+    return {
+      data: {
+        approvalRequests: [],
+        status: "LOBBY",
+        onThisDevice: mockContinuityOnThisDevice,
+      },
+      refetch: jest.fn(),
+    };
+  },
 }));
 
 const tripId = "018f22c4-6e80-7000-8000-000000000001";
@@ -195,6 +206,8 @@ let mockCurrentSession = {
 let mockRevision = 0;
 let mockSetupRequired = false;
 let mockLibraryOnThisDevice = true;
+let mockContinuityOnThisDevice = false;
+let mockLibraryItems: readonly TripSummary[] | null = null;
 const mockListeners = new Set<() => void>();
 
 function mockPublish(): void {
@@ -242,30 +255,32 @@ jest.mock("../src/bootstrap/useTripLibrary", () => ({
       isError: false,
       refetch: mockRefresh,
       data: {
-        items: trip
-          ? [
-              {
-                id: trip.id,
-                name: trip.name,
-                status: trip.status,
-                participation: [
-                  "COMPLETE",
-                  "INCOMPLETE_EXPIRED",
-                  "CANCELLED",
-                ].includes(trip.status)
-                  ? "LEFT"
-                  : "JOINED",
-                role: "OWNER",
-                sharingPaused: false,
-                onThisDevice: mockLibraryOnThisDevice,
-                memberCount: trip.members.length,
-                savedPhotoCount: 0,
-                startsAt: trip.startsAt,
-                endsAt: trip.endsAt,
-                leftAt: null,
-              },
-            ]
-          : [],
+        items:
+          mockLibraryItems ??
+          (trip
+            ? [
+                {
+                  id: trip.id,
+                  name: trip.name,
+                  status: trip.status,
+                  participation: [
+                    "COMPLETE",
+                    "INCOMPLETE_EXPIRED",
+                    "CANCELLED",
+                  ].includes(trip.status)
+                    ? "LEFT"
+                    : "JOINED",
+                  role: "OWNER",
+                  sharingPaused: false,
+                  onThisDevice: mockLibraryOnThisDevice,
+                  memberCount: trip.members.length,
+                  savedPhotoCount: 0,
+                  startsAt: trip.startsAt,
+                  endsAt: trip.endsAt,
+                  leftAt: null,
+                },
+              ]
+            : []),
       },
     };
   },
@@ -381,6 +396,8 @@ describe("Expo Router mobile journey", () => {
     mockFontsLoaded = true;
     mockSetupRequired = false;
     mockLibraryOnThisDevice = true;
+    mockContinuityOnThisDevice = false;
+    mockLibraryItems = null;
     mockProjection = {
       failed: false,
       loading: false,
@@ -638,6 +655,75 @@ describe("Expo Router mobile journey", () => {
     expect(router.getPathname()).toBe("/");
   });
 
+  it.each(["list-first", "continuity-first"] as const)(
+    "acknowledges phone recovery once when approval arrives %s",
+    async (order) => {
+      setPhase("READY_NO_TRIP");
+      mockProjection = { ...mockProjection, trip: ownerTrip() };
+      mockLibraryOnThisDevice = false;
+      await renderActualRouter("/");
+      await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
+      screen.getByRole("button", { name: "Request device approval" });
+      if (order === "list-first") {
+        await act(async () => {
+          mockLibraryOnThisDevice = true;
+          mockPublish();
+        });
+        screen.getByRole("button", { name: "Request device approval" });
+        expect(mockRetry).not.toHaveBeenCalled();
+      }
+      await act(async () => {
+        mockContinuityOnThisDevice = true;
+        mockPublish();
+      });
+      await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        mockLibraryOnThisDevice = true;
+        mockPublish();
+      });
+      screen.getByRole("button", { name: "Open Kyoto" });
+      expect(
+        screen.queryByRole("button", { name: "Request device approval" }),
+      ).toBeNull();
+      await act(async () => mockPublish());
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["LEFT", "missing"] as const)(
+    "dismisses phone recovery without resuming when its selected membership becomes %s",
+    async (membership) => {
+      setPhase("READY_NO_TRIP");
+      mockProjection = { ...mockProjection, trip: ownerTrip() };
+      mockLibraryOnThisDevice = false;
+      await renderActualRouter("/");
+      await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
+      screen.getByRole("button", { name: "Request device approval" });
+      await act(async () => {
+        mockProjection = {
+          ...mockProjection,
+          trip:
+            membership === "LEFT" ? ownerTrip({ status: "COMPLETE" }) : null,
+        };
+        mockPublish();
+      });
+      screen.getByRole("header", { name: "Start your first trip." });
+      expect(
+        screen.queryByRole("button", { name: "Request device approval" }),
+      ).toBeNull();
+      expect(mockRetry).not.toHaveBeenCalled();
+      await act(async () => {
+        mockProjection = { ...mockProjection, trip: ownerTrip() };
+        mockPublish();
+      });
+      screen.getByRole("button", { name: "Open Kyoto" });
+      expect(
+        screen.queryByRole("button", { name: "Request device approval" }),
+      ).toBeNull();
+      expect(mockRetry).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     "READY_NO_TRIP",
     "READY_ACTIVE",
@@ -666,15 +752,64 @@ describe("Expo Router mobile journey", () => {
     15_000,
   );
 
-  it("keeps sign-out available when all trips are past trips", async () => {
+  it("ignores a cached departed membership while keeping account access available", async () => {
     mockProjection = {
       ...mockProjection,
       trip: ownerTrip({ status: "COMPLETE" }),
     };
     await renderActualRouter("/");
-    screen.getByText("PAST TRIPS");
+    expect(screen.queryByText("Kyoto")).toBeNull();
+    screen.getByRole("header", { name: "Start your first trip." });
     await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
     screen.getByRole("button", { name: "Sign out" });
+  });
+
+  it("ignores departed cache rows while retaining access to the current trip's final sync", async () => {
+    setPhase("READY_ACTIVE");
+    mockProjection = {
+      ...mockProjection,
+      trip: ownerTrip({
+        status: "ENDING",
+        startsAt: "2030-01-01T00:00:00.000Z",
+      }),
+    };
+    const current: TripSummary = {
+      id: tripId,
+      name: "Kyoto",
+      status: "ENDING",
+      participation: "LEAVING",
+      role: "OWNER",
+      sharingPaused: false,
+      onThisDevice: true,
+      memberCount: 2,
+      savedPhotoCount: 8,
+      startsAt: "2030-01-01T00:00:00.000Z",
+      endsAt: "2030-01-02T00:00:00.000Z",
+      leftAt: null,
+    };
+    mockLibraryItems = [
+      {
+        ...current,
+        id: "018f22c4-6e80-7000-8000-000000000002",
+        name: "Old wedding",
+        status: "COMPLETE",
+        participation: "LEFT",
+      },
+      current,
+    ];
+    const router = await renderActualRouter("/");
+    expect(screen.queryByText("Old wedding")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "View Old wedding" }),
+    ).toBeNull();
+    screen.getByText("Finishing sync");
+    expect(
+      screen.getByRole("button", { name: "Start a new trip" }),
+    ).toBeDisabled();
+    await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
+    await waitFor(() => expect(router.getPathname()).toBe(`/trips/${tripId}`));
+    screen.getByTestId("lobby-screen");
+    screen.getByText("Finishing");
   });
 
   it.each(["/", "/trips/create", "/trips/join"])(
@@ -821,7 +956,7 @@ describe("Expo Router mobile journey", () => {
     ).toBeDisabled();
   });
 
-  it("opens the existing create flow after a past trip and skips already granted photo access", async () => {
+  it("opens the existing create flow after departure and skips already granted photo access", async () => {
     setPhase("READY_NO_TRIP");
     mockProjection = {
       ...mockProjection,
@@ -840,10 +975,8 @@ describe("Expo Router mobile journey", () => {
       return { kind: "READY", tripId };
     });
     const router = await renderActualRouter("/");
-    screen.getByText("PAST TRIPS");
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Start a new trip" }),
-    );
+    expect(screen.queryByText("Kyoto")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Start a trip" }));
     await waitFor(() => expect(router.getPathname()).toBe("/trips/create"));
     await fireEvent.changeText(screen.getByLabelText("Trip name"), "Next trip");
     await fireEvent.press(screen.getByRole("button", { name: "Create trip" }));

@@ -36,13 +36,13 @@ export function useTripLibrary(visible = true) {
       visible &&
       foreground,
     staleTime: TRIP_LIBRARY_FRESH_MS,
-    // Approval/live membership needs timely feedback. A settled history can
-    // refresh on focus/manual invalidation with a much quieter repair poll.
+    // Keep joining and unfinished delivery live. With no current trip, focus,
+    // explicit refresh and mutations can refresh this query without idle polls.
     refetchInterval: (query) =>
       currentSession ||
       query.state.data?.items.some((trip) => trip.participation !== "LEFT")
         ? 5_000
-        : 60_000,
+        : false,
     refetchIntervalInBackground: false,
     retry: false,
   });
