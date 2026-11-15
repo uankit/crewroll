@@ -1,11 +1,11 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createClerkWebhookVerifier } from "../../src/platform/clerk/verifyClerkWebhook.js";
 
 const secretBytes = Buffer.alloc(32, 0x4a);
 const secret = `whsec_${secretBytes.toString("base64")}`;
-const now = new Date();
+const now = new Date("2030-01-01T12:00:00.000Z");
 const timestamp = Math.floor(now.getTime() / 1_000);
 const eventId = "evt_identity_001";
 const raw = Buffer.from(
@@ -36,6 +36,14 @@ function headers(at = timestamp, body: Uint8Array = raw) {
 }
 
 describe("Clerk webhook verifier", () => {
+  beforeEach(() => {
+    // The injected clock and the real provider's Date.now must agree even
+    // when a busy runner crosses a wall-clock second during this suite.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("verifies original raw bytes and returns only a minimal event", async () => {
     const verifier = createClerkWebhookVerifier({
       clock: { now: () => now },
@@ -79,18 +87,30 @@ describe("Clerk webhook verifier", () => {
     });
   });
 
-  it("accepts five minutes exactly and rejects one second beyond", async () => {
-    const verifier = createClerkWebhookVerifier({
-      clock: { now: () => now },
-      signingSecret: secret,
-    });
-    await expect(
-      verifier.verify(raw, headers(timestamp - 300)),
-    ).resolves.toMatchObject({ eventId });
-    await expect(
-      verifier.verify(raw, headers(timestamp - 301)),
-    ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
-  });
+  it.each([-300, 300])(
+    "accepts the exact five-minute boundary (%i seconds)",
+    async (offset) => {
+      const verifier = createClerkWebhookVerifier({
+        clock: { now: () => now },
+        signingSecret: secret,
+      });
+      await expect(
+        verifier.verify(raw, headers(timestamp + offset)),
+      ).resolves.toMatchObject({ eventId });
+    },
+  );
+  it.each([-301, 301])(
+    "rejects one second beyond the five-minute boundary (%i seconds)",
+    async (offset) => {
+      const verifier = createClerkWebhookVerifier({
+        clock: { now: () => now },
+        signingSecret: secret,
+      });
+      await expect(
+        verifier.verify(raw, headers(timestamp + offset)),
+      ).rejects.toMatchObject({ kind: "AUTH_INVALID" });
+    },
+  );
 
   it("maps verified malformed user events to invalid request", async () => {
     const verifier = createClerkWebhookVerifier({

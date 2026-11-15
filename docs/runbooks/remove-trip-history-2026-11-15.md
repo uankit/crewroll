@@ -70,7 +70,7 @@ Local validation passed:
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Tooling                         | 1,454 passed.                                                                                                   |
 | UI, default and Android presets | 1,144 passed in each; one opposite-platform test skipped in each.                                               |
-| Contract and service unit tests | 867 passed.                                                                                                     |
+| Contract and service unit tests | 870 passed.                                                                                                     |
 | PostgreSQL integration          | 353 passed across 27 suites, including nine current-trip regressions.                                           |
 | Android JVM / Swift             | 178 / 138 passed.                                                                                               |
 | Static and production checks    | Types, lint, formatting, unchanged migration policy, Expo Doctor 21/21 and production bundle resolution passed. |
