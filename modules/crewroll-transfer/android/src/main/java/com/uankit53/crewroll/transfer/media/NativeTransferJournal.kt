@@ -80,6 +80,18 @@ class NativeTransferJournal(val directory: File) {
         }
         persist(next)
     }
+    /** One atomic presentation-only update; transport retry/checkpoints remain
+     * untouched and a large completed gallery does not cause N full rewrites. */
+    @Synchronized fun retryPhotoOrganization(tripId: String) {
+        require(UUID.fromString(tripId).toString() == tripId)
+        val retrying = records().filter { it.getString("tripId") == tripId && !it.isNull("deliveryId") && it.optBoolean("complete") && it.optionalString("photoOrganization") == "FAILED" }
+        if (retrying.isEmpty()) return
+        val next = JSONObject(state.toString())
+        retrying.forEach { work ->
+            next.getJSONObject("works").put(work.getString("workId"), work.put("photoOrganization", "PENDING").put("organizationRetryAt", JSONObject.NULL))
+        }
+        persist(next)
+    }
     @Synchronized fun purgeTrip(tripId: String) {
         val removed = records().filter { it.getString("tripId") == tripId }
         if (removed.isEmpty() && pendingDeliveryCursor(tripId) == null) return

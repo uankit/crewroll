@@ -462,3 +462,72 @@ describe("finite local key recovery classification", () => {
     });
   });
 });
+
+describe("trip album accepted restoration", () => {
+  it.each(["ACTIVE", "ENDING"] as const)(
+    "prefers album registration during accepted %s restoration",
+    async (status) => {
+      const { native } = harness();
+      const importAndActivateTrip = jest.fn();
+      const importAndActivateTripWithAlbum = jest
+        .fn()
+        .mockResolvedValue(undefined);
+      const service = createActivateObservedTrip({
+        device: { deviceId, identity },
+        native: {
+          ...native,
+          importAndActivateTrip,
+          importAndActivateTripWithAlbum,
+        },
+      });
+      const response = activeResponse({ status, name: "Jodhpur 👰" });
+      await expect(service.activateObserved(response)).resolves.toMatchObject({
+        id: tripId,
+        status,
+      });
+      expect(importAndActivateTripWithAlbum).toHaveBeenCalledWith({
+        protocolVersion: 1,
+        envelope: expect.objectContaining({ tripId, endsAt, wrappedKey }),
+        activation: expect.objectContaining({ tripId, endsAt }),
+        album: { tripName: response.name },
+      });
+      expect(importAndActivateTripWithAlbum).toHaveBeenCalledTimes(1);
+      expect(importAndActivateTrip).not.toHaveBeenCalled();
+      expect(native.importTripKey).not.toHaveBeenCalled();
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    new ImportedTripActivationFailed(),
+    new Error("private album failure"),
+    null,
+    {},
+  ])(
+    "never retries a present failed or malformed album capability through older methods %#",
+    async (failure) => {
+      const { native } = harness();
+      const importAndActivateTrip = jest.fn();
+      const operation =
+        failure === null || !(failure instanceof Error)
+          ? failure
+          : jest.fn().mockRejectedValue(failure);
+      const service = createActivateObservedTrip({
+        device: { deviceId, identity },
+        native: {
+          ...native,
+          importAndActivateTrip,
+          importAndActivateTripWithAlbum: operation as never,
+        },
+      });
+      const error: unknown = await service
+        .activateObserved(activeResponse())
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(TripActivationFailed);
+      expect(error).not.toHaveProperty("cause");
+      expect(String(error)).not.toContain("private");
+      expect(importAndActivateTrip).not.toHaveBeenCalled();
+      expect(native.importTripKey).not.toHaveBeenCalled();
+      expect(native.activateTrip).not.toHaveBeenCalled();
+    },
+  );
+});

@@ -1051,7 +1051,8 @@ public final class NativeKeyLifecycle {
         recipientDeviceID: String,
         recipientE2EEKeyVersion: Int,
         wrappedKey: String,
-        endsAt: String
+        endsAt: String,
+        onImported: ((NativeKeyScope) -> Void)? = nil
     ) throws {
         var envelope = Data()
         var plaintext = Data()
@@ -1100,6 +1101,7 @@ public final class NativeKeyLifecycle {
             ) == .conflict {
                 throw NativeKeyError.invalidEnvelope
             }
+            onImported?(scopedSession.scope)
         } catch let error as NativeKeyError {
             if error.code == NativeKeyError.accessLocked.code ||
                 error.code == NativeKeyError.materialLost.code { throw error }
@@ -1119,7 +1121,8 @@ public final class NativeKeyLifecycle {
 
     /// The bridge owns the selection fence across both existing durable steps.
     /// An activation failure never rolls back a successfully imported key.
-    public func importAndActivateTrip(_ command: [String: Any]) throws {
+    public func importAndActivateTrip(_ command: [String: Any],
+        beforeActivation: ((NativeKeyScope, ActiveTripMetadata) -> Void)? = nil) throws {
         try NativeCommandDecoder.require(command, for: .importAndActivateTrip)
         guard let envelope = command["envelope"] as? [String: Any],
               let activation = command["activation"] as? [String: Any] else {
@@ -1134,7 +1137,8 @@ public final class NativeKeyLifecycle {
             recipientDeviceID: NativeCommandDecoder.string(envelope, "recipientDeviceId"),
             recipientE2EEKeyVersion: NativeCommandDecoder.integer(envelope, "recipientE2eeKeyVersion"),
             wrappedKey: NativeCommandDecoder.string(envelope, "wrappedKey"),
-            endsAt: NativeCommandDecoder.string(envelope, "endsAt")
+            endsAt: NativeCommandDecoder.string(envelope, "endsAt"),
+            onImported: { beforeActivation?($0, metadata) }
         )
         do {
             try activateTrip(metadata)

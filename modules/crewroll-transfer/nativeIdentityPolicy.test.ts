@@ -287,11 +287,14 @@ describe("native identity and trip-key production policy", () => {
       ["wrapTripKey", "WRAP_TRIP_KEY"],
       ["importTripKey", "IMPORT_TRIP_KEY"],
       ["importAndActivateTrip", "IMPORT_AND_ACTIVATE_TRIP"],
+      ["importAndActivateTripWithAlbum", "IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM"],
       ["activateTrip", "ACTIVATE_TRIP"],
       ["deactivateTrip", "DEACTIVATE_TRIP"],
     ] as const) {
       expect(asyncFunctionBlock(swift, method)).toContain(
-        `NativeCommandDecoder.require(command, for: .${method})`,
+        method === "importAndActivateTripWithAlbum"
+          ? "NativeTripAlbumCommand.decode(command)"
+          : `NativeCommandDecoder.require(command, for: .${method})`,
       );
       expect(asyncFunctionBlock(kotlin, method)).toContain(
         `NativeCommandDecoder.require(command, NativeCommandKind.${kind})`,

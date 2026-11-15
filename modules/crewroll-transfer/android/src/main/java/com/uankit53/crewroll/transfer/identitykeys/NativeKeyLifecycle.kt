@@ -230,6 +230,7 @@ enum class NativeCommandKind(val exactKeys: Set<String>, val hasTripId: Boolean)
   PREPARE_DEVICE_SESSION(setOf("protocolVersion", "accountId", "apiBaseUrl"), false),
   GET_ACTIVE_TRIP_SELECTION(setOf("protocolVersion", "accountId", "installationId"), false),
   IMPORT_AND_ACTIVATE_TRIP(setOf("protocolVersion", "envelope", "activation"), false),
+  IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM(setOf("protocolVersion", "envelope", "activation", "album"), false),
   ENSURE_DEVICE_IDENTITY(setOf("protocolVersion", "accountId"), false),
   RESTORE_DEVICE_SESSION(setOf("protocolVersion", "accountId", "installationId", "apiBaseUrl"), false),
   INSTALL_DEVICE_SESSION(setOf(
@@ -287,7 +288,13 @@ object NativeCommandDecoder {
     requireProtocol(command)
     if (kind == NativeCommandKind.IMPORT_TRIP_KEY) instant(command, "endsAt")
     if (kind.hasTripId) requireTripId(string(command, "tripId"))
-    if (kind == NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP) {
+    if (kind == NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) {
+      val album = objectValue(command, "album")
+      if (album.keys != setOf("tripName")) throw NativeKeyException.invalidCommand()
+      val name = string(album, "tripName").trim().codePoints().toArray()
+      if (name.size !in 1..80 || name.any { it in 0xD800..0xDFFF }) throw NativeKeyException.invalidCommand()
+    }
+    if (kind == NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP || kind == NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) {
       val envelope = objectValue(command, "envelope")
       val activation = objectValue(command, "activation")
       require(envelope, NativeCommandKind.IMPORT_TRIP_KEY)
@@ -593,7 +600,8 @@ class NativeKeyLifecycle(
   }
 
   /** One protected read, with the original durable import and activation saves. */
-  fun importAndActivateTrip(command: Map<String, Any?>): NativeMediaContext {
+  fun importAndActivateTrip(command: Map<String, Any?>,
+    beforeActivation: ((NativeKeyScope, ActiveTripMetadata) -> Unit)? = null): NativeMediaContext {
     NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP)
     return keyCommand {
     val envelope = NativeCommandDecoder.objectValue(command, "envelope")
@@ -603,6 +611,7 @@ class NativeKeyLifecycle(
       NativeCommandDecoder.string(envelope, "recipientDeviceId"), NativeCommandDecoder.integer(envelope, "recipientE2eeKeyVersion"),
       NativeCommandDecoder.string(envelope, "wrappedKey"), NativeCommandDecoder.string(envelope, "endsAt"))
     try {
+      beforeActivation?.invoke(currentSession().scope, activation)
       activateTrip(activation)
       mediaContext() ?: throw NativeKeyException.materialLost()
     } catch (_: Throwable) { throw NativeKeyException.activationFailed() }

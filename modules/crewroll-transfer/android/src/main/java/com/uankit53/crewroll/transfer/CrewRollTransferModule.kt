@@ -257,6 +257,28 @@ class CrewRollTransferModule : Module() {
         }
       }
     }
+    AsyncFunction("importAndActivateTripWithAlbum") { command: Map<String, Any?>, promise: Promise ->
+      future("importAndActivateTripWithAlbum", promise, clearLeaseOnCompletion = false) { epoch ->
+        NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM)
+        val album = NativeCommandDecoder.objectValue(command, "album")
+        val legacy = command.filterKeys { it != "album" }
+        var imported = false
+        try {
+          mediaSession.changeAndPrime<com.uankit53.crewroll.transfer.identitykeys.NativeMediaContext>(
+            { lifecycle().importAndActivateTrip(legacy) { scope, metadata ->
+                runtime().registerTripAlbum(scope, metadata, string(album, "tripName"))
+              }.also { imported = true } }, { it })
+          runtime().policy(true, cellular = true)
+          engine().activate { transferCommands.matches(epoch) }.handle { _, error ->
+            if (error != null) mediaSession.failPreparedCommand(transferCommands, epoch)
+            null
+          }
+        } catch (error: Throwable) {
+          if (imported) mediaSession.failPreparedCommand(transferCommands, epoch)
+          throw error
+        }
+      }
+    }
     AsyncFunction("activateTrip") { command: Map<String, Any?>, promise: Promise ->
       future("activateTrip", promise) { epoch ->
         NativeCommandDecoder.require(command, NativeCommandKind.ACTIVATE_TRIP)
@@ -288,6 +310,13 @@ class CrewRollTransferModule : Module() {
     }
     AsyncFunction("reconcileNow") { command: Map<String, Any?>, promise: Promise ->
       future("reconcileNow", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion")); runtime().let { if (it.enabled && it.foreground) CrewRollSyncJobs.syncNow(it.context, it.cellular) }; engine().requestReconcile().thenApply { null } }
+    }
+    AsyncFunction("retryPhotoOrganization") { command: Map<String, Any?>, promise: Promise ->
+      future("retryPhotoOrganization", promise, changesSession = false) { epoch ->
+        requireCommand(command, setOf("protocolVersion", "tripId"))
+        com.uankit53.crewroll.transfer.media.NativeTripAlbumPaths.requireTrip(string(command, "tripId"))
+        engine().retryPhotoOrganization(string(command, "tripId")) { transferCommands.matches(epoch) }.thenApply { null }
+      }
     }
     AsyncFunction("retry") { command: Map<String, Any?>, promise: Promise ->
       future("retry", promise, changesSession = false) { requireCommand(command, setOf("protocolVersion", "workId")); engine().retry(string(command, "workId")).thenApply { null } }

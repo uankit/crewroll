@@ -217,6 +217,24 @@ final class AccountScopedLifecycleTests: XCTestCase {
         XCTAssertThrowsError(try NativeCommandDecoder.require(prepare.merging(["privateKey": "forbidden"]) { _, new in new }, for: .prepareDeviceSession))
     }
 
+    func testAlbumPresentationCallbackUsesAuthenticatedScopeBeforeActivationAndNeverRunsForInvalidEnvelope() throws {
+        let fixture = ScopedFixture(accountHashes: [accountA: hashA])
+        let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)
+        let command = try compositeCommand(fixture)
+        var calls = 0
+        try fixture.subject.importAndActivateTrip(command, beforeActivation: { selected, metadata in
+            calls += 1
+            XCTAssertEqual(selected, scope)
+            XCTAssertEqual(metadata, fixture.metadata(tripID: self.tripA))
+            XCTAssertEqual(fixture.store.trip(scope, self.tripA)?.state, .installed)
+            XCTAssertNil(fixture.store.activeMetadata(scope))
+        })
+        XCTAssertEqual(calls, 1)
+        fixture.crypto.rejectOpen = true
+        XCTAssertThrowsError(try fixture.subject.importAndActivateTrip(command, beforeActivation: { _, _ in calls += 1 }))
+        XCTAssertEqual(calls, 1)
+    }
+
     func testCompositeActivationFailurePreservesCommittedImportAndSupportsCorrectedRetry() throws {
         let fixture = ScopedFixture(accountHashes: [accountA: hashA])
         let scope = try fixture.ensureAndInstall(accountID: accountA, deviceID: deviceA)

@@ -145,6 +145,19 @@ export function createActivateObservedTrip(
     } as const);
 
     try {
+      const withAlbum = native.importAndActivateTripWithAlbum;
+      if (withAlbum !== undefined) {
+        await withAlbum.call(
+          native,
+          Object.freeze({
+            protocolVersion: 1,
+            envelope: imported,
+            activation,
+            album: Object.freeze({ tripName: response.name }),
+          }),
+        );
+        return view;
+      }
       const combined = native.importAndActivateTrip;
       if (combined !== undefined) {
         await combined.call(

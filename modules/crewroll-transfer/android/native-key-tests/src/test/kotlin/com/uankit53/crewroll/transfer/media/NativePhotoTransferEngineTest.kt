@@ -640,6 +640,268 @@ class NativePhotoTransferEngineTest {
             assertEquals(0, f.count(engine, "originalsSaved"))
         }
     }
+
+    @Test fun `named trip delivery saves one exact original and never copies a source capture into the album`() {
+        Fixture().use { f ->
+            val registry = NativeTripAlbumRegistry(f.root.resolve("journals"))
+            registry.register(f.context.scope, f.context.metadata, "Jodhpur Wedding")
+            f.albums = registry
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "READY" }
+            assertEquals(registry.resolve(f.context.scope, f.context.metadata).relativePath, f.savedPath)
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+            assertArrayEquals(f.source, f.saved)
+            assertEquals(1, f.verifiedLocalIds.count { it == "saved" }, "a final-path save uses its existing verified-save checkpoint")
+            assertEquals(0, f.organizationCalls)
+            assertEquals("READY", (engine.snapshot().get()["photoOrganization"] as Map<*, *>)["state"])
+            f.stop(engine)
+        }
+    }
+
+    @Test fun `album repair failure remains visible while verified original receipt and completion stay successful`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf(); f.organizationFails = true
+            val registry = NativeTripAlbumRegistry(f.root.resolve("journals"))
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "FAILED" }
+            assertTrue(f.persistedWork()!!.getBoolean("complete"))
+            assertEquals(1, f.receipts); assertEquals(0, f.saves); assertEquals(0, f.downloads)
+            val snapshot = engine.snapshot().get()
+            assertEquals(emptyList<String>(), snapshot["blockers"])
+            assertEquals(mapOf("state" to "FAILED", "pendingCount" to 0, "failedCount" to 1), snapshot["photoOrganization"])
+            f.organizationFails = false
+            engine.reconcileNow().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "READY" }
+            assertEquals(1, f.receipts); assertEquals(0, f.saves); assertEquals(0, f.downloads)
+            assertEquals(registry.resolve(f.context.scope, f.context.metadata).relativePath, f.savedPath)
+            f.stop(engine)
+        }
+    }
+
+    @Test fun `metadata write failure delivers to legacy folder then repairs with no second save or receipt`() {
+        Fixture().use { f ->
+            val root = f.root.resolve("journals")
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, root).apply { mkdirs() }
+            val obstruction = File(directory, "album-${f.trip}.json").apply { check(mkdir()) }
+            val registry = NativeTripAlbumRegistry(root)
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optBoolean("complete") == true }
+            assertEquals(NativeTripAlbumPaths.LEGACY, f.savedPath)
+            assertEquals("FAILED", (engine.snapshot().get()["photoOrganization"] as Map<*, *>)["state"])
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+            assertTrue(obstruction.delete())
+            engine.reconcileNow().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "READY" }
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+            assertNotEquals(NativeTripAlbumPaths.LEGACY, f.savedPath)
+            f.stop(engine)
+        }
+    }
+
+    @Test fun `user moved original is preserved outside the trip album without a new image`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf(); f.savedPath = "Pictures/Favorites/"
+            val registry = NativeTripAlbumRegistry(f.root.resolve("journals"))
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "USER_MANAGED" }
+            assertEquals("Pictures/Favorites/", f.savedPath)
+            assertEquals(1, f.receipts); assertEquals(0, f.saves); assertEquals(0, f.downloads)
+            f.stop(engine)
+        }
+    }
+
+    @Test fun `a journaled app-owned partial pending row is resumed before publication without treating partial bytes as a saved original`() {
+        Fixture().use { f ->
+            f.saved = byteArrayOf(1); f.savedPublished = false
+            val directory = f.root.resolve("journals/${f.context.scope.accountHash}.${f.context.scope.installationId}")
+            NativeTransferJournal(directory).put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", false).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant))
+            val engine = f.engine(); f.start(engine)
+            assertEquals(1, f.saves); assertEquals(1, f.downloads); assertEquals(1, f.receipts)
+            assertTrue(f.savedPublished); assertArrayEquals(f.source, f.saved)
+            assertTrue(f.persistedWork()!!.getBoolean("complete"))
+        }
+    }
+
+    @Test fun `seven day retention removes only expired album metadata and never gallery originals`() {
+        Fixture().use { f ->
+            val expiredId = "01990000-0000-7000-8000-000000000099"
+            val registry = NativeTripAlbumRegistry(f.root.resolve("journals"))
+            val old = f.context.metadata.copy(tripId = expiredId, startsAt = "2020-01-01T00:00:00Z", endsAt = "2020-01-02T00:00:00Z")
+            registry.register(f.context.scope, old, "Old Wedding")
+            f.albums = registry; f.saved = f.source.copyOf()
+            f.retentionTrips = listOf(NativeExpiredTrip(f.context.scope, expiredId, Instant.parse("2020-01-09T00:00:00Z")))
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, f.root.resolve("journals"))
+            assertNotNull(NativeTripAlbumStore(directory).read(expiredId))
+            val engine = f.engine(); f.start(engine)
+            assertNull(NativeTripAlbumStore(directory).read(expiredId))
+            assertArrayEquals(f.source, f.saved)
+            assertEquals(0, f.saves); assertEquals(0, f.downloads)
+        }
+    }
+
+    @Test fun `account erasure clears scoped album metadata and pending presentation memory while preserving saved originals`() {
+        Fixture().use { f ->
+            val registry = NativeTripAlbumRegistry(f.root.resolve("journals"))
+            registry.register(f.context.scope, f.context.metadata, "Wedding")
+            f.albums = registry; f.saved = f.source.copyOf()
+            val engine = f.engine(); f.start(engine)
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, f.root.resolve("journals"))
+            assertNotNull(NativeTripAlbumStore(directory).read(f.trip))
+            f.contextAvailable = false
+            engine.eraseAccount(f.context.scope.accountHash).get(5, TimeUnit.SECONDS)
+            assertFalse(directory.exists())
+            assertEquals(NativeTripAlbumDestination(null, false, false), registry.peek(f.context.scope, f.trip))
+            assertArrayEquals(f.source, f.saved)
+            assertEquals(0, f.saves); assertEquals(0, f.downloads)
+        }
+    }
+
+    @Test fun `headless restart retains pending and failed organization from the durable capture journal without album registry intent`() {
+        for (stage in listOf("PENDING", "FAILED")) Fixture().use { f ->
+            f.saved = f.source.copyOf()
+            val root = f.root.resolve("journals")
+            val registry = NativeTripAlbumRegistry(root); f.albums = registry
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, root)
+            NativeTransferJournal(directory).put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant).put("photoOrganization", stage))
+            val engine = f.engine(); engine.activate().get(5, TimeUnit.SECONDS)
+            val status = engine.snapshot().get()["photoOrganization"] as Map<*, *>
+            assertEquals(stage, status["state"])
+            assertEquals(if (stage == "FAILED") 1 else 0, status["failedCount"])
+            assertEquals(if (stage == "PENDING") 1 else 0, status["pendingCount"])
+            registry.register(f.context.scope, f.context.metadata, "Wedding")
+            engine.reconcileNow().get(5, TimeUnit.SECONDS)
+            f.await { f.persistedWork()?.optionalString("photoOrganization") == "READY" }
+            assertEquals(1, f.verifiedLocalIds.count { it == "saved" }, "only an actual move reopens image bytes")
+            assertEquals(0, f.saves); assertEquals(0, f.downloads); assertEquals(0, f.receipts)
+            f.stop(engine)
+        }
+    }
+
+    @Test fun `rebuilt destination confirmation uses cheap inspection without trusting an old ready flag or rereading image bytes`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf(); f.verifyCorrupt = true
+            val root = f.root.resolve("journals")
+            val registry = NativeTripAlbumRegistry(root)
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            f.savedPath = registry.resolve(f.context.scope, f.context.metadata).relativePath!!
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, root)
+            NativeTransferJournal(directory).put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant).put("photoOrganization", "READY").put("organizationDestination", "old-destination"))
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.inspectionHook = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                assertEquals("PENDING", (engine.snapshot().get()["photoOrganization"] as Map<*, *>)["state"])
+                release.countDown()
+                f.await { f.persistedWork()?.optionalString("organizationDestination") == photoOrganizationDestinationId(f.savedPath) }
+                assertEquals("READY", (engine.snapshot().get()["photoOrganization"] as Map<*, *>)["state"])
+                assertTrue(f.verifiedLocalIds.isEmpty()); assertEquals(0, f.organizationCalls)
+                assertEquals(0, f.saves); assertEquals(0, f.downloads); assertEquals(0, f.receipts)
+            } finally { release.countDown(); f.inspectionHook = null; f.stop(engine) }
+        }
+    }
+
+    @Test fun `late folder inspection cannot confirm old organization after the account generation is paused`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf()
+            val root = f.root.resolve("journals")
+            val registry = NativeTripAlbumRegistry(root)
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            f.savedPath = registry.resolve(f.context.scope, f.context.metadata).relativePath!!
+            NativeTransferJournal(NativeTripAlbumPaths.directory(f.context.scope, root)).put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant).put("photoOrganization", "PENDING"))
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.inspectionHook = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val engine = f.engine()
+            try {
+                engine.activate().get(5, TimeUnit.SECONDS)
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val stopped = engine.stop()
+                release.countDown(); stopped.get(5, TimeUnit.SECONDS)
+                assertEquals("PENDING", f.persistedWork()!!.optionalString("photoOrganization"))
+                assertEquals(0, f.organizationCalls); assertTrue(f.verifiedLocalIds.isEmpty())
+            } finally { release.countDown(); f.inspectionHook = null }
+        }
+    }
+
+    @Test fun `dedicated album retry is trip fenced and changes no original backoff or HTTP state`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf()
+            val root = f.root.resolve("journals")
+            val registry = NativeTripAlbumRegistry(root)
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            val directory = NativeTripAlbumPaths.directory(f.context.scope, root)
+            val journal = NativeTransferJournal(directory)
+            journal.put(JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant).put("photoOrganization", "FAILED").put("organizationRetryAt", Instant.now().plusSeconds(300).toString()))
+            val uploadId = "01990000-0000-4000-8000-000000000088"
+            val original = JSONObject().put("workId", uploadId).put("assetId", uploadId).put("tripId", f.trip).put("sourceLocalId", "source")
+                .put("capturedAt", Instant.now().toString()).put("complete", false).put("etags", JSONObject()).put("retryAttempts", 4)
+                .put("nextAttemptAt", Instant.now().plusSeconds(300).toString()).put("blocker", "INTEGRITY_FAILURE")
+            journal.put(original)
+            val engine = f.engine()
+            assertThrows(java.util.concurrent.ExecutionException::class.java) { engine.retryPhotoOrganization("01990000-0000-7000-8000-000000000099").get(5, TimeUnit.SECONDS) }
+            assertEquals("FAILED", NativeTransferJournal(directory).record(f.delivery)!!.getString("photoOrganization"))
+            engine.retryPhotoOrganization(f.trip).get(5, TimeUnit.SECONDS)
+            assertEquals("READY", NativeTransferJournal(directory).record(f.delivery)!!.getString("photoOrganization"))
+            assertEquals(original.toString(), NativeTransferJournal(directory).record(uploadId)!!.toString())
+            assertTrue(engine.snapshot().get()["paused"] as Boolean)
+            assertTrue(f.jsonCalls.isEmpty()); assertEquals(0, f.saves); assertEquals(0, f.downloads); assertEquals(0, f.receipts)
+        }
+    }
+
+    @Test fun `queued old account album retry cannot reset a new account journal even for the same trip id`() {
+        Fixture().use { f ->
+            f.saved = f.source.copyOf()
+            val root = f.root.resolve("journals")
+            val registry = NativeTripAlbumRegistry(root)
+            registry.register(f.context.scope, f.context.metadata, "Wedding"); f.albums = registry
+            val firstScope = f.context.scope
+            fun savedWork() = JSONObject().put("workId", f.delivery).put("assetId", f.asset).put("tripId", f.trip)
+                .put("deliveryId", f.delivery).put("capturedAt", Instant.now().toString()).put("complete", true).put("etags", JSONObject())
+                .put("savedLocalId", "saved").put("downloadBody", f.grant).put("photoOrganization", "FAILED")
+                .put("organizationRetryAt", Instant.now().plusSeconds(300).toString())
+            NativeTransferJournal(NativeTripAlbumPaths.directory(firstScope, root)).put(savedWork())
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            f.inspectionHook = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+            val fence = NativeTransferCommandFence()
+            val captured = fence.current()
+            val engine = f.engine()
+            try {
+                val holding = engine.retryPhotoOrganization(f.trip) { fence.matches(captured) }
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                val queued = engine.retryPhotoOrganization(f.trip) { fence.matches(captured) }
+                val next = f.context.copy(scope = NativeKeyScope("b".repeat(64), "installation-other"),
+                    session = f.context.session.copy(deviceId = "01990000-0000-4000-8000-000000000077"))
+                val nextDirectory = NativeTripAlbumPaths.directory(next.scope, root)
+                val newWork = savedWork()
+                NativeTransferJournal(nextDirectory).put(newWork)
+                val before = File(nextDirectory, "journal.json").readText()
+                fence.advance()
+                f.context = next
+                release.countDown()
+                for (pending in listOf(holding, queued)) {
+                    val failure = assertThrows(Exception::class.java) { pending.get(5, TimeUnit.SECONDS) }
+                    assertTrue((failure.cause ?: failure) is java.util.concurrent.CancellationException)
+                }
+                assertEquals(before, File(nextDirectory, "journal.json").readText())
+                assertEquals("FAILED", NativeTransferJournal(nextDirectory).record(f.delivery)!!.getString("photoOrganization"))
+                assertEquals(0, f.organizationCalls); assertTrue(f.verifiedLocalIds.isEmpty()); assertTrue(f.jsonCalls.isEmpty())
+            } finally { release.countDown(); f.inspectionHook = null }
+        }
+    }
     private class Fixture : AutoCloseable {
         val provider = VerifiedSodiumProvider.open()
         val crypto = NativePhotoCrypto(provider.sodium)
@@ -668,13 +930,20 @@ class NativePhotoTransferEngineTest {
         var commits = 0
         var downloads = 0
         var saves = 0
+        var albums: NativeTripAlbumRegistry? = null
+        var savedPath = NativeTripAlbumPaths.LEGACY
+        var organizationFails = false
+        var organizationCalls = 0
+        var inspectionHook: (() -> Unit)? = null
         var receipts = 0
         val receiptCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
         val acceptedReceiptCommands = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val jsonCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
         val downloadedUrls = java.util.concurrent.CopyOnWriteArrayList<String>()
         val downloadGrantCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
         val verifiedLocalIds = java.util.concurrent.CopyOnWriteArrayList<String>()
         var saved: ByteArray? = null
+        var savedPublished = true
         var savedHook: (() -> Unit)? = null
         var originalDownloadHook: (() -> Unit)? = null
         var originalDownloadBody: ((String, File, Long) -> Unit)? = null
@@ -728,9 +997,28 @@ class NativePhotoTransferEngineTest {
             override fun preview(source: File, destination: File): PhotoMetadata {
                 destination.writeBytes(byteArrayOf(1, 2, 3)); return PhotoMetadata("image/jpeg", 3u, 1u)
             }
-            override fun findSaved(assetId: String) = if (saved == null) null else "saved"
-            override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, allocated: (String) -> Unit): String {
-                allocated("saved"); saves++; saved = source.readBytes(); savedHook?.invoke(); return "saved"
+            override fun findSaved(assetId: String) = if (saved == null || !savedPublished) null else "saved"
+            override fun isPublished(localId: String): Boolean {
+                if (localId == "saved" && saved == null) throw PhotoLibraryException("SOURCE_MISSING")
+                return localId != "saved" || savedPublished
+            }
+            override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, relativePath: String, allocated: (String) -> Unit): String {
+                allocated("saved"); saves++; savedPath = relativePath; saved = source.readBytes(); savedPublished = true; savedHook?.invoke(); return "saved"
+            }
+            override fun organizeSaved(localId: String, relativePath: String): PhotoOrganizationResult {
+                organizationCalls++
+                if (organizationFails) throw IOException("folder unavailable")
+                if (savedPath != NativeTripAlbumPaths.LEGACY && savedPath != relativePath) return PhotoOrganizationResult.USER_MANAGED
+                savedPath = relativePath
+                return PhotoOrganizationResult.ORGANIZED
+            }
+            override fun inspectOrganization(localId: String, relativePath: String): NativePhotoOrganizationAction {
+                inspectionHook?.invoke()
+                return when {
+                    savedPath == relativePath -> NativePhotoOrganizationAction.ALREADY_ORGANIZED
+                    savedPath != NativeTripAlbumPaths.LEGACY -> NativePhotoOrganizationAction.USER_MANAGED
+                    else -> NativePhotoOrganizationAction.MOVE
+                }
             }
             override fun verify(localId: String, bytes: Long, checksum: ByteArray) {
                 val actual = if (localId == "source") source else saved ?: throw PhotoLibraryException("SOURCE_MISSING")
@@ -801,7 +1089,15 @@ class NativePhotoTransferEngineTest {
         val connectionPolicies = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
         fun engine(): NativePhotoTransferEngine = NativePhotoTransferEngine(root.resolve("journals"), {
             if (!contextAvailable) null else context.copy(session = context.session.copy(backgroundBearer = context.session.backgroundBearer.copyOf()), tripKey = key.copyOf())
-        }, photos, crypto, { cellular -> connectionPolicies.add(cellular); network }, {},
+        }, photos, crypto, { cellular ->
+            connectionPolicies.add(cellular)
+            object : NativePhotoTransportPort by network {
+                override fun json(path: String, method: String, body: JSONObject?, context: NativeMediaContext, commandId: String): JSONObject {
+                    jsonCalls.add(path)
+                    return network.json(path, method, body, context, commandId)
+                }
+            }
+        }, {},
             expiredTrips = { retentionScanHook?.invoke(); retentionTrips },
             purgeTripKey = { expired, cleanup ->
                 if (!retentionCandidateCurrent) false else {
@@ -813,6 +1109,7 @@ class NativePhotoTransferEngineTest {
                 }
             },
             nextRetentionDeadline = { retentionTrips.minOfOrNull { it.deadline } },
+            albums = albums,
         ).also(engines::add)
         fun start(engine: NativePhotoTransferEngine) {
             val completed = if (discover) commits else receipts

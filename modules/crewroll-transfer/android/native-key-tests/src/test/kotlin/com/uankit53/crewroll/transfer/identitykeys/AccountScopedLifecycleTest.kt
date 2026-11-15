@@ -71,6 +71,45 @@ class AccountScopedLifecycleTest {
     }
   }
 
+
+  @Test fun `album registration runs only after authenticated import and before trip activation without extra protected reads`() {
+    val f = compositeCase(false)
+    val expected = NativeKeyScope(hashA, f.identity.installationId)
+    val events = mutableListOf<String>()
+    f.disk.reads = 0
+    val context = f.subject.importAndActivateTrip(f.command) { scope, metadata ->
+      assertEquals(expected, scope)
+      assertEquals(f.metadata, metadata)
+      assertNotNull(f.store.loadTrip(scope, tripA)?.also { it.key.fill(0) })
+      assertNull(f.store.activeSelection(), "album registration precedes selected trip exposure")
+      events.add("album")
+    }
+    context.erase()
+    assertEquals(listOf("album"), events)
+    assertEquals(1, f.disk.reads)
+    assertEquals(tripA, f.subject.mediaContext()!!.let { try { it.metadata.tripId } finally { it.erase() } })
+
+    val invalid = compositeCase(false)
+    var registered = false
+    val envelope = NativeCommandDecoder.objectValue(invalid.command, "envelope") + ("wrappedKey" to "A".repeat(200))
+    assertThrows(NativeKeyException::class.java) {
+      invalid.subject.importAndActivateTrip(invalid.command + ("envelope" to envelope)) { _, _ -> registered = true }
+    }
+    assertFalse(registered)
+    assertNull(invalid.store.activeSelection())
+  }
+
+  @Test fun `album command validates closed nested metadata and retains original crypto tuple validation`() {
+    val f = compositeCase(false)
+    val valid = f.command + ("album" to mapOf("tripName" to "🧡".repeat(80)))
+    NativeCommandDecoder.require(valid, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM)
+    for (album in listOf(mapOf("tripName" to "x", "path" to "DCIM/Camera"), mapOf("tripName" to "x".repeat(81)), mapOf("tripName" to "\uD800"))) {
+      assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(f.command + ("album" to album), NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) }
+    }
+    val mismatched = NativeCommandDecoder.objectValue(f.command, "activation") + ("tripId" to tripB)
+    assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(valid + ("activation" to mismatched), NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) }
+    assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(valid + ("extra" to true), NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) }
+  }
   private fun startupComposite(wrapped: String, metadata: ActiveTripMetadata): Map<String, Any?> = mapOf(
     "protocolVersion" to 1,
     "envelope" to mapOf("protocolVersion" to 1, "tripId" to metadata.tripId, "keyEpoch" to metadata.keyEpoch,
@@ -1188,7 +1227,7 @@ private class StartupEngineProbe(private val media: NativeMediaSession, lifecycl
     override fun exportOriginal(localId: String, destination: File): PhotoMetadata = error("no synthetic capture")
     override fun preview(source: File, destination: File): PhotoMetadata = error("no synthetic preview")
     override fun findSaved(assetId: String): String? = null
-    override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, allocated: (String) -> Unit): String = error("no synthetic save")
+    override fun save(source: File, assetId: String, capturedAt: Instant?, mime: String, relativePath: String, allocated: (String) -> Unit): String = error("no synthetic save")
     override fun verify(localId: String, bytes: Long, checksum: ByteArray) { error("no synthetic verify") }
   }
   private val network = object : NativePhotoTransportPort {

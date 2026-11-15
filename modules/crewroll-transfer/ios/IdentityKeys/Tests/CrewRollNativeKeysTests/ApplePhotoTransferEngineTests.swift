@@ -5,6 +5,126 @@ import XCTest
 @testable import CrewRollNativeKeys
 
 final class ApplePhotoTransferEngineTests: XCTestCase {
+    func testDedicatedAlbumRetryUsesNoKeysTransportOrPhotoSaveAndRejectsWrongTrip() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        fixture.photos.bytes = fixture.plaintext
+        let assetID = try XCTUnwrap(fixture.network.previewGrant?.assetId)
+        var saved = NativePhotoWork(workID: UUID().uuidString.lowercased(), assetID: assetID,
+            tripID: fixture.context.metadata.tripID, capturedAt: Date(), sourceLocalID: nil, deliveryID: UUID().uuidString.lowercased())
+        saved.savedLocalID = "saved-placeholder"; saved.complete = true; saved.downloadBody = fixture.network.grant
+        try fixture.ledger().put(saved)
+        let registry = NativeTripAlbumRegistry(root: fixture.root)
+        registry.register(scope: fixture.context.scope, metadata: fixture.context.metadata, name: "Wedding")
+        let albumLibrary = TestTripAlbumLibrary(); albumLibrary.failCreation = true
+        let entered = expectation(description: "Original transport remains suspended")
+        var response: CheckedContinuation<Data, Never>?
+        fixture.network.pendingPageOverride = { _ in
+            await withCheckedContinuation { response = $0; entered.fulfill() }
+        }
+        let engine = fixture.engine(albumOrganizer: NativeTripPhotoOrganizer(registry: registry, library: albumLibrary)) {}
+        await engine.activate()
+        await fulfillment(of: [entered], timeout: 5)
+        do {
+            try await eventually { registry.snapshot(scope: fixture.context.scope, tripID: fixture.context.metadata.tripID)?["state"] as? String == "FAILED" }
+            do {
+                try await engine.retryPhotoOrganization(tripID: "01990000-0000-7000-8000-000000000099")
+                XCTFail("a different trip must not change organization")
+            } catch { XCTAssertEqual(error as? NativeKeyError, .invalidState) }
+            XCTAssertEqual(albumLibrary.creations, 0)
+            albumLibrary.failCreation = false
+            var readsDuringRetry: [Int] = []
+            try await engine.retryPhotoOrganization(tripID: fixture.context.metadata.tripID, ifCurrent: {
+                readsDuringRetry.append(fixture.contextReads); return true
+            })
+            XCTAssertEqual(Set(readsDuringRetry).count, 1, "local retry must not load keys again")
+            try await eventually { registry.snapshot(scope: fixture.context.scope, tripID: fixture.context.metadata.tripID)?["state"] as? String == "READY" }
+            XCTAssertEqual(fixture.network.pendingPaths.count, 1)
+            XCTAssertEqual(fixture.network.downloads, 0)
+            XCTAssertEqual(fixture.network.uploads, 0)
+            XCTAssertEqual(fixture.network.receipts, 0)
+            XCTAssertEqual(fixture.photos.saves, 0)
+            XCTAssertEqual(albumLibrary.linkedAssets, ["saved-placeholder"])
+        } catch {
+            response?.resume(returning: Data("{\"items\":[]}".utf8)); response = nil
+            await engine.stop(); throw error
+        }
+        response?.resume(returning: Data("{\"items\":[]}".utf8)); response = nil
+        await engine.stop()
+        do {
+            try await engine.retryPhotoOrganization(tripID: fixture.context.metadata.tripID)
+            XCTFail("paused policy must invalidate local retry admission")
+        } catch { XCTAssertEqual(error as? NativeKeyError, .invalidState) }
+    }
+
+    func testOwnCameraOriginalIsOrganizedByReferenceWithoutSavingAnotherPhoto() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        fixture.photos.sourceBytes = fixture.plaintext; fixture.network.outgoing = true
+        let registry = NativeTripAlbumRegistry(root: fixture.root)
+        registry.register(scope: fixture.context.scope, metadata: fixture.context.metadata, name: "Wedding")
+        let albumLibrary = TestTripAlbumLibrary()
+        let engine = fixture.engine(albumOrganizer: NativeTripPhotoOrganizer(registry: registry, library: albumLibrary)) {}
+        await engine.activate()
+        try await eventually { fixture.network.commits == 1 && albumLibrary.linkedAssets.contains("camera-source") }
+        await engine.stop()
+        XCTAssertEqual(fixture.photos.saves, 0)
+        XCTAssertEqual(fixture.network.receipts, 0)
+        XCTAssertEqual(fixture.network.uploads, 2)
+        XCTAssertEqual(albumLibrary.linkedAssets, ["camera-source"])
+    }
+
+    func testAlbumFailureDoesNotBlockOriginalHashReceiptOrResaveOnOrganizationRetry() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let registry = NativeTripAlbumRegistry(root: fixture.root)
+        registry.register(scope: fixture.context.scope, metadata: fixture.context.metadata, name: "Wedding")
+        let albumLibrary = TestTripAlbumLibrary(); albumLibrary.failCreation = true
+        let organizer = NativeTripPhotoOrganizer(registry: registry, library: albumLibrary)
+        let engine = fixture.engine(albumOrganizer: organizer) {}
+        await engine.activate()
+        try await eventually {
+            guard fixture.network.receipts == 1, try fixture.readWorks().first?.complete == true else { return false }
+            return try await (engine.snapshot()["photoOrganization"] as? [String: Any])?["state"] as? String == "FAILED"
+        }
+        await engine.stop()
+        XCTAssertEqual(fixture.photos.saves, 1)
+        XCTAssertEqual(fixture.photos.bytes, fixture.plaintext)
+        XCTAssertNil(try fixture.readWorks().first?.blocker)
+        albumLibrary.failCreation = false
+        let reopened = NativeTripAlbumRegistry(root: fixture.root)
+        let recovered = fixture.engine(albumOrganizer: NativeTripPhotoOrganizer(registry: reopened, library: albumLibrary)) {}
+        await recovered.activate()
+        try await eventually {
+            try await (recovered.snapshot()["photoOrganization"] as? [String: Any])?["state"] as? String == "READY"
+        }
+        await recovered.stop()
+        XCTAssertEqual(albumLibrary.linkedAssets, ["saved-placeholder"])
+        XCTAssertEqual(fixture.photos.saves, 1)
+        XCTAssertEqual(fixture.network.downloads, 1)
+        XCTAssertEqual(fixture.network.receipts, 1)
+    }
+
+    func testPauseWaitsForAcceptedAlbumCreationAndFencesItsLaterMembership() async throws {
+        let fixture = try TransferFixture(); defer { fixture.cleanup() }
+        let registry = NativeTripAlbumRegistry(root: fixture.root)
+        registry.register(scope: fixture.context.scope, metadata: fixture.context.metadata, name: "Wedding")
+        let albumLibrary = TestTripAlbumLibrary(); albumLibrary.suspendCreation = true
+        let entered = expectation(description: "Album transaction accepted")
+        albumLibrary.onCreate = { entered.fulfill() }
+        let engine = fixture.engine(albumOrganizer: NativeTripPhotoOrganizer(registry: registry, library: albumLibrary)) {}
+        await engine.activate()
+        await fulfillment(of: [entered], timeout: 5)
+        let completion = CompletionFlag()
+        let stopped = Task { await engine.stop(); await completion.mark() }
+        for _ in 0..<1000 {
+            if try await engine.snapshot()["paused"] as? Bool == true { break }
+            await Task.yield()
+        }
+        let completedEarly = await completion.completed
+        XCTAssertFalse(completedEarly)
+        albumLibrary.resumeCreation(); await stopped.value
+        XCTAssertTrue(albumLibrary.linkedAssets.isEmpty)
+        XCTAssertEqual(fixture.photos.saves, 1)
+    }
+
     func testStaleForegroundDeliveryCannotOverwriteNewerBackgroundVisibility() async throws {
         let fixture = try TransferFixture(); defer { fixture.cleanup() }
         let engine = fixture.engine {}
@@ -852,8 +972,9 @@ private final class TransferFixture {
         network.previewGrant = NativePreviewGrant(assetId: assetID, expiresAt: "2026-12-01T00:00:00Z", encryptedManifest: Data(manifest).base64EncodedString(), object: .init(variant: "PREVIEW", url: "https://objects.example/preview", ciphertextBytes: String(preview.ciphertextBytes), checksumSha256: Data(preview.ciphertextSHA256).base64EncodedString()))
     }
     var connectionPolicies: [Bool] = []
-    func engine(_ invalidated: @escaping () -> Void) -> ApplePhotoTransferEngine {
-        ApplePhotoTransferEngine(root: root, contextProvider: { self.context }, invalidated: { _ in invalidated() }, library: photos, transportFactory: { cellular in self.connectionPolicies.append(cellular); return self.network })
+    var contextReads = 0
+    func engine(albumOrganizer: NativeTripPhotoOrganizer? = nil, _ invalidated: @escaping () -> Void) -> ApplePhotoTransferEngine {
+        ApplePhotoTransferEngine(root: root, contextProvider: { self.contextReads += 1; return self.context }, invalidated: { _ in invalidated() }, library: photos, transportFactory: { cellular in self.connectionPolicies.append(cellular); return self.network }, albumOrganizer: albumOrganizer)
     }
     func ledger() throws -> NativeTransferJournal { try NativeTransferJournal(directory: root.appendingPathComponent(context.scope.accountHash + "." + context.scope.installationID)) }
     func readWorks() throws -> [NativePhotoWork] {

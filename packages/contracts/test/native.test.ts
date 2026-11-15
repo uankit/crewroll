@@ -14,6 +14,7 @@ import {
   EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
   ImportAndActivateTripCommandSchema,
+  ImportAndActivateTripWithAlbumCommandSchema,
   PrepareDeviceSessionCommandSchema,
   PreparedDeviceSessionSchema,
   InstallDeviceSessionCommandSchema,
@@ -21,6 +22,7 @@ import {
   ReconcileNowCommandSchema,
   RefreshDeviceSessionCommandSchema,
   RetryCommandSchema,
+  RetryPhotoOrganizationCommandSchema,
   RevisionInvalidationSchema,
   SetTransferPolicyCommandSchema,
   WrapTripKeyCommandSchema,
@@ -382,6 +384,27 @@ describe("native bridge protocol", () => {
       nextCursor: null,
     };
     expect(Value.Check(DurableEngineSnapshotSchema, snapshot)).toBe(true);
+    for (const state of ["PENDING", "READY", "FAILED"])
+      expect(
+        Value.Check(DurableEngineSnapshotSchema, {
+          ...snapshot,
+          photoOrganization: { state, pendingCount: 1, failedCount: 0 },
+        }),
+      ).toBe(true);
+    for (const photoOrganization of [
+      { state: "SAVED", pendingCount: 0, failedCount: 0 },
+      { state: "READY", pendingCount: -1, failedCount: 0 },
+      { state: "READY", pendingCount: 0, failedCount: 0.5 },
+      { state: "FAILED", pendingCount: 0, failedCount: 1, cause: "private" },
+      { state: "READY" },
+    ])
+      expect(
+        Value.Check(DurableEngineSnapshotSchema, {
+          ...snapshot,
+          photoOrganization,
+        }),
+      ).toBe(false);
+
     expect(Value.Check(AssetPageSchema, page)).toBe(true);
     expect(
       Value.Check(RevisionInvalidationSchema, {
@@ -478,12 +501,55 @@ it("requires closed nested import/activation commands without changing either ex
     },
   };
   expect(Value.Check(ImportAndActivateTripCommandSchema, command)).toBe(true);
+  const albumCommand = { ...command, album: { tripName: "Jodhpur 👰" } };
+  expect(
+    Value.Check(ImportAndActivateTripWithAlbumCommandSchema, albumCommand),
+  ).toBe(true);
+  for (const tripName of ["界".repeat(80), "👰".repeat(80), "Trip / Camera"])
+    expect(
+      Value.Check(ImportAndActivateTripWithAlbumCommandSchema, {
+        ...albumCommand,
+        album: { tripName },
+      }),
+    ).toBe(true);
+  for (const invalid of [
+    command,
+    { ...albumCommand, extra: true },
+    { ...albumCommand, album: { tripName: "" } },
+    { ...albumCommand, album: { tripName: "👰".repeat(81) } },
+    { ...albumCommand, album: { tripName: "\uD800" } },
+    { ...albumCommand, album: { tripName: "Trip", directory: "/Camera" } },
+    {
+      ...albumCommand,
+      activation: { ...command.activation, tripName: "Trip" },
+    },
+    { ...albumCommand, envelope: { ...command.envelope, tripName: "Trip" } },
+  ])
+    expect(
+      Value.Check(ImportAndActivateTripWithAlbumCommandSchema, invalid),
+    ).toBe(false);
+
   for (const invalid of [
     { ...command, extra: true },
     { ...command, envelope: { ...command.envelope, privateKey: "private" } },
     { ...command, activation: { ...command.activation, keyEpoch: 2 } },
   ])
     expect(Value.Check(ImportAndActivateTripCommandSchema, invalid)).toBe(
+      false,
+    );
+});
+
+it("keeps album retry closed and separate from original transfer commands", () => {
+  const command = { protocolVersion: 1, tripId };
+  expect(Value.Check(RetryPhotoOrganizationCommandSchema, command)).toBe(true);
+  for (const invalid of [
+    { protocolVersion: 1 },
+    { ...command, protocolVersion: 2 },
+    { ...command, tripId: deviceId.replace("7d1a", "4d1a") },
+    { ...command, workId: deviceId },
+    { ...command, resetBackoff: true },
+  ])
+    expect(Value.Check(RetryPhotoOrganizationCommandSchema, invalid)).toBe(
       false,
     );
 });

@@ -120,6 +120,7 @@ describe("CrewRoll native transfer boundary", () => {
       "getActiveTripSelection",
       "getSnapshot",
       "importAndActivateTrip",
+      "importAndActivateTripWithAlbum",
       "importTripKey",
       "installDeviceSession",
       "listAssets",
@@ -128,6 +129,7 @@ describe("CrewRoll native transfer boundary", () => {
       "refreshDeviceSession",
       "restoreDeviceSession",
       "retry",
+      "retryPhotoOrganization",
       "setTransferPolicy",
       "subscribeToInvalidations",
       "subscribeToPushHints",
@@ -1141,5 +1143,231 @@ describe("metadata-only selected trip capability", () => {
       ),
     ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
     expect(getSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("optional trip album composite boundary", () => {
+  const command = { ...combinedCommand, album: { tripName: "Jodhpur 👰" } };
+  it("discovers lazily and permits fallback only for an absent capability", () => {
+    const load = jest.fn(() => nativeModule().module);
+    const port = createCrewRollTransferPort(load);
+    expect(load).not.toHaveBeenCalled();
+    expect(port.importAndActivateTripWithAlbum).toBeUndefined();
+    for (const malformed of [null, false, {}, "available"])
+      expect(
+        () =>
+          createCrewRollTransferPort(
+            () =>
+              nativeModule({ importAndActivateTripWithAlbum: malformed })
+                .module,
+          ).importAndActivateTripWithAlbum,
+      ).toThrow(CrewRollTransferProtocolError);
+  });
+  it("validates closed album/context data before dispatch and preserves native receiver", async () => {
+    const operation = jest.fn(async function (
+      this: CrewRollTransferNativeModule,
+    ) {
+      expect(this).toBe(module);
+    });
+    const { module } = nativeModule({
+      importAndActivateTripWithAlbum: operation,
+    });
+    const port = createCrewRollTransferPort(() => module);
+    const getter = jest.fn(() => {
+      throw new Error("private accessor");
+    });
+    for (const invalid of [
+      { ...command, extra: true },
+      { ...command, album: { tripName: "Trip", path: "/Camera" } },
+      { ...command, album: { tripName: "👰".repeat(81) } },
+      {
+        ...command,
+        activation: {
+          ...command.activation,
+          tripId: "0191a203-227b-7011-9213-141516171819",
+        },
+      },
+      {
+        ...command,
+        activation: {
+          ...command.activation,
+          endsAt: "2026-09-29T12:00:00.000Z",
+        },
+      },
+      {
+        ...command,
+        album: Object.defineProperty({}, "tripName", {
+          enumerable: true,
+          get: getter,
+        }),
+      },
+    ])
+      await expect(
+        port.importAndActivateTripWithAlbum!(invalid as typeof command),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    expect(getter).not.toHaveBeenCalled();
+    expect(operation).not.toHaveBeenCalled();
+    await port.importAndActivateTripWithAlbum!(command);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(operation).toHaveBeenCalledWith(command);
+  });
+  it.each([false, {}, "done"])(
+    "rejects malformed present completion %#",
+    async (result) => {
+      const port = createCrewRollTransferPort(
+        () =>
+          nativeModule({ importAndActivateTripWithAlbum: async () => result })
+            .module,
+      );
+      await expect(
+        port.importAndActivateTripWithAlbum!(command),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    },
+  );
+  it("maps only a finite own activation code without evaluating getters or exposing causes", async () => {
+    const getter = jest.fn(() => "ERR_CREWROLL_TRIP_ACTIVATION");
+    const failure = Object.defineProperty(
+      new Error("private message"),
+      "code",
+      { get: getter },
+    );
+    const port = createCrewRollTransferPort(
+      () =>
+        nativeModule({
+          importAndActivateTripWithAlbum: async () => {
+            throw failure;
+          },
+        }).module,
+    );
+    await expect(port.importAndActivateTripWithAlbum!(command)).rejects.toBe(
+      failure,
+    );
+    expect(getter).not.toHaveBeenCalled();
+    const late = Object.assign(new Error("private message"), {
+      code: "ERR_CREWROLL_TRIP_ACTIVATION",
+      cause: "private",
+    });
+    const classified = createCrewRollTransferPort(
+      () =>
+        nativeModule({
+          importAndActivateTripWithAlbum: async () => {
+            throw late;
+          },
+        }).module,
+    );
+    const error: unknown = await classified.importAndActivateTripWithAlbum!(
+      command,
+    ).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ImportedTripActivationFailed);
+    expect(error).not.toHaveProperty("cause");
+    expect(String(error)).not.toContain("private");
+  });
+});
+
+it("keeps optional photo organization separate from original transfer counts and rejects malformed status", async () => {
+  const photoOrganization = {
+    state: "FAILED",
+    pendingCount: 0,
+    failedCount: 1,
+  } as const;
+  const port = createCrewRollTransferPort(
+    () =>
+      nativeModule({
+        getSnapshot: async () => ({ ...inactiveSnapshot, photoOrganization }),
+      }).module,
+  );
+  await expect(port.getSnapshot()).resolves.toEqual({
+    ...inactiveSnapshot,
+    photoOrganization,
+  });
+  for (const invalid of [
+    { ...photoOrganization, state: "SAVED" },
+    { ...photoOrganization, failedCount: -1 },
+    { ...photoOrganization, privatePath: "private" },
+  ]) {
+    const malformed = createCrewRollTransferPort(
+      () =>
+        nativeModule({
+          getSnapshot: async () => ({
+            ...inactiveSnapshot,
+            photoOrganization: invalid,
+          }),
+        }).module,
+    );
+    await expect(malformed.getSnapshot()).rejects.toBeInstanceOf(
+      CrewRollTransferProtocolError,
+    );
+  }
+});
+
+describe("local-only photo organization retry", () => {
+  const command = { protocolVersion: 1, tripId } as const;
+  it("exposes only an available native capability and dispatches only its closed local command", async () => {
+    const load = jest.fn(() => nativeModule().module);
+    const absent = createCrewRollTransferPort(load);
+    expect(load).not.toHaveBeenCalled();
+    expect(absent.retryPhotoOrganization).toBeUndefined();
+    for (const malformed of [null, false, {}, "retry"])
+      expect(
+        () =>
+          createCrewRollTransferPort(
+            () => nativeModule({ retryPhotoOrganization: malformed }).module,
+          ).retryPhotoOrganization,
+      ).toThrow(CrewRollTransferProtocolError);
+    const operation = jest.fn(async function (
+      this: CrewRollTransferNativeModule,
+    ) {
+      expect(this).toBe(module);
+    });
+    const calls = { retry: jest.fn(), reconcileNow: jest.fn() };
+    const { module } = nativeModule({
+      ...calls,
+      retryPhotoOrganization: operation,
+    });
+    const port = createCrewRollTransferPort(() => module);
+    for (const invalid of [
+      { ...command, workId },
+      { ...command, resetBackoff: true },
+      { protocolVersion: 1 },
+      { ...command, tripId: deviceId.replace("7d1a", "4d1a") },
+    ])
+      await expect(
+        port.retryPhotoOrganization!(invalid as typeof command),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+    expect(operation).not.toHaveBeenCalled();
+    await port.retryPhotoOrganization!(command);
+    expect(operation).toHaveBeenCalledWith(command);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(calls.retry).not.toHaveBeenCalled();
+    expect(calls.reconcileNow).not.toHaveBeenCalled();
+  });
+  it("rejects malformed completion or a native failure without invoking transfer retry", async () => {
+    for (const result of [false, {}, "done"]) {
+      const calls = { retry: jest.fn(), reconcileNow: jest.fn() };
+      const { module } = nativeModule({
+        ...calls,
+        retryPhotoOrganization: async () => result,
+      });
+      await expect(
+        createCrewRollTransferPort(() => module).retryPhotoOrganization!(
+          command,
+        ),
+      ).rejects.toBeInstanceOf(CrewRollTransferProtocolError);
+      expect(calls.retry).not.toHaveBeenCalled();
+      expect(calls.reconcileNow).not.toHaveBeenCalled();
+    }
+    const failure = new Error("organization failed");
+    const calls = { retry: jest.fn(), reconcileNow: jest.fn() };
+    const { module } = nativeModule({
+      ...calls,
+      retryPhotoOrganization: async () => {
+        throw failure;
+      },
+    });
+    await expect(
+      createCrewRollTransferPort(() => module).retryPhotoOrganization!(command),
+    ).rejects.toBe(failure);
+    expect(calls.retry).not.toHaveBeenCalled();
+    expect(calls.reconcileNow).not.toHaveBeenCalled();
   });
 });

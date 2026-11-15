@@ -27,6 +27,7 @@ final class CrewRollAppleRuntime {
         let value = try CrewRollAppleRuntime(); instance = value; return value
     }
     let lifecycle: NativeKeyLifecycle
+    let albumRegistry: NativeTripAlbumRegistry
     private let engineResource: NativeLazyResource<ApplePhotoTransferEngine>
     private let retentionWork = NativeMaintenanceWorkQueue()
     var engine: ApplePhotoTransferEngine { engineResource.get() }
@@ -44,10 +45,12 @@ final class CrewRollAppleRuntime {
         let lifecycle = try AppleNativeKeyInfrastructure.makeLifecycle()
         self.lifecycle = lifecycle
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let albumRegistry = NativeTripAlbumRegistry(root: support.appendingPathComponent("CrewRollTransfers"))
+        self.albumRegistry = albumRegistry
         engineResource = NativeLazyResource {
             ApplePhotoTransferEngine(root: support.appendingPathComponent("CrewRollTransfers"), contextProvider: { try lifecycle.mediaContext() }, invalidated: { revision in
                 NotificationCenter.default.post(name: .crewRollEngineInvalidated, object: nil, userInfo: ["revision": revision])
-            }, expiredTrips: { try lifecycle.expiredTrips() }, nextRetentionDeadline: { try lifecycle.nextTripRetentionDeadline() }, purgeExpiredKey: { trip, cleanup in try lifecycle.purgeExpiredTrip(trip, beforeKeyRemoval: cleanup) })
+            }, expiredTrips: { try lifecycle.expiredTrips() }, nextRetentionDeadline: { try lifecycle.nextTripRetentionDeadline() }, purgeExpiredKey: { trip, cleanup in try lifecycle.purgeExpiredTrip(trip, beforeKeyRemoval: cleanup) }, albumRegistry: albumRegistry)
         }
         // Replace the retired Wi-Fi-only preference, preserving sign-out and
         // the account-scoped journal. New activations also enable all networks.

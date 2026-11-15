@@ -124,3 +124,74 @@ it("does not advertise a combined operation on an older binary", () => {
     createPreparedTripNative(harness()).importAndActivateTrip,
   ).toBeUndefined();
 });
+
+it("confirms album import and activation together across polling without extra key commands", async () => {
+  const native = {
+    ...harness(),
+    importAndActivateTrip: jest.fn().mockResolvedValue(undefined),
+    importAndActivateTripWithAlbum: jest.fn().mockResolvedValue(undefined),
+  };
+  const prepared = createPreparedTripNative(native);
+  const combined = {
+    protocolVersion: 1,
+    envelope: {
+      protocolVersion: 1,
+      tripId: command.tripId,
+      keyEpoch: 1,
+      algorithmVersion: 1,
+      expectedSenderDeviceId: command.membershipId,
+      recipientDeviceId: command.membershipId,
+      recipientE2eeKeyVersion: 1,
+      endsAt: command.endsAt,
+      wrappedKey: Buffer.alloc(148, 9).toString("base64"),
+    },
+    activation: command,
+    album: { tripName: "Jodhpur" },
+  } as const;
+  await Promise.all(
+    Array.from({ length: 100 }, () =>
+      prepared.importAndActivateTripWithAlbum!(combined),
+    ),
+  );
+  await prepared.importTripKey(combined.envelope);
+  await prepared.activateTrip(command);
+  expect(native.importAndActivateTripWithAlbum).toHaveBeenCalledTimes(1);
+  expect(native.importTripKey).not.toHaveBeenCalled();
+  expect(native.activateTrip).not.toHaveBeenCalled();
+  await prepared.importAndActivateTripWithAlbum!({
+    ...combined,
+    album: { tripName: "Bikaner" },
+  });
+  expect(native.importAndActivateTripWithAlbum).toHaveBeenCalledTimes(2);
+  await prepared.activateTrip({
+    ...command,
+    membershipId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3151",
+  });
+  await prepared.importAndActivateTripWithAlbum!(combined);
+  expect(native.importAndActivateTripWithAlbum).toHaveBeenCalledTimes(3);
+  native.importAndActivateTripWithAlbum.mockRejectedValueOnce(
+    new Error("album metadata not saved"),
+  );
+  const changed = { ...combined, album: { tripName: "Another trip" } };
+  await expect(
+    prepared.importAndActivateTripWithAlbum!(changed),
+  ).rejects.toThrow("album metadata not saved");
+  await prepared.importAndActivateTripWithAlbum!(changed);
+  expect(native.importAndActivateTripWithAlbum).toHaveBeenCalledTimes(5);
+  const separateComposite = {
+    ...combined,
+    activation: {
+      ...command,
+      membershipId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3151",
+    },
+  };
+  await prepared.importAndActivateTrip!(separateComposite);
+  await prepared.importAndActivateTripWithAlbum!({
+    ...separateComposite,
+    album: changed.album,
+  });
+  expect(native.importAndActivateTripWithAlbum).toHaveBeenCalledTimes(6);
+  expect(
+    createPreparedTripNative(harness()).importAndActivateTripWithAlbum,
+  ).toBeUndefined();
+});

@@ -172,7 +172,10 @@ public final class CrewRollTransferModule: Module {
             if let engine { await engine.setPolicy(paused: true, cellularAllowed: false, ifCurrent: { self.transferCommands.matches(epoch) }) }
             try await AppleBackgroundTransfer.shared.clear(ifCurrent: { self.transferCommands.matches(epoch) },
               protectedMutation: { work in try self.transferCommands.withCurrent(epoch, work) })
-            try self.transferCommands.withCurrent(epoch) { try lifecycle.clearDeviceSession() }
+            try self.transferCommands.withCurrent(epoch) {
+              try lifecycle.clearDeviceSession()
+              runtime.albumRegistry.evictAll()
+            }
             promise.resolve(nil)
           } catch { promise.reject(Self.bridgeException(error)) }
         }
@@ -280,27 +283,16 @@ public final class CrewRollTransferModule: Module {
         promise.resolve(nil)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
+    AsyncFunction("importAndActivateTripWithAlbum") { (command: [String: Any], promise: Promise) in
+      do {
+        let decoded = try NativeTripAlbumCommand.decode(command)
+        try self.activateImportedTrip(decoded.core, albumName: decoded.name, promise: promise)
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("importAndActivateTrip") { (command: [String: Any], promise: Promise) in
       do {
         try NativeCommandDecoder.require(command, for: .importAndActivateTrip)
-        let epoch = self.transferCommands.advance()
-        let runtime = try CrewRollAppleRuntime.get()
-        try self.transferCommands.withCurrent(epoch) {
-          try runtime.lifecycle.importAndActivateTrip(command)
-          runtime.policy(enabled: true, cellular: true)
-        }
-        let engine = runtime.engine
-        // Preserve import's independent retention wake without holding the
-        // selection fence across an engine await.
-        Task { try? await engine.reconcileRetention(force: true) }
-        Task {
-          do {
-            await engine.foreground(runtime.foregroundSnapshot)
-            await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
-            try self.transferCommands.withCurrent(epoch) { }
-            promise.resolve(nil)
-          } catch { promise.reject(Self.bridgeException(NativeKeyError.tripActivationFailed)) }
-        }
+        try self.activateImportedTrip(command, albumName: nil, promise: promise)
       } catch { promise.reject(Self.bridgeException(error)) }
     }
     AsyncFunction("activateTrip") { (command: [String: Any], promise: Promise) in
@@ -371,6 +363,21 @@ public final class CrewRollTransferModule: Module {
         Task { do { try await engine.reconcileNow(); promise.resolve(nil) } catch { promise.reject(Self.bridgeException(error)) } }
       } catch { promise.reject(Self.bridgeException(error)) }
     }
+    AsyncFunction("retryPhotoOrganization") { (command: [String: Any], promise: Promise) in
+      do {
+        try Self.require(command, keys: ["protocolVersion", "tripId"])
+        let tripID = try NativeTripAlbumCommand.retryTripID(command)
+        let epoch = self.transferCommands.current()
+        guard let engine = CrewRollAppleRuntime.existing()?.existingEngine else { throw NativeKeyError.invalidState }
+        Task {
+          do {
+            try await engine.retryPhotoOrganization(tripID: tripID, ifCurrent: { self.transferCommands.matches(epoch) })
+            try self.transferCommands.withCurrent(epoch) { }
+            promise.resolve(nil)
+          } catch { promise.reject(Self.bridgeException(error)) }
+        }
+      } catch { promise.reject(Self.bridgeException(error)) }
+    }
     AsyncFunction("retry") { (command: [String: Any], promise: Promise) in
       do {
         try Self.require(command, keys: ["protocolVersion", "workId"])
@@ -412,6 +419,27 @@ public final class CrewRollTransferModule: Module {
   }
 
   private func engine() throws -> ApplePhotoTransferEngine { try CrewRollAppleRuntime.get().engine }
+
+  private func activateImportedTrip(_ command: [String: Any], albumName: String?, promise: Promise) throws {
+    let epoch = transferCommands.advance()
+    let runtime = try CrewRollAppleRuntime.get()
+    try transferCommands.withCurrent(epoch) {
+      try runtime.lifecycle.importAndActivateTrip(command, beforeActivation: { scope, metadata in
+        if let albumName { runtime.albumRegistry.register(scope: scope, metadata: metadata, name: albumName) }
+      })
+      runtime.policy(enabled: true, cellular: true)
+    }
+    let engine = runtime.engine
+    Task { try? await engine.reconcileRetention(force: true) }
+    Task {
+      do {
+        await engine.foreground(runtime.foregroundSnapshot)
+        await engine.activate(ifCurrent: { self.transferCommands.matches(epoch) })
+        try self.transferCommands.withCurrent(epoch) { }
+        promise.resolve(nil)
+      } catch { promise.reject(Self.bridgeException(NativeKeyError.tripActivationFailed)) }
+    }
+  }
 
   private static func require(_ command: [String: Any], keys: Set<String>) throws {
     guard Set(command.keys) == keys else { throw NativeKeyError.invalidCommand }

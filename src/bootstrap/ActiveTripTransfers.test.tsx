@@ -22,6 +22,7 @@ jest.mock("../infrastructure/native/crewRollTransfer", () => ({
     getSnapshot: jest.fn(),
     listAssets: jest.fn(),
     reconcileNow: jest.fn(),
+    retryPhotoOrganization: jest.fn(),
     retry: jest.fn(),
     setTransferPolicy: jest.fn().mockResolvedValue(undefined),
     subscribeToInvalidations: jest.fn(() => ({ remove: jest.fn() })),
@@ -87,6 +88,72 @@ const cachedPhotos = {
     ],
   },
 };
+
+it("retries album organization while preserving saved originals and delivery status", async () => {
+  jest.mocked(crewRollTransfer.getSnapshot).mockResolvedValue({
+    ...snapshot,
+    counts: { discovered: 2, previewReady: 2, originalsSaved: 2, blocked: 0 },
+    photoOrganization: { state: "FAILED", pendingCount: 2, failedCount: 1 },
+  });
+  jest
+    .mocked(crewRollTransfer.listAssets)
+    .mockResolvedValue(cachedPhotos.assets);
+  const view = await screen();
+  const retry = await view.findByRole("button", {
+    name: "Retry album organization",
+  });
+  view.getByRole("button", { name: "Trip photo. Saved on this phone" });
+  view.getByRole("alert", {
+    name: "Trip album organization couldn’t finish.",
+  });
+  await fireEvent.press(retry);
+  await waitFor(() =>
+    expect(crewRollTransfer.retryPhotoOrganization).toHaveBeenCalledWith({
+      protocolVersion: 1,
+      tripId,
+    }),
+  );
+  expect(crewRollTransfer.reconcileNow).not.toHaveBeenCalled();
+  expect(crewRollTransfer.retry).not.toHaveBeenCalled();
+  expect(crewRollTransfer.setTransferPolicy).not.toHaveBeenCalled();
+  view.getByRole("button", { name: "Trip photo. Saved on this phone" });
+});
+
+it("updates album-only status without discarding the unchanged gallery page or scroll", async () => {
+  const cache = createTripGalleryCache(tripId);
+  jest.mocked(crewRollTransfer.getSnapshot).mockResolvedValue({
+    ...snapshot,
+    photoOrganization: { state: "PENDING", pendingCount: 1, failedCount: 0 },
+  });
+  jest
+    .mocked(crewRollTransfer.listAssets)
+    .mockResolvedValue(cachedPhotos.assets);
+  const view = await render(
+    <CrewRollThemeProvider>
+      <ActiveTripTransfers tripId={tripId} cache={cache} />
+    </CrewRollThemeProvider>,
+  );
+  await view.findByText("Organizing saved photos into your trip album…");
+  cache.saveScrollY(120);
+  jest.mocked(crewRollTransfer.getSnapshot).mockResolvedValue({
+    ...snapshot,
+    photoOrganization: { state: "READY", pendingCount: 0, failedCount: 0 },
+  });
+  const notify = jest
+    .mocked(crewRollTransfer.subscribeToInvalidations)
+    .mock.calls.at(-1)![0];
+  await act(async () =>
+    notify({
+      protocolVersion: 1,
+      type: "ENGINE_INVALIDATED",
+      revision: snapshot.revision,
+    }),
+  );
+  await view.findByText("Received photos are grouped in your trip album.");
+  expect(crewRollTransfer.listAssets).toHaveBeenCalledTimes(1);
+  expect(cache.getScrollY()).toBe(120);
+  view.getByRole("button", { name: "Trip photo. Saved on this phone" });
+});
 
 it("recovers the permission handoff without showing an error or requiring a tap", async () => {
   jest.useFakeTimers();

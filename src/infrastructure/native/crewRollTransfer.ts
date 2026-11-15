@@ -17,6 +17,7 @@ import {
   EnsureDeviceIdentityCommandSchema,
   ImportTripKeyCommandSchema,
   ImportAndActivateTripCommandSchema,
+  ImportAndActivateTripWithAlbumCommandSchema,
   InstallDeviceSessionCommandSchema,
   ListAssetsQuerySchema,
   NativeDeviceIdentitySchema,
@@ -27,6 +28,7 @@ import {
   ReconcileNowCommandSchema,
   RefreshDeviceSessionCommandSchema,
   RetryCommandSchema,
+  RetryPhotoOrganizationCommandSchema,
   RevisionInvalidationSchema,
   RestoreDeviceSessionCommandSchema,
   RestoredDeviceSessionSchema,
@@ -44,6 +46,7 @@ import {
   type EnsureDeviceIdentityCommand,
   type ImportTripKeyCommand,
   type ImportAndActivateTripCommand,
+  type ImportAndActivateTripWithAlbumCommand,
   type InstallDeviceSessionCommand,
   type ListAssetsQuery,
   type NativeDeviceIdentity,
@@ -54,6 +57,7 @@ import {
   type ReconcileNowCommand,
   type RefreshDeviceSessionCommand,
   type RetryCommand,
+  type RetryPhotoOrganizationCommand,
   type RevisionInvalidation,
   type RestoreDeviceSessionCommand,
   type RestoredDeviceSession,
@@ -95,6 +99,28 @@ function parse<Schema extends TSchema>(
   return value as Static<Schema>;
 }
 
+/** Reject accessors before schema validation can execute caller-owned code. */
+function isDataOnly(value: unknown, depth = 0): boolean {
+  try {
+    if (value === null || typeof value !== "object") return true;
+    if (depth > 4 || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    return Reflect.ownKeys(descriptors).every((key) => {
+      if (typeof key !== "string") return false;
+      const descriptor = descriptors[key];
+      return (
+        descriptor !== undefined &&
+        "value" in descriptor &&
+        isDataOnly(descriptor.value, depth + 1)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
 export interface CrewRollTransferPort {
   getActiveTripSelection?:
     | ((command: GetActiveTripSelectionCommand) => Promise<ActiveTripSelection>)
@@ -119,12 +145,17 @@ export interface CrewRollTransferPort {
   wrapTripKey(command: WrapTripKeyCommand): Promise<WrapTripKeyResult>;
   importTripKey(command: ImportTripKeyCommand): Promise<void>;
   activateTrip(command: ActivateTripCommand): Promise<void>;
+  importAndActivateTripWithAlbum?:
+    | ((command: ImportAndActivateTripWithAlbumCommand) => Promise<void>)
+    | undefined;
   importAndActivateTrip?:
     ((command: ImportAndActivateTripCommand) => Promise<void>) | undefined;
   deactivateTrip(command: DeactivateTripCommand): Promise<void>;
   setTransferPolicy(command: SetTransferPolicyCommand): Promise<void>;
   reconcileNow(command: ReconcileNowCommand): Promise<void>;
   retry(command: RetryCommand): Promise<void>;
+  retryPhotoOrganization?:
+    ((command: RetryPhotoOrganizationCommand) => Promise<void>) | undefined;
   getSnapshot(): Promise<DurableEngineSnapshot>;
   listAssets(query: ListAssetsQuery): Promise<AssetPage>;
   subscribeToInvalidations(
@@ -149,6 +180,31 @@ export function createCrewRollTransferPort(
   return {
     // Capability discovery is lazy: constructing the port must not load Expo's
     // native module. Only an absent method permits the older binary path.
+    get retryPhotoOrganization() {
+      const native = getNativeModule();
+      const operation = native.retryPhotoOrganization;
+      if (operation === undefined) return undefined;
+      if (typeof operation !== "function")
+        throw new CrewRollTransferProtocolError(
+          "retryPhotoOrganization capability",
+        );
+      return async (command: RetryPhotoOrganizationCommand) => {
+        if (!isDataOnly(command))
+          throw new CrewRollTransferProtocolError(
+            "retryPhotoOrganization command",
+          );
+        const parsed = parse(
+          RetryPhotoOrganizationCommandSchema,
+          command,
+          "retryPhotoOrganization command",
+        );
+        const result: unknown = await operation.call(native, parsed);
+        if (result !== undefined && result !== null)
+          throw new CrewRollTransferProtocolError(
+            "retryPhotoOrganization result",
+          );
+      };
+    },
     get getActiveTripSelection() {
       const native = getNativeModule();
       const operation = native.getActiveTripSelection;
@@ -195,6 +251,52 @@ export function createCrewRollTransferPort(
             "prepareDeviceSession context",
           );
         return result;
+      };
+    },
+    get importAndActivateTripWithAlbum() {
+      const native = getNativeModule();
+      const operation = native.importAndActivateTripWithAlbum;
+      if (operation === undefined) return undefined;
+      if (typeof operation !== "function")
+        throw new CrewRollTransferProtocolError(
+          "importAndActivateTripWithAlbum capability",
+        );
+      return async (command: ImportAndActivateTripWithAlbumCommand) => {
+        if (!isDataOnly(command))
+          throw new CrewRollTransferProtocolError(
+            "importAndActivateTripWithAlbum command",
+          );
+        const parsed = parse(
+          ImportAndActivateTripWithAlbumCommandSchema,
+          command,
+          "importAndActivateTripWithAlbum command",
+        );
+        if (
+          parsed.envelope.tripId !== parsed.activation.tripId ||
+          parsed.envelope.keyEpoch !== parsed.activation.keyEpoch ||
+          parsed.envelope.endsAt !== parsed.activation.endsAt
+        )
+          throw new CrewRollTransferProtocolError(
+            "importAndActivateTripWithAlbum context",
+          );
+        changed();
+        try {
+          const result: unknown = await operation.call(native, parsed);
+          if (result !== undefined && result !== null)
+            throw new CrewRollTransferProtocolError(
+              "importAndActivateTripWithAlbum result",
+            );
+        } catch (error) {
+          // No arbitrary code-shaped object or getter can assert a later stage.
+          // Expo's native rejection is an Error with its own finite code value.
+          if (
+            error instanceof Error &&
+            Object.getOwnPropertyDescriptor(error, "code")?.value ===
+              "ERR_CREWROLL_TRIP_ACTIVATION"
+          )
+            throw new ImportedTripActivationFailed();
+          throw error;
+        }
       };
     },
     get importAndActivateTrip() {

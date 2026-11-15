@@ -19,6 +19,9 @@ import com.uankit53.crewroll.transfer.media.NativePushHint
 import com.uankit53.crewroll.transfer.media.NativePushWakeGate
 import com.uankit53.crewroll.transfer.media.NativePhotoAccess
 import com.uankit53.crewroll.transfer.media.nativePhotoAccess
+import com.uankit53.crewroll.transfer.media.NativeTripAlbumRegistry
+import com.uankit53.crewroll.transfer.identitykeys.NativeKeyScope
+import com.uankit53.crewroll.transfer.identitykeys.ActiveTripMetadata
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicLong
@@ -48,6 +51,7 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     }
   }
   private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+  private val albums = NativeTripAlbumRegistry(File(context.noBackupFilesDir, "crewroll-transfers"))
   private val engineDelegate = lazy { NativePhotoTransferEngine(File(context.noBackupFilesDir, "crewroll-transfers"), { mediaSession.read() },
     AndroidPhotoLibrary(context), NativePhotoCrypto(SodiumAndroid()), { cellular ->
       NativePhotoTransport {
@@ -58,8 +62,11 @@ internal class CrewRollNativeRuntime private constructor(val context: Context) {
     }, { revision -> listeners.forEach { it(revision) } },
     expiredTrips = { lifecycle.expiredTrips() },
     purgeTripKey = { trip, cleanup -> mediaSession.change { lifecycle.purgeExpiredTrip(trip, cleanup) } },
-    nextRetentionDeadline = { lifecycle.nextTripRetentionDeadline() }) }
+    nextRetentionDeadline = { lifecycle.nextTripRetentionDeadline() }, albums = albums) }
   val engine get() = engineDelegate.value
+  fun registerTripAlbum(scope: NativeKeyScope, metadata: ActiveTripMetadata, tripName: String) {
+    albums.register(scope, metadata, tripName)
+  }
   private val maintenanceExecutor = Executors.newSingleThreadExecutor { task ->
     Thread(task, "CrewRollRetention").apply { isDaemon = true }
   }
