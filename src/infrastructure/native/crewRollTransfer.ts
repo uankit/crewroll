@@ -121,6 +121,22 @@ function isDataOnly(value: unknown, depth = 0): boolean {
   }
 }
 
+function reportActivationDispatch(
+  operation: "importAndActivateTripWithAlbum" | "importAndActivateTrip",
+) {
+  try {
+    console.warn(
+      JSON.stringify({
+        event: "trip_activation_boundary",
+        operation,
+        stage: "native-dispatch",
+      }),
+    );
+  } catch {
+    // A logging failure must never prevent native dispatch.
+  }
+}
+
 export interface CrewRollTransferPort {
   getActiveTripSelection?:
     | ((command: GetActiveTripSelectionCommand) => Promise<ActiveTripSelection>)
@@ -264,7 +280,7 @@ export function createCrewRollTransferPort(
       return async (command: ImportAndActivateTripWithAlbumCommand) => {
         if (!isDataOnly(command))
           throw new CrewRollTransferProtocolError(
-            "importAndActivateTripWithAlbum command",
+            "importAndActivateTripWithAlbum data",
           );
         const parsed = parse(
           ImportAndActivateTripWithAlbumCommandSchema,
@@ -281,6 +297,7 @@ export function createCrewRollTransferPort(
           );
         changed();
         try {
+          reportActivationDispatch("importAndActivateTripWithAlbum");
           const result: unknown = await operation.call(native, parsed);
           if (result !== undefined && result !== null)
             throw new CrewRollTransferProtocolError(
@@ -323,6 +340,7 @@ export function createCrewRollTransferPort(
           );
         changed();
         try {
+          reportActivationDispatch("importAndActivateTrip");
           const result: unknown = await operation.call(native, parsed);
           if (result !== undefined && result !== null)
             throw new CrewRollTransferProtocolError(

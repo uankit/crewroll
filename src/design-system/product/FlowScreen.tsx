@@ -21,6 +21,8 @@ export function FlowScreen({
   centerContent = false,
   fillContent = false,
   compact = false,
+  pinnedHeader = false,
+  pinnedFooter = false,
   scrollRestoration,
 }: Readonly<{
   children?: ReactNode;
@@ -35,14 +37,24 @@ export function FlowScreen({
   centerContent?: boolean;
   fillContent?: boolean;
   compact?: boolean;
+  pinnedHeader?: boolean;
+  pinnedFooter?: boolean;
   scrollRestoration?: ScrollRestoration;
 }>) {
   const theme = useCrewRollTheme();
   const { width } = useWindowDimensions();
+  const fixedHeader = pinnedHeader ? header : undefined;
+  const renderedFooter = footer ? (
+    <View style={styles.footer}>{footer}</View>
+  ) : null;
   return (
     <Screen
       {...(testID ? { testID } : {})}
       contentStyle={styles.content}
+      {...(fixedHeader ? { fixedHeader } : {})}
+      {...(pinnedFooter && renderedFooter
+        ? { fixedFooter: renderedFooter }
+        : {})}
       {...(scrollRestoration ? { scrollRestoration } : {})}
     >
       <View
@@ -52,30 +64,32 @@ export function FlowScreen({
           (centerContent || fillContent) && styles.grow,
         ]}
       >
-        {header ??
-          (onBack || label ? (
-            <View style={styles.navigation}>
-              {onBack ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Back"
-                  onPress={onBack}
-                  style={styles.back}
-                >
-                  <Image
-                    source={require("../../../assets/onboarding/back.svg")}
-                    tintColor={theme.textPrimary}
-                    style={styles.backIcon}
-                  />
-                </Pressable>
-              ) : (
-                <View />
-              )}
-              <AppText tone="secondary" variant="label">
-                {label}
-              </AppText>
-            </View>
-          ) : null)}
+        {fixedHeader
+          ? null
+          : (header ??
+            (onBack || label ? (
+              <View style={styles.navigation}>
+                {onBack ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Back"
+                    onPress={onBack}
+                    style={styles.back}
+                  >
+                    <Image
+                      source={require("../../../assets/onboarding/back.svg")}
+                      tintColor={theme.textPrimary}
+                      style={styles.backIcon}
+                    />
+                  </Pressable>
+                ) : (
+                  <View />
+                )}
+                <AppText tone="secondary" variant="label">
+                  {label}
+                </AppText>
+              </View>
+            ) : null))}
         {title || description ? (
           <View style={styles.intro}>
             {title ? (
@@ -103,7 +117,7 @@ export function FlowScreen({
           children
         )}
       </View>
-      {footer ? <View style={styles.footer}>{footer}</View> : null}
+      {pinnedFooter ? null : renderedFooter}
     </Screen>
   );
 }

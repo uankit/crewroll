@@ -21,23 +21,13 @@ export function WelcomeScreen({
   const colors = useCrewRollTheme();
   const imageHeight = Math.max(
     250,
-    Math.min(440, height - insets.top - insets.bottom - 308),
+    Math.min(440, height - insets.top - insets.bottom - 240),
   );
   return (
     <FlowScreen
       testID="welcome-screen"
       centerContent
       header={<CrewRollWordmark />}
-      footer={
-        <>
-          <Button label="Get started" onPress={onContinue} />
-          <Button
-            label="I already have an account"
-            variant="text"
-            onPress={onContinue}
-          />
-        </>
-      }
     >
       <View style={[styles.hero, { height: imageHeight }]}>
         <Image
@@ -64,6 +54,11 @@ export function WelcomeScreen({
         <AppText tone="secondary" style={{ fontSize: 15, lineHeight: 22 }}>
           Your crew’s photos, together as they happen.
         </AppText>
+        <Button
+          label="Get started"
+          onPress={onContinue}
+          style={{ marginTop: spacing.sm }}
+        />
       </View>
     </FlowScreen>
   );

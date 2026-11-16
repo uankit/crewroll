@@ -1,4 +1,9 @@
-import { useRef, useState, type PropsWithChildren } from "react";
+import {
+  useRef,
+  useState,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -21,6 +26,8 @@ export type ScrollRestoration = Readonly<{
 }>;
 
 export type ScreenProps = PropsWithChildren<{
+  readonly fixedHeader?: ReactNode;
+  readonly fixedFooter?: ReactNode;
   readonly scroll?: boolean;
   readonly testID?: string;
   readonly style?: StyleProp<ViewStyle>;
@@ -66,6 +73,8 @@ function RestorableScrollView({
 
 export function Screen({
   children,
+  fixedHeader,
+  fixedFooter,
   scroll = true,
   testID,
   style,
@@ -77,18 +86,43 @@ export function Screen({
   const content = (
     <View style={[styles.content, contentStyle]}>{children}</View>
   );
-
-  if (!scroll) {
-    return (
-      <SafeAreaView
-        edges={["top", "bottom"]}
-        testID={testID}
-        style={[styles.root, { backgroundColor: colors.background }, style]}
+  const header = fixedHeader ? (
+    <View style={styles.fixedHeader}>{fixedHeader}</View>
+  ) : null;
+  const footer = fixedFooter ? (
+    <View style={styles.fixedFooter}>{fixedFooter}</View>
+  ) : null;
+  const body = scroll ? (
+    <RestorableScrollView
+      key={scrollRestoration?.key ?? "screen"}
+      {...(testID ? { testID: `${testID}-scroll` } : {})}
+      {...(scrollRestoration ? { restoration: scrollRestoration } : {})}
+      style={styles.root}
+      contentContainerStyle={styles.scrollContent}
+      contentInsetAdjustmentBehavior="automatic"
+      automaticallyAdjustKeyboardInsets={false}
+      keyboardDismissMode="on-drag"
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+    >
+      {content}
+    </RestorableScrollView>
+  ) : (
+    content
+  );
+  const keyboardContent =
+    scroll || footer ? (
+      <KeyboardAvoidingView
+        {...(testID ? { testID: `${testID}-keyboard-area` } : {})}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.root}
       >
-        {content}
-      </SafeAreaView>
+        {body}
+        {footer}
+      </KeyboardAvoidingView>
+    ) : (
+      body
     );
-  }
 
   return (
     <SafeAreaView
@@ -96,30 +130,31 @@ export function Screen({
       testID={testID}
       style={[styles.root, { backgroundColor: colors.background }, style]}
     >
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.root}
-      >
-        <RestorableScrollView
-          key={scrollRestoration?.key ?? "screen"}
-          {...(testID ? { testID: `${testID}-scroll` } : {})}
-          {...(scrollRestoration ? { restoration: scrollRestoration } : {})}
-          contentContainerStyle={styles.scrollContent}
-          contentInsetAdjustmentBehavior="automatic"
-          automaticallyAdjustKeyboardInsets={false}
-          keyboardDismissMode="on-drag"
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps={keyboardShouldPersistTaps}
-        >
-          {content}
-        </RestorableScrollView>
-      </KeyboardAvoidingView>
+      {header}
+      {keyboardContent}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  fixedHeader: {
+    paddingHorizontal: spacing.gutter,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.sm,
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
+  },
+  fixedFooter: {
+    paddingHorizontal: spacing.gutter,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
+    flexShrink: 0,
+  },
   scrollContent: { flexGrow: 1 },
   content: {
     flex: 1,

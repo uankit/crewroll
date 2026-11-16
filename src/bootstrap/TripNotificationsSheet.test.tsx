@@ -66,7 +66,11 @@ const trip: TripView = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockActions.approve.mockReset();
-  mockActions.reject.mockReset();
+  mockActions.reject.mockReset().mockResolvedValue({
+    tripId: "trip",
+    membershipId: "harsh",
+    status: "REJECTED",
+  });
   mockActions.resolveDeviceRecovery.mockReset();
   mockPhones = [];
   mockCanMutateTrip = true;
@@ -148,7 +152,11 @@ test("blocks repeat decisions while approval is pending and preserves a failed r
     "The request couldn’t be updated. Try again.",
   );
   expect(view.getByRole("button", { name: "Approve Harsh" })).toBeEnabled();
-  mockActions.approve.mockResolvedValueOnce({ kind: "READY", tripId: "trip" });
+  mockActions.approve.mockResolvedValueOnce({
+    tripId: "trip",
+    membershipId: "harsh",
+    status: "ACTIVE",
+  });
   await fireEvent.press(view.getByRole("button", { name: "Approve Harsh" }));
   expect(view.queryByText("Harsh approved.")).toBeNull();
   expect(view.getByText("You’re all caught up.")).toBeOnTheScreen();
@@ -195,3 +203,56 @@ test("hides join decisions from guests and preserves phone transfer sign-out", a
   );
   expect(mockSignOut).toHaveBeenCalledTimes(1);
 });
+
+test.each([true, false])(
+  "keeps an accepted member decision resolved despite failed refreshes (approve=%s)",
+  async (approve) => {
+    const receipt = {
+      tripId: "trip",
+      membershipId: "harsh",
+      status: approve ? ("ACTIVE" as const) : ("REJECTED" as const),
+    };
+    const action = approve ? mockActions.approve : mockActions.reject;
+    action.mockResolvedValueOnce(receipt);
+    mockRefetch.mockRejectedValueOnce(new Error("continuity offline"));
+    const onChanged = jest.fn(async () => {
+      throw new Error("photo refresh failed");
+    });
+    const view = await render(
+      <TripNotificationsSheet
+        trip={trip}
+        onDismiss={jest.fn()}
+        onChanged={onChanged}
+      />,
+    );
+    await fireEvent.press(
+      view.getByRole("button", {
+        name: approve ? "Approve Harsh" : "Decline Harsh",
+      }),
+    );
+    await waitFor(() => expect(onChanged).toHaveBeenCalledWith(receipt));
+    view.getByText("You’re all caught up.");
+    expect(view.queryByRole("alert")).toBeNull();
+    expect(
+      view.queryByRole("button", {
+        name: approve ? "Approve Harsh" : "Decline Harsh",
+      }),
+    ).toBeNull();
+    await view.unmount();
+    const reopened = await render(
+      <TripNotificationsSheet
+        trip={trip}
+        resolvedMemberIds={["harsh"]}
+        onDismiss={jest.fn()}
+        onChanged={onChanged}
+      />,
+    );
+    reopened.getByText("You’re all caught up.");
+    expect(
+      reopened.queryByRole("button", {
+        name: approve ? "Approve Harsh" : "Decline Harsh",
+      }),
+    ).toBeNull();
+    expect(action).toHaveBeenCalledTimes(1);
+  },
+);

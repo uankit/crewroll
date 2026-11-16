@@ -1,4 +1,11 @@
-import { AppText, Button, FlowScreen, TextField } from "../../design-system";
+import {
+  AppText,
+  Button,
+  CrewRollHeader,
+  FlowScreen,
+  Stack,
+  TextField,
+} from "../../design-system";
 
 export function ProfileScreen({
   name,
@@ -18,9 +25,10 @@ export function ProfileScreen({
   return (
     <FlowScreen
       testID="profile-screen"
-      label="Your profile"
-      title="Your name."
-      description="So your crew knows who’s sharing."
+      pinnedHeader
+      pinnedFooter
+      header={<CrewRollHeader />}
+      centerContent
       footer={
         <>
           <Button
@@ -38,6 +46,12 @@ export function ProfileScreen({
         </>
       }
     >
+      <Stack gap="sm">
+        <AppText accessibilityRole="header" variant="title1">
+          Your name.
+        </AppText>
+        <AppText tone="secondary">So your crew knows who’s sharing.</AppText>
+      </Stack>
       <TextField
         label="Name"
         value={name}

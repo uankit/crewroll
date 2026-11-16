@@ -1,7 +1,14 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Keyboard } from "react-native";
 
-import { Button, FlowScreen, TextField } from "../../design-system";
+import {
+  Button,
+  AppText,
+  CrewRollHeader,
+  FlowScreen,
+  Stack,
+  TextField,
+} from "../../design-system";
 import {
   createDefaultTripEnd,
   TripEndField,
@@ -23,9 +30,11 @@ export type CreateTripInput = Readonly<{
 }>;
 
 export type CreateTripScreenProps = Readonly<{
+  accountControl?: ReactNode;
   now: Date;
   onCancel: () => void;
   onCreate: (input: CreateTripInput) => void;
+  onDraftChange?: (input: CreateTripInput) => void;
   initialName?: string;
   initialEndsAt?: Date;
   locale?: string;
@@ -45,12 +54,14 @@ type CreateTripFormProps = Omit<CreateTripScreenProps, "state"> &
   Readonly<{ submitting: boolean }>;
 
 function CreateTripForm({
+  accountControl,
   initialEndsAt,
   initialName = "",
   locale,
   now,
   onCancel,
   onCreate,
+  onDraftChange,
   submitting,
 }: CreateTripFormProps) {
   const [name, setName] = useState(initialName);
@@ -83,10 +94,23 @@ function CreateTripForm({
   return (
     <FlowScreen
       testID="create-trip-screen"
-      label="Create trip"
+      pinnedHeader
+      pinnedFooter
+      header={
+        <CrewRollHeader accountControl={accountControl}>
+          {!submitting ? (
+            <Button
+              label="‹ Back"
+              accessibilityLabel="Back"
+              variant="text"
+              onPress={onCancel}
+              style={{ alignSelf: "flex-start" }}
+            />
+          ) : null}
+        </CrewRollHeader>
+      }
       title="Name your trip."
       description="Start when you’re ready. Choose when sharing ends."
-      {...(submitting ? {} : { onBack: onCancel })}
       footer={
         <Button label="Create trip" loading={submitting} onPress={createTrip} />
       }
@@ -103,6 +127,7 @@ function CreateTripForm({
         onChangeText={(value) => {
           createRequested.current = false;
           setName(value);
+          onDraftChange?.({ name: value, endsAt: endsAt.toISOString() });
           setAttempted(false);
         }}
         value={name}
@@ -115,6 +140,7 @@ function CreateTripForm({
         onChange={(value) => {
           createRequested.current = false;
           setEndsAt(value);
+          onDraftChange?.({ name, endsAt: value.toISOString() });
           setAttempted(false);
         }}
         value={endsAt}
@@ -131,16 +157,28 @@ export function CreateTripScreen({
     return (
       <FlowScreen
         testID="create-trip-screen"
-        title="Checking your trip."
-        description="Your trip may already be created. Check the same request to continue."
-        footer={
+        header={<CrewRollHeader accountControl={props.accountControl} />}
+        pinnedHeader
+        centerContent
+      >
+        <Stack gap="md">
+          <AppText
+            accessibilityRole="header"
+            variant="title1"
+            style={{ textAlign: "center" }}
+          >
+            Checking your trip.
+          </AppText>
+          <AppText tone="secondary" style={{ textAlign: "center" }}>
+            Your trip may already be created. Check its status to continue.
+          </AppText>
           <Button
             label="Check trip status"
             loading={state.checking ?? false}
             onPress={state.onCheck}
           />
-        }
-      />
+        </Stack>
+      </FlowScreen>
     );
   return <CreateTripForm {...props} submitting={state.kind === "submitting"} />;
 }

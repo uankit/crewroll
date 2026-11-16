@@ -1,5 +1,5 @@
 import { reloadAppAsync } from "expo";
-import { act, render, screen } from "@testing-library/react-native";
+import { act, render, screen, within } from "@testing-library/react-native";
 import { Platform } from "react-native";
 
 import { SessionLoadingScreen } from "./SessionLoadingScreen";
@@ -27,6 +27,10 @@ describe("SessionLoadingScreen", () => {
       ),
     ).toBeOnTheScreen();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getAllByLabelText("CrewRoll")).toHaveLength(1);
+    const content = within(screen.getByTestId("launch-busy-scroll"));
+    expect(content.queryByLabelText("CrewRoll")).toBeNull();
+    content.getByTestId("launch-status");
     expect(screen.queryByLabelText(/connection/i)).toBeNull();
   });
 

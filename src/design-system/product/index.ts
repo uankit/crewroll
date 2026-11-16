@@ -2,6 +2,7 @@ export {
   CrewRollWordmark,
   type CrewRollWordmarkProps,
 } from "./CrewRollWordmark";
+export { CrewRollHeader, type CrewRollHeaderProps } from "./CrewRollHeader";
 export { InviteCard, type InviteCardProps } from "./InviteCard";
 export { MemberAvatar, type MemberAvatarProps } from "./MemberAvatar";
 export {

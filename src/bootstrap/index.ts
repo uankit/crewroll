@@ -4,6 +4,7 @@ export { AppNavigator, AppSignInSurface } from "./AppNavigator";
 export { AppProviders } from "./AppProviders";
 export {
   AppSessionProvider,
+  PhotoAccessRequired,
   resolveLaunchPhase,
   terminalJoinFailureReason,
   useAppSession,

@@ -24,10 +24,6 @@ export function startBlockerFor(trip: TripView): StartBlocker | null {
     return "MEMBER_PENDING_KEY";
   }
 
-  if (trip.members.some((member) => !member.fullPhotoLibraryAccess)) {
-    return "MEMBER_NEEDS_FULL_ACCESS";
-  }
-
   if (trip.members.some((member) => member.deviceState !== "AVAILABLE")) {
     return "MEMBER_DEVICE_MISSING";
   }

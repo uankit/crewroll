@@ -1049,8 +1049,8 @@ test("mobile source uses only the locked topology and public route imports", asy
       /import\s*\{[^}]*\bCreateTripScreen\b[^}]*\}\s*from "@\/features\/trips";/u,
     ],
     [
-      "app/(app)/trips/join.tsx",
-      /import\s*\{[^}]*\bJoinTripScreen\b[^}]*\}\s*from "@\/features\/invitations";/u,
+      "app/(app)/index.tsx",
+      /import\s*\{[^}]*\bInviteCodeSheet\b[^}]*\}\s*from "@\/features\/invitations";/u,
     ],
     [
       "app/(app)/trips/[tripId].tsx",

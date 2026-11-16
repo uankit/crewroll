@@ -1,6 +1,8 @@
 import { type PropsWithChildren, useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  KeyboardAvoidingView,
+  Platform,
   Modal,
   Animated,
   Easing,
@@ -23,6 +25,7 @@ import { Stack } from "./Stack";
 
 export type SheetProps = PropsWithChildren<{
   readonly visible: boolean;
+  readonly onShow?: () => void;
   readonly title: string;
   readonly onDismiss: () => void;
   readonly closeLabel?: string;
@@ -35,6 +38,7 @@ export type SheetProps = PropsWithChildren<{
 export function Sheet({
   children,
   visible,
+  onShow,
   title,
   onDismiss,
   closeLabel,
@@ -67,13 +71,18 @@ export function Sheet({
   return (
     <Modal
       animationType="none"
+      onShow={onShow}
       onRequestClose={onDismiss}
       statusBarTranslucent
       testID={testID}
       transparent
       visible={presented}
     >
-      <View style={styles.root}>
+      <KeyboardAvoidingView
+        testID="sheet-keyboard-area"
+        style={styles.root}
+        behavior={Platform.select({ ios: "padding", android: "padding" })}
+      >
         <Animated.View
           pointerEvents="none"
           style={[
@@ -165,7 +174,7 @@ export function Sheet({
             </ScrollView>
           </Stack>
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

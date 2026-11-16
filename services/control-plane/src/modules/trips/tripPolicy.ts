@@ -245,9 +245,6 @@ export function evaluateStartEligibility(
   if (input.pendingMemberCount > 0) return problem("PENDING_JOIN_REQUESTS");
   if (!input.hasCompleteKeyDirectory) return problem("KEY_ENVELOPE_MISSING");
   if (!input.allNominatedDevicesActive) return problem("DEVICE_REVOKED");
-  if (!input.allMembersReady) {
-    return problem("PHOTO_LIBRARY_ACCESS_REQUIRED");
-  }
   return success(Object.freeze({ resultingVersion: input.currentVersion + 1 }));
 }
 

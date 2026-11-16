@@ -134,8 +134,6 @@ function blockerProblem(trip: TripView): CrewRollApiProblem | null {
       return new CrewRollApiProblem("TRIP_STATE_CONFLICT");
     case "MEMBER_PENDING_KEY":
       return new CrewRollApiProblem("PENDING_JOIN_REQUESTS");
-    case "MEMBER_NEEDS_FULL_ACCESS":
-      return new CrewRollApiProblem("PHOTO_LIBRARY_ACCESS_REQUIRED");
     case "MEMBER_DEVICE_MISSING":
       return new CrewRollApiProblem("KEY_ENVELOPE_MISSING");
   }

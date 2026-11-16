@@ -102,7 +102,6 @@ export type TripDatabaseState =
 export interface StartEligibilityInput {
   readonly actorIsOwner: boolean;
   readonly actorUsesNominatedDevice: boolean;
-  readonly allMembersReady: boolean;
   readonly allNominatedDevicesActive: boolean;
   readonly currentVersion: number;
   readonly expectedVersion: number;

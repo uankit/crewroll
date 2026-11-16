@@ -43,9 +43,8 @@ export function startupPresentation(startup: AppStartupState): Readonly<{
         };
       case "TRIP_ACTIVATION_FAILED":
         return {
-          title: "Finish trip setup.",
-          message:
-            "Photo sharing couldn’t be prepared. Try again to finish setting up this trip.",
+          title: "Sharing is paused on this phone",
+          message: "Reconnect sharing to continue with this trip.",
         };
       case "TRIP_RECOVERY_FAILED":
       default:

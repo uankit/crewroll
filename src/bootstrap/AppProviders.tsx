@@ -11,6 +11,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { createProvisionCurrentDevice } from "../application/auth/ProvisionDevice";
 import { createRefreshDeviceSession } from "../application/auth/RefreshDeviceSession";
 import { createActivateObservedTrip } from "../application/trips/ActivateObservedTrip";
+import { createRejectMember } from "../application/trips/RejectMember";
 import { createApproveMember } from "../application/trips/ApproveMember";
 import { createCreateImmediateTrip } from "../application/trips/CreateImmediateTrip";
 import { createHydrateTrip } from "../application/trips/HydrateTrip";
@@ -112,6 +113,7 @@ function createProductionComposition(
   }
 
   const runtime: AppSessionRuntime = Object.freeze({
+    photoPermission,
     invalidatePendingSetup() {
       nativeSessions.invalidate();
     },
@@ -185,6 +187,11 @@ function createProductionComposition(
         api: mobileDependencies.tripApi,
         device,
         native,
+        random,
+      });
+      const rejectMember = createRejectMember({
+        api: mobileDependencies.tripApi,
+        deviceId: device.deviceId,
         random,
       });
       const startTrip = createStartAndActivateTrip({
@@ -330,18 +337,11 @@ function createProductionComposition(
             device.deviceId,
             tripId,
           );
-          await approveMember.approve(candidate, membershipId);
-          return hydrateTrip.hydrate(tripId);
+          // Approval is accepted independently of this phone's photo engine.
+          // The caller refreshes its projection after receiving this receipt.
+          return approveMember.approve(candidate, membershipId);
         },
-        async rejectMember(tripId: string, membershipId: string) {
-          await mobileDependencies.tripApi.rejectMember(
-            device.deviceId,
-            await createUuidV4(random),
-            tripId,
-            membershipId,
-          );
-          return hydrateTrip.hydrate(tripId);
-        },
+        rejectMember: rejectMember.reject,
         createTrip: createTrip.create,
         reconcileUnknownCreate: createTrip.reconcileUnknownCreate,
         replayUnknownJoin: joinTrip.replayUnknownJoin,

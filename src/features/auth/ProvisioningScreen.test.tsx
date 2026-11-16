@@ -1,5 +1,5 @@
-import { fireEvent, render } from "@testing-library/react-native";
-import { StyleSheet } from "react-native";
+import { fireEvent, render, within } from "@testing-library/react-native";
+import { StyleSheet, type StyleProp, type ViewStyle } from "react-native";
 
 import {
   CrewRollThemeProvider,
@@ -24,6 +24,53 @@ function renderScreen(
 }
 
 describe("ProvisioningScreen", () => {
+  it("centers the recovery title and explanation below a pinned brand with working footer actions", async () => {
+    const retry = jest.fn(),
+      signOut = jest.fn();
+    const view = await renderScreen({
+      status: "failed",
+      onRetry: retry,
+      onSignOut: signOut,
+      presentation: {
+        title: "Let’s reconnect.",
+        message: "CrewRoll could not connect this phone. Try again.",
+      },
+    });
+    type Element = Readonly<{
+      parent: Element | null;
+      props: Readonly<Record<string, unknown>>;
+    }>;
+    const centered = (element: Element) => {
+      let parent = element.parent;
+      while (parent) {
+        const style = StyleSheet.flatten(
+          parent.props.style as StyleProp<ViewStyle>,
+        );
+        if (style?.justifyContent === "center" && style.flexGrow === 1)
+          return parent;
+        parent = parent.parent;
+      }
+      return null;
+    };
+    const body = centered(
+      view.getByRole("header", { name: "Let’s reconnect." }),
+    );
+    expect(body).not.toBeNull();
+    expect(centered(view.getByRole("alert"))).toBe(body);
+    expect(
+      centered(view.getByRole("button", { name: "Try again" })),
+    ).toBeNull();
+    const content = within(view.getByTestId("provisioning-screen-scroll"));
+    expect(content.queryByLabelText("CrewRoll")).toBeNull();
+    expect(content.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(content.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(view.getAllByLabelText("CrewRoll")).toHaveLength(1);
+    expect(view.queryByRole("button", { name: "Your account" })).toBeNull();
+    await fireEvent.press(view.getByRole("button", { name: "Try again" }));
+    await fireEvent.press(view.getByRole("button", { name: "Sign out" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledTimes(1);
+  });
   it.each(["working", "failed"] as const)(
     "offers safe teardown during %s restoration when no account menu is available",
     async (status) => {

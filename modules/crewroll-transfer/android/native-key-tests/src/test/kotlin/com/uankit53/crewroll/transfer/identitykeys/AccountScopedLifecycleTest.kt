@@ -110,6 +110,49 @@ class AccountScopedLifecycleTest {
     assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(valid + ("activation" to mismatched), NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) }
     assertThrows(NativeKeyException::class.java) { NativeCommandDecoder.require(valid + ("extra" to true), NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM) }
   }
+  @Test fun `composite bridge hash maps retain nested null and reject extra keys before activation`() {
+    for (withAlbum in listOf(false, true)) {
+      val f = compositeCase(false)
+      // ReadableNativeMap.toHashMap returns nested HashMaps and JS numbers as Doubles.
+      val envelope = HashMap(NativeCommandDecoder.objectValue(f.command, "envelope")).apply {
+        this["protocolVersion"] = 1.0
+        this["keyEpoch"] = 1.0
+        this["algorithmVersion"] = 1.0
+        this["recipientE2eeKeyVersion"] = 1.0
+      }
+      val activation = HashMap(NativeCommandDecoder.objectValue(f.command, "activation")).apply {
+        this["protocolVersion"] = 1.0
+        this["keyEpoch"] = 1.0
+      }
+      val command = hashMapOf<String, Any?>(
+        "protocolVersion" to 1.0, "envelope" to envelope, "activation" to activation,
+      )
+      val kind = if (withAlbum) {
+        command["album"] = hashMapOf("tripName" to "Goa")
+        NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM
+      } else NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP
+      assertTrue(activation.containsKey("releaseAt"))
+      assertNull(activation["releaseAt"])
+      assertDoesNotThrow { NativeCommandDecoder.require(command, kind) }
+      assertNull(NativeCommandDecoder.activation(activation).releaseAt)
+      val invalid = mutableListOf(
+        command + ("extra" to null),
+        command + ("envelope" to (envelope + ("extra" to null))),
+        command + ("activation" to (activation + ("extra" to null))),
+        command + ("activation" to (activation - "releaseAt")),
+      )
+      if (withAlbum) invalid += command + ("album" to hashMapOf("tripName" to "Goa", "extra" to null))
+      for (value in invalid) assertThrows(NativeKeyException::class.java) {
+        NativeCommandDecoder.require(value, kind)
+      }
+      val context = f.subject.importAndActivateTrip(command.filterKeys { it != "album" })
+      try {
+        assertNull(context.metadata.releaseAt)
+        assertEquals(f.metadata, context.metadata)
+      } finally { context.erase() }
+    }
+  }
+
   private fun startupComposite(wrapped: String, metadata: ActiveTripMetadata): Map<String, Any?> = mapOf(
     "protocolVersion" to 1,
     "envelope" to mapOf("protocolVersion" to 1, "tripId" to metadata.tripId, "keyEpoch" to metadata.keyEpoch,

@@ -26,9 +26,11 @@ import type {
   TripRecoveryRecord,
   TripRecoveryScope,
 } from "../application/trips/ports";
+import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
 import type { TripView } from "../domain/trips/model";
 import {
   AppSessionProvider,
+  PhotoAccessRequired,
   permissionForVisibleTrip,
   resolveLaunchPhase,
   terminalJoinFailureReason,
@@ -323,7 +325,11 @@ function createRuntime(options: RuntimeOptions = {}) {
   const calls: string[] = [];
   const scoped: ScopedTripSession = {
     previewInvite: jest.fn(),
-    approveMember: jest.fn(async () => lobby),
+    approveMember: jest.fn(async (approvedTripId, approvedMembershipId) => ({
+      tripId: approvedTripId,
+      membershipId: approvedMembershipId,
+      status: "ACTIVE" as const,
+    })),
     openPhotoSettings: jest.fn(async () => undefined),
     replayPendingMutation:
       options.replayPendingMutation ?? jest.fn(async () => null),
@@ -364,6 +370,19 @@ function createRuntime(options: RuntimeOptions = {}) {
     startTrip: jest.fn(async () => ({ ...lobby, status: "ACTIVE" as const })),
   };
   const runtime: AppSessionRuntime = {
+    photoPermission: {
+      read: jest.fn(async () => ({
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: true,
+      })),
+      request: jest.fn(async () => ({
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: true,
+      })),
+      openSettings: jest.fn(async () => undefined),
+    },
     invalidatePendingSetup: jest.fn(),
     provisionCurrentDevice: jest.fn(
       options.provision ??
@@ -3209,7 +3228,7 @@ describe("AppSessionProvider", () => {
     expect(onAuthInvalid).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks immediate Start in the same tick as foreground invalidation", async () => {
+  it("keeps Start independent from photo permission refresh while local sharing stays paused", async () => {
     const { runtime, scoped } = createRuntime({
       recovery: {
         state: "CONFIRMED",
@@ -3219,8 +3238,12 @@ describe("AppSessionProvider", () => {
       },
     });
     let immediateStartFailure: unknown;
+    let current!: ReturnType<typeof useAppSession>;
     function ImmediateStartProbe() {
       const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
       return (
         <Text
           testID="immediate-start-probe"
@@ -3250,10 +3273,9 @@ describe("AppSessionProvider", () => {
     await act(async () =>
       screen.getByTestId("immediate-start-probe").props.onPress(),
     );
-    expect(immediateStartFailure).toEqual(
-      new Error("TRIP_SESSION_UNAVAILABLE"),
-    );
-    expect(scoped.startTrip).not.toHaveBeenCalled();
+    expect(immediateStartFailure).toBeUndefined();
+    expect(scoped.startTrip).toHaveBeenCalledTimes(1);
+    expect(current.capabilities.canSharePhotos).toBe(false);
   });
 
   it("discards a late previous-trip readiness result without a Query write", async () => {
@@ -3683,6 +3705,10 @@ describe("staged startup authority", () => {
     await expect(actions.start(tripId)).rejects.toThrow(
       "TRIP_SESSION_UNAVAILABLE",
     );
+    await expect(actions.approve(tripId, membershipId)).rejects.toThrow(
+      "TRIP_SESSION_UNAVAILABLE",
+    );
+    expect(scoped.approveMember).not.toHaveBeenCalled();
     expect(scoped.createTrip).not.toHaveBeenCalled();
     expect(scoped.startTrip).not.toHaveBeenCalled();
     await act(() =>
@@ -4082,4 +4108,311 @@ it("targets an account-check retry without re-registering or hiding a valid libr
   } finally {
     await view.unmount();
   }
+});
+
+describe("new trip photo admission", () => {
+  const denied: PhotoLibraryPermissionState = {
+    kind: "REQUESTABLE",
+    fullPhotoLibraryAccess: false,
+    canAskAgain: true,
+  };
+  const limited: PhotoLibraryPermissionState = {
+    kind: "SETTINGS_REQUIRED",
+    fullPhotoLibraryAccess: false,
+    canAskAgain: false,
+    reason: "LIMITED_LIBRARY",
+  };
+  it.each(["create", "preview", "join"] as const)(
+    "rechecks native access immediately before %s and never submits a denied, limited or unreadable grant",
+    async (operation) => {
+      const requestJoin = jest.fn(async () => ({
+        tripId,
+        membershipId,
+        status: "PENDING_KEY" as const,
+      }));
+      const { runtime, scoped } = createRuntime({ requestJoin });
+      let current!: ReturnType<typeof useAppSession>;
+      function Probe() {
+        const session = useAppSession();
+        useLayoutEffect(() => {
+          current = session;
+        }, [session]);
+        return <SessionProbe />;
+      }
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime}>
+          <Probe />
+        </Harness>,
+      );
+      await waitFor(() => expect(current.snapshot.phase).toBe("READY_NO_TRIP"));
+      // An earlier UI grant does not authorize the eventual API call.
+      await expect(current.actions!.checkPhotoAccess()).resolves.toMatchObject({
+        kind: "FULL",
+      });
+      for (const permission of [denied, limited, null]) {
+        if (permission)
+          jest
+            .mocked(runtime.photoPermission.read)
+            .mockResolvedValueOnce(permission);
+        else
+          jest
+            .mocked(runtime.photoPermission.read)
+            .mockRejectedValueOnce(new Error("native unavailable"));
+        await act(async () => {
+          const result =
+            operation === "create"
+              ? current.actions!.create({ name: "Kyoto", endsAt: lobby.endsAt })
+              : operation === "preview"
+                ? current.actions!.previewInvite("ABCD2345")
+                : current.actions!.join("ABCD2345");
+          await expect(result).rejects.toEqual(
+            new PhotoAccessRequired(permission),
+          );
+        });
+        expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+        expect(current.pendingTripPreview).toBeNull();
+        expect(scoped.createTrip).not.toHaveBeenCalled();
+        expect(scoped.previewInvite).not.toHaveBeenCalled();
+        expect(requestJoin).not.toHaveBeenCalled();
+      }
+      expect(runtime.photoPermission.request).not.toHaveBeenCalled();
+      await view.unmount();
+    },
+  );
+
+  it("rejects an old admission result after account switch without using either account's trip API", async () => {
+    const { runtime, scoped } = createRuntime();
+    let current!: ReturnType<typeof useAppSession>;
+    function Probe() {
+      const session = useAppSession();
+      useLayoutEffect(() => {
+        current = session;
+      }, [session]);
+      return <SessionProbe />;
+    }
+    const view = await render(
+      <Harness auth={signedIn} runtime={runtime}>
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() => expect(current.snapshot.phase).toBe("READY_NO_TRIP"));
+    let finish!: (permission: PhotoLibraryPermissionState) => void;
+    jest.mocked(runtime.photoPermission.read).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let failure: unknown;
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = current
+        .actions!.create({ name: "Old account", endsAt: lobby.endsAt })
+        .catch((error: unknown) => {
+          failure = error;
+        });
+    });
+    await view.rerender(
+      <Harness
+        auth={{ ...signedIn, userId: "user_two", sessionId: "session_two" }}
+        runtime={runtime}
+      >
+        <Probe />
+      </Harness>,
+    );
+    await waitFor(() =>
+      expect(runtime.provisionCurrentDevice).toHaveBeenCalledTimes(2),
+    );
+    await act(async () => {
+      finish({ kind: "FULL", fullPhotoLibraryAccess: true, canAskAgain: true });
+      await pending;
+    });
+    expect(failure).toEqual(new Error("TRIP_SESSION_UNAVAILABLE"));
+    expect(scoped.createTrip).not.toHaveBeenCalled();
+    expect(current.snapshot.phase).toBe("READY_NO_TRIP");
+    await view.unmount();
+  });
+});
+
+describe("host key operations independent of photo activation", () => {
+  const active: TripView = {
+    ...lobby,
+    status: "ACTIVE",
+    startsAt: "2030-01-01T00:00:00Z",
+  };
+  const continuity = {
+    tripId,
+    version: 2,
+    tripName: "Kyoto",
+    status: "ACTIVE" as const,
+    hostDisplayName: "Owner",
+    onThisDevice: true,
+    syncFrom: null,
+    ownerInviteCode: "ABCD2345",
+    deviceRequest: null,
+    approvalRequests: [],
+  };
+
+  it.each([
+    ["approve", "read failure"],
+    ["approve", "activation failure"],
+    ["reject", "read failure"],
+    ["reject", "activation failure"],
+  ] as const)(
+    "keeps accepted %s and device decisions independent of photo failure and a later %s",
+    async (operation, failure) => {
+      const hydrate = jest
+        .fn()
+        .mockRejectedValue(new TripActivationFailed("INTERNAL_ERROR", active));
+      const { runtime: base, scoped } = createRuntime({
+        activeTripId: tripId,
+        hydrate,
+      });
+      const resolveDeviceRecovery = jest.fn(async () => continuity);
+      const rejectMember = jest.fn(async () => ({
+        tripId,
+        membershipId,
+        status: "REJECTED" as const,
+      }));
+      const runtime = {
+        ...base,
+        createScopedTripSession: () => ({
+          ...scoped,
+          resolveDeviceRecovery,
+          rejectMember,
+        }),
+      };
+      const { holder, Probe } = startupProbe();
+      const client = createQueryClient();
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime} queryClient={client}>
+          <Probe />
+        </Harness>,
+      );
+      await waitFor(() =>
+        expect(holder.current?.startup.error?.code).toBe(
+          "TRIP_ACTIVATION_FAILED",
+        ),
+      );
+      const before = hydrate.mock.calls.length;
+      let receipt: unknown;
+      await act(async () => {
+        receipt = await holder.current!.actions![operation](
+          tripId,
+          membershipId,
+        );
+        await expect(
+          holder.current!.actions!.resolveDeviceRecovery(
+            tripId,
+            "request",
+            true,
+          ),
+        ).resolves.toEqual(continuity);
+      });
+      expect(receipt).toEqual({
+        tripId,
+        membershipId,
+        status: operation === "approve" ? "ACTIVE" : "REJECTED",
+      });
+      expect(
+        operation === "approve" ? scoped.approveMember : rejectMember,
+      ).toHaveBeenCalledTimes(1);
+      expect(resolveDeviceRecovery).toHaveBeenCalledWith(
+        tripId,
+        "request",
+        true,
+      );
+      expect(hydrate).toHaveBeenCalledTimes(before);
+      expect(
+        client.getQueryData([
+          "trip-continuity",
+          holder.current!.queryScope!.opaqueAccountScope,
+          deviceId,
+          tripId,
+        ]),
+      ).toEqual(continuity);
+      await expect(holder.current!.actions!.start(tripId)).rejects.toThrow(
+        "TRIP_SESSION_UNAVAILABLE",
+      );
+      expect(scoped.startTrip).not.toHaveBeenCalled();
+      hydrate.mockRejectedValueOnce(
+        failure === "read failure"
+          ? new Error("offline")
+          : new TripActivationFailed("INTERNAL_ERROR", active),
+      );
+      await act(async () => {
+        if (failure === "read failure")
+          await expect(
+            holder.current!.loadTripProjection(tripId),
+          ).rejects.toThrow("offline");
+        else
+          await expect(
+            holder.current!.loadTripProjection(tripId),
+          ).resolves.toEqual(active);
+      });
+      expect(receipt).toEqual({
+        tripId,
+        membershipId,
+        status: operation === "approve" ? "ACTIVE" : "REJECTED",
+      });
+      expect(holder.current!.activationFailureTripId).toBe(tripId);
+      expect(holder.current!.capabilities.canSharePhotos).toBe(false);
+      expect(holder.current!.startup.error?.code).toBe(
+        "TRIP_ACTIVATION_FAILED",
+      );
+      await view.unmount();
+      client.clear();
+    },
+  );
+
+  it.each(["KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST"] as const)(
+    "keeps known %s states behind the key-operation barrier",
+    async (code) => {
+      const { runtime: base, scoped } = createRuntime({
+        activeTripId: tripId,
+        hydrate: async () => {
+          throw new TripActivationFailed("INTERNAL_ERROR", active, code);
+        },
+      });
+      const resolveDeviceRecovery = jest.fn(async () => continuity);
+      const runtime = {
+        ...base,
+        createScopedTripSession: () => ({ ...scoped, resolveDeviceRecovery }),
+      };
+      const { holder, Probe } = startupProbe();
+      const view = await render(
+        <Harness auth={signedIn} runtime={runtime}>
+          <Probe />
+        </Harness>,
+      );
+      await waitFor(() =>
+        expect(holder.current?.startup.error?.code).toBe(
+          code === "KEY_ACCESS_LOCKED"
+            ? "LOCAL_STORAGE_LOCKED"
+            : "LOCAL_KEYS_UNAVAILABLE",
+        ),
+      );
+      await expect(
+        holder.current!.actions!.approve(tripId, membershipId),
+      ).rejects.toThrow("TRIP_SESSION_UNAVAILABLE");
+      await expect(
+        holder.current!.actions!.resolveDeviceRecovery(tripId, "request", true),
+      ).rejects.toThrow("TRIP_SESSION_UNAVAILABLE");
+      expect(scoped.approveMember).not.toHaveBeenCalled();
+      expect(resolveDeviceRecovery).not.toHaveBeenCalled();
+      await act(async () => {
+        await holder.current!.actions!.resolveDeviceRecovery(
+          tripId,
+          "request",
+          false,
+        );
+      });
+      expect(resolveDeviceRecovery).toHaveBeenCalledWith(
+        tripId,
+        "request",
+        false,
+      );
+      await view.unmount();
+    },
+  );
 });

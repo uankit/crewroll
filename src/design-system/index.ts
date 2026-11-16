@@ -63,6 +63,8 @@ export {
 export {
   CrewRollWordmark,
   type CrewRollWordmarkProps,
+  CrewRollHeader,
+  type CrewRollHeaderProps,
   InviteCard,
   type InviteCardProps,
   MemberAvatar,

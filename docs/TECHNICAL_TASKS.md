@@ -418,6 +418,24 @@ No task in a gate starts until all dependencies listed in its row are complete. 
 **Deliverable:** Correlated timestamps for detection, durable spool, preview ready/uploaded, commit, inbox ready, download, verification, library save, receipt, and purge. IDs are opaque; analytics contain no hashes, paths, names, EXIF, or image content.
 **Acceptance gate:** One physical transfer yields a complete trace across device/API/worker boundaries; redaction tests block forbidden fields; missing stages are queryable without revealing media data.
 
+### - [ ] OBS-003 — Centralize error handling and failure diagnostics
+
+Requested November 16, 2026 after the Kobiton trip activation failure in session `9091377` reached the UI with generic recovery messages and no identifiable failed stage.
+
+Extend `Error` with a shared `CrewRollError` base class. Define stable application error codes, operation names, failure stages, retry disposition, a safe user-facing message, and a diagnostic ID. Preserve the underlying cause internally when translating API problems, native Swift/Kotlin errors, transport failures, validation failures, and session-fence failures. Reuse the existing problem-code contracts and sanitizers.
+
+Preserve existing error classification and recovery contracts, including API problem kind/code/status, activation trip context, local-key failures, and authoritative create/join outcomes. Retry guidance must retain idempotency keys and uncertain-command recovery records so diagnosis or retry never creates duplicate mutations.
+
+Correlate device, API, worker, and native events through diagnostic/request IDs and timestamps. Record the last successful stage and the failed stage so a missing native dispatch can be distinguished from a rejected native operation. Expose safe diagnostic IDs to support and testing, with detailed failure context available in developer diagnostics. Map each failure to one clear recovery action in the UI.
+
+Classify whether recovery belongs to CrewRoll, the network/service, the account, or this phone's permissions/storage. User messages explain the practical impact and an available action without blaming the user for an internal failure. Distinguish a live trip from sharing paused on one phone; permission failures lead to permission setup, transient failures can recover quietly, and persistent failures show one recognizable recovery button. Never ask for a permission that is already granted to explain an unrelated execution error.
+
+Keep credentials, key material, envelopes, photo content, file paths, and personal data out of diagnostics. Use an allowlist for metadata. Preserve useful internal causes without serializing raw third-party errors into logs or UI messages.
+
+Begin with trip activation and its capability, validation, session, native-dispatch, album, and transfer stages. Extend the same contract to account setup, photo permissions, create/join/approval, background sync, and trip completion. The bounded activation diagnostics added during this investigation are an initial contribution to this work.
+
+Acceptance requires an on-device failure to identify its code, operation, stage, and correlated trace. Regression tests cover cause preservation, classification, retry behavior, redaction, and a single recovery control. Unknown errors receive a safe fallback while retaining an internal diagnostic reference. A failed diagnostic write must preserve application behavior.
+
 ### - [ ] INF-003 — Deploy the production-shaped staging API and worker
 
 **Depends on:** `INF-002`, `API-005`, `WRK-001`, `OBS-001`

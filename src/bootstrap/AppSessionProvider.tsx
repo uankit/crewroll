@@ -42,6 +42,10 @@ import {
   type StartupCapabilityFacts,
 } from "./startupState";
 import type { NativeLocalKeyFailure } from "../application/problems/nativeLocalKeyFailure";
+import type {
+  ApproveMemberResult,
+  RejectMemberResult,
+} from "../application/trips/ApproveMember";
 import { TripActivationFailed } from "../application/trips/ActivateObservedTrip";
 import type { CreateImmediateTripInput } from "../application/trips/CreateImmediateTrip";
 import {
@@ -52,7 +56,10 @@ import type {
   TripRecoveryRecord,
   TripRecoveryScope,
 } from "../application/trips/ports";
-import type { PhotoLibraryPermissionState } from "../infrastructure/media/expoPhotoLibraryPermission";
+import type {
+  PhotoLibraryPermissionPort,
+  PhotoLibraryPermissionState,
+} from "../infrastructure/media/expoPhotoLibraryPermission";
 import {
   clearForegroundQueryState,
   tripQueryKey,
@@ -191,8 +198,14 @@ export type ScopedTripSession = Readonly<{
   replayUnknownJoin(): Promise<JoinTripResult | null>;
   hydrateTrip(tripId: string): Promise<TripView>;
   requestJoin(inviteCode: string): Promise<JoinTripResult>;
-  approveMember(tripId: string, membershipId: string): Promise<TripView>;
-  rejectMember?(tripId: string, membershipId: string): Promise<TripView>;
+  approveMember(
+    tripId: string,
+    membershipId: string,
+  ): Promise<ApproveMemberResult>;
+  rejectMember?(
+    tripId: string,
+    membershipId: string,
+  ): Promise<RejectMemberResult>;
   setPhotoReadiness(
     tripId: string,
     requestPermission: boolean,
@@ -208,7 +221,15 @@ export type ScopedTripSession = Readonly<{
   startTrip(trip: TripView): Promise<TripView>;
 }>;
 
+export class PhotoAccessRequired extends Error {
+  constructor(readonly permission: PhotoLibraryPermissionState | null) {
+    super("Full photo access is required before creating or joining a trip.");
+    this.name = "PhotoAccessRequired";
+  }
+}
+
 export type AppSessionRuntime = Readonly<{
+  photoPermission: PhotoLibraryPermissionPort;
   /** Fence continuations from a setup attempt whose caller has stopped waiting. */
   invalidatePendingSetup(): void;
   pauseTransfers?(
@@ -252,6 +273,9 @@ export type JoinMutationResult =
   | Readonly<{ kind: "PENDING_APPROVAL" }>;
 
 export type TripSessionActions = Readonly<{
+  checkPhotoAccess(
+    requestPermission?: boolean,
+  ): Promise<PhotoLibraryPermissionState>;
   getTripContinuity(tripId: string): Promise<TripContinuity>;
   ensureOwnerInvite(tripId: string): Promise<TripContinuity>;
   requestDeviceRecovery(tripId: string): Promise<TripContinuity>;
@@ -269,9 +293,12 @@ export type TripSessionActions = Readonly<{
   ): Promise<TripTransferState>;
   previewInvite(inviteCode: string): Promise<TripInvitePreview>;
   create(input: CreateImmediateTripInput): Promise<TripMutationResult>;
-  join(inviteCode: string): Promise<JoinMutationResult>;
-  approve(tripId: string, membershipId: string): Promise<TripMutationResult>;
-  reject(tripId: string, membershipId: string): Promise<TripMutationResult>;
+  join(
+    inviteCode: string,
+    preview?: TripInvitePreview,
+  ): Promise<JoinMutationResult>;
+  approve(tripId: string, membershipId: string): Promise<ApproveMemberResult>;
+  reject(tripId: string, membershipId: string): Promise<RejectMemberResult>;
   invalidatePhotoReadiness(): void;
   publishPhotoReadiness(
     tripId: string,
@@ -779,17 +806,24 @@ export function AppSessionProvider({
   );
 
   const binding = useCallback(
-    (intent: "read" | "mutate" | "prepared" = "read") => {
+    (intent: "read" | "mutate" | "prepared" | "keys" = "read") => {
       const services = scopedSession.current;
       const facts = startupFactsRef.current;
       const capabilities = startupCapabilities(facts);
+      const keyError = startupRef.current.error?.code;
+      const keyOperationsBlocked =
+        keyError === "LOCAL_STORAGE_LOCKED" ||
+        keyError === "LOCAL_KEYS_UNAVAILABLE";
       if (
         services === null ||
         queryScope.current === null ||
         facts.binding !== accountBindingRef.current ||
         !capabilities.canReadLibrary ||
         (intent !== "read" && !capabilities.canMutateTrip) ||
-        (intent === "prepared" && !facts.transferReady)
+        (intent === "prepared" && !facts.transferReady) ||
+        // A restored device permits a key operation, not a claim that a trip key
+        // exists. The scoped service must finish native wrapping before its POST.
+        (intent === "keys" && keyOperationsBlocked)
       ) {
         throw unavailableSession();
       }
@@ -823,27 +857,152 @@ export function AppSessionProvider({
     [binding, observeOperation],
   );
 
+  const checkPhotoAccess = useCallback(
+    async (requestPermission = false): Promise<PhotoLibraryPermissionState> => {
+      const current = binding("mutate");
+      const permission = await withDeadline(
+        () =>
+          requestPermission
+            ? runtime.photoPermission.request()
+            : runtime.photoPermission.read(),
+        requestPermission ? 30_000 : 10_000,
+      );
+      if (current.generation !== runGeneration.current)
+        throw unavailableSession();
+      return permission;
+    },
+    [binding, runtime],
+  );
+
+  const requirePhotoAccess = useCallback(
+    async (generation: number) => {
+      let permission: PhotoLibraryPermissionState;
+      try {
+        permission = await checkPhotoAccess();
+      } catch {
+        if (generation !== runGeneration.current) throw unavailableSession();
+        throw new PhotoAccessRequired(null);
+      }
+      if (generation !== runGeneration.current) throw unavailableSession();
+      if (permission.kind !== "FULL") throw new PhotoAccessRequired(permission);
+    },
+    [checkPhotoAccess],
+  );
+
   const createTrip = useCallback(
     async (input: CreateImmediateTripInput): Promise<TripMutationResult> => {
       const current = binding("mutate");
+      await requirePhotoAccess(current.generation);
       const observed = await observeOperation(
         current.services.createTrip(input),
         current.generation,
       );
       return observed.result;
     },
-    [binding, observeOperation],
+    [binding, observeOperation, requirePhotoAccess],
   );
 
   const previewInvite = useCallback(
     async (inviteCode: string): Promise<TripInvitePreview> => {
       const current = binding("mutate");
+      await requirePhotoAccess(current.generation);
       try {
         const preview = await current.services.previewInvite(inviteCode);
         if (current.generation !== runGeneration.current)
           throw unavailableSession();
-        setPendingTripPreview(preview);
         return preview;
+      } catch (error) {
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        if (isAuthFailure(error)) await clearAndSignOut();
+        throw error;
+      }
+    },
+    [binding, clearAndSignOut, requirePhotoAccess],
+  );
+
+  const joinTrip = useCallback(
+    async (
+      inviteCode: string,
+      preview?: TripInvitePreview,
+    ): Promise<JoinMutationResult> => {
+      const current = binding("mutate");
+      await requirePhotoAccess(current.generation);
+      setPendingTripPreview(preview ?? null);
+      try {
+        const result = await current.services.requestJoin(inviteCode);
+        if (current.generation !== runGeneration.current) {
+          throw unavailableSession();
+        }
+        if (result.status === "PENDING_KEY") {
+          const device = currentDevice.current;
+          if (device === null) throw unavailableSession();
+          setSnapshot({
+            phase: "READY_PENDING_APPROVAL",
+            deviceId: device.deviceId,
+          });
+          return Object.freeze({ kind: "PENDING_APPROVAL" });
+        }
+        if (result.status === "REJECTED") {
+          setPendingTripPreview(null);
+          setOwnerInvite(null);
+          setActivationFailureTripId(null);
+          const device = currentDevice.current;
+          if (device === null) throw unavailableSession();
+          setSnapshot({ phase: "READY_NO_TRIP", deviceId: device.deviceId });
+          return Object.freeze({ kind: "REJECTED" });
+        }
+        const observed = await observeOperation(
+          current.services.hydrateTrip(result.tripId),
+          current.generation,
+        );
+        return observed.result;
+      } catch (error) {
+        if (current.generation !== runGeneration.current) {
+          throw unavailableSession();
+        }
+        if (isAuthFailure(error)) {
+          await clearAndSignOut();
+        } else if (error instanceof JoinTripTerminalProblem) {
+          const device = currentDevice.current;
+          if (device !== null) {
+            setPendingTripPreview(null);
+            setSnapshot(refusedJoinSnapshot(device.deviceId, error));
+          }
+        } else if (currentDevice.current) {
+          // Keep a lost reply bound to its saved command while Home reconciles it.
+          setSnapshot({
+            phase: "READY_UNKNOWN_JOIN",
+            deviceId: currentDevice.current.deviceId,
+          });
+          updateStartupFacts({ recoverySettled: false, tripsSettled: false });
+          publishStartup(startupWorking("recovery"));
+          setRetryGeneration((value) => value + 1);
+        }
+        throw error;
+      }
+    },
+    [
+      binding,
+      requirePhotoAccess,
+      clearAndSignOut,
+      observeOperation,
+      publishStartup,
+      updateStartupFacts,
+    ],
+  );
+
+  const approveMember = useCallback(
+    async (tripId: string, membershipId: string) => {
+      const current = binding("keys");
+      try {
+        const receipt = await current.services.approveMember(
+          tripId,
+          membershipId,
+        );
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        return receipt;
       } catch (error) {
         if (current.generation !== runGeneration.current)
           throw unavailableSession();
@@ -854,80 +1013,26 @@ export function AppSessionProvider({
     [binding, clearAndSignOut],
   );
 
-  const joinTrip = useCallback(
-    async (inviteCode: string): Promise<JoinMutationResult> => {
-      const current = binding("mutate");
-      let result: JoinTripResult;
-      try {
-        result = await current.services.requestJoin(inviteCode);
-      } catch (error) {
-        if (current.generation !== runGeneration.current) {
-          throw unavailableSession();
-        }
-        if (isAuthFailure(error)) {
-          await clearAndSignOut();
-        }
-        if (error instanceof JoinTripTerminalProblem) {
-          const device = currentDevice.current;
-          if (device !== null) {
-            setPendingTripPreview(null);
-            setSnapshot(refusedJoinSnapshot(device.deviceId, error));
-          }
-        }
-        throw error;
-      }
-      if (current.generation !== runGeneration.current) {
-        throw unavailableSession();
-      }
-      if (result.status === "PENDING_KEY") {
-        const device = currentDevice.current;
-        if (device === null) throw unavailableSession();
-        setSnapshot({
-          phase: "READY_PENDING_APPROVAL",
-          deviceId: device.deviceId,
-        });
-        return Object.freeze({ kind: "PENDING_APPROVAL" });
-      }
-      if (result.status === "REJECTED") {
-        setOwnerInvite(null);
-        setActivationFailureTripId(null);
-        const device = currentDevice.current;
-        if (device === null) throw unavailableSession();
-        setSnapshot({ phase: "READY_NO_TRIP", deviceId: device.deviceId });
-        return Object.freeze({ kind: "REJECTED" });
-      }
-      const observed = await observeOperation(
-        current.services.hydrateTrip(result.tripId),
-        current.generation,
-      );
-      return observed.result;
-    },
-    [binding, clearAndSignOut, observeOperation],
-  );
-
-  const approveMember = useCallback(
-    async (tripId: string, membershipId: string) => {
-      const current = binding("prepared");
-      const observed = await observeOperation(
-        current.services.approveMember(tripId, membershipId),
-        current.generation,
-      );
-      return observed.result;
-    },
-    [binding, observeOperation],
-  );
-
   const rejectMember = useCallback(
     async (tripId: string, membershipId: string) => {
       const current = binding("mutate");
       if (!current.services.rejectMember) throw unavailableSession();
-      const observed = await observeOperation(
-        current.services.rejectMember(tripId, membershipId),
-        current.generation,
-      );
-      return observed.result;
+      try {
+        const receipt = await current.services.rejectMember(
+          tripId,
+          membershipId,
+        );
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        return receipt;
+      } catch (error) {
+        if (current.generation !== runGeneration.current)
+          throw unavailableSession();
+        if (isAuthFailure(error)) await clearAndSignOut();
+        throw error;
+      }
     },
-    [binding, observeOperation],
+    [binding, clearAndSignOut],
   );
 
   const publishPhotoReadiness = useCallback(
@@ -1020,7 +1125,7 @@ export function AppSessionProvider({
     photoPermissionTripIdRef.current = null;
     updateStartupFacts({ fullPhotoAccess: false });
     // Keep the last confirmed view while the local permission is checked.
-    // Start remains fenced until that check and any readiness change finish.
+    // Local sharing stays paused until the permission check finishes.
   }, [updateStartupFacts]);
 
   const openPhotoSettings = useCallback(async (): Promise<void> => {
@@ -1030,11 +1135,6 @@ export function AppSessionProvider({
 
   const startTrip = useCallback(
     async (tripId: string): Promise<TripMutationResult> => {
-      // The ref is invalidated synchronously on entry/foreground/account changes.
-      // Keep this action stable: readiness state changes must not retrigger the
-      // lobby entry effect and create an endless permission-publish loop.
-      if (photoPermissionTripIdRef.current !== tripId)
-        throw unavailableSession();
       const current = binding("prepared");
       const cached = queryClient.getQueryData<TripView>(
         tripQueryKey(
@@ -1137,7 +1237,7 @@ export function AppSessionProvider({
   );
   const resolveDeviceRecovery = useCallback(
     async (tripId: string, requestId: string, approve: boolean) => {
-      const current = binding(approve ? "prepared" : "mutate");
+      const current = binding(approve ? "keys" : "mutate");
       if (!current.services.resolveDeviceRecovery) throw unavailableSession();
       const value = await current.services.resolveDeviceRecovery(
         tripId,
@@ -1146,13 +1246,23 @@ export function AppSessionProvider({
       );
       if (current.generation !== runGeneration.current)
         throw unavailableSession();
+      queryClient.setQueryData(
+        [
+          "trip-continuity",
+          current.queryScope.opaqueAccountScope,
+          current.queryScope.deviceId,
+          tripId,
+        ],
+        value,
+      );
       return value;
     },
-    [binding],
+    [binding, queryClient],
   );
 
   const actions = useMemo<TripSessionActions>(
     () => ({
+      checkPhotoAccess,
       getTripContinuity,
       ensureOwnerInvite,
       requestDeviceRecovery,
@@ -1172,6 +1282,7 @@ export function AppSessionProvider({
       start: startTrip,
     }),
     [
+      checkPhotoAccess,
       getTripContinuity,
       ensureOwnerInvite,
       requestDeviceRecovery,
@@ -1298,6 +1409,7 @@ export function AppSessionProvider({
       previousAccountId.current !== null &&
       previousAccountId.current !== authUserId;
     if (sessionChanged) {
+      setPendingTripPreview(null);
       previousAccountId.current = authUserId;
       provisioned.current = undefined;
       restored.current = undefined;
@@ -2028,7 +2140,8 @@ export function AppSessionProvider({
       loadTripProjection,
       ownerInviteCode: visibleOwnerInviteCode,
       pendingTripPreview:
-        resolvedSnapshot.phase === "READY_PENDING_APPROVAL"
+        resolvedSnapshot.phase === "READY_PENDING_APPROVAL" ||
+        resolvedSnapshot.phase === "READY_UNKNOWN_JOIN"
           ? pendingTripPreview
           : null,
       copyOwnerInvite,

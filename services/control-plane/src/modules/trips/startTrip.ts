@@ -292,9 +292,6 @@ export function createStartTrip(dependencies: StartTripDependencies) {
             actorIsOwner: caller.userId === trip.ownerUserId,
             actorUsesNominatedDevice:
               caller.participatingDeviceId === input.actor.deviceId,
-            allMembersReady: visibleMemberships.every(
-              (membership) => membership.fullPhotoLibraryAccess,
-            ),
             allNominatedDevicesActive: visibleMemberships.every(
               (membership) =>
                 devices.find(

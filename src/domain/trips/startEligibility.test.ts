@@ -99,7 +99,7 @@ describe("trip Start eligibility", () => {
     ]
   >([
     ["PENDING_KEY", false, "MISSING", "MEMBER_PENDING_KEY"],
-    ["ACTIVE", false, "MISSING", "MEMBER_NEEDS_FULL_ACCESS"],
+    ["ACTIVE", false, "MISSING", "MEMBER_DEVICE_MISSING"],
     ["ACTIVE", true, "MISSING", "MEMBER_DEVICE_MISSING"],
     ["ACTIVE", true, "NOT_DISCLOSED", "MEMBER_DEVICE_MISSING"],
   ])(
@@ -124,7 +124,7 @@ describe("trip Start eligibility", () => {
     ]
   >([
     ["PENDING_KEY", false, "MISSING", "MEMBER_PENDING_KEY"],
-    ["ACTIVE", false, "MISSING", "MEMBER_NEEDS_FULL_ACCESS"],
+    ["ACTIVE", false, "MISSING", "MEMBER_DEVICE_MISSING"],
     ["ACTIVE", true, "MISSING", "MEMBER_DEVICE_MISSING"],
   ])(
     "checks every participant for %s/readiness %s/device %s",
@@ -150,7 +150,7 @@ describe("trip Start eligibility", () => {
     },
   );
 
-  it("returns no blocker for a valid two-member Immediate lobby", () => {
+  it("allows approved members to start while photo sharing is paused on either device", () => {
     expect(
       startBlockerFor(
         trip({
@@ -161,6 +161,7 @@ describe("trip Start eligibility", () => {
               role: "MEMBER",
               displayName: "Member",
               isCurrentMember: false,
+              fullPhotoLibraryAccess: false,
             }),
           ],
         }),

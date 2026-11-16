@@ -266,6 +266,27 @@ describe("native identity and trip-key production policy", () => {
     }
   });
 
+  it("receives Android composite commands through the null-preserving ReadableMap bridge before closed decoding", () => {
+    const kotlin = read(
+      "modules/crewroll-transfer/android/src/main/java/com/uankit53/crewroll/transfer/CrewRollTransferModule.kt",
+    );
+    expect(kotlin).toContain("import com.facebook.react.bridge.ReadableMap");
+    for (const method of [
+      "importAndActivateTrip",
+      "importAndActivateTripWithAlbum",
+    ]) {
+      const body = asyncFunctionBlock(kotlin, method);
+      expect(body).toMatch(/rawCommand: ReadableMap, promise: Promise/);
+      const conversion = body.indexOf("val command = rawCommand.toHashMap()");
+      const decoder = body.indexOf("NativeCommandDecoder.require(command,");
+      const lifecycle = body.indexOf("lifecycle().importAndActivateTrip(");
+      expect(conversion).toBeGreaterThanOrEqual(0);
+      expect(decoder).toBeGreaterThan(conversion);
+      expect(lifecycle).toBeGreaterThan(decoder);
+      expect(body).not.toContain("filterValues");
+    }
+  });
+
   it("routes identity and trip shells through closed-object decoders and lowercase UUIDv7 trip validation", () => {
     const swift = read(
       "modules/crewroll-transfer/ios/CrewRollTransferModule.swift",

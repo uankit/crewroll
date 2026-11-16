@@ -146,7 +146,9 @@ export async function reconcileStartupTrip(
       result = await services.replayUnknownJoin();
     } catch (error) {
       check();
-      if (!(error instanceof JoinTripTerminalProblem)) throw error;
+      if (input.fatal(error)) throw error;
+      if (!(error instanceof JoinTripTerminalProblem))
+        return { kind: "UNKNOWN_JOIN" };
       joinRefusal = error;
     }
     check();

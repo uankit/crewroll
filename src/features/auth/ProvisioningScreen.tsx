@@ -2,7 +2,7 @@ import {
   AppText,
   BrandLoading,
   Button,
-  CrewRollWordmark,
+  CrewRollHeader,
   FlowScreen,
   Screen,
   Stack,
@@ -43,12 +43,9 @@ export function ProvisioningScreen(props: ProvisioningScreenProps) {
   return (
     <FlowScreen
       testID="provisioning-screen"
-      header={<CrewRollWordmark />}
-      title={
-        signingOut
-          ? "Finish signing out."
-          : (props.presentation?.title ?? "Restore this phone.")
-      }
+      pinnedHeader
+      pinnedFooter
+      header={<CrewRollHeader />}
       centerContent
       footer={
         <Stack gap="sm">
@@ -63,13 +60,20 @@ export function ProvisioningScreen(props: ProvisioningScreenProps) {
         </Stack>
       }
     >
-      <AppText
-        accessibilityRole="alert"
-        accessibilityLabel={failure}
-        tone="secondary"
-      >
-        {failure}
-      </AppText>
+      <Stack gap="sm">
+        <AppText accessibilityRole="header" variant="title1">
+          {signingOut
+            ? "Finish signing out."
+            : (props.presentation?.title ?? "Restore this phone.")}
+        </AppText>
+        <AppText
+          accessibilityRole="alert"
+          accessibilityLabel={failure}
+          tone="secondary"
+        >
+          {failure}
+        </AppText>
+      </Stack>
     </FlowScreen>
   );
 }

@@ -57,6 +57,111 @@ function envelopeProblem(): CrewRollApiProblem {
   return new CrewRollApiProblem("KEY_ENVELOPE_INVALID");
 }
 
+type ActivationStage =
+  | "envelope"
+  | "album-capability"
+  | "album-command"
+  | "composite-capability"
+  | "composite-command"
+  | "import-key"
+  | "activation";
+
+const activationErrorCodes = new Set([
+  "ERR_ARGUMENT_CAST",
+  "ERR_INVALID_ARGS_NUMBER",
+  "ERR_INCOMPATIBLE_ARG_TYPE",
+  "ERR_NULL_ARGUMENT",
+  "ERR_FUNCTION_CALL",
+  "ERR_UNEXPECTED",
+  "ERR_COLLECTION_ELEMENT_CAST",
+  "ERR_DYNAMIC_CAST",
+  "ERR_METHOD_NOT_FOUND",
+  "ERR_CREWROLL_NATIVE_PROTOCOL",
+  "ERR_CREWROLL_TRIP_ACTIVATION",
+  "KEY_ACCESS_LOCKED",
+  "KEY_MATERIAL_LOST",
+  "KEY_ENVELOPE_INVALID",
+  "KEY_ENVELOPE_MISSING",
+]);
+const activationBoundaryOperations = new Set([
+  "importAndActivateTripWithAlbum capability",
+  "importAndActivateTripWithAlbum data",
+  "importAndActivateTripWithAlbum command",
+  "importAndActivateTripWithAlbum context",
+  "importAndActivateTripWithAlbum result",
+  "importAndActivateTrip capability",
+  "importAndActivateTrip command",
+  "importAndActivateTrip context",
+  "importAndActivateTrip result",
+  "importTripKey command",
+  "activateTrip command",
+]);
+
+/** Failure telemetry is a closed vocabulary and never includes command data. */
+function reportActivationFailure(stage: ActivationStage, error: unknown) {
+  let code = "UNKNOWN";
+  let operation = "UNKNOWN";
+  let errorKind = "OTHER";
+  let messageClass = "OTHER";
+  try {
+    errorKind =
+      error instanceof TypeError
+        ? "TypeError"
+        : error instanceof RangeError
+          ? "RangeError"
+          : error instanceof Error
+            ? "Error"
+            : "OTHER";
+    if (error instanceof Error) {
+      const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+      if (typeof message === "string") {
+        if (/\bnull\b.*\bexpected\b.*\bobject\b/i.test(message))
+          messageClass = "NULL_EXPECTED_OBJECT";
+        else if (/read.?only|not writable|not extensible/i.test(message))
+          messageClass = "READ_ONLY_MUTATION";
+      }
+    }
+    if (error instanceof ImportedTripActivationFailed) {
+      code = "ERR_CREWROLL_TRIP_ACTIVATION";
+    } else if (error instanceof Error) {
+      const candidate = Object.getOwnPropertyDescriptor(error, "code")?.value;
+      if (typeof candidate === "string" && activationErrorCodes.has(candidate))
+        code = candidate;
+      if (
+        Object.getOwnPropertyDescriptor(error, "message")?.value ===
+        "Native session ended"
+      )
+        code = "NATIVE_SESSION_ENDED";
+      const boundary = Object.getOwnPropertyDescriptor(
+        error,
+        "operation",
+      )?.value;
+      if (
+        code === "ERR_CREWROLL_NATIVE_PROTOCOL" &&
+        typeof boundary === "string" &&
+        activationBoundaryOperations.has(boundary)
+      )
+        operation = boundary;
+    }
+  } catch {
+    // Exotic errors cannot expand the finite diagnostic payload.
+  }
+  try {
+    console.warn(
+      JSON.stringify({
+        event: "trip_activation_failed",
+        stage,
+        code,
+        operation,
+        errorKind,
+        messageClass,
+      }),
+    );
+  } catch {
+    // Diagnostics must preserve the original failure and retry behavior.
+  }
+}
+
 function hasValidLocalKeyContext(
   deviceId: string,
   identity: NativeDeviceIdentity,
@@ -120,7 +225,9 @@ export function createActivateObservedTrip(
     const view = safelyProject(response, device.deviceId);
     const envelope = response.tripKeyEnvelope;
     if (envelope === null) {
-      throw new TripActivationFailed("KEY_ENVELOPE_MISSING", view);
+      const failure = new TripActivationFailed("KEY_ENVELOPE_MISSING", view);
+      reportActivationFailure("envelope", failure);
+      throw failure;
     }
 
     const imported = Object.freeze({
@@ -144,9 +251,11 @@ export function createActivateObservedTrip(
       keyEpoch: 1,
     } as const);
 
+    let stage: ActivationStage = "album-capability";
     try {
       const withAlbum = native.importAndActivateTripWithAlbum;
       if (withAlbum !== undefined) {
+        stage = "album-command";
         await withAlbum.call(
           native,
           Object.freeze({
@@ -158,8 +267,10 @@ export function createActivateObservedTrip(
         );
         return view;
       }
+      stage = "composite-capability";
       const combined = native.importAndActivateTrip;
       if (combined !== undefined) {
+        stage = "composite-command";
         await combined.call(
           native,
           Object.freeze({
@@ -170,8 +281,10 @@ export function createActivateObservedTrip(
         );
         return view;
       }
+      stage = "import-key";
       await native.importTripKey(imported);
     } catch (error) {
+      reportActivationFailure(stage, error);
       if (error instanceof ImportedTripActivationFailed)
         throw new TripActivationFailed(internalProblem().code, view);
       throw new TripActivationFailed(
@@ -184,6 +297,7 @@ export function createActivateObservedTrip(
     try {
       await native.activateTrip(activation);
     } catch (error) {
+      reportActivationFailure("activation", error);
       throw new TripActivationFailed(
         internalProblem().code,
         view,

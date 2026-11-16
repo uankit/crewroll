@@ -4,6 +4,7 @@ import com.uankit53.crewroll.transfer.identitykeys.NativeKeyException
 import com.uankit53.crewroll.transfer.identitykeys.NativeKeyLifecycle
 import com.uankit53.crewroll.transfer.identitykeys.NativeCommandDecoder
 import com.uankit53.crewroll.transfer.identitykeys.NativeCommandKind
+import com.facebook.react.bridge.ReadableMap
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
@@ -235,8 +236,10 @@ class CrewRollTransferModule : Module() {
         null
       }
     }
-    AsyncFunction("importAndActivateTrip") { command: Map<String, Any?>, promise: Promise ->
+    AsyncFunction("importAndActivateTrip") { rawCommand: ReadableMap, promise: Promise ->
       future("importAndActivateTrip", promise, clearLeaseOnCompletion = false) { epoch ->
+        // SDK 57's generic Any converter cannot decode nested nulls.
+        val command = rawCommand.toHashMap()
         NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP)
         var imported = false
         try {
@@ -257,8 +260,10 @@ class CrewRollTransferModule : Module() {
         }
       }
     }
-    AsyncFunction("importAndActivateTripWithAlbum") { command: Map<String, Any?>, promise: Promise ->
+    AsyncFunction("importAndActivateTripWithAlbum") { rawCommand: ReadableMap, promise: Promise ->
       future("importAndActivateTripWithAlbum", promise, clearLeaseOnCompletion = false) { epoch ->
+        // SDK 57's generic Any converter cannot decode nested nulls.
+        val command = rawCommand.toHashMap()
         NativeCommandDecoder.require(command, NativeCommandKind.IMPORT_AND_ACTIVATE_TRIP_WITH_ALBUM)
         val album = NativeCommandDecoder.objectValue(command, "album")
         val legacy = command.filterKeys { it != "album" }

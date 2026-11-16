@@ -2298,6 +2298,37 @@ describe("start Trip command", () => {
     ]);
   });
 
+  it("starts and replays with an approved guest whose photo access is unavailable", async () => {
+    const test = await setupStart();
+    const guest = test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
+    if (guest === undefined) throw new Error("Missing approved guest");
+    test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
+      ...guest,
+      fullPhotoLibraryAccess: false,
+    });
+
+    const started = successful(await executeStart(test));
+    expect(started).toMatchObject({ status: "ACTIVE", version: 6 });
+    expect(
+      test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID),
+    ).toMatchObject({
+      state: "ACTIVE",
+      fullPhotoLibraryAccess: false,
+    });
+    const inboxes = test.harness.state.inboxes.length;
+    const outboxes = test.harness.state.outboxes.size;
+
+    const replayed = successful(await executeStart(test));
+    expect(replayed).toEqual(started);
+    expect(test.harness.state.trips.get(TRIP_ID)).toMatchObject({
+      startedAt: NOW,
+      state: "ACTIVE",
+      version: 6,
+    });
+    expect(test.harness.state.inboxes).toHaveLength(inboxes);
+    expect(test.harness.state.outboxes.size).toBe(outboxes);
+  });
+
   it.each([
     {
       code: "TRIP_OWNER_REQUIRED",
@@ -2314,7 +2345,7 @@ describe("start Trip command", () => {
         });
         return { actor: MEMBER_ACTOR, body: startBody(4) };
       },
-      name: "non-owner before all later state, version, key, and readiness failures",
+      name: "non-owner before all later state, version, and key failures",
     },
     {
       code: "DEVICE_NOT_PARTICIPANT",
@@ -2392,7 +2423,7 @@ describe("start Trip command", () => {
         );
         return { actor: ACTOR, body: startBody() };
       },
-      name: "pending membership before key, device, and readiness failures",
+      name: "pending membership before key and device failures",
     },
     {
       code: "KEY_ENVELOPE_MISSING",
@@ -2416,7 +2447,7 @@ describe("start Trip command", () => {
         );
         return { actor: ACTOR, body: startBody() };
       },
-      name: "missing key envelope before device and readiness failures",
+      name: "missing key envelope before device failure",
     },
     {
       code: "DEVICE_REVOKED",
@@ -2437,21 +2468,7 @@ describe("start Trip command", () => {
         });
         return { actor: ACTOR, body: startBody() };
       },
-      name: "revoked nominated device before readiness failure",
-    },
-    {
-      code: "PHOTO_LIBRARY_ACCESS_REQUIRED",
-      configure: (test: Awaited<ReturnType<typeof setupStart>>) => {
-        const membership =
-          test.harness.state.memberships.get(JOIN_MEMBERSHIP_ID);
-        if (membership === undefined) throw new Error("Missing member");
-        test.harness.state.memberships.set(JOIN_MEMBERSHIP_ID, {
-          ...membership,
-          fullPhotoLibraryAccess: false,
-        });
-        return { actor: ACTOR, body: startBody() };
-      },
-      name: "false readiness",
+      name: "revoked nominated device",
     },
   ])("applies eligibility precedence: $name", async ({ code, configure }) => {
     const test = await setupStart();
