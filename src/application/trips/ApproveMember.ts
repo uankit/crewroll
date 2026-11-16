@@ -15,11 +15,15 @@ import { userFacingProblems } from "../problems/userFacingProblem";
 import { TripTransportProblem } from "./CreateImmediateTrip";
 import type { ApproveMemberNativePort, TripApiPort } from "./ports";
 
-export type ApproveMemberResult = Readonly<{
+export type MemberResolutionReceipt = Readonly<{
   tripId: string;
   membershipId: string;
-  status: "ACTIVE";
+  status: "ACTIVE" | "REJECTED";
 }>;
+export type ApproveMemberResult = MemberResolutionReceipt &
+  Readonly<{ status: "ACTIVE" }>;
+export type RejectMemberResult = MemberResolutionReceipt &
+  Readonly<{ status: "REJECTED" }>;
 
 export type ApproveMemberDependencies = Readonly<{
   api: TripApiPort;

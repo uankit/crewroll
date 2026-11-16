@@ -14,11 +14,14 @@ import {
 import { HomeHeader } from "./HomeHeader";
 
 export function tripSummaryStatus(trip: TripSummary): string {
+  if (trip.status === "CANCELLED") return "Trip cancelled";
+  if (trip.status === "INCOMPLETE_EXPIRED") return "Trip ended";
   if (trip.participation === "LEAVING" || trip.status === "ENDING")
     return "Finishing sync";
   if (trip.participation === "JOINING") return "Waiting for approval";
   if (trip.status === "LOBBY") return "Gathering your crew";
-  return trip.sharingPaused ? "Your sharing is paused" : "Live now";
+  if (trip.status === "COMPLETE") return "Trip finished";
+  return trip.sharingPaused ? "Your sharing is paused" : "Trip is live";
 }
 export function TripLibraryScreen({
   accountControl,
@@ -62,11 +65,14 @@ export function TripLibraryScreen({
     current.participation === "JOINED" &&
     !current.sharingPaused;
   return (
-    <Screen testID="trip-library-screen" contentStyle={styles.content}>
-      <View style={styles.header}>
-        <HomeHeader accountControl={accountControl} />
+    <Screen
+      testID="trip-library-screen"
+      contentStyle={styles.content}
+      fixedHeader={<HomeHeader accountControl={accountControl} />}
+    >
+      <View style={styles.body}>
         <AppText accessibilityRole="header" variant="title1">
-          Your trips.
+          {current ? "Your trip" : "Your trips"}
         </AppText>
         {statusContent}
         {rejoinUnavailable ? (
@@ -80,86 +86,83 @@ export function TripLibraryScreen({
           </AppText>
         ) : null}
         {error ? (
-          <Stack gap="xs">
-            <AppText tone="critical">Your trips couldn’t refresh.</AppText>
-            <Button label="Try again" variant="text" onPress={onRetry} />
+          <Stack gap="sm">
+            <AppText tone="secondary">We couldn’t refresh your trips.</AppText>
+            <Button label="Refresh trips" onPress={onRetry} />
           </Stack>
         ) : refreshing && !current ? (
           <AppText tone="secondary">Loading your trips…</AppText>
         ) : null}
         {current ? (
-          <Stack gap="sm">
-            <AppText variant="eyebrow" tone="secondary">
-              CURRENT TRIP
-            </AppText>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${current.name}`}
-              disabled={!canOpenTrip(current)}
-              onPress={() => onOpenTrip(current)}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${current.name}`}
+            accessibilityHint={
+              current.onThisDevice
+                ? tripSummaryStatus(current)
+                : "Review this trip and confirm your phone."
+            }
+            disabled={!canOpenTrip(current)}
+            onPress={() => onOpenTrip(current)}
+            style={[
+              styles.tripRow,
+              {
+                borderColor: theme.border,
+                backgroundColor: theme.surface,
+              },
+            ]}
+          >
+            <View
               style={[
-                styles.tripRow,
+                styles.currentAccent,
                 {
-                  borderBottomColor: theme.border,
+                  backgroundColor: live ? theme.success : theme.textSecondary,
                 },
               ]}
-            >
-              <View
-                style={[
-                  styles.currentAccent,
-                  {
-                    backgroundColor: live ? theme.success : theme.textSecondary,
-                  },
-                ]}
-              />
-              <View style={styles.details}>
-                <View style={styles.row}>
-                  <AppText variant="headline" style={styles.name}>
-                    {current.name}
-                  </AppText>
-                  {live ? (
-                    <AppText variant="caption" style={{ color: theme.success }}>
-                      Live
-                    </AppText>
-                  ) : null}
-                </View>
-                <AppText variant="caption" tone="secondary">
-                  {current.memberCount}{" "}
-                  {current.memberCount === 1 ? "person" : "people"} ·{" "}
-                  {current.savedPhotoCount} photos
+            />
+            <View style={styles.details}>
+              <View style={styles.row}>
+                <AppText variant="headline" style={styles.name}>
+                  {current.name}
                 </AppText>
-                {!live ? (
-                  <AppText variant="caption" tone="secondary">
-                    {!sharingReady &&
-                    current.onThisDevice &&
-                    current.status === "ACTIVE" &&
-                    current.participation === "JOINED" &&
-                    !current.sharingPaused
-                      ? "Sharing is not ready on this phone"
-                      : tripSummaryStatus(current)}
+                {live ? (
+                  <AppText variant="caption" style={{ color: theme.success }}>
+                    Live
                   </AppText>
                 ) : null}
               </View>
-              <AppText tone="secondary">›</AppText>
-            </Pressable>
-          </Stack>
+              <AppText variant="caption" tone="secondary">
+                {current.memberCount}{" "}
+                {current.memberCount === 1 ? "person" : "people"} ·{" "}
+                {current.savedPhotoCount} photos
+              </AppText>
+              {!live ? (
+                <AppText variant="caption" tone="secondary">
+                  {!current.onThisDevice
+                    ? "Continue on this phone"
+                    : tripSummaryStatus(current)}
+                </AppText>
+              ) : null}
+            </View>
+            <AppText tone="secondary">›</AppText>
+          </Pressable>
         ) : null}
       </View>
-      <View style={styles.footer}>
-        <Button
-          label="Start a new trip"
-          disabled={!canStartTrip}
-          onPress={onCreateTrip}
-        />
-        {!current ? (
+      {!current ? (
+        <View style={styles.footer}>
+          <Button
+            label="Start a new trip"
+            disabled={!canStartTrip}
+            onPress={onCreateTrip}
+          />
           <Button
             label="Enter invite code"
             variant="text"
             disabled={!canStartTrip}
             onPress={onJoinTrip}
           />
-        ) : null}
-      </View>
+        </View>
+      ) : null}
     </Screen>
   );
 }
@@ -168,7 +171,12 @@ function allowOpen() {
 }
 const styles = StyleSheet.create({
   content: { paddingTop: spacing.xs, paddingBottom: spacing.xs },
-  header: { flex: 1, gap: spacing.lg, paddingBottom: spacing.sm },
+  body: {
+    flex: 1,
+    justifyContent: "center",
+    gap: spacing.lg,
+    paddingVertical: spacing.lg,
+  },
   footer: { gap: spacing.xs, paddingTop: spacing.lg },
   row: {
     flexDirection: "row",
@@ -178,8 +186,9 @@ const styles = StyleSheet.create({
   },
   tripRow: {
     minHeight: 80,
-    paddingVertical: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    padding: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.lg,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,

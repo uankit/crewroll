@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { CrewRollWordmark, LiveStatus, Screen, Stack } from "../design-system";
+import { CrewRollHeader, FlowScreen, LiveStatus } from "../design-system";
 
 /** Authentication/loading does not establish a network failure. */
 export function SessionLoadingScreen({
@@ -13,20 +13,22 @@ export function SessionLoadingScreen({
   }, []);
 
   return (
-    <Screen scroll={false} testID="launch-busy">
-      <Stack gap="lg" justify="center" style={{ flex: 1 }}>
-        <CrewRollWordmark />
-        <LiveStatus
-          icon="…"
-          label={slow ? "Still opening CrewRoll" : "Opening CrewRoll"}
-          message={
-            slow
-              ? "This is taking longer than expected. You can close and reopen CrewRoll; your saved trip data stays on this phone."
-              : message
-          }
-          testID="launch-status"
-        />
-      </Stack>
-    </Screen>
+    <FlowScreen
+      testID="launch-busy"
+      pinnedHeader
+      header={<CrewRollHeader />}
+      centerContent
+    >
+      <LiveStatus
+        icon="…"
+        label={slow ? "Still opening CrewRoll" : "Opening CrewRoll"}
+        message={
+          slow
+            ? "This is taking longer than expected. You can close and reopen CrewRoll; your saved trip data stays on this phone."
+            : message
+        }
+        testID="launch-status"
+      />
+    </FlowScreen>
   );
 }

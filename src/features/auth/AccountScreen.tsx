@@ -1,5 +1,4 @@
 import { Image } from "expo-image";
-import { LegalLinks } from "./LegalLinks";
 import { useEffect } from "react";
 import {
   Keyboard,
@@ -13,6 +12,7 @@ import {
 import {
   AppText,
   Button,
+  CrewRollHeader,
   TextField,
   useCrewRollTheme,
   FlowScreen,
@@ -66,6 +66,19 @@ function AccountContents({
   onBack,
 }: Readonly<{ flow: AccountFlow; onBack: () => void }>) {
   const theme = useCrewRollTheme();
+  const header = (
+    <CrewRollHeader>
+      <Button
+        label="‹ Back"
+        accessibilityLabel="Back"
+        variant="text"
+        onPress={
+          flow.passwordRequired || flow.verifying ? flow.editEmail : onBack
+        }
+        style={{ alignSelf: "flex-start" }}
+      />
+    </CrewRollHeader>
+  );
   const error = flow.error ? (
     <AppText accessibilityRole="alert" tone="critical" variant="label">
       {flow.error}
@@ -75,10 +88,10 @@ function AccountContents({
     return (
       <FlowScreen
         testID="password-screen"
-        label="Your account"
-        title="Welcome back."
-        description={flow.email}
-        onBack={flow.editEmail}
+        pinnedHeader
+        pinnedFooter
+        header={header}
+        centerContent
         footer={
           <Button
             label="Sign in"
@@ -88,6 +101,12 @@ function AccountContents({
           />
         }
       >
+        <View style={styles.intro}>
+          <AppText accessibilityRole="header" variant="title1">
+            Welcome back.
+          </AppText>
+          <AppText tone="secondary">{flow.email}</AppText>
+        </View>
         <View style={styles.form}>
           <TextField
             label="Password"
@@ -116,8 +135,10 @@ function AccountContents({
     return (
       <FlowScreen
         testID="verification-screen"
-        label="Verify email"
-        onBack={flow.editEmail}
+        pinnedHeader
+        pinnedFooter
+        header={header}
+        centerContent
         footer={
           <>
             <Button
@@ -227,12 +248,21 @@ function AccountContents({
   return (
     <FlowScreen
       testID="account-screen"
-      title="Good times start here."
-      description="Sign in or create your account."
-      label="Your account"
-      onBack={onBack}
-      footer={<LegalLinks />}
+      centerContent
+      pinnedHeader
+      pinnedFooter
+      header={header}
+      footer={
+        <Button
+          label="Continue with email"
+          loading={flow.busy}
+          onPress={() => void flow.submitEmail()}
+        />
+      }
     >
+      <AppText accessibilityRole="header" variant="title1">
+        Sign in or create an account
+      </AppText>
       <View style={styles.intro}>
         <Button
           label="Continue with Google"
@@ -284,11 +314,6 @@ function AccountContents({
           returnKeyType="go"
         />
         {error}
-        <Button
-          label="Continue with email"
-          loading={flow.busy}
-          onPress={() => void flow.submitEmail()}
-        />
       </View>
     </FlowScreen>
   );
@@ -300,7 +325,6 @@ const styles = StyleSheet.create({
   providerIcon: { width: 20, height: 20 },
   divider: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   line: { height: 1, flex: 1, maxWidth: 94 },
-  terms: { textAlign: "center" },
   emailIcon: {
     width: 72,
     height: 72,

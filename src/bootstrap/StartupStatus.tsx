@@ -13,15 +13,23 @@ export function StartupStatus({
 }>) {
   if (startup.status === "ready") return null;
   const copy = startupPresentation(startup);
+  const activationFailure = startup.error?.code === "TRIP_ACTIVATION_FAILED";
   return (
     <Stack gap="xs" testID="startup-status">
       {startup.status === "failed" ? (
         <>
-          <AppText accessibilityRole="alert" tone="critical">
+          <AppText accessibilityRole="header" variant="headline">
+            {copy.title}
+          </AppText>
+          <AppText accessibilityRole="alert" tone="secondary">
             {copy.message}
           </AppText>
           {showRetry ? (
-            <Button label="Try again" variant="text" onPress={onRetry} />
+            <Button
+              label={activationFailure ? "Reconnect sharing" : "Try again"}
+              variant={activationFailure ? "primary" : "secondary"}
+              onPress={onRetry}
+            />
           ) : null}
         </>
       ) : (

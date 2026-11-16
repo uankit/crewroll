@@ -1148,6 +1148,37 @@ describe("metadata-only selected trip capability", () => {
 
 describe("optional trip album composite boundary", () => {
   const command = { ...combinedCommand, album: { tripName: "Jodhpur 👰" } };
+  it("logs only the dispatch stage and preserves activation if logging fails", async () => {
+    const log = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const operation = jest.fn().mockResolvedValue(undefined);
+      const native = nativeModule({
+        importAndActivateTripWithAlbum: operation,
+      });
+      const port = createCrewRollTransferPort(() => native.module);
+      await port.importAndActivateTripWithAlbum!(command);
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: "trip_activation_boundary",
+          operation: "importAndActivateTripWithAlbum",
+          stage: "native-dispatch",
+        }),
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(
+        /Jodhpur|018f0d98|wrappedKey/,
+      );
+      log.mockImplementationOnce(() => {
+        throw new Error("private logging failure");
+      });
+      await expect(
+        port.importAndActivateTripWithAlbum!(command),
+      ).resolves.toBeUndefined();
+      expect(operation).toHaveBeenCalledTimes(2);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("discovers lazily and permits fallback only for an absent capability", () => {
     const load = jest.fn(() => nativeModule().module);
     const port = createCrewRollTransferPort(load);

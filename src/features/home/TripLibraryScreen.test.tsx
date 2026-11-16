@@ -46,7 +46,7 @@ it("ignores cached departed rows while keeping the current trip usable", async (
     view.getByRole("button", { name: "Open Current trip" }),
   );
   expect(onOpenTrip).toHaveBeenCalledWith(current);
-  expect(view.getByRole("button", { name: "Start a new trip" })).toBeDisabled();
+  expect(view.queryByRole("button", { name: "Start a new trip" })).toBeNull();
 });
 
 it("allows create and join when a stale payload contains only departed memberships", async () => {
@@ -89,9 +89,9 @@ it("keeps the current trip and retry state when its refresh fails", async () => 
     view.getByRole("button", { name: "Open Current trip" }),
   );
   expect(onOpenTrip).toHaveBeenCalledWith(current);
-  await fireEvent.press(view.getByRole("button", { name: "Try again" }));
+  await fireEvent.press(view.getByRole("button", { name: "Refresh trips" }));
   expect(onRetry).toHaveBeenCalledTimes(1);
-  expect(view.getByRole("button", { name: "Start a new trip" })).toBeDisabled();
+  expect(view.queryByRole("button", { name: "Start a new trip" })).toBeNull();
   expect(view.queryByText(departed.name)).toBeNull();
 });
 
@@ -112,7 +112,9 @@ it("shows current metadata during preparation with guarded actions", async () =>
   );
   view.getByText("Preparing photo sharing");
   view.getByText("Current trip");
-  view.getByText("Sharing is not ready on this phone");
+  // An unchecked permission keeps sharing guarded without claiming failure.
+  view.getByText("Trip is live");
+  expect(view.queryByText("Sharing is not ready on this phone")).toBeNull();
   expect(view.queryByText("Live")).toBeNull();
   const button = view.getByRole("button", { name: "Open Current trip" });
   expect(button).toBeDisabled();
@@ -125,6 +127,19 @@ it.each([
   { status: "ENDING", participation: "LEAVING", label: "Finishing sync" },
   { status: "ENDING", participation: "JOINED", label: "Finishing sync" },
   { status: "ACTIVE", participation: "JOINING", label: "Waiting for approval" },
+  { status: "COMPLETE", participation: "JOINED", label: "Trip finished" },
+  { status: "CANCELLED", participation: "JOINED", label: "Trip cancelled" },
+  { status: "CANCELLED", participation: "JOINING", label: "Trip cancelled" },
+  {
+    status: "INCOMPLETE_EXPIRED",
+    participation: "JOINED",
+    label: "Trip ended",
+  },
+  {
+    status: "INCOMPLETE_EXPIRED",
+    participation: "LEAVING",
+    label: "Trip ended",
+  },
 ] as const)(
   "retains operational membership controls: %j",
   async ({ label, ...state }) => {
@@ -144,9 +159,7 @@ it.each([
       view.getByRole("button", { name: "Open Current trip" }),
     );
     expect(open).toHaveBeenCalledWith(trip);
-    expect(
-      view.getByRole("button", { name: "Start a new trip" }),
-    ).toBeDisabled();
+    expect(view.queryByRole("button", { name: "Start a new trip" })).toBeNull();
     expect(view.queryByText(departed.name)).toBeNull();
   },
 );

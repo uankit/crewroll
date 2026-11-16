@@ -3,6 +3,7 @@ import { Linking, StyleSheet } from "react-native";
 import {
   AppText,
   Button,
+  CrewRollHeader,
   FlowScreen,
   Stack,
   useCrewRollTheme,
@@ -23,6 +24,17 @@ export function TermsScreen({
 }>) {
   const theme = useCrewRollTheme();
   const [linkError, setLinkError] = useState(false);
+  const header = (
+    <CrewRollHeader>
+      <Button
+        label="‹ Back"
+        accessibilityLabel="Back"
+        variant="text"
+        onPress={onBack}
+        style={{ alignSelf: "flex-start" }}
+      />
+    </CrewRollHeader>
+  );
   const open = (path: string) => {
     setLinkError(false);
     void Linking.openURL(`https://crewroll.app/${path}`).catch(() =>
@@ -34,8 +46,9 @@ export function TermsScreen({
   if (error || linkError)
     return (
       <FlowScreen
-        label="Before you share"
-        onBack={onBack}
+        pinnedHeader
+        pinnedFooter
+        header={header}
         centerContent
         footer={
           <Button
@@ -65,8 +78,9 @@ export function TermsScreen({
     );
   return (
     <FlowScreen
-      label="Before you share"
-      onBack={onBack}
+      pinnedHeader
+      pinnedFooter
+      header={header}
       centerContent
       footer={
         <Button label="Agree & continue" loading={busy} onPress={onAccept} />

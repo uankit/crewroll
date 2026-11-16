@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react-native";
+import { fireEvent, render, within } from "@testing-library/react-native";
 import type { ComponentProps, PropsWithChildren } from "react";
 import { StyleSheet, View } from "react-native";
 
@@ -15,7 +15,14 @@ import {
   TransferHealthCard,
   TripSummaryCard,
 } from "./index";
-import { CrewRollThemeProvider, darkColors, spacing } from "../index";
+import { FlowScreen } from "./FlowScreen";
+import {
+  AppText,
+  Button,
+  CrewRollThemeProvider,
+  darkColors,
+  spacing,
+} from "../index";
 
 type ThemeHarnessProps = PropsWithChildren<{
   readonly scheme?: "light" | "dark";
@@ -60,6 +67,72 @@ const waitingStatus = {
 } as const;
 
 describe("CrewRoll product composites", () => {
+  test.each([false, true])(
+    "FlowScreen keeps a single account header with pinnedHeader=%s",
+    async (pinnedHeader) => {
+      const openAccount = jest.fn();
+      const view = await render(
+        <ThemeHarness>
+          <FlowScreen
+            testID="header-flow"
+            pinnedHeader={pinnedHeader}
+            header={<Button label="Your account" onPress={openAccount} />}
+          >
+            <AppText>Scrollable trip content</AppText>
+          </FlowScreen>
+        </ThemeHarness>,
+      );
+      expect(
+        view.getAllByRole("button", { name: "Your account" }),
+      ).toHaveLength(1);
+      const content = within(view.getByTestId("header-flow-scroll"));
+      content.getByText("Scrollable trip content");
+      expect(
+        content.queryByRole("button", { name: "Your account" }) === null,
+      ).toBe(pinnedHeader);
+      await fireEvent.press(view.getByRole("button", { name: "Your account" }));
+      expect(openAccount).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([false, true])(
+    "FlowScreen renders one working footer with pinnedFooter=%s and preserves its scroll body",
+    async (pinnedFooter) => {
+      const submit = jest.fn();
+      const screen = await render(
+        <ThemeHarness>
+          <FlowScreen
+            testID="footer-flow"
+            pinnedHeader
+            pinnedFooter={pinnedFooter}
+            header={<AppText>Fixed account header</AppText>}
+            footer={<Button label="Submit form" onPress={submit} />}
+          >
+            <AppText>Scrollable form fields</AppText>
+          </FlowScreen>
+        </ThemeHarness>,
+      );
+
+      expect(
+        screen.getAllByRole("button", { name: "Submit form" }),
+      ).toHaveLength(1);
+      const body = within(screen.getByTestId("footer-flow-scroll"));
+      body.getByText("Scrollable form fields");
+      expect(body.queryByText("Fixed account header")).toBeNull();
+      expect(body.queryByRole("button", { name: "Submit form" }) === null).toBe(
+        pinnedFooter,
+      );
+      within(screen.getByTestId("footer-flow-keyboard-area")).getByRole(
+        "button",
+        { name: "Submit form" },
+      );
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Submit form" }),
+      );
+      expect(submit).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("renders the wordmark and member identity inventory with scalable copy and list semantics", async () => {
     const screen = await render(
       <ThemeHarness scheme="dark">

@@ -16,6 +16,8 @@ android {
 }
 
 dependencies {
+  // React Native supplies ReadableMap in the host; Expo core does not export it.
+  compileOnly 'com.facebook.react:react-android'
   // SDK 57 autolinking may use a precompiled publication instead of a source project.
   implementation expoModule.getExpoDependency('expo-notifications')
   implementation 'com.google.firebase:firebase-messaging:25.0.1'

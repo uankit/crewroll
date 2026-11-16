@@ -88,6 +88,209 @@ function harness(response: TripResponse = activeResponse()) {
   return { native, response, service };
 }
 
+describe("bounded activation diagnostics", () => {
+  it.each([
+    "ERR_ARGUMENT_CAST",
+    "ERR_INVALID_ARGS_NUMBER",
+    "ERR_INCOMPATIBLE_ARG_TYPE",
+    "ERR_NULL_ARGUMENT",
+    "ERR_FUNCTION_CALL",
+    "ERR_UNEXPECTED",
+    "ERR_COLLECTION_ELEMENT_CAST",
+    "ERR_DYNAMIC_CAST",
+    "ERR_METHOD_NOT_FOUND",
+  ])(
+    "retains the known Expo bridge code %s without native detail",
+    async (code) => {
+      const log = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { native } = harness();
+        native.importTripKey.mockRejectedValueOnce(
+          Object.assign(new Error(`private ${wrappedKey}`), { code }),
+        );
+        const service = createActivateObservedTrip({
+          device: { deviceId, identity },
+          native,
+        });
+        await expect(
+          service.activateObserved(activeResponse()),
+        ).rejects.toBeInstanceOf(TripActivationFailed);
+        expect(log).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "trip_activation_failed",
+            stage: "import-key",
+            code,
+            operation: "UNKNOWN",
+            errorKind: "Error",
+            messageClass: "OTHER",
+          }),
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toContain(wrappedKey);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    [
+      new TypeError("Value is null, expected an Object"),
+      "TypeError",
+      "NULL_EXPECTED_OBJECT",
+    ],
+    [
+      new TypeError("Cannot assign to read only property 'private'"),
+      "TypeError",
+      "READ_ONLY_MUTATION",
+    ],
+    [new RangeError("private range detail"), "RangeError", "OTHER"],
+    [new Error("private native detail"), "Error", "OTHER"],
+    [{ name: "TypeError", message: "private object detail" }, "OTHER", "OTHER"],
+  ])(
+    "classifies a bridge failure without emitting its message %#",
+    async (failure, errorKind, messageClass) => {
+      const log = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { native } = harness();
+        native.importTripKey.mockRejectedValueOnce(failure);
+        const service = createActivateObservedTrip({
+          device: { deviceId, identity },
+          native,
+        });
+        await expect(
+          service.activateObserved(activeResponse()),
+        ).rejects.toBeInstanceOf(TripActivationFailed);
+        expect(log).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "trip_activation_failed",
+            stage: "import-key",
+            code: "UNKNOWN",
+            operation: "UNKNOWN",
+            errorKind,
+            messageClass,
+          }),
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toMatch(
+          /private|expected an/,
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["capability", "importAndActivateTripWithAlbum capability"],
+    ["command", "importAndActivateTripWithAlbum data"],
+    ["command", "importAndActivateTripWithAlbum command"],
+    ["command", "importAndActivateTripWithAlbum context"],
+    ["command", "importAndActivateTripWithAlbum result"],
+  ] as const)(
+    "reports the finite album %s failure at %s",
+    async (step, operation) => {
+      const log = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const failure = Object.assign(new Error("private envelope and path"), {
+          code: "ERR_CREWROLL_NATIVE_PROTOCOL",
+          operation,
+          wrappedKey,
+        });
+        const { native } = harness();
+        Object.defineProperty(native, "importAndActivateTripWithAlbum", {
+          get: () => {
+            if (step === "capability") throw failure;
+            return async () => {
+              throw failure;
+            };
+          },
+        });
+        const service = createActivateObservedTrip({
+          device: { deviceId, identity },
+          native,
+        });
+        await expect(
+          service.activateObserved(activeResponse()),
+        ).rejects.toBeInstanceOf(TripActivationFailed);
+        expect(log).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "trip_activation_failed",
+            stage: `album-${step}`,
+            code: "ERR_CREWROLL_NATIVE_PROTOCOL",
+            operation,
+            errorKind: "Error",
+            messageClass: "OTHER",
+          }),
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toMatch(
+          /private|wrappedKey|018f0d98|0191a203/,
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it("classifies a stale session and discards private error payloads and accessors", async () => {
+    const log = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const getter = jest.fn(() => "private getter payload");
+    try {
+      const failures = [
+        new Error("Native session ended"),
+        Object.assign(new Error("private native detail"), {
+          code: "KEY_MATERIAL_LOST",
+          operation: "private operation",
+          wrappedKey,
+        }),
+        Object.assign(new Error("private native detail"), {
+          code: "private code",
+          operation: "private operation",
+          wrappedKey,
+        }),
+        Object.defineProperties(new Error("private native detail"), {
+          code: { get: getter },
+          operation: { get: getter },
+        }),
+        { code: "KEY_MATERIAL_LOST", message: "private object detail" },
+      ];
+      const { native } = harness();
+      for (const failure of failures) {
+        native.importTripKey.mockRejectedValueOnce(failure);
+        const service = createActivateObservedTrip({
+          device: { deviceId, identity },
+          native,
+        });
+        await expect(
+          service.activateObserved(activeResponse()),
+        ).rejects.toBeInstanceOf(TripActivationFailed);
+      }
+      expect(
+        log.mock.calls.map(([line]) => JSON.parse(line as string)),
+      ).toEqual(
+        [
+          "NATIVE_SESSION_ENDED",
+          "KEY_MATERIAL_LOST",
+          "UNKNOWN",
+          "UNKNOWN",
+          "UNKNOWN",
+        ].map((code, index) => ({
+          event: "trip_activation_failed",
+          stage: "import-key",
+          code,
+          operation: "UNKNOWN",
+          errorKind: index === 4 ? "OTHER" : "Error",
+          messageClass: "OTHER",
+        })),
+      );
+      expect(getter).not.toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(
+        /private|wrappedKey|018f0d98|0191a203/,
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
 describe("ActivateObservedTrip.activateObserved", () => {
   it("imports the caller envelope then activates while ignoring another member's redacted nomination", async () => {
     const { native, response, service } = harness();

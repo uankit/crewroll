@@ -5,6 +5,7 @@ import {
 import { TripNotificationsSheet } from "@/bootstrap/TripNotificationsSheet";
 import { TripInfoSheet } from "@/bootstrap/TripInfoSheet";
 import { StartupStatus } from "@/bootstrap/StartupStatus";
+import { AccountMenu } from "@/bootstrap/AccountMenu";
 import { useTripContinuity } from "@/bootstrap/useTripContinuity";
 import {
   Redirect,
@@ -135,6 +136,39 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     id: string;
     message: string;
   } | null>(null);
+  const [acceptedMembers, setAcceptedMembers] = useState<{
+    scope: typeof session.queryScope;
+    tripId: string;
+    approved: readonly string[];
+    declined: readonly string[];
+  } | null>(null);
+  const scopedDecisions =
+    acceptedMembers?.scope === session.queryScope &&
+    acceptedMembers.tripId === tripId
+      ? acceptedMembers
+      : null;
+  const approvedIds = scopedDecisions?.approved ?? [];
+  const declinedIds = scopedDecisions?.declined ?? [];
+  function acknowledgeMember(id: string, status: "ACTIVE" | "REJECTED") {
+    setAcceptedMembers((current) => {
+      const existing =
+        current?.scope === session.queryScope && current.tripId === tripId
+          ? current
+          : null;
+      return {
+        scope: session.queryScope,
+        tripId,
+        approved:
+          status === "ACTIVE"
+            ? [...(existing?.approved ?? []), id]
+            : (existing?.approved ?? []),
+        declined:
+          status === "REJECTED"
+            ? [...(existing?.declined ?? []), id]
+            : (existing?.declined ?? []),
+      };
+    });
+  }
   const resolvingMember = useRef(false);
   async function resolveMember(id: string, approve: boolean) {
     if (
@@ -147,18 +181,21 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
     setMemberBusy({ id, action: approve ? "approve" : "decline" });
     setMemberError(null);
     try {
-      if (approve) await actions.approve(tripId, id);
-      else await actions.reject(tripId, id);
-      void projection.refresh();
+      const receipt = approve
+        ? await actions.approve(tripId, id)
+        : await actions.reject(tripId, id);
+      acknowledgeMember(receipt.membershipId, receipt.status);
     } catch {
       setMemberError({
         id,
         message: "The request couldn’t be updated. Try again.",
       });
+      return;
     } finally {
       resolvingMember.current = false;
       setMemberBusy(null);
     }
+    void projection.refresh().catch(() => undefined);
   }
 
   if (projection.failed) {
@@ -223,6 +260,7 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
   return (
     <>
       <LobbyScreen
+        accountControl={<AccountMenu />}
         scrollRestoration={{
           key: JSON.stringify([tripId, filters, gallery.cursor]),
           offsetY: galleryCache.getScrollY(),
@@ -249,6 +287,8 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
               memberRequests: {
                 busy: memberBusy,
                 error: memberError,
+                approvedIds,
+                declinedIds,
                 onResolve: (id: string, approve: boolean) =>
                   void resolveMember(id, approve),
               },
@@ -259,7 +299,9 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         deviceRequestCount={continuity.data?.approvalRequests.length ?? 0}
         transferContent={
           session.capabilities.canReadLibrary &&
-          (activation?.kind === "ready" || trip.status === "ENDING") ? (
+          (activation?.kind === "ready" ||
+            trip.status === "ENDING" ||
+            photoCount > 0) ? (
             <ActiveTripTransfers
               {...(trip.members.find((m) => m.isCurrentMember)?.membershipId
                 ? {
@@ -327,7 +369,12 @@ function TripLobby({ tripId }: Readonly<{ tripId: string }>) {
         <TripNotificationsSheet
           trip={trip}
           onDismiss={() => setNotificationsOpen(false)}
-          onChanged={() => void projection.refresh()}
+          resolvedMemberIds={[...approvedIds, ...declinedIds]}
+          onChanged={(receipt) => {
+            if (receipt)
+              acknowledgeMember(receipt.membershipId, receipt.status);
+            return projection.refresh();
+          }}
         />
       ) : null}
       {infoOpen ? (

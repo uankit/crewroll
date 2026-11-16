@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, within } from "@testing-library/react-native";
 import { createRef, type PropsWithChildren, type ReactNode } from "react";
 import { StyleSheet, type TextInput, View } from "react-native";
 
@@ -356,5 +356,46 @@ describe("design-system primitives", () => {
     ).toEqual(
       expect.objectContaining({ backgroundColor: darkColors.background }),
     );
+    expect(fixed.queryByTestId("fixed-screen-scroll")).toBeNull();
+    expect(fixed.queryByTestId("fixed-screen-keyboard-area")).toBeNull();
   });
+
+  test.each([true, false])(
+    "Screen keeps fixed actions in the keyboard area and header outside it with scroll=%s",
+    async (scroll) => {
+      const submit = jest.fn();
+      const screen = await render(
+        <ThemeHarness>
+          <Screen
+            testID="form-screen"
+            scroll={scroll}
+            fixedHeader={<AppText>Account header</AppText>}
+            fixedFooter={<Button label="Continue" onPress={submit} />}
+          >
+            <TextField label="Email" value="" onChangeText={jest.fn()} />
+          </Screen>
+        </ThemeHarness>,
+      );
+
+      expect(screen.getAllByText("Account header")).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(
+        1,
+      );
+      const keyboardArea = within(
+        screen.getByTestId("form-screen-keyboard-area"),
+      );
+      keyboardArea.getByLabelText("Email");
+      keyboardArea.getByRole("button", { name: "Continue" });
+      expect(keyboardArea.queryByText("Account header")).toBeNull();
+      if (scroll) {
+        const body = within(screen.getByTestId("form-screen-scroll"));
+        body.getByLabelText("Email");
+        expect(body.queryByRole("button", { name: "Continue" })).toBeNull();
+      } else {
+        expect(screen.queryByTestId("form-screen-scroll")).toBeNull();
+      }
+      await fireEvent.press(screen.getByRole("button", { name: "Continue" }));
+      expect(submit).toHaveBeenCalledTimes(1);
+    },
+  );
 });

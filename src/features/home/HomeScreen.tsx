@@ -1,6 +1,6 @@
 import { toUserFacingProblem } from "../../application/problems/userFacingProblem";
 import type { ReactNode } from "react";
-import type { TripInvitePreview } from "../../domain/trips/model";
+
 import { Image } from "expo-image";
 import { StyleSheet, View } from "react-native";
 
@@ -11,7 +11,7 @@ import {
   FlowScreen,
   spacing,
   radius,
-  onboardingGeometry,
+  Stack,
 } from "../../design-system";
 import { HomeHeader } from "./HomeHeader";
 
@@ -20,13 +20,13 @@ export type HomeScreenState =
   | Readonly<{ kind: "loading" }>
   | Readonly<{ kind: "failed"; onRetry: () => void; retrying?: boolean }>
   | Readonly<{
-      kind: "unknown-create" | "unknown-join" | "pending-approval";
+      kind: "unknown-create";
       onRecover: () => void;
       recovering?: boolean;
-      preview?: TripInvitePreview | null;
     }>;
 
 export type HomeScreenProps = Readonly<{
+  invitation?: ReactNode;
   inviteUnavailable?: boolean;
   rejoinUnavailable?: boolean;
   accountControl?: ReactNode;
@@ -37,58 +37,8 @@ export type HomeScreenProps = Readonly<{
   state?: HomeScreenState;
 }>;
 
-function CrewConstellation() {
-  const colors = useCrewRollTheme();
-  return (
-    <View
-      accessible
-      accessibilityLabel="Everyone’s view. One shared roll."
-      style={styles.constellation}
-    >
-      <Image
-        source={require("../../../assets/onboarding/crew-connections.svg")}
-        style={styles.connections}
-        contentFit="fill"
-      />
-      <View style={[styles.center, { backgroundColor: colors.accentSurface }]}>
-        <Image
-          source={require("../../../assets/onboarding/crew-center.svg")}
-          style={{ width: 52, height: 52 }}
-        />
-      </View>
-      {(
-        [
-          { label: "A", left: "7.5%", top: 32 },
-          { label: "R", left: "77.4%", top: 32 },
-          { label: "M", left: "19.7%", top: 180 },
-          { label: "+2", left: "65.2%", top: 180 },
-        ] as const
-      ).map(({ label, left, top }) => (
-        <View
-          key={label}
-          style={[
-            styles.avatar,
-            {
-              left,
-              top,
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <AppText variant="label" tone="action">
-            {label}
-          </AppText>
-        </View>
-      ))}
-      <AppText variant="bodyStrong" style={styles.caption}>
-        Everyone’s view. One shared roll.
-      </AppText>
-    </View>
-  );
-}
-
 export function HomeScreen({
+  invitation,
   inviteUnavailable = false,
   rejoinUnavailable = false,
   accountControl,
@@ -99,138 +49,105 @@ export function HomeScreen({
   state = { kind: "no-trip" },
 }: HomeScreenProps) {
   const colors = useCrewRollTheme();
-  if (state.kind !== "no-trip") {
-    const pending = state.kind === "pending-approval";
+  const header = <HomeHeader accountControl={accountControl} />;
+  if (invitation)
     return (
       <FlowScreen
         testID="home-screen"
-        header={<HomeHeader accountControl={accountControl} />}
-        title={
-          pending
-            ? `Waiting for ${state.preview?.hostDisplayName ?? "your host"}.`
-            : state.kind === "failed"
-              ? "Your trips couldn’t load."
-              : "Checking your trip."
-        }
-        description={
-          pending
-            ? `We’ll bring you into ${state.preview?.name ?? "the trip"} as soon as ${state.preview?.hostDisplayName ?? "your host"} approves you.`
-            : state.kind === "failed"
-              ? "Try again to refresh your trips."
-              : "We’re checking your saved request before continuing."
-        }
-        footer={
-          state.kind === "failed" ? (
-            <Button
-              label="Try again"
-              onPress={state.onRetry}
-              loading={state.retrying ?? false}
-            />
-          ) : pending ? (
-            <AppText
-              tone="secondary"
-              variant="caption"
-              style={{ textAlign: "center" }}
-            >
-              No photos are shared until you’re approved.
-            </AppText>
-          ) : state.kind === "unknown-create" ||
-            state.kind === "unknown-join" ? (
-            <Button
-              label="Check request"
-              loading={state.recovering ?? false}
-              onPress={state.onRecover}
-            />
-          ) : undefined
-        }
+        header={header}
+        pinnedHeader
+        centerContent
       >
-        {statusContent}
-        <View
-          style={[styles.automatic, { backgroundColor: colors.surfaceMuted }]}
-        >
-          <AppText variant="label" style={{ color: colors.success }}>
-            {pending
-              ? "Checking automatically"
-              : (state.kind === "unknown-create" ||
-                    state.kind === "unknown-join") &&
-                  state.recovering === false
-                ? "Check your trip request"
-                : "Checking your trip request"}
-          </AppText>
-        </View>
-        {pending ? (
-          <AppText tone="secondary">
-            You can leave this screen. We’ll update it when your host responds.
-          </AppText>
-        ) : null}
+        {invitation}
       </FlowScreen>
     );
-  }
+  if (state.kind !== "no-trip")
+    return (
+      <FlowScreen
+        testID="home-screen"
+        header={header}
+        pinnedHeader
+        centerContent
+      >
+        <Stack gap="md">
+          <AppText
+            accessibilityRole="header"
+            variant="title1"
+            style={styles.centeredText}
+          >
+            {state.kind === "failed"
+              ? "Your trips couldn’t load."
+              : "Checking your trip."}
+          </AppText>
+          {state.kind === "loading" ? statusContent : null}
+          {state.kind === "failed" ? (
+            <Button
+              label="Try again"
+              loading={state.retrying ?? false}
+              onPress={state.onRetry}
+            />
+          ) : state.kind === "unknown-create" ? (
+            <Button
+              label="Check request"
+              onPress={state.onRecover}
+              loading={state.recovering ?? false}
+            />
+          ) : null}
+        </Stack>
+      </FlowScreen>
+    );
+  const notice = rejoinUnavailable
+    ? toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message
+    : inviteUnavailable
+      ? "This invite is no longer available. Ask your host for a new code."
+      : state.creationFailed
+        ? "Your trip wasn’t created. Give it another try."
+        : null;
   return (
-    <FlowScreen
-      testID="home-screen"
-      header={<HomeHeader accountControl={accountControl} />}
-      title="Start your first trip."
-      centerContent
-      description={
-        rejoinUnavailable
-          ? toUserFacingProblem("TRIP_REJOIN_UNAVAILABLE").message
-          : inviteUnavailable
-            ? "This invite is no longer available. Ask your host for a new code."
-            : state.creationFailed
-              ? "Your trip wasn’t created. Give it another try."
-              : "Create one, or join your crew with a code."
-      }
-      footer={
-        <>
-          <Button
-            label="Start a trip"
-            disabled={!canCreateTrip}
-            onPress={onCreateTrip}
-          />
-          <Button
-            label="Enter invite code"
-            variant="text"
-            disabled={!canCreateTrip}
-            onPress={onJoinTrip}
-          />
-        </>
-      }
-    >
+    <FlowScreen testID="home-screen" header={header} pinnedHeader centerContent>
       {statusContent}
-      <CrewConstellation />
+      <View style={[styles.mark, { backgroundColor: colors.accentSurface }]}>
+        <Image
+          source={require("../../../assets/onboarding/crew-center.svg")}
+          style={styles.icon}
+        />
+      </View>
+      <Stack gap="xs">
+        <AppText accessibilityRole="header" variant="title1">
+          Start or join a trip
+        </AppText>
+        <AppText tone="secondary">
+          Start a shared roll with friends, or enter a code from your host.
+        </AppText>
+        {notice ? (
+          <AppText accessibilityRole="alert" tone="critical">
+            {notice}
+          </AppText>
+        ) : null}
+      </Stack>
+      <Stack gap="xs">
+        <Button
+          label="Start a trip"
+          disabled={!canCreateTrip}
+          onPress={onCreateTrip}
+        />
+        <Button
+          label="Enter invite code"
+          variant="secondary"
+          disabled={!canCreateTrip}
+          onPress={onJoinTrip}
+        />
+      </Stack>
     </FlowScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  constellation: { height: 300, width: "100%" },
-  connections: { position: "absolute", top: 0, width: "100%", height: 230 },
-  center: {
-    position: "absolute",
-    top: 76,
-    left: "50%",
-    marginLeft: -onboardingGeometry.sharedCenterSize / 2,
-    width: 112,
-    height: 112,
-    borderRadius: radius.pill,
-    alignItems: "center",
-    justifyContent: "center",
+  centeredText: { textAlign: "center" },
+  mark: {
+    alignSelf: "flex-start",
+    padding: spacing.md,
+    borderRadius: radius.xl,
   },
-  avatar: {
-    position: "absolute",
-    width: 52,
-    height: 52,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  caption: {
-    position: "absolute",
-    top: 254,
-    width: "100%",
-    textAlign: "center",
-  },
-  automatic: { borderRadius: radius.md, padding: spacing.md },
+  icon: { width: 48, height: 48 },
 });

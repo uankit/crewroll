@@ -2,6 +2,23 @@ import { fireEvent, render } from "@testing-library/react-native";
 import { StartupStatus } from "./StartupStatus";
 import { startupFailed, startupReady, startupWorking } from "./startupState";
 
+it("explains paused sharing with one reconnect button and no settings instruction", async () => {
+  const retry = jest.fn();
+  const view = await render(
+    <StartupStatus
+      startup={startupFailed("transfer", "TRIP_ACTIVATION_FAILED", "transfer")}
+      onRetry={retry}
+    />,
+  );
+  view.getByRole("header", { name: "Sharing is paused on this phone" });
+  expect(view.queryByText(/Settings|permission|your connection/i)).toBeNull();
+  expect(view.getAllByRole("button")).toHaveLength(1);
+  await fireEvent.press(
+    view.getByRole("button", { name: "Reconnect sharing" }),
+  );
+  expect(retry).toHaveBeenCalledTimes(1);
+});
+
 it("announces the current operation without a percentage or an action before it fails", async () => {
   const view = await render(
     <StartupStatus startup={startupWorking("transfer")} onRetry={jest.fn()} />,

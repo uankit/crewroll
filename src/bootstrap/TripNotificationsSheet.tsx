@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { StyleSheet } from "react-native";
 import { AppIcon, AppText, Sheet, Stack, spacing } from "../design-system";
 import { JoinRequestRow } from "../features/trips/JoinRequestRow";
+import type { MemberResolutionReceipt } from "../application/trips/ApproveMember";
 import type { TripView } from "../domain/trips/model";
 import { useAppSession } from "./AppSessionProvider";
 import { useTripContinuity } from "./useTripContinuity";
@@ -10,10 +11,12 @@ export function TripNotificationsSheet({
   trip,
   onDismiss,
   onChanged,
+  resolvedMemberIds = [],
 }: Readonly<{
   trip: TripView;
   onDismiss: () => void;
-  onChanged: () => void;
+  onChanged: (receipt?: MemberResolutionReceipt) => void | Promise<void>;
+  resolvedMemberIds?: readonly string[];
 }>) {
   const session = useAppSession();
   // The trip route owns the polling timer; this sheet shares its cached result.
@@ -34,7 +37,9 @@ export function TripNotificationsSheet({
     owner && open
       ? trip.members.filter(
           (m) =>
-            m.status === "PENDING_KEY" && !resolved.includes(m.membershipId),
+            m.status === "PENDING_KEY" &&
+            !resolved.includes(m.membershipId) &&
+            !resolvedMemberIds.includes(m.membershipId),
         )
       : [];
   const phones =
@@ -59,6 +64,7 @@ export function TripNotificationsSheet({
     setBusy({ id, action: approve ? "approve" : "decline" });
     setError(null);
     setAnnouncement(null);
+    let receipt: MemberResolutionReceipt | undefined;
     try {
       if (phone) {
         const result = await session.actions.resolveDeviceRecovery(
@@ -71,20 +77,27 @@ export function TripNotificationsSheet({
           return;
         }
       } else if (approve) {
-        await session.actions.approve(trip.id, id);
+        receipt = await session.actions.approve(trip.id, id);
       } else {
-        await session.actions.reject(trip.id, id);
+        receipt = await session.actions.reject(trip.id, id);
       }
       setResolved((current) => [...current, id]);
       setAnnouncement(approve ? null : `${name}’s request declined.`);
-      void continuity.refetch();
-      onChanged();
     } catch {
       setError("The request couldn’t be updated. Try again.");
+      return;
     } finally {
       working.current = false;
       setBusy(null);
     }
+    // The decision is already accepted. Refresh failures belong to their
+    // existing data/sharing surfaces, never to the resolved request.
+    void Promise.resolve()
+      .then(() => continuity.refetch())
+      .catch(() => undefined);
+    void Promise.resolve()
+      .then(() => onChanged(receipt))
+      .catch(() => undefined);
   }
 
   return (

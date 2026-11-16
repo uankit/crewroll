@@ -315,7 +315,7 @@ export function ActiveTripTransfers({
   if (snapshot === null)
     return (
       <>
-        <Stack gap="sm" style={{ flex: 1 }}>
+        <Stack gap="sm" style={{ flex: 1, justifyContent: "center" }}>
           {!failure ? (
             <AppText
               variant="caption"
@@ -326,7 +326,12 @@ export function ActiveTripTransfers({
             </AppText>
           ) : null}
           {failure ? (
-            <AppText accessibilityRole="alert" tone="critical">
+            <AppText accessibilityRole="header" variant="headline">
+              Photos couldn’t load yet
+            </AppText>
+          ) : null}
+          {failure ? (
+            <AppText accessibilityRole="alert" tone="secondary">
               {failure}
             </AppText>
           ) : null}

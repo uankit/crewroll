@@ -215,7 +215,6 @@ describe("pure Trip Room policy", () => {
     const eligible = {
       actorIsOwner: true,
       actorUsesNominatedDevice: true,
-      allMembersReady: true,
       allNominatedDevicesActive: true,
       currentVersion: 7,
       expectedVersion: 7,
@@ -265,13 +264,8 @@ describe("pure Trip Room policy", () => {
         status: 409,
       },
       {
-        change: { allMembersReady: false, allNominatedDevicesActive: false },
+        change: { allNominatedDevicesActive: false },
         code: "DEVICE_REVOKED",
-        status: 409,
-      },
-      {
-        change: { allMembersReady: false },
-        code: "PHOTO_LIBRARY_ACCESS_REQUIRED",
         status: 409,
       },
     ] as const;

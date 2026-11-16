@@ -204,6 +204,19 @@ async function fixture(
           ],
   }));
   const runtime: AppSessionRuntime = {
+    photoPermission: {
+      read: jest.fn(async () => ({
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: true,
+      })),
+      request: jest.fn(async () => ({
+        kind: "FULL" as const,
+        fullPhotoLibraryAccess: true as const,
+        canAskAgain: true,
+      })),
+      openSettings: jest.fn(async () => undefined),
+    },
     invalidatePendingSetup: jest.fn(),
     provisionCurrentDevice: async () => ({ deviceId, identity }),
     getNativeSnapshot: async () => ({ activeTripId: null }),
@@ -345,6 +358,10 @@ it.each(["immediate", "after interrupted response"] as const)(
         );
       });
       if (when === "after interrupted response") {
+        await waitFor(() =>
+          expect(f.current().snapshot.phase).toBe("READY_UNKNOWN_JOIN"),
+        );
+        expect(f.commands).toHaveLength(2);
         await expect(f.load()).resolves.toMatchObject({
           state: "UNKNOWN_JOIN",
           commandId: f.commands[0],
@@ -358,8 +375,8 @@ it.each(["immediate", "after interrupted response"] as const)(
         expect(f.current().snapshot.phase).toBe("READY_NO_TRIP"),
       );
       if (when === "after interrupted response") {
-        expect(f.commands).toHaveLength(2);
-        expect(f.commands[1]).toBe(f.commands[0]);
+        expect(f.commands).toHaveLength(3);
+        expect(new Set(f.commands).size).toBe(1);
         expect(
           screen.getByText(
             "You can’t rejoin this trip. You can join a different trip.",

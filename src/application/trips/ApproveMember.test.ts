@@ -2,6 +2,8 @@ import type { MembershipResponse, TripResponse } from "@crewroll/contracts";
 
 import { CrewRollApiProblem } from "../problems/crewRollApiProblem";
 import { TripTransportProblem } from "./CreateImmediateTrip";
+import { createNativeSessionFence } from "../../bootstrap/nativeSessionFence";
+import type { CrewRollTransferPort } from "../../infrastructure/native/crewRollTransfer";
 import { createApproveMember } from "./ApproveMember";
 import type { TripApiPort } from "./ports";
 
@@ -516,4 +518,70 @@ describe("ApproveMember.approve", () => {
     await expect(third).rejects.toEqual(new TripTransportProblem());
     await expect(third).rejects.not.toBe(privateTransport);
   });
+});
+
+describe("approval native key proof", () => {
+  it.each(["KEY_ACCESS_LOCKED", "KEY_MATERIAL_LOST", "KEY_ENVELOPE_INVALID"])(
+    "never posts approval after native wrapping fails with %s",
+    async (code) => {
+      const { api, native, service } = harness();
+      native.wrapTripKey.mockRejectedValueOnce(
+        Object.assign(new Error("private native detail"), { code }),
+      );
+      await expect(
+        service.approve(
+          tripResponse({ status: "ACTIVE", startsAt: "2026-09-01T12:00:00Z" }),
+          targetMembershipId,
+        ),
+      ).rejects.toEqual(new CrewRollApiProblem("KEY_ENVELOPE_INVALID"));
+      expect(api.approveMember).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["before wrapping", "during wrapping"])(
+    "prevents an obsolete account from posting approval when invalidated %s",
+    async (when) => {
+      const { api, native, random } = harness();
+      const unused = jest.fn(async () => undefined);
+      const bridge = new Proxy(native, {
+        get(target, name) {
+          return Reflect.get(target, name) ?? unused;
+        },
+      }) as unknown as CrewRollTransferPort;
+      const fence = createNativeSessionFence(bridge);
+      const service = createApproveMember({
+        api,
+        device: { deviceId: ownerDeviceId, identity },
+        native: fence.capture(),
+        random,
+      });
+      let complete!: () => void;
+      let began!: () => void;
+      const wrapping = new Promise<void>((resolve) => {
+        began = resolve;
+      });
+      if (when === "during wrapping")
+        native.wrapTripKey.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              complete = () => resolve(validWrap);
+              began();
+            }),
+        );
+      else fence.invalidate();
+      const operation = service.approve(tripResponse(), targetMembershipId);
+      const rejected = expect(operation).rejects.toEqual(
+        new CrewRollApiProblem("KEY_ENVELOPE_INVALID"),
+      );
+      if (when === "during wrapping") {
+        await wrapping;
+        fence.invalidate();
+        complete();
+      }
+      await rejected;
+      expect(api.approveMember).not.toHaveBeenCalled();
+      if (when === "before wrapping")
+        expect(native.wrapTripKey).not.toHaveBeenCalled();
+    },
+  );
 });

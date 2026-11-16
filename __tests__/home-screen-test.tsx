@@ -1,10 +1,38 @@
 import { fireEvent, render } from "@testing-library/react-native";
-import { CrewRollThemeProvider } from "@/design-system";
+import { Button, CrewRollThemeProvider } from "@/design-system";
 import {
   HomeScreen,
   TripLibraryScreen,
   type TripSummary,
 } from "@/features/home";
+
+it.each(["failed", "unknown-create"] as const)(
+  "keeps one recovery action for the %s Home state",
+  async (kind) => {
+    const recover = jest.fn();
+    const startupRetry = jest.fn();
+    const screen = await render(
+      <HomeScreen
+        onCreateTrip={jest.fn()}
+        onJoinTrip={jest.fn()}
+        statusContent={<Button label="Retry startup" onPress={startupRetry} />}
+        state={
+          kind === "failed"
+            ? { kind, onRetry: recover }
+            : { kind, onRecover: recover }
+        }
+      />,
+    );
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    await fireEvent.press(
+      screen.getByRole("button", {
+        name: kind === "failed" ? "Try again" : "Check request",
+      }),
+    );
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(startupRetry).not.toHaveBeenCalled();
+  },
+);
 
 it("offers one create action and one code action on the first-trip screen", async () => {
   const create = jest.fn(),
@@ -13,7 +41,7 @@ it("offers one create action and one code action on the first-trip screen", asyn
     <HomeScreen onCreateTrip={create} onJoinTrip={join} />,
   );
   expect(
-    screen.getByRole("header", { name: "Start your first trip." }),
+    screen.getByRole("header", { name: "Start or join a trip" }),
   ).toBeOnTheScreen();
   expect(screen.getAllByRole("button")).toHaveLength(2);
   await fireEvent.press(screen.getByRole("button", { name: "Start a trip" }));
@@ -97,17 +125,6 @@ it.each(["first trip", "trip library"] as const)(
   },
 );
 
-it("waits automatically without a second join or status-check button", async () => {
-  const screen = await render(
-    <HomeScreen
-      onCreateTrip={jest.fn()}
-      onJoinTrip={jest.fn()}
-      state={{ kind: "pending-approval", onRecover: jest.fn() }}
-    />,
-  );
-  expect(screen.getByText("Checking automatically")).toBeOnTheScreen();
-  expect(screen.queryByRole("button")).toBeNull();
-});
 it("does not leak failure details or allow repeated recovery taps", async () => {
   const retry = jest.fn();
   const screen = await render(
@@ -126,7 +143,7 @@ it("keeps accessible scalable text in the dark theme", async () => {
       <HomeScreen onCreateTrip={jest.fn()} onJoinTrip={jest.fn()} />
     </CrewRollThemeProvider>,
   );
-  const title = screen.getByRole("header", { name: "Start your first trip." });
+  const title = screen.getByRole("header", { name: "Start or join a trip" });
   expect(title.props.allowFontScaling).toBe(true);
   expect(title.props.maxFontSizeMultiplier).toBe(2);
 });
@@ -165,9 +182,9 @@ it.each([
         onRetry={jest.fn()}
       />,
     );
-    const button = screen.getByRole("button", { name: "Start a new trip" });
-    expect(button).toBeDisabled();
-    await fireEvent.press(button);
+    expect(
+      screen.queryByRole("button", { name: "Start a new trip" }),
+    ).toBeNull();
     expect(create).not.toHaveBeenCalled();
   },
 );
@@ -204,9 +221,7 @@ it("enables the existing create and join actions when the current trip finishes"
       trips={[{ ...libraryTrip, status: "ENDING", participation: "LEAVING" }]}
     />,
   );
-  expect(
-    screen.getByRole("button", { name: "Start a new trip" }),
-  ).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Start a new trip" })).toBeNull();
   await screen.rerender(
     <TripLibraryScreen
       {...props}

@@ -323,6 +323,22 @@ describe("StartAndActivateTrip.start", () => {
     );
   });
 
+  it("starts an approved crew while either device has photo sharing paused", async () => {
+    const { api, native, service } = harness();
+    const base = eligibleTripView();
+    const result = await service.start({
+      ...base,
+      members: base.members.map((member) => ({
+        ...member,
+        fullPhotoLibraryAccess: false,
+      })),
+    });
+
+    expect(result.status).toBe("ACTIVE");
+    expect(api.startTrip).toHaveBeenCalledTimes(1);
+    expect(native.activateTrip).toHaveBeenCalledTimes(1);
+  });
+
   it.each<readonly [string, TripView, ProblemCode]>([
     [
       "a non-owner projection before inspecting redacted member devices",
@@ -365,19 +381,6 @@ describe("StartAndActivateTrip.start", () => {
         ],
       }),
       "PENDING_JOIN_REQUESTS",
-    ],
-    [
-      "missing full access",
-      eligibleTripView({
-        members: [
-          eligibleTripView().members[0]!,
-          {
-            ...eligibleTripView().members[1]!,
-            fullPhotoLibraryAccess: false,
-          },
-        ],
-      }),
-      "PHOTO_LIBRARY_ACCESS_REQUIRED",
     ],
     [
       "an owner-visible missing nominated device",

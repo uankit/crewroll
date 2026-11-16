@@ -10,7 +10,8 @@ import {
 import { type PropsWithChildren, useSyncExternalStore } from "react";
 import * as SplashScreen from "expo-splash-screen";
 import * as Clipboard from "expo-clipboard";
-import { View } from "react-native";
+import { AppState, View, type AppStateStatus } from "react-native";
+import type { PhotoLibraryPermissionState } from "../src/infrastructure/media/expoPhotoLibraryPermission";
 
 import type { AppSessionSnapshot } from "../src/bootstrap/AppSessionProvider";
 import {
@@ -149,6 +150,11 @@ const invitePreview: TripInvitePreview = {
   members: [{ displayName: "Owner", role: "OWNER" }],
 };
 const mockActions = {
+  checkPhotoAccess: jest.fn(async (): Promise<PhotoLibraryPermissionState> => ({
+    kind: "FULL",
+    fullPhotoLibraryAccess: true,
+    canAskAgain: true,
+  })),
   ensureOwnerInvite: jest.fn(async () => ({ ownerInviteCode: null })),
   previewInvite: jest.fn(async () => invitePreview),
   approve: jest.fn(),
@@ -186,6 +192,7 @@ let mockProjection = {
   trip: null as TripView | null,
 };
 let mockCurrentSession = {
+  queryScope: { opaqueAccountScope: "account-one", deviceId },
   galleryCache: createTripGalleryCache(tripId),
   actions: mockActions,
   activationFailureTripId: null as string | null,
@@ -291,6 +298,9 @@ jest.mock("../src/bootstrap/AppProviders", () => ({
 }));
 
 jest.mock("../src/bootstrap/AppSessionProvider", () => ({
+  PhotoAccessRequired: jest.requireActual<
+    typeof import("../src/bootstrap/AppSessionProvider")
+  >("../src/bootstrap/AppSessionProvider").PhotoAccessRequired,
   useAppSession: mockUseAppSession,
   useTripProjection: mockUseTripProjection,
   terminalJoinFailureReason: (error: unknown) =>
@@ -393,6 +403,11 @@ async function renderActualRouter(initialUrl: string) {
 describe("Expo Router mobile journey", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActions.checkPhotoAccess.mockReset().mockResolvedValue({
+      kind: "FULL",
+      fullPhotoLibraryAccess: true,
+      canAskAgain: true,
+    });
     mockFontsLoaded = true;
     mockSetupRequired = false;
     mockLibraryOnThisDevice = true;
@@ -405,6 +420,7 @@ describe("Expo Router mobile journey", () => {
       trip: null,
     };
     mockCurrentSession = {
+      queryScope: { opaqueAccountScope: "account-one", deviceId },
       galleryCache: createTripGalleryCache(tripId),
       actions: mockActions,
       activationFailureTripId: null,
@@ -513,9 +529,7 @@ describe("Expo Router mobile journey", () => {
       startup: startupFailed("recovery", "TRIP_RECOVERY_FAILED", "trips"),
     };
     await renderActualRouter("/");
-    screen.getByRole("alert", {
-      name: "Saved trip state couldn’t be restored. Try again to continue safely.",
-    });
+    screen.getByText("Request not confirmed");
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     const check = screen.getByRole("button", { name: "Check request" });
     expect(check).toBeEnabled();
@@ -528,13 +542,8 @@ describe("Expo Router mobile journey", () => {
       };
       mockPublish();
     });
-    expect(
-      screen.getByRole("button", { name: "Check request" }),
-    ).toBeDisabled();
-    screen.getByLabelText(/^Checking saved trip state:/);
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Check request" }),
-    );
+    expect(screen.queryByRole("button", { name: "Check request" })).toBeNull();
+    screen.getByText("Confirming your request…");
     expect(mockRetry).toHaveBeenCalledTimes(1);
   });
 
@@ -707,7 +716,7 @@ describe("Expo Router mobile journey", () => {
         };
         mockPublish();
       });
-      screen.getByRole("header", { name: "Start your first trip." });
+      screen.getByRole("header", { name: "Start or join a trip" });
       expect(
         screen.queryByRole("button", { name: "Request device approval" }),
       ).toBeNull();
@@ -759,7 +768,7 @@ describe("Expo Router mobile journey", () => {
     };
     await renderActualRouter("/");
     expect(screen.queryByText("Kyoto")).toBeNull();
-    screen.getByRole("header", { name: "Start your first trip." });
+    screen.getByRole("header", { name: "Start or join a trip" });
     await fireEvent.press(screen.getByRole("button", { name: "Your account" }));
     screen.getByRole("button", { name: "Sign out" });
   });
@@ -804,8 +813,8 @@ describe("Expo Router mobile journey", () => {
     ).toBeNull();
     screen.getByText("Finishing sync");
     expect(
-      screen.getByRole("button", { name: "Start a new trip" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Start a new trip" }),
+    ).toBeNull();
     await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
     await waitFor(() => expect(router.getPathname()).toBe(`/trips/${tripId}`));
     screen.getByTestId("lobby-screen");
@@ -952,8 +961,8 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Open Kyoto" }),
     ).toBeOnTheScreen();
     expect(
-      screen.getByRole("button", { name: "Start a new trip" }),
-    ).toBeDisabled();
+      screen.queryByRole("button", { name: "Start a new trip" }),
+    ).toBeNull();
   });
 
   it("opens the existing create flow after departure and skips already granted photo access", async () => {
@@ -997,11 +1006,289 @@ describe("Expo Router mobile journey", () => {
     ).toBeOnTheScreen();
   });
 
+  it.each(["/trips/create", "/trips/join", "/?join=1"])(
+    "requires a full native grant before opening %s and resumes the original action",
+    async (url) => {
+      const denied: PhotoLibraryPermissionState = {
+        kind: "REQUESTABLE",
+        fullPhotoLibraryAccess: false,
+        canAskAgain: true,
+      };
+      mockActions.checkPhotoAccess.mockResolvedValue(denied);
+      await renderActualRouter(url);
+      await screen.findByText(
+        "Allow full photo access on this phone before creating or joining a trip.",
+      );
+      expect(screen.queryByLabelText("Trip name")).toBeNull();
+      expect(screen.queryByLabelText("Invite code")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+      expect(mockActions.create).not.toHaveBeenCalled();
+      expect(mockActions.previewInvite).not.toHaveBeenCalled();
+      expect(mockActions.join).not.toHaveBeenCalled();
+      // Denial is recoverable and does not continue into a partially set up trip.
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Allow photo access" }),
+      );
+      expect(screen.queryByLabelText("Trip name")).toBeNull();
+      expect(screen.queryByLabelText("Invite code")).toBeNull();
+      mockActions.checkPhotoAccess.mockResolvedValue({
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: true,
+      });
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Allow photo access" }),
+      );
+      await screen.findByLabelText(
+        url === "/trips/create" ? "Trip name" : "Invite code",
+      );
+      expect(mockActions.checkPhotoAccess).toHaveBeenCalledWith(true);
+      expect(mockActions.create).not.toHaveBeenCalled();
+      expect(mockActions.previewInvite).not.toHaveBeenCalled();
+      expect(mockActions.join).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/trips/create", "/?join=1"])(
+    "cancels denied admission at %s without creating or joining",
+    async (url) => {
+      mockActions.checkPhotoAccess.mockResolvedValue({
+        kind: "REQUESTABLE",
+        fullPhotoLibraryAccess: false,
+        canAskAgain: true,
+      });
+      const router = await renderActualRouter(url);
+      await fireEvent.press(
+        await screen.findByRole("button", { name: "Back" }),
+      );
+      await screen.findByRole("button", { name: "Start a trip" });
+      expect(router.getPathname()).toBe("/");
+      expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+      expect(screen.queryByLabelText("Invite code")).toBeNull();
+      expect(mockActions.create).not.toHaveBeenCalled();
+      expect(mockActions.join).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps limited access behind the gate and resumes the code drawer after returning from Settings", async () => {
+    const originalSubscribe = AppState.addEventListener;
+    const listeners = new Set<(state: AppStateStatus) => void>();
+    AppState.addEventListener = (_event, callback) => {
+      listeners.add(callback);
+      return {
+        remove: () => {
+          listeners.delete(callback);
+        },
+      };
+    };
+    try {
+      mockActions.checkPhotoAccess.mockResolvedValue({
+        kind: "SETTINGS_REQUIRED",
+        fullPhotoLibraryAccess: false,
+        canAskAgain: false,
+        reason: "LIMITED_LIBRARY",
+      });
+      await renderActualRouter("/?join=1");
+      await screen.findByText(
+        "Selected Photos access is on. Choose Full Access to create or join a trip.",
+      );
+      expect(screen.queryByLabelText("Invite code")).toBeNull();
+      await fireEvent.press(
+        screen.getByRole("button", { name: "Open photo settings" }),
+      );
+      expect(mockActions.openPhotoSettings).toHaveBeenCalledTimes(1);
+      expect(mockActions.checkPhotoAccess).not.toHaveBeenCalledWith(true);
+      await act(async () => {
+        listeners.forEach((callback) => callback("background"));
+      });
+      mockActions.checkPhotoAccess.mockResolvedValue({
+        kind: "FULL",
+        fullPhotoLibraryAccess: true,
+        canAskAgain: true,
+      });
+      await act(async () => {
+        listeners.forEach((callback) => callback("active"));
+      });
+      await screen.findByLabelText("Invite code");
+      expect(mockActions.checkPhotoAccess).not.toHaveBeenCalledWith(true);
+      expect(mockActions.previewInvite).not.toHaveBeenCalled();
+      expect(mockActions.join).not.toHaveBeenCalled();
+    } finally {
+      AppState.addEventListener = originalSubscribe;
+    }
+  });
+
+  it.each([
+    ["/trips/create", "Trip name", "Goa weekend"],
+    ["/?join=1", "Invite code", "ABCD2345"],
+  ])(
+    "preserves the draft at %s through a foreground permission recheck",
+    async (url, label, value) => {
+      const originalSubscribe = AppState.addEventListener;
+      const listeners = new Set<(state: AppStateStatus) => void>();
+      AppState.addEventListener = (_event, callback) => {
+        listeners.add(callback);
+        return {
+          remove: () => {
+            listeners.delete(callback);
+          },
+        };
+      };
+      try {
+        await renderActualRouter(url);
+        await fireEvent.changeText(await screen.findByLabelText(label), value);
+        mockActions.checkPhotoAccess.mockResolvedValue({
+          kind: "REQUESTABLE",
+          fullPhotoLibraryAccess: false,
+          canAskAgain: true,
+        });
+        await act(async () => {
+          listeners.forEach((callback) => callback("background"));
+        });
+        await act(async () => {
+          listeners.forEach((callback) => callback("active"));
+        });
+        await screen.findByRole("button", { name: "Allow photo access" });
+        expect(screen.queryByLabelText(label)).toBeNull();
+        mockActions.checkPhotoAccess.mockResolvedValue({
+          kind: "FULL",
+          fullPhotoLibraryAccess: true,
+          canAskAgain: true,
+        });
+        await fireEvent.press(
+          screen.getByRole("button", { name: "Allow photo access" }),
+        );
+        expect((await screen.findByLabelText(label)).props.value).toBe(value);
+        expect(mockActions.create).not.toHaveBeenCalled();
+        expect(mockActions.previewInvite).not.toHaveBeenCalled();
+        expect(mockActions.join).not.toHaveBeenCalled();
+      } finally {
+        AppState.addEventListener = originalSubscribe;
+      }
+    },
+  );
+
+  it("discards an in-flight admission intent when the account changes", async () => {
+    let grant!: (state: PhotoLibraryPermissionState) => void;
+    mockActions.checkPhotoAccess
+      .mockResolvedValueOnce({
+        kind: "REQUESTABLE",
+        fullPhotoLibraryAccess: false,
+        canAskAgain: true,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            grant = resolve;
+          }),
+      );
+    await renderActualRouter("/?join=1");
+    await fireEvent.press(
+      await screen.findByRole("button", { name: "Allow photo access" }),
+    );
+    await act(async () => {
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        queryScope: { opaqueAccountScope: "account-two", deviceId },
+      };
+      mockPublish();
+    });
+    await screen.findByRole("button", { name: "Start a trip" });
+    await act(async () => {
+      grant({ kind: "FULL", fullPhotoLibraryAccess: true, canAskAgain: true });
+    });
+    expect(screen.queryByLabelText("Invite code")).toBeNull();
+    expect(screen.queryByTestId("photo-access-screen")).toBeNull();
+    expect(mockActions.previewInvite).not.toHaveBeenCalled();
+    expect(mockActions.join).not.toHaveBeenCalled();
+  });
+
+  it("returns to photo setup when permission is revoked before join without showing request recovery", async () => {
+    mockActions.join.mockRejectedValueOnce(
+      new (jest.requireActual<
+        typeof import("../src/bootstrap/AppSessionProvider")
+      >("../src/bootstrap/AppSessionProvider").PhotoAccessRequired)({
+        kind: "SETTINGS_REQUIRED",
+        fullPhotoLibraryAccess: false,
+        canAskAgain: false,
+      }),
+    );
+    await renderActualRouter("/?join=1");
+    await fireEvent.changeText(
+      await screen.findByLabelText("Invite code"),
+      "ABCD2345",
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
+    await screen.findByRole("button", { name: "Request to join" });
+    mockActions.checkPhotoAccess.mockResolvedValue({
+      kind: "SETTINGS_REQUIRED",
+      fullPhotoLibraryAccess: false,
+      canAskAgain: false,
+    });
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Request to join" }),
+    );
+    await screen.findByRole("button", { name: "Open photo settings" });
+    expect(screen.queryByText("Checking your request.")).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("button", { name: "Start a trip" });
+  });
+
   it("starts manual joining empty and ignores a code supplied in a URL", async () => {
     setPhase("READY_NO_TRIP");
     await renderActualRouter("/trips/join?code=ABCD2345");
     expect(screen.getByLabelText("Invite code").props.value).toBe("");
     expect(mockActions.previewInvite).not.toHaveBeenCalled();
+    expect(mockActions.join).not.toHaveBeenCalled();
+  });
+
+  it("recognizes a host’s trip created on another phone while the code drawer was open", async () => {
+    setPhase("READY_NO_TRIP");
+    const router = await renderActualRouter("/");
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Enter invite code" }),
+    );
+    expect(router.getPathname()).toBe("/");
+    mockRefresh.mockImplementationOnce(async () => {
+      mockProjection = { ...mockProjection, trip: ownerTrip() };
+      mockLibraryOnThisDevice = false;
+      mockPublish();
+    });
+    await fireEvent.changeText(
+      screen.getByLabelText("Invite code"),
+      "ABCD2345",
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
+    await screen.findByText("Continue on this phone");
+    expect(
+      screen.queryByRole("button", { name: "Request to join" }),
+    ).toBeNull();
+    await fireEvent.press(screen.getByRole("button", { name: "Open Kyoto" }));
+    screen.getByRole("button", { name: "Request device approval" });
+    expect(mockActions.join).not.toHaveBeenCalled();
+  });
+
+  it("opens another code over the preview and keeps the original trip when dismissed", async () => {
+    setPhase("READY_NO_TRIP");
+    const router = await renderActualRouter("/");
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Enter invite code" }),
+    );
+    await fireEvent.changeText(
+      screen.getByLabelText("Invite code"),
+      "ABCD2345",
+    );
+    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Use another code" }),
+    );
+    expect(screen.getByLabelText("Invite code").props.value).toBe("");
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Close Join a trip" }),
+    );
+    screen.getByRole("header", { name: "Kyoto" });
+    screen.getByRole("button", { name: "Request to join" });
+    expect(router.getPathname()).toBe("/");
     expect(mockActions.join).not.toHaveBeenCalled();
   });
 
@@ -1021,7 +1308,9 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Request to join" }),
     );
     await waitFor(() =>
-      expect(screen.getByText("Invite unavailable.")).toBeOnTheScreen(),
+      expect(
+        screen.getByText("This invite is no longer available."),
+      ).toBeOnTheScreen(),
     );
     await fireEvent.press(
       screen.getByRole("button", { name: "Use another code" }),
@@ -1034,6 +1323,7 @@ describe("Expo Router mobile journey", () => {
     async (code) => {
       setPhase("READY_NO_TRIP");
       mockActions.join.mockImplementationOnce(async () => {
+        setPhase("READY_UNKNOWN_JOIN");
         throw { kind: "API_PROBLEM", code, serverStatus: 409 };
       });
       await renderActualRouter("/trips/join");
@@ -1046,7 +1336,7 @@ describe("Expo Router mobile journey", () => {
         screen.getByRole("button", { name: "Request to join" }),
       );
       await waitFor(() =>
-        expect(screen.getByText("Checking your request.")).toBeOnTheScreen(),
+        expect(screen.getByText("Request not confirmed")).toBeOnTheScreen(),
       );
       expect(
         screen.queryByRole("button", {
@@ -1054,7 +1344,7 @@ describe("Expo Router mobile journey", () => {
         }),
       ).toBeNull();
       expect(
-        screen.getByRole("button", { name: "Check join request" }),
+        screen.getByRole("button", { name: "Check request" }),
       ).toBeOnTheScreen();
     },
   );
@@ -1074,10 +1364,9 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Request to join" }),
     );
     await waitFor(() =>
-      expect(screen.getByText("Can’t rejoin this trip.")).toBeOnTheScreen(),
-    );
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Back to your trips" }),
+      expect(
+        screen.getByRole("button", { name: "Enter invite code" }),
+      ).toBeOnTheScreen(),
     );
     await waitFor(() => expect(router.getPathname()).toBe("/"));
     expect(
@@ -1145,8 +1434,11 @@ describe("Expo Router mobile journey", () => {
       screen.getByRole("button", { name: "Request to join" }),
     );
     await waitFor(() => expect(invitee.getPathname()).toBe("/"));
-    screen.getByRole("header", { name: "Waiting for Owner." });
-    screen.getByText("No photos are shared until you’re approved.");
+    screen.getByRole("header", { name: "Kyoto" });
+    screen.getByText("Waiting for approval");
+    expect(
+      screen.queryByRole("button", { name: "Request to join" }),
+    ).toBeNull();
     expect(screen.queryByTestId("lobby-screen")).toBeNull();
     expect(mockActions.publishPhotoReadiness).not.toHaveBeenCalled();
     await act(async () => {
@@ -1181,6 +1473,70 @@ describe("Expo Router mobile journey", () => {
     );
   });
 
+  it.each([true, false])(
+    "keeps the accepted member decision across failed refresh and reopening (approve=%s)",
+    async (approve) => {
+      setPhase("READY_ACTIVE");
+      mockProjection = {
+        ...mockProjection,
+        trip: {
+          ...pendingOwnerTrip(),
+          status: "ACTIVE",
+          startsAt: "2030-01-01T00:00:00Z",
+        },
+      };
+      mockCurrentSession = {
+        ...mockCurrentSession,
+        activationFailureTripId: tripId,
+        startup: startupFailed(
+          "transfer",
+          "TRIP_ACTIVATION_FAILED",
+          "transfer",
+        ),
+        capabilities: { ...mockReadyCapabilities, canSharePhotos: false },
+      };
+      const action = approve ? mockActions.approve : mockActions.reject;
+      action.mockResolvedValueOnce({
+        tripId,
+        membershipId: memberMembershipId,
+        status: approve ? "ACTIVE" : "REJECTED",
+      });
+      mockRefresh.mockRejectedValue(new Error("refresh offline"));
+      try {
+        await renderActualRouter(`/trips/${tripId}`);
+        await fireEvent.press(
+          screen.getByRole("button", { name: /Notifications/ }),
+        );
+        await fireEvent.press(
+          screen.getByRole("button", {
+            name: approve ? "Approve Grace Hopper" : "Decline Grace Hopper",
+          }),
+        );
+        await screen.findByText("You’re all caught up.");
+        expect(
+          screen.queryByText("The request couldn’t be updated. Try again."),
+        ).toBeNull();
+        await fireEvent.press(
+          screen.getByRole("button", { name: "Close Notifications" }),
+        );
+        screen.getByRole("button", { name: "Reconnect sharing" });
+        await fireEvent.press(
+          screen.getByRole("button", { name: /Notifications/ }),
+        );
+        await screen.findByText("You’re all caught up.");
+        expect(
+          screen.queryByRole("button", {
+            name: approve ? "Approve Grace Hopper" : "Decline Grace Hopper",
+          }),
+        ).toBeNull();
+        expect(action).toHaveBeenCalledTimes(1);
+        expect(mockActions.retryActivation).not.toHaveBeenCalled();
+      } finally {
+        mockRefresh.mockReset().mockResolvedValue(undefined);
+      }
+    },
+  );
+
   it("wires owner copy, approval, Start, and safe active projection updates", async () => {
     setPhase("READY_LOBBY");
     mockProjection = { ...mockProjection, trip: pendingOwnerTrip() };
@@ -1191,7 +1547,7 @@ describe("Expo Router mobile journey", () => {
     mockActions.approve.mockImplementationOnce(async () => {
       mockProjection = { ...mockProjection, trip: approvedOwnerTrip() };
       mockPublish();
-      return { kind: "READY", tripId };
+      return { tripId, membershipId: memberMembershipId, status: "ACTIVE" };
     });
     mockActions.start.mockImplementationOnce(async () => {
       mockProjection = {
@@ -1313,7 +1669,7 @@ describe("Expo Router mobile journey", () => {
     expect(mockActions.publishPhotoReadiness).toHaveBeenCalledTimes(1);
   });
 
-  it("enables Start when polling observes the guest's photo readiness without reopening the host", async () => {
+  it("keeps Start enabled independently of the guest's photo readiness", async () => {
     setPhase("READY_LOBBY");
     mockProjection = {
       ...mockProjection,
@@ -1327,7 +1683,7 @@ describe("Expo Router mobile journey", () => {
     };
     const router = await renderActualRouter(`/trips/${tripId}`);
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Start trip" })).toBeDisabled(),
+      expect(screen.getByRole("button", { name: "Start trip" })).toBeEnabled(),
     );
     await act(async () => {
       mockProjection = {
@@ -1367,13 +1723,15 @@ describe("Expo Router mobile journey", () => {
     });
     await renderActualRouter(`/trips/${tripId}`);
 
-    await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+    await fireEvent.press(
+      screen.getByRole("button", { name: "Reconnect sharing" }),
+    );
     await waitFor(() =>
       expect(mockActions.retryActivation).toHaveBeenCalledWith(tripId),
     );
     expect(mockActions.start).not.toHaveBeenCalled();
     await waitFor(() =>
-      expect(screen.queryByText("Try again")).not.toBeOnTheScreen(),
+      expect(screen.queryByText("Reconnect sharing")).not.toBeOnTheScreen(),
     );
   });
 

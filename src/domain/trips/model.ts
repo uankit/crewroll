@@ -40,11 +40,7 @@ export type TripView = Readonly<{
 }>;
 
 export type StartBlocker =
-  | "OWNER_ONLY"
-  | "NOT_LOBBY"
-  | "MEMBER_PENDING_KEY"
-  | "MEMBER_NEEDS_FULL_ACCESS"
-  | "MEMBER_DEVICE_MISSING";
+  "OWNER_ONLY" | "NOT_LOBBY" | "MEMBER_PENDING_KEY" | "MEMBER_DEVICE_MISSING";
 
 /** Public invite metadata. It contains no device identifiers or photo keys. */
 export type TripInvitePreview = Readonly<{

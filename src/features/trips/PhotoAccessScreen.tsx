@@ -1,10 +1,12 @@
 import { Image } from "expo-image";
+import type { ReactNode } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import type { PhotoAccessReason } from "../../domain/trips/photoAccess";
 import {
   AppText,
   Button,
   CrewRollWordmark,
+  CrewRollHeader,
   FlowScreen,
   Stack,
   radius,
@@ -20,7 +22,11 @@ export function PhotoAccessScreen({
   onLater,
   error,
   reason,
+  requiredBeforeTrip = false,
+  accountControl,
 }: Readonly<{
+  accountControl?: ReactNode;
+  requiredBeforeTrip?: boolean;
   checking: boolean;
   settingsRequired: boolean;
   unavailable: boolean;
@@ -33,8 +39,19 @@ export function PhotoAccessScreen({
   return (
     <FlowScreen
       testID="photo-access-screen"
+      pinnedHeader={Boolean(accountControl)}
+      pinnedFooter
       centerContent
-      header={<CrewRollWordmark style={{ paddingTop: spacing.lg }} />}
+      compact={requiredBeforeTrip}
+      header={
+        accountControl ? (
+          <CrewRollHeader accountControl={accountControl} />
+        ) : (
+          <CrewRollWordmark
+            style={{ paddingTop: requiredBeforeTrip ? spacing.xs : spacing.lg }}
+          />
+        )
+      }
       footer={
         <>
           <Button
@@ -51,7 +68,7 @@ export function PhotoAccessScreen({
             onPress={onContinue}
           />
           <Button
-            label="Set up later"
+            label={requiredBeforeTrip ? "Back" : "Set up later"}
             variant="text"
             disabled={checking}
             onPress={onLater}
@@ -59,50 +76,74 @@ export function PhotoAccessScreen({
         </>
       }
     >
-      <View style={styles.illustration}>
-        <Image
-          source={require("../../../assets/onboarding/photo-access.png")}
-          contentFit="cover"
-          style={styles.photo}
-        />
-        <AppText tone="secondary" variant="title2">
-          →
-        </AppText>
-        <View style={[styles.roll, { backgroundColor: colors.surfaceMuted }]}>
+      {!requiredBeforeTrip ? (
+        <View style={styles.illustration}>
           <Image
-            source={require("../../../assets/onboarding/photo-access-mark.svg")}
-            style={styles.mark}
+            source={require("../../../assets/onboarding/photo-access.png")}
+            contentFit="cover"
+            style={styles.photo}
           />
+          <AppText tone="secondary" variant="title2">
+            →
+          </AppText>
+          <View style={[styles.roll, { backgroundColor: colors.surfaceMuted }]}>
+            <Image
+              source={require("../../../assets/onboarding/photo-access-mark.svg")}
+              style={styles.mark}
+            />
+          </View>
         </View>
-      </View>
+      ) : null}
       <Stack gap="sm">
         <AppText accessibilityRole="header" variant="title1">
-          Your camera.{"\n"}Your shared roll.
+          {requiredBeforeTrip
+            ? "Before your trip"
+            : "Your camera.\nYour shared roll."}
         </AppText>
         <AppText tone="secondary">
-          New camera photos from your live trip share automatically with your
-          approved crew. Full photo access also lets CrewRoll save their
-          originals to your phone.
+          {requiredBeforeTrip
+            ? "Allow full photo access on this phone before creating or joining a trip."
+            : "New camera photos from your live trip share automatically with your approved crew. Full photo access also lets CrewRoll save their originals to your phone."}
         </AppText>
       </Stack>
+      {requiredBeforeTrip ? (
+        <AppText tone="secondary" variant="caption">
+          New trip photos share automatically with your approved crew. Their
+          originals save to your phone.
+        </AppText>
+      ) : null}
       {reason ? (
         <AppText accessibilityRole="alert" tone="secondary">
           {reason === "LIMITED_LIBRARY"
-            ? "Selected Photos access is on. Automatic trip sharing needs Full Access to find new photos. You can set this up later and keep using CrewRoll."
-            : "Photo access is on. Android also needs original photo metadata access to share exact originals, including location metadata. You can set this up later."}
+            ? requiredBeforeTrip
+              ? "Selected Photos access is on. Choose Full Access to create or join a trip."
+              : "Selected Photos access is on. Automatic trip sharing needs Full Access to find new photos. You can set this up later and keep using CrewRoll."
+            : requiredBeforeTrip
+              ? "Photo access is on. Android also needs original photo metadata access before creating or joining a trip."
+              : "Photo access is on. Android also needs original photo metadata access to share exact originals, including location metadata. You can set this up later."}
         </AppText>
       ) : null}
       <Stack gap="md">
         <Stack gap="xxs">
-          <AppText variant="bodyStrong">Only your trips</AppText>
-          <AppText tone="secondary">
+          {!requiredBeforeTrip ? (
+            <AppText variant="bodyStrong">Only your trips</AppText>
+          ) : null}
+          <AppText
+            tone="secondary"
+            variant={requiredBeforeTrip ? "caption" : "body"}
+          >
             Sharing begins after approval and the trip starts. Earlier photos
             stay private. Originals can include capture and location metadata.
           </AppText>
         </Stack>
         <Stack gap="xxs">
-          <AppText variant="bodyStrong">Always your choice</AppText>
-          <AppText tone="secondary">
+          {!requiredBeforeTrip ? (
+            <AppText variant="bodyStrong">Always your choice</AppText>
+          ) : null}
+          <AppText
+            tone="secondary"
+            variant={requiredBeforeTrip ? "caption" : "body"}
+          >
             Pause sharing in Trip info, or change photo access in your phone’s
             Settings.
           </AppText>

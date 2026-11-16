@@ -1,216 +1,164 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
-import { BackHandler, StyleSheet, View } from "react-native";
-import { CrewRollThemeProvider, darkColors } from "../../design-system";
+import { SafeAreaInsetsContext } from "react-native-safe-area-context";
+import { act, fireEvent, render } from "@testing-library/react-native";
+import { InviteCodeSheet, TripInvitationCard } from "./index";
 import type { TripInvitePreview } from "../../domain/trips/model";
-import { JoinTripScreen, type JoinTripScreenProps } from "./index";
+import { CrewRollThemeProvider } from "../../design-system";
 
 const preview: TripInvitePreview = {
   tripId: "018f0d98-76fa-7d1a-b4b4-1f742c2e3130",
-  name: "Goa with friends",
+  name: "Goa",
   startsAt: null,
-  endsAt: "2026-09-20T18:00:00Z",
+  endsAt: "2030-11-17T18:00:00Z",
   hostDisplayName: "Riya",
   members: [
     { displayName: "Riya", role: "OWNER" },
     { displayName: "Arjun", role: "MEMBER" },
   ],
 };
-const lookup = () => jest.fn().mockResolvedValue(preview);
-const renderJoin = (props: Partial<JoinTripScreenProps> = {}) =>
-  render(
-    <JoinTripScreen
-      onLookup={lookup()}
-      onCancel={jest.fn()}
-      onJoin={jest.fn()}
-      {...props}
-    />,
-  );
+function sheet(
+  onLookup: (code: string) => Promise<TripInvitePreview> = jest
+    .fn()
+    .mockResolvedValue(preview),
+) {
+  const onDismiss = jest.fn(),
+    onFound = jest.fn();
+  return {
+    onDismiss,
+    onFound,
+    onLookup,
+    render: () =>
+      render(
+        <SafeAreaInsetsContext.Provider
+          value={{ top: 47, bottom: 34, left: 0, right: 0 }}
+        >
+          <InviteCodeSheet {...{ onDismiss, onFound, onLookup }} />
+        </SafeAreaInsetsContext.Provider>,
+      ),
+  };
+}
 
-describe("JoinTripScreen", () => {
-  test("looks up a normalized code and shows real host and crew before joining once", async () => {
-    const onLookup = lookup();
-    const onJoin = jest.fn();
-    const screen = await renderJoin({
-      initialCode: " abcd 2345 ",
-      onLookup,
-      onJoin,
-    });
-    expect(screen.getByLabelText("Invite code").props.value).toBe("ABCD2345");
-    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
-    await waitFor(() => screen.getByRole("header", { name: preview.name }));
-    expect(onLookup).toHaveBeenCalledWith("ABCD2345");
-    expect(onJoin).not.toHaveBeenCalled();
-    screen.getByText("Arjun");
-    screen.getByText("Host");
-    screen.getByText("Crew · 2 joined");
-    screen.getByText(
-      "Sharing starts after Riya approves and the trip is live. Photos from before that moment stay private.",
-    );
-    const submit = screen.getByRole("button", { name: "Request to join" });
-    await fireEvent.press(submit);
-    await fireEvent.press(submit);
-    expect(onJoin).toHaveBeenCalledTimes(1);
-    expect(onJoin).toHaveBeenCalledWith("ABCD2345");
-  });
-  test("rejects malformed codes before any network operation", async () => {
-    const onLookup = lookup();
-    const onJoin = jest.fn();
-    const screen = await renderJoin({ onLookup, onJoin });
-    await fireEvent.changeText(
-      screen.getByLabelText("Invite code"),
-      "ABCI2345",
-    );
-    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
-    screen.getByRole("alert", {
-      name: "Enter the complete 8-character invite code.",
-    });
-    expect(onLookup).not.toHaveBeenCalled();
-    expect(onJoin).not.toHaveBeenCalled();
-  });
-  test("coalesces rapid lookup presses without issuing a join", async () => {
-    let resolve!: (value: TripInvitePreview) => void;
-    const onLookup = jest.fn(
-      () =>
-        new Promise<TripInvitePreview>((done) => {
-          resolve = done;
-        }),
-    );
-    const onJoin = jest.fn();
-    const screen = await renderJoin({
-      initialCode: "ABCD2345",
-      onLookup,
-      onJoin,
-    });
-    const button = screen.getByRole("button", { name: "Find trip" });
-    await fireEvent.press(button);
-    await fireEvent.press(button);
-    expect(onLookup).toHaveBeenCalledTimes(1);
-    expect(onJoin).not.toHaveBeenCalled();
-    await act(async () => resolve(preview));
-  });
-  test("allows returning to the code without joining", async () => {
-    const onJoin = jest.fn();
-    const onCancel = jest.fn();
-    const screen = await renderJoin({
-      initialCode: "ABCD2345",
-      onJoin,
-      onCancel,
-    });
-    await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
-    await waitFor(() => screen.getByText("Arjun"));
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Not this trip" }),
-    );
-    screen.getByLabelText("Invite code");
-    await fireEvent.press(screen.getByRole("button", { name: "Back" }));
-    expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(onJoin).not.toHaveBeenCalled();
-  });
-  test("Android Back returns from the preview to the entered code without leaving the join flow", async () => {
-    let back!: () => boolean | null | undefined;
-    const subscription = jest
-      .spyOn(BackHandler, "addEventListener")
-      .mockImplementation((_event, handler) => {
-        back = () =>
-          handler({ type: "hardwareBackPress", timeStamp: Date.now() });
-        return { remove: jest.fn() };
-      });
-    const onCancel = jest.fn();
-    const view = await renderJoin({ initialCode: "ABCD2345", onCancel });
+it("normalizes a pasted invite and leaves the decision to join on Home", async () => {
+  const props = sheet();
+  const view = await props.render();
+  await fireEvent.changeText(view.getByLabelText("Invite code"), " abcd 2345 ");
+  await fireEvent.press(view.getByRole("button", { name: "Find trip" }));
+  expect(props.onLookup).toHaveBeenCalledWith("ABCD2345");
+  expect(props.onFound).toHaveBeenCalledWith("ABCD2345", preview);
+});
+it.each(["", "ABCD234", "ABCD23456"])(
+  "disables lookup for incomplete or overlong input %s, including keyboard submit",
+  async (code) => {
+    const props = sheet(),
+      view = await props.render();
+    const input = view.getByLabelText("Invite code");
+    await fireEvent.changeText(input, code);
+    expect(view.getByRole("button", { name: "Find trip" })).toBeDisabled();
+    await fireEvent(input, "submitEditing");
+    expect(view.queryByRole("alert")).toBeNull();
+    expect(props.onLookup).not.toHaveBeenCalled();
+    expect(props.onFound).not.toHaveBeenCalled();
+  },
+);
+it("enables Find trip only after the normalized code reaches eight characters", async () => {
+  const props = sheet(),
+    view = await props.render();
+  const input = view.getByLabelText("Invite code");
+  await fireEvent.changeText(input, " abcd 234 ");
+  expect(input.props.value).toBe("ABCD234");
+  expect(view.getByRole("button", { name: "Find trip" })).toBeDisabled();
+  await fireEvent(input, "submitEditing");
+  expect(props.onLookup).not.toHaveBeenCalled();
+  await fireEvent.changeText(input, " abcd 2345 ");
+  expect(view.getByRole("button", { name: "Find trip" })).toBeEnabled();
+  await fireEvent(input, "submitEditing");
+  expect(props.onLookup).toHaveBeenCalledTimes(1);
+  expect(props.onLookup).toHaveBeenCalledWith("ABCD2345");
+});
+it.each(["BADCODE1", "ABCI2345"])(
+  "reports an eight-character code with an unsupported letter (%s) without a length error or API call",
+  async (code) => {
+    const props = sheet(),
+      view = await props.render();
+    await fireEvent.changeText(view.getByLabelText("Invite code"), code);
+    expect(view.getByRole("button", { name: "Find trip" })).toBeEnabled();
     await fireEvent.press(view.getByRole("button", { name: "Find trip" }));
-    await waitFor(() => view.getByText("Arjun"));
-    await act(async () => {
-      expect(back()).toBe(true);
-    });
-    expect(view.getByLabelText("Invite code").props.value).toBe("ABCD2345");
-    expect(onCancel).not.toHaveBeenCalled();
-    await view.unmount();
-    subscription.mockRestore();
+    view.getByText("That code doesn’t look right. Check it with your host.");
+    view.getByRole("alert");
+    expect(view.queryByText(/Enter the 8-character/)).toBeNull();
+    expect(props.onLookup).not.toHaveBeenCalled();
+    expect(props.onFound).not.toHaveBeenCalled();
+  },
+);
+it.each(["INVITE_INVALID", "NETWORK_ERROR"])(
+  "allows editing after %s",
+  async (code) => {
+    const props = sheet(
+        jest.fn().mockRejectedValue({ code, detail: "private token" }),
+      ),
+      view = await props.render();
+    await fireEvent.changeText(view.getByLabelText("Invite code"), "ABCD2345");
+    await fireEvent.press(view.getByRole("button", { name: "Find trip" }));
+    view.getByRole("alert");
+    view.getByText(
+      code === "INVITE_INVALID"
+        ? "Trip not found. Check the code with your host."
+        : "Couldn’t load this trip. Try again.",
+    );
+    expect(props.onLookup).toHaveBeenCalledTimes(1);
+    expect(props.onFound).not.toHaveBeenCalled();
+    expect(view.queryByText(/private token/)).toBeNull();
+    await fireEvent.changeText(view.getByLabelText("Invite code"), "ABCD2346");
+    expect(view.queryByRole("alert")).toBeNull();
+  },
+);
+it("ignores repeated taps and a late lookup after the drawer closes", async () => {
+  let resolve!: (trip: TripInvitePreview) => void;
+  const props = sheet(
+      jest.fn(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      ),
+    ),
+    view = await props.render();
+  await fireEvent.changeText(view.getByLabelText("Invite code"), "ABCD2345");
+  const find = view.getByRole("button", { name: "Find trip" });
+  // Submit twice before React commits disabled controls to exercise the synchronous fence.
+  const submit = view.getByLabelText("Invite code").props.onSubmitEditing;
+  await act(() => {
+    submit();
+    submit();
   });
-  test.each(["INVITE_INVALID", "NETWORK_ERROR"])(
-    "shows safe lookup errors for %s",
-    async (code) => {
-      const onLookup = jest
-        .fn()
-        .mockRejectedValue({ code, detail: "private token key stack" });
-      const onJoin = jest.fn();
-      const screen = await renderJoin({
-        initialCode: "ABCD2345",
-        onLookup,
-        onJoin,
-      });
-      await fireEvent.press(screen.getByRole("button", { name: "Find trip" }));
-      await waitFor(() => screen.getByRole("alert"));
-      expect(screen.queryByText(/private token/)).toBeNull();
-      expect(onJoin).not.toHaveBeenCalled();
-      expect(
-        screen.getByRole("button", { name: "Find trip" }).props
-          .accessibilityState.busy,
-      ).toBe(false);
-    },
+  await fireEvent.press(find);
+  expect(view.getByRole("button", { name: "Find trip" })).toBeDisabled();
+  expect(props.onLookup).toHaveBeenCalledTimes(1);
+  await fireEvent.press(
+    view.getByRole("button", { name: "Close Join a trip" }),
   );
-  test.each(["invalid", "rejected"] as const)(
-    "offers another code only for a terminal %s result",
-    async (kind) => {
-      const onUseAnotherCode = jest.fn();
-      const screen = await renderJoin({ state: { kind, onUseAnotherCode } });
-      await fireEvent.press(
-        screen.getByRole("button", { name: "Use another code" }),
-      );
-      expect(onUseAnotherCode).toHaveBeenCalledTimes(1);
-    },
+  await act(async () => resolve(preview));
+  expect(props.onDismiss).toHaveBeenCalledTimes(1);
+  expect(props.onFound).not.toHaveBeenCalled();
+});
+it("keeps the named trip and crew on the card after requesting approval", async () => {
+  const card = (pending: boolean) => (
+    <CrewRollThemeProvider scheme="dark" reduceMotion>
+      <TripInvitationCard
+        preview={preview}
+        request={pending ? "pending" : "preview"}
+        onChangeCode={jest.fn()}
+        onJoin={jest.fn()}
+      />
+    </CrewRollThemeProvider>
   );
-  test("gives a proven terminal rejoin refusal an ordinary way Home without retrying", async () => {
-    const onReturnHome = jest.fn();
-    const view = await renderJoin({
-      state: { kind: "rejoin-unavailable", onReturnHome },
-    });
-    expect(
-      view.getByRole("header", { name: "Can’t rejoin this trip." }),
-    ).toBeOnTheScreen();
-    expect(
-      view.queryByRole("button", {
-        name: /retry|check join request|use another code/i,
-      }),
-    ).toBeNull();
-    await fireEvent.press(
-      view.getByRole("button", { name: "Back to your trips" }),
-    );
-    expect(onReturnHome).toHaveBeenCalledTimes(1);
-  });
-
-  test("keeps an unknown join recoverable without clearing or replacing it", async () => {
-    const onRetry = jest.fn();
-    const screen = await renderJoin({ state: { kind: "unknown", onRetry } });
-    screen.getByRole("header", { name: "Checking your request." });
-    expect(
-      screen.queryByRole("button", { name: /clear|reset|another|back/i }),
-    ).toBeNull();
-    await fireEvent.press(
-      screen.getByRole("button", { name: "Check join request" }),
-    );
-    expect(onRetry).toHaveBeenCalledTimes(1);
-  });
-  test("retains scalable copy and a scrollable dark RTL form", async () => {
-    const screen = await render(
-      <CrewRollThemeProvider reduceMotion scheme="dark">
-        <View style={{ direction: "rtl" }}>
-          <JoinTripScreen
-            onLookup={lookup()}
-            onCancel={jest.fn()}
-            onJoin={jest.fn()}
-          />
-        </View>
-      </CrewRollThemeProvider>,
-    );
-    const heading = screen.getByRole("header", { name: "Enter your code." });
-    expect(heading.props.allowFontScaling).toBe(true);
-    expect(heading.props.maxFontSizeMultiplier).toBe(2);
-    expect(
-      StyleSheet.flatten(screen.getByTestId("join-trip-screen").props.style)
-        .backgroundColor,
-    ).toBe(darkColors.background);
-    const button = screen.getByRole("button", { name: "Find trip" });
-    expect(StyleSheet.flatten(button.props.style).minHeight).toBe(56);
-  });
+  const view = await render(card(false));
+  expect(view.getByRole("header", { name: "Goa" }).props.allowFontScaling).toBe(
+    true,
+  );
+  expect(view.getAllByText("Riya")).toHaveLength(1);
+  view.getByText(/Arjun/);
+  await view.rerender(card(true));
+  view.getByText("Waiting for approval");
+  view.getByRole("header", { name: "Goa" });
+  expect(view.queryByRole("button")).toBeNull();
 });

@@ -1,6 +1,6 @@
-import { fireEvent, render, within } from "@testing-library/react-native";
+import { act, fireEvent, render, within } from "@testing-library/react-native";
 import type { PropsWithChildren } from "react";
-import { StyleSheet } from "react-native";
+import { Keyboard, Platform, StyleSheet } from "react-native";
 
 import {
   AppText,
@@ -30,6 +30,61 @@ function ThemeHarness({ children, reduceMotion = false }: ThemeHarnessProps) {
 }
 
 describe("overlay and progress primitives", () => {
+  test.each(["android", "ios"] as const)(
+    "Sheet makes room for the keyboard inside its %s modal",
+    async (platform) => {
+      const originalPlatform = Platform.OS;
+      const listeners = new Map<
+        string,
+        Parameters<typeof Keyboard.addListener>[1]
+      >();
+      const addKeyboardListener = Keyboard.addListener.bind(Keyboard);
+      const subscription = jest
+        .spyOn(Keyboard, "addListener")
+        .mockImplementation((event, listener) => {
+          listeners.set(event, listener);
+          return addKeyboardListener(event, listener);
+        });
+      Platform.OS = platform;
+      try {
+        const screen = await render(
+          <ThemeHarness>
+            <Sheet onDismiss={jest.fn()} title="Join a trip" visible>
+              <AppText>Enter the invite code</AppText>
+            </Sheet>
+          </ThemeHarness>,
+        );
+        const avoiding = screen.getByTestId("sheet-keyboard-area");
+        await fireEvent(avoiding, "layout", {
+          nativeEvent: { layout: { x: 0, y: 0, width: 360, height: 800 } },
+          persist: jest.fn(),
+        });
+        const eventPrefix = platform === "ios" ? "keyboardWill" : "keyboardDid";
+        const keyboardEvent = {
+          duration: 0,
+          easing: "keyboard" as const,
+          endCoordinates: { screenX: 0, screenY: 480, width: 360, height: 320 },
+        };
+        await act(async () => {
+          listeners.get(`${eventPrefix}Show`)?.(keyboardEvent);
+        });
+        expect(StyleSheet.flatten(avoiding.props.style)).toEqual(
+          expect.objectContaining({ paddingBottom: 320 }),
+        );
+        await act(async () =>
+          listeners.get(`${eventPrefix}Hide`)?.(keyboardEvent),
+        );
+        expect(StyleSheet.flatten(avoiding.props.style)).toEqual(
+          expect.objectContaining({ paddingBottom: 0 }),
+        );
+        await screen.unmount();
+      } finally {
+        Platform.OS = originalPlatform;
+        subscription.mockRestore();
+      }
+    },
+  );
+
   test("Sheet exposes modal content and a labeled close action", async () => {
     const onDismiss = jest.fn();
     const screen = await render(
