@@ -156,26 +156,21 @@ async function renderLibrary(client: QueryClient) {
   return view;
 }
 
-it("refreshes settled history once a minute and still allows manual refresh", async () => {
-  mockListTrips.mockResolvedValue({ items: [pastTrip] });
+it("does not poll an empty current-trip view and still allows manual refresh", async () => {
   await withLibraryTest(async ({ view }) => {
     expect(mockListTrips).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(59_000);
+      await jest.advanceTimersByTimeAsync(120_000);
     });
     expect(mockListTrips).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(1_000);
-    });
-    expect(mockListTrips).toHaveBeenCalledTimes(2);
-    await act(async () => {
       await view.result.current.refetch();
     });
-    expect(mockListTrips).toHaveBeenCalledTimes(3);
+    expect(mockListTrips).toHaveBeenCalledTimes(2);
   });
 });
 
-it("polls pending membership promptly, then slows down when only history remains", async () => {
+it("polls pending membership promptly, then stops when it leaves the current view", async () => {
   mockListTrips.mockResolvedValue({
     items: [
       { ...pastTrip, status: "ACTIVE", participation: "JOINING", leftAt: null },
@@ -187,19 +182,39 @@ it("polls pending membership promptly, then slows down when only history remains
       await jest.advanceTimersByTimeAsync(5_000);
     });
     expect(mockListTrips).toHaveBeenCalledTimes(2);
-    mockListTrips.mockResolvedValue({ items: [pastTrip] });
+    mockListTrips.mockResolvedValue({ items: [] });
     await act(async () => {
       await jest.advanceTimersByTimeAsync(5_000);
     });
     expect(mockListTrips).toHaveBeenCalledTimes(3);
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(59_000);
+      await jest.advanceTimersByTimeAsync(120_000);
     });
     expect(mockListTrips).toHaveBeenCalledTimes(3);
+  });
+});
+
+it("keeps polling unfinished delivery until the current membership leaves", async () => {
+  mockListTrips.mockResolvedValue({
+    items: [
+      { ...pastTrip, status: "ENDING", participation: "LEAVING", leftAt: null },
+    ],
+  });
+  await withLibraryTest(async () => {
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(1_000);
+      await jest.advanceTimersByTimeAsync(5_000);
     });
-    expect(mockListTrips).toHaveBeenCalledTimes(4);
+    expect(mockListTrips).toHaveBeenCalledTimes(2);
+  });
+});
+
+it("does not start an idle poll for a legacy response containing only past memberships", async () => {
+  mockListTrips.mockResolvedValue({ items: [pastTrip] });
+  await withLibraryTest(async () => {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(120_000);
+    });
+    expect(mockListTrips).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -213,7 +228,7 @@ it("keeps live session polling while its trip-library response catches up", asyn
   });
 });
 
-it("never displays a previous account's late history response after a scope switch", async () => {
+it("never displays a previous account's late trip response after a scope switch", async () => {
   let finishPrevious!: (value: TripListResponse) => void;
   mockListTrips.mockImplementationOnce(
     () =>

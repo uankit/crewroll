@@ -2278,7 +2278,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Returns the account's current operational trip, including pending joining and unfinished leaving or delivery. Completed and departed trip history is not returned. Existing summary fields are retained for installed-client compatibility."
       },
       "post": {
         "operationId": "createTrip",

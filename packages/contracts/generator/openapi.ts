@@ -350,13 +350,17 @@ export function createOpenApiDocument(): OpenApiDocument {
         ),
       },
       "/v1/trips": {
-        get: operation(
-          "listTrips",
-          queryHeaders,
-          { "200": response("TripListResponse") },
-          undefined,
-          "ClerkBearer",
-        ),
+        get: {
+          ...operation(
+            "listTrips",
+            queryHeaders,
+            { "200": response("TripListResponse") },
+            undefined,
+            "ClerkBearer",
+          ),
+          description:
+            "Returns the account's current operational trip, including pending joining and unfinished leaving or delivery. Completed and departed trip history is not returned. Existing summary fields are retained for installed-client compatibility.",
+        },
         post: operation(
           "createTrip",
           commandHeaders,

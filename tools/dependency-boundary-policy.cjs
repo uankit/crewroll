@@ -152,7 +152,6 @@ function createMobileBoundaryPolicy({ tsconfigPath }) {
   const featurePackages = [
     ...uiPackages,
     "@expo/ui",
-    "@shopify/flash-list",
     "@tanstack/react-query",
     "zod",
   ];

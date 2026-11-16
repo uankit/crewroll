@@ -31,8 +31,8 @@ export function DeleteAccountControl({
   return (
     <Stack gap="md">
       <AppText>
-        This permanently removes your account, trip history and temporary shared
-        copies. Trips you host will end.
+        This permanently removes your account, trip memberships and temporary
+        shared copies. Trips you host will end.
       </AppText>
       <AppText tone="secondary">
         Photos already saved to anyone’s phone stay there. This can’t be undone.

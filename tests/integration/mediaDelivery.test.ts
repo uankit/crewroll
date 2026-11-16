@@ -451,10 +451,7 @@ describe.sequential("durable encrypted photo delivery", () => {
         .where("user_id", "=", members[1]!.userId)
         .execute(),
     ).toHaveLength(0);
-    expect((await lifecycle().list(members[1]!)).items[0]).toMatchObject({
-      participation: "LEFT",
-      savedPhotoCount: 1,
-    });
+    expect((await lifecycle().list(members[1]!)).items).toEqual([]);
     expect((await lifecycle().list(outsider)).items).toHaveLength(0);
   });
   it("leave now revokes media access without fabricating receipts or removing other people's queued photos", async () => {
@@ -1308,7 +1305,7 @@ describe.sequential("durable encrypted photo delivery", () => {
     ).toBe("EXPIRED");
   });
 
-  it("preserves purged-asset replay before the deadline, then erases photo payloads and keys while retaining history", async () => {
+  it("preserves purged-asset replay before the deadline, then erases photo payloads and keys without exposing past trips", async () => {
     for (const member of members)
       await fixtures.envelope(tripId, member.deviceId, members[0]!.deviceId);
     const committed = await uploaded();
@@ -1351,7 +1348,11 @@ describe.sequential("durable encrypted photo delivery", () => {
     await expect(
       service.createUpload(members[0]!, body),
     ).resolves.toMatchObject({ uploadSessionId: committed.uploadSessionId });
-    const history = (await lifecycle().list(members[1]!)).items[0]!;
+    await fixtures.activeTrip(members[1]!.userId, tripId);
+    expect((await lifecycle().list(members[1]!)).items[0]).toMatchObject({
+      id: tripId,
+      savedPhotoCount: 1,
+    });
     now = (
       await context.db
         .selectFrom("trips")
@@ -1384,13 +1385,17 @@ describe.sequential("durable encrypted photo delivery", () => {
           .executeTakeFirstOrThrow()
       ).media_metadata_purged_at,
     ).toEqual(now);
-    const after = (await lifecycle().list(members[1]!)).items[0]!;
-    expect(after).toMatchObject({
-      id: history.id,
-      name: history.name,
-      savedPhotoCount: history.savedPhotoCount,
-    });
-    expect(after.savedPhotoCount).toBe(1);
+    await lifecycle().expire();
+    expect((await lifecycle().list(members[1]!)).items).toEqual([]);
+    // The operational delivery receipt survives removal of the history feed.
+    expect(
+      await context.db
+        .selectFrom("deliveries")
+        .select("state")
+        .where("recipient_device_id", "=", members[1]!.deviceId)
+        .where("asset_id", "=", body.assetId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "SAVED_LOCALLY" });
     const actor = await foreground(members[0]!);
     await expect(
       createKyselyTripUnitOfWork(context.db).readProjection(actor, tripId),

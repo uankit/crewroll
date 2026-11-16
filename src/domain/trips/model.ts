@@ -59,7 +59,8 @@ export type TripInvitePreview = Readonly<{
   }>[];
 }>;
 
-/** Read-only trip library metadata; never contains keys or photo bytes. */
+/** Current-trip metadata; legacy responses may still include LEFT memberships.
+ * Never contains keys or photo bytes. */
 export type TripSummary = Readonly<{
   id: string;
   name: string;

@@ -1,22 +1,11 @@
-import { act, fireEvent, render } from "@testing-library/react-native";
+import { fireEvent, render } from "@testing-library/react-native";
 import type { TripSummary } from "../../domain/trips/model";
 import { TripLibraryScreen } from "./TripLibraryScreen";
 import { Text } from "react-native";
 
-// Use the real recycler and the measurement pattern from its Jest setup.
-// These are rendering/interaction checks, not physical-device performance claims.
-jest.mock("@shopify/flash-list/dist/recyclerview/utils/measureLayout", () => ({
-  ...jest.requireActual(
-    "@shopify/flash-list/dist/recyclerview/utils/measureLayout",
-  ),
-  measureParentSize: () => ({ x: 0, y: 0, width: 400, height: 900 }),
-  measureFirstChildLayout: () => ({ x: 0, y: 0, width: 400, height: 900 }),
-  measureItemLayout: () => ({ x: 0, y: 0, width: 400, height: 100 }),
-}));
-
-const history: TripSummary[] = Array.from({ length: 1_000 }, (_, index) => ({
-  id: `018f22c4-6e80-7000-8000-${String(index).padStart(12, "0")}`,
-  name: `Past trip ${index}`,
+const departed: TripSummary = {
+  id: "018f22c4-6e80-7000-8000-000000000001",
+  name: "Previous wedding",
   status: "COMPLETE",
   participation: "LEFT",
   role: "MEMBER",
@@ -26,72 +15,69 @@ const history: TripSummary[] = Array.from({ length: 1_000 }, (_, index) => ({
   sharingPaused: false,
   onThisDevice: true,
   memberCount: 2,
-  savedPhotoCount: index,
-}));
+  savedPhotoCount: 40,
+};
+const current: TripSummary = {
+  ...departed,
+  id: "018f22c4-6e80-7000-8000-999999999999",
+  name: "Current trip",
+  status: "ACTIVE",
+  participation: "JOINED",
+  leftAt: null,
+};
 
-it("recycles a large history while keeping creation and rendered trip actions accessible", async () => {
+it("ignores cached departed rows while keeping the current trip usable", async () => {
   const onOpenTrip = jest.fn();
-  const onCreateTrip = jest.fn();
-  const screen = await render(
+  const view = await render(
     <TripLibraryScreen
-      trips={history}
+      trips={[departed, current]}
       onOpenTrip={onOpenTrip}
-      onCreateTrip={onCreateTrip}
+      onCreateTrip={jest.fn()}
       onJoinTrip={jest.fn()}
       onRetry={jest.fn()}
     />,
   );
-  const mounted = screen
-    .getAllByRole("button")
-    .filter((button) =>
-      String(button.props.accessibilityLabel).startsWith("View Past trip"),
-    );
-  expect(mounted.length).toBeGreaterThan(0);
-  expect(mounted.length).toBeLessThan(100);
-  expect(screen.queryByTestId("trip-library-screen-scroll")).toBeNull();
+  expect(view.queryByText(departed.name)).toBeNull();
+  expect(
+    view.queryByRole("button", { name: `View ${departed.name}` }),
+  ).toBeNull();
+  expect(view.queryByTestId("trip-history-list")).toBeNull();
   await fireEvent.press(
-    screen.getByRole("button", { name: "View Past trip 0" }),
+    view.getByRole("button", { name: "Open Current trip" }),
   );
-  expect(onOpenTrip).toHaveBeenCalledWith(history[0]);
-  await fireEvent.press(
-    screen.getByRole("button", { name: "Start a new trip" }),
-  );
-  expect(onCreateTrip).toHaveBeenCalledTimes(1);
-  await fireEvent.scroll(screen.getByTestId("trip-history-list"), {
-    nativeEvent: {
-      contentOffset: { x: 0, y: 90_000 },
-      contentSize: { width: 400, height: 100_900 },
-      layoutMeasurement: { width: 400, height: 900 },
-    },
-  });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  });
-  const later = screen
-    .getAllByRole("button")
-    .find((button) =>
-      /^View Past trip 9\d\d$/.test(String(button.props.accessibilityLabel)),
-    );
-  expect(later).toBeDefined();
-  if (!later) throw new Error("Expected an older trip after scrolling");
-  await fireEvent.press(later);
-  expect(onOpenTrip).toHaveBeenCalledTimes(2);
+  expect(onOpenTrip).toHaveBeenCalledWith(current);
+  expect(view.getByRole("button", { name: "Start a new trip" })).toBeDisabled();
 });
 
-it("keeps the current trip and retry state when history refresh fails", async () => {
-  const current = {
-    ...history[0]!,
-    id: "018f22c4-6e80-7000-8000-999999999999",
-    name: "Current trip",
-    status: "ACTIVE" as const,
-    participation: "JOINED" as const,
-    leftAt: null,
-  };
-  const onOpenTrip = jest.fn();
-  const onRetry = jest.fn();
-  const screen = await render(
+it("allows create and join when a stale payload contains only departed memberships", async () => {
+  const create = jest.fn(),
+    join = jest.fn(),
+    open = jest.fn();
+  const view = await render(
     <TripLibraryScreen
-      trips={[current, ...history]}
+      trips={[departed]}
+      onOpenTrip={open}
+      onCreateTrip={create}
+      onJoinTrip={join}
+      onRetry={jest.fn()}
+    />,
+  );
+  expect(view.queryByText(departed.name)).toBeNull();
+  await fireEvent.press(view.getByRole("button", { name: "Start a new trip" }));
+  await fireEvent.press(
+    view.getByRole("button", { name: "Enter invite code" }),
+  );
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(join).toHaveBeenCalledTimes(1);
+  expect(open).not.toHaveBeenCalled();
+});
+
+it("keeps the current trip and retry state when its refresh fails", async () => {
+  const onOpenTrip = jest.fn(),
+    onRetry = jest.fn();
+  const view = await render(
+    <TripLibraryScreen
+      trips={[departed, current]}
       error
       onOpenTrip={onOpenTrip}
       onCreateTrip={jest.fn()}
@@ -100,58 +86,75 @@ it("keeps the current trip and retry state when history refresh fails", async ()
     />,
   );
   await fireEvent.press(
-    screen.getByRole("button", { name: "Open Current trip" }),
+    view.getByRole("button", { name: "Open Current trip" }),
   );
   expect(onOpenTrip).toHaveBeenCalledWith(current);
-  await fireEvent.press(screen.getByRole("button", { name: "Try again" }));
+  await fireEvent.press(view.getByRole("button", { name: "Try again" }));
   expect(onRetry).toHaveBeenCalledTimes(1);
-  expect(
-    screen.getByRole("button", { name: "Start a new trip" }),
-  ).toBeDisabled();
+  expect(view.getByRole("button", { name: "Start a new trip" })).toBeDisabled();
+  expect(view.queryByText(departed.name)).toBeNull();
 });
 
-it("shows actual trip metadata during sharing preparation without declaring it live or enabling current-trip actions", async () => {
-  const current = {
-    ...history[0]!,
-    name: "Current trip",
-    status: "ACTIVE" as const,
-    participation: "JOINED" as const,
-    leftAt: null,
-  };
+it("shows current metadata during preparation with guarded actions", async () => {
   const onOpenTrip = jest.fn();
-  const screen = await render(
+  const view = await render(
     <TripLibraryScreen
-      trips={[current, history[1]!]}
+      trips={[departed, current]}
       statusContent={<Text>Preparing photo sharing</Text>}
       canCreateTrip={false}
       sharingReady={false}
-      canOpenTrip={(trip) => trip.participation === "LEFT"}
+      canOpenTrip={() => false}
       onOpenTrip={onOpenTrip}
       onCreateTrip={jest.fn()}
       onJoinTrip={jest.fn()}
       onRetry={jest.fn()}
     />,
   );
-  screen.getByText("Preparing photo sharing");
-  screen.getByText("Current trip");
-  screen.getByText("Sharing is not ready on this phone");
-  expect(screen.queryByText("Live")).toBeNull();
-  const currentButton = screen.getByRole("button", {
-    name: "Open Current trip",
-  });
-  expect(currentButton).toBeDisabled();
-  await fireEvent.press(currentButton);
+  view.getByText("Preparing photo sharing");
+  view.getByText("Current trip");
+  view.getByText("Sharing is not ready on this phone");
+  expect(view.queryByText("Live")).toBeNull();
+  const button = view.getByRole("button", { name: "Open Current trip" });
+  expect(button).toBeDisabled();
+  await fireEvent.press(button);
   expect(onOpenTrip).not.toHaveBeenCalled();
-  await fireEvent.press(
-    screen.getByRole("button", { name: "View Past trip 1" }),
-  );
-  expect(onOpenTrip).toHaveBeenCalledWith(history[1]);
+  expect(view.queryByText(departed.name)).toBeNull();
 });
 
+it.each([
+  { status: "ENDING", participation: "LEAVING", label: "Finishing sync" },
+  { status: "ENDING", participation: "JOINED", label: "Finishing sync" },
+  { status: "ACTIVE", participation: "JOINING", label: "Waiting for approval" },
+] as const)(
+  "retains operational membership controls: %j",
+  async ({ label, ...state }) => {
+    const trip = { ...current, ...state },
+      open = jest.fn();
+    const view = await render(
+      <TripLibraryScreen
+        trips={[departed, trip]}
+        onOpenTrip={open}
+        onCreateTrip={jest.fn()}
+        onJoinTrip={jest.fn()}
+        onRetry={jest.fn()}
+      />,
+    );
+    view.getByText(label);
+    await fireEvent.press(
+      view.getByRole("button", { name: "Open Current trip" }),
+    );
+    expect(open).toHaveBeenCalledWith(trip);
+    expect(
+      view.getByRole("button", { name: "Start a new trip" }),
+    ).toBeDisabled();
+    expect(view.queryByText(departed.name)).toBeNull();
+  },
+);
+
 it("keeps create and invite actions visible but disabled while the phone is restoring", async () => {
-  const create = jest.fn();
-  const join = jest.fn();
-  const screen = await render(
+  const create = jest.fn(),
+    join = jest.fn();
+  const view = await render(
     <TripLibraryScreen
       trips={[]}
       statusContent={<Text>Restoring this phone</Text>}
@@ -162,9 +165,9 @@ it("keeps create and invite actions visible but disabled while the phone is rest
       onRetry={jest.fn()}
     />,
   );
-  screen.getByText("Restoring this phone");
-  const createButton = screen.getByRole("button", { name: "Start a new trip" });
-  const joinButton = screen.getByRole("button", { name: "Enter invite code" });
+  view.getByText("Restoring this phone");
+  const createButton = view.getByRole("button", { name: "Start a new trip" });
+  const joinButton = view.getByRole("button", { name: "Enter invite code" });
   expect(createButton).toBeDisabled();
   expect(joinButton).toBeDisabled();
   await fireEvent.press(createButton);

@@ -213,7 +213,10 @@ it("enables the existing create and join actions when the current trip finishes"
       trips={[{ ...libraryTrip, status: "COMPLETE", participation: "LEFT" }]}
     />,
   );
-  screen.getByText("PAST TRIPS");
+  expect(screen.queryByText(libraryTrip.name)).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: `Open ${libraryTrip.name}` }),
+  ).toBeNull();
   expect(
     screen.getByRole("button", { name: "Start a new trip" }),
   ).toBeEnabled();

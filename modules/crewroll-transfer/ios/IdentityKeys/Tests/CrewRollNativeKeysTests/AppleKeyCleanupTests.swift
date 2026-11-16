@@ -105,12 +105,49 @@ final class AppleKeyCleanupTests: XCTestCase {
         try store.purgeExpiredTrip(trip, now: deadline)
         let restarted = AppleAccountScopedKeyStore(service: service)
         XCTAssertNil(try restarted.loadTrip(scope: scope, tripID: expired))
-        XCTAssertEqual(try restarted.frozenMetadata(scope: scope, tripID: expired), frozen)
+        XCTAssertNil(try restarted.frozenMetadata(scope: scope, tripID: expired))
+        XCTAssertEqual(try restarted.tripRetentionDeadline(scope: scope, tripID: expired), deadline)
+        XCTAssertEqual(try restarted.frozenMetadata(scope: other, tripID: future), metadata(future, end: "2026-09-03T00:00:00Z"))
         XCTAssertNotNil(try restarted.loadTrip(scope: scope, tripID: unknown))
         XCTAssertNotNil(try restarted.loadTrip(scope: other, tripID: future))
         XCTAssertTrue(try restarted.expiredTrips(now: deadline).isEmpty)
         XCTAssertEqual(try restarted.nextTripRetentionDeadline(), deadline.addingTimeInterval(86_400))
         XCTAssertEqual(try restarted.createTrip(scope: scope, tripID: expired) { throw NativeKeyError.invalidState }, .tombstoned)
+        for end in [frozen.endsAt, "2027-09-02T00:00:00Z"] {
+            XCTAssertEqual(try restarted.importTrip(scope: scope, tripID: expired,
+                key: Data(repeating: 9, count: 32), endsAt: end,
+                now: Date(timeIntervalSince1970: 0), constantTimeEquals: { $0 == $1 }), .conflict)
+        }
+    }
+
+    func testLegacyExpiryMinimizesActivationMetadataWithoutLosingDatedReplayFence() throws {
+        try withStore { store, service, scope in
+            let trip = "018f0d98-76fa-7d1a-b4b4-1f742c2e3130"
+            let metadata = ActiveTripMetadata(tripID: trip, membershipID: "018f0d98-76fa-7d1a-b4b4-1f742c2e3160",
+                startsAt: "2030-01-01T00:00:00Z", endsAt: "2030-01-02T00:00:00Z",
+                releaseAt: "2030-01-01T23:00:00Z", keyEpoch: 1)
+            try seedLegacy(service: service, scope: scope, trip: trip, metadata: metadata)
+            let deadline = try NativeTripRetention.deadline(metadata)
+            // No migration sweep first: the frozen record is the only dated
+            // authority available to this existing purge transaction.
+            let candidate = try XCTUnwrap(store.expiredTrips(now: deadline).first)
+            XCTAssertTrue(try store.purgeExpiredTrip(candidate, now: deadline))
+            let restarted = AppleAccountScopedKeyStore(service: service)
+            XCTAssertNil(try restarted.loadTrip(scope: scope, tripID: trip))
+            XCTAssertNil(try restarted.frozenMetadata(scope: scope, tripID: trip))
+            XCTAssertEqual(try restarted.tripRetentionDeadline(scope: scope, tripID: trip), deadline)
+            let database = try XCTUnwrap(JSONSerialization.jsonObject(with: storedJSON(service: service)) as? [String: Any])
+            let states = try XCTUnwrap(database["scopes"] as? [String: [String: Any]])
+            let state = try XCTUnwrap(states[scope.accountHash + "." + scope.installationID])
+            XCTAssertEqual((state["tripEndsAt"] as? [String: String])?[trip], metadata.endsAt)
+            XCTAssertNil((state["frozenMetadata"] as? [String: Any])?[trip])
+            XCTAssertTrue((state["tombstones"] as? [String])?.contains(trip) == true)
+            for end in [metadata.endsAt, "2031-01-02T00:00:00Z"] {
+                XCTAssertEqual(try restarted.importTrip(scope: scope, tripID: trip,
+                    key: Data(repeating: 9, count: 32), endsAt: end,
+                    now: Date(timeIntervalSince1970: 0), constantTimeEquals: { $0 == $1 }), .conflict)
+            }
+        }
     }
 
     func testEmptyCleanupDoesNotCreateAKeychainDatabase() throws {

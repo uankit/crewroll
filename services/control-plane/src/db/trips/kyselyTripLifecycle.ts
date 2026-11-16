@@ -289,7 +289,15 @@ export function createKyselyTripLifecycle(
       return db.transaction().execute(async (tx) => {
         await authorize(tx, actor, true);
         const rows = await tx
-          .selectFrom("trip_members as m")
+          // This is an operational current-trip lookup, not a membership
+          // history feed. The user primary key bounds it to one trip, including
+          // JOINING and LEAVING until their normal departure is complete.
+          .selectFrom("user_active_trips as current")
+          .innerJoin("trip_members as m", (join) =>
+            join
+              .onRef("m.trip_id", "=", "current.trip_id")
+              .onRef("m.user_id", "=", "current.user_id"),
+          )
           .innerJoin("trips as t", "t.id", "m.trip_id")
           .select([
             "t.id",
@@ -325,9 +333,10 @@ export function createKyselyTripLifecycle(
               .where("d.state", "=", "SAVED_LOCALLY")
               .as("savedPhotoCount"),
           ])
-          .where("m.user_id", "=", actor.userId)
+          .where("current.user_id", "=", actor.userId)
+          .where("m.left_at", "is", null)
           .where("m.state", "!=", "REJECTED")
-          .orderBy("t.created_at", "desc")
+          .where("t.state", "in", ["LOBBY", "ACTIVE", "ENDING"])
           .execute();
         return {
           items: rows.map((r) => ({
@@ -335,14 +344,11 @@ export function createKyselyTripLifecycle(
             name: r.name,
             status: r.status,
             role: r.role,
-            participation:
-              r.left_at || terminal(r.status)
-                ? ("LEFT" as const)
-                : r.leaving_at
-                  ? ("LEAVING" as const)
-                  : r.state === "PENDING_KEY"
-                    ? ("JOINING" as const)
-                    : ("JOINED" as const),
+            participation: r.leaving_at
+              ? ("LEAVING" as const)
+              : r.state === "PENDING_KEY"
+                ? ("JOINING" as const)
+                : ("JOINED" as const),
             startsAt: r.started_at?.toISOString() ?? null,
             endsAt: r.ends_at.toISOString(),
             leftAt: r.left_at?.toISOString() ?? null,

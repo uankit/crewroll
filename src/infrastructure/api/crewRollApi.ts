@@ -500,7 +500,11 @@ class OpenApiCrewRollApi implements CrewRollApi {
     );
     if (!matchesRuntimeSchema(TripListResponseSchema as RuntimeSchema, value))
       throw new CrewRollTransportProblem();
-    return value;
+    // Older API deployments may still include finished memberships. They are
+    // not part of the current-trip view, including during a rolling upgrade.
+    return {
+      items: value.items.filter((trip) => trip.participation !== "LEFT"),
+    };
   }
   async getTripLifecycle(
     deviceId: string,

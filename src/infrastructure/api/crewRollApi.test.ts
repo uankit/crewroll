@@ -7,6 +7,7 @@ import type {
   StartTripBody,
   SetTripReadinessBody,
   TripResponse,
+  TripSummary,
 } from "@crewroll/contracts";
 import { ProblemCodeSchema } from "@crewroll/contracts";
 import type { SessionTokenSource } from "../../application/auth/ports";
@@ -233,6 +234,39 @@ function deferred<T>() {
 }
 
 describe("CrewRoll API boundary", () => {
+  it("excludes legacy past memberships while keeping each unfinished participation state", async () => {
+    const base: TripSummary = {
+      id: tripId,
+      name: "Weekend",
+      status: "ACTIVE",
+      participation: "JOINED",
+      role: "MEMBER",
+      startsAt: "2026-09-01T00:00:00.000Z",
+      endsAt: "2026-09-02T12:00:00.000Z",
+      leftAt: null,
+      sharingPaused: false,
+      onThisDevice: true,
+      memberCount: 3,
+      savedPhotoCount: 2,
+    };
+    for (const participation of ["JOINING", "JOINED", "LEAVING"] as const) {
+      const current = { ...base, participation };
+      const past = {
+        ...base,
+        participation: "LEFT",
+        status: "COMPLETE",
+        leftAt: base.endsAt,
+      };
+      const fetchMock = jest.fn(async () =>
+        response({ items: [past, current] }, 200),
+      );
+      await expect(apiWith(fetchMock).listTrips(deviceId)).resolves.toEqual({
+        items: [current],
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("accepts an 80-code-point astral profile name through the HTTP response parser", async () => {
     const displayName = "🛶".repeat(80);
     const fetchMock = jest.fn(async () => response({ displayName }, 200));

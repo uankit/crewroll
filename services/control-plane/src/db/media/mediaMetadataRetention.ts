@@ -4,8 +4,9 @@ import type { Clock } from "../../shared/time/clock.js";
 
 const BATCH = 100;
 
-/** Erase photo payloads after access/recovery expires, preserving history and
- * storage keys until byte retirement is confirmed. Never erase R2 tombstones. */
+/** Erase photo payloads after access/recovery expires, preserving operational
+ * records and storage keys until byte retirement is confirmed. Never erase R2
+ * tombstones. */
 export async function eraseExpiredMediaMetadata(
   db: Kysely<Database>,
   clock: Clock,

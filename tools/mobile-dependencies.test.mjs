@@ -31,7 +31,6 @@ const applicationDependencies = [
   "@tanstack/react-query",
   "zod",
   "openapi-fetch",
-  "@shopify/flash-list",
 ];
 
 const sdk57Range = /^~57\.0\.(0|[1-9]\d*)$/;
